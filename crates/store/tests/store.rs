@@ -9,8 +9,8 @@ use std::path::Path;
 
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
 use headwork_core::{
-    Actor, AdmissionRefusal, AskKind, AskState, Config, MachineMode, Model, ProjectName, Refusal,
-    Role, SessionState, Slug, TaskRequest, TaskState, Trigger,
+    Actor, AdmissionRefusal, AskKind, AskState, Config, MachineMode, Model, PermissionMode,
+    ProjectName, Refusal, Role, SessionState, Slug, TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
     EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewSession, NewTask, Store, StoreError, Task,
@@ -40,6 +40,7 @@ fn request(project: &str, slug: &str, kind: &str) -> NewTask {
         },
         brief_path: format!("briefs/{project}-{slug}.md"),
         depends_on: None,
+        permission_mode: PermissionMode::Auto,
     }
 }
 
@@ -386,6 +387,7 @@ fn board_shows_sessions_asks_and_states() {
         role: Role::Child,
         rc_name: "me-sim-sand".to_owned(),
         host: "wmux".to_owned(),
+        host_workspace: Some("ws-1".to_owned()),
         host_surface: Some("surface:7".to_owned()),
     };
     store.record_session(&session, Actor::Tick).unwrap();
@@ -446,4 +448,71 @@ fn parking_blocks_new_tasks() {
         ),
         "parking refuses spawns"
     );
+}
+
+#[test]
+fn launcher_records_place_pids_exit_and_worktree() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    store.start_task(&config, task.id, Actor::Tick).unwrap();
+    let id = "0b6c1d2e-0000-4000-8000-000000000002";
+    let session = NewSession {
+        id: id.to_owned(),
+        task_id: Some(task.id),
+        role: Role::Child,
+        rc_name: "me-sim-sand".to_owned(),
+        host: "wmux".to_owned(),
+        host_workspace: None,
+        host_surface: None,
+    };
+    store.record_session(&session, Actor::User).unwrap();
+    store
+        .set_session_place(id, "ws-1", "surf-1", Actor::User)
+        .unwrap();
+    store.session_launched(id, 100, 101, "job").unwrap();
+    let (row, owner) = store.session(id).unwrap().unwrap();
+    assert_eq!(owner, Some(task.id), "the session's task");
+    assert_eq!(row.state, SessionState::Live, "live once launched");
+    assert_eq!(
+        (row.launcher_pid, row.claude_pid),
+        (Some(100), Some(101)),
+        "pids"
+    );
+    assert_eq!(row.host_surface.as_deref(), Some("surf-1"), "surface");
+
+    store.session_ended(id, Some(3)).unwrap();
+    let row = store.session_of(task.id).unwrap().unwrap();
+    assert_eq!(row.state, SessionState::Ended, "ended");
+    assert_eq!(row.exit_code, Some(3), "exit code");
+
+    store
+        .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
+        .unwrap();
+    store
+        .set_worktree_state(task.id, "removed", Actor::User)
+        .unwrap();
+    let worktree = store.worktree_of(task.id).unwrap().unwrap();
+    assert_eq!(
+        (worktree.path.as_str(), worktree.state.as_str()),
+        ("S:/w/sand", "removed"),
+        "worktree"
+    );
+    let kinds: Vec<String> = store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 50,
+        })
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    for kind in [
+        "session-placed",
+        "launched",
+        "exited",
+        "worktree-recorded",
+        "worktree-state",
+    ] {
+        assert!(kinds.iter().any(|k| k == kind), "{kind} logged");
+    }
 }

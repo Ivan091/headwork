@@ -62,6 +62,7 @@ fn passing_triggers() -> Vec<Trigger> {
         Trigger::Start(FREE),
         Trigger::SessionStarted(LIVE),
         Trigger::SpawnTimedOut,
+        Trigger::LaunchFailed,
         Trigger::AskOpened,
         Trigger::AskAnswered,
         Trigger::ReviewOpened { repo_allowed: true },
@@ -73,6 +74,7 @@ fn passing_triggers() -> Vec<Trigger> {
         Trigger::Close(READY),
         Trigger::Drop,
         Trigger::BeginClosing,
+        Trigger::ForceClose,
         Trigger::Cleaned(CLEAN),
         Trigger::ProcessLost {
             machine: MachineMode::Normal,
@@ -90,6 +92,7 @@ const TABLE: &[(&str, TaskState, TaskState)] = &[
     ("start", S::Queued, S::Spawning),
     ("session-started", S::Spawning, S::Working),
     ("spawn-timed-out", S::Spawning, S::Failed),
+    ("launch-failed", S::Spawning, S::Failed),
     ("ask-opened", S::Working, S::NeedsUser),
     ("ask-answered", S::NeedsUser, S::Working),
     ("review-opened", S::Working, S::InReview),
@@ -107,6 +110,16 @@ const TABLE: &[(&str, TaskState, TaskState)] = &[
     ("drop", S::Parking, S::Dropped),
     ("drop", S::Parked, S::Dropped),
     ("begin-closing", S::Dropped, S::Closing),
+    ("force-close", S::Queued, S::Closing),
+    ("force-close", S::Spawning, S::Closing),
+    ("force-close", S::Working, S::Closing),
+    ("force-close", S::NeedsUser, S::Closing),
+    ("force-close", S::InReview, S::Closing),
+    ("force-close", S::Merged, S::Closing),
+    ("force-close", S::Failed, S::Closing),
+    ("force-close", S::Interrupted, S::Closing),
+    ("force-close", S::Parking, S::Closing),
+    ("force-close", S::Parked, S::Closing),
     ("cleaned", S::Closing, S::Closed),
     ("process-lost", S::Working, S::Interrupted),
     ("process-lost", S::NeedsUser, S::Interrupted),
@@ -573,6 +586,8 @@ fn trigger() -> impl Strategy<Value = Trigger> {
             })
         }),
         Just(Trigger::SpawnTimedOut),
+        Just(Trigger::LaunchFailed),
+        Just(Trigger::ForceClose),
         Just(Trigger::AskOpened),
         Just(Trigger::AskAnswered),
         any::<bool>().prop_map(|repo_allowed| Trigger::ReviewOpened { repo_allowed }),
@@ -638,6 +653,8 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
             matches!(machine, MachineMode::Normal | MachineMode::Resuming)
         }
         Trigger::SpawnTimedOut
+        | Trigger::LaunchFailed
+        | Trigger::ForceClose
         | Trigger::AskOpened
         | Trigger::AskAnswered
         | Trigger::ChangesRequested
@@ -662,7 +679,7 @@ proptest! {
                         prop_assert_eq!(current.state, S::Closing, "closed only after closing");
                         prop_assert!(matches!(trigger, Trigger::Cleaned(_)), "closed only after verification");
                     }
-                    if step.to == S::Closing && current.state == S::Merged {
+                    if step.to == S::Closing && matches!(trigger, Trigger::Close(_)) {
                         prop_assert!(!keep, "a keep task closed on its own");
                     }
                     current = TaskSnapshot { state: step.to, state_before_park: step.state_before_park, keep };

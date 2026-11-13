@@ -1,0 +1,259 @@
+//! Process trees: start a program so that the tool owns everything it starts, ask whether a process lives, end a
+//! whole tree.
+//!
+//! On Windows a child runs inside a Job Object with kill-on-close, so closing the job, or the death of the process
+//! holding it, ends every descendant. On unix the child leads its own process group, and ending the group ends the
+//! tree.
+
+use std::io;
+use std::process::{Child, Command, ExitStatus};
+
+/// Why a process operation failed.
+#[derive(Debug, thiserror::Error)]
+pub enum ProcError {
+    /// The program did not start.
+    #[error("starting `{program}`: {source}")]
+    Spawn {
+        /// The program.
+        program: String,
+        /// The OS error.
+        #[source]
+        source: io::Error,
+    },
+    /// Waiting for the child failed.
+    #[error("waiting for process {pid}: {source}")]
+    Wait {
+        /// The child's process id.
+        pid: u32,
+        /// The OS error.
+        #[source]
+        source: io::Error,
+    },
+    /// A system tool such as `taskkill` or `kill` did not run.
+    #[error("running `{tool}`: {source}")]
+    Tool {
+        /// The tool.
+        tool: &'static str,
+        /// The OS error.
+        #[source]
+        source: io::Error,
+    },
+    /// The interrupt handler could not be installed.
+    #[error("ignoring Ctrl+C: {0}")]
+    Interrupts(String),
+}
+
+/// How the tool holds a child's tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ownership {
+    /// A Windows Job Object with kill-on-close.
+    Job,
+    /// A unix process group led by the child.
+    ProcessGroup,
+    /// Not owned; the reason says why. The child still runs.
+    Unowned(String),
+}
+
+/// A child process whose whole tree the tool owns.
+#[derive(Debug)]
+pub struct OwnedChild {
+    child: Child,
+    tree: imp::Tree,
+    ownership: Ownership,
+}
+
+impl OwnedChild {
+    /// Starts `command` inside a new tree it cannot leave.
+    ///
+    /// The tree is joined right after the start, so a grandchild started in the first instant may escape it; `claude`
+    /// takes far longer than that before it starts anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcError::Spawn`] when the program does not start. Failing to own the tree is not an error; it is
+    /// reported by [`OwnedChild::ownership`].
+    pub fn spawn(command: &mut Command) -> Result<Self, ProcError> {
+        imp::prepare(command);
+        let child = command.spawn().map_err(|source| ProcError::Spawn {
+            program: command.get_program().to_string_lossy().into_owned(),
+            source,
+        })?;
+        let (tree, ownership) = imp::adopt(&child);
+        Ok(Self {
+            child,
+            tree,
+            ownership,
+        })
+    }
+
+    /// The child's process id.
+    #[must_use]
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// How the tree is held.
+    #[must_use]
+    pub const fn ownership(&self) -> &Ownership {
+        &self.ownership
+    }
+
+    /// Waits for the child to exit, then ends whatever is left of its tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcError::Wait`] when waiting fails; the tree is ended anyway.
+    pub fn wait(mut self) -> Result<ExitStatus, ProcError> {
+        let pid = self.child.id();
+        let status = self
+            .child
+            .wait()
+            .map_err(|source| ProcError::Wait { pid, source });
+        imp::end(self.tree);
+        status
+    }
+}
+
+/// Ends the process `pid` and all its descendants.
+///
+/// Returns `false` when no such process was running.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Tool`] when the system tool cannot run.
+pub fn kill_tree(pid: u32) -> Result<bool, ProcError> {
+    imp::kill_tree(pid)
+}
+
+/// Whether a process with this id runs.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Tool`] when the system tool cannot run.
+pub fn is_alive(pid: u32) -> Result<bool, ProcError> {
+    imp::is_alive(pid)
+}
+
+/// Makes this process ignore Ctrl+C and Ctrl+Break, so that an interrupt typed into a pane reaches the program in it
+/// and does not end the launcher that owns the program's tree.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Interrupts`] when the handler cannot be installed.
+pub fn ignore_interrupts() -> Result<(), ProcError> {
+    ctrlc::set_handler(|| {}).map_err(|error| ProcError::Interrupts(error.to_string()))
+}
+
+#[cfg(windows)]
+mod imp {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::{Child, Command};
+
+    use win32job::{ExtendedLimitInfo, Job};
+
+    use super::{Ownership, ProcError};
+
+    /// The job holding the tree; closing it ends every process in it.
+    pub(super) type Tree = Option<Job>;
+
+    /// Taskkill's exit code when no process matched.
+    const TASKKILL_NOT_FOUND: i32 = 128;
+
+    pub(super) const fn prepare(_command: &mut Command) {}
+
+    pub(super) fn adopt(child: &Child) -> (Tree, Ownership) {
+        match job_for(child) {
+            Ok(job) => (Some(job), Ownership::Job),
+            Err(reason) => (None, Ownership::Unowned(reason)),
+        }
+    }
+
+    fn job_for(child: &Child) -> Result<Job, String> {
+        let mut info = ExtendedLimitInfo::new();
+        info.limit_kill_on_job_close();
+        let job = Job::create_with_limit_info(&info).map_err(|error| error.to_string())?;
+        let handle = isize::try_from(child.as_raw_handle().addr())
+            .map_err(|_| "the process handle does not fit".to_owned())?;
+        job.assign_process(handle)
+            .map_err(|error| format!("assigning the job: {}", std::io::Error::from(error)))?;
+        Ok(job)
+    }
+
+    pub(super) fn end(tree: Tree) {
+        drop(tree);
+    }
+
+    pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .map_err(|source| ProcError::Tool {
+                tool: "taskkill",
+                source,
+            })?
+            .status;
+        Ok(status.code() != Some(TASKKILL_NOT_FOUND) && status.success())
+    }
+
+    pub(super) fn is_alive(pid: u32) -> Result<bool, ProcError> {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .map_err(|source| ProcError::Tool {
+                tool: "tasklist",
+                source,
+            })?;
+        let needle = format!("\"{pid}\"");
+        Ok(String::from_utf8_lossy(&output.stdout).contains(&needle))
+    }
+}
+
+#[cfg(unix)]
+mod imp {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    use super::{Ownership, ProcError};
+
+    /// The process group id, which is the child's pid.
+    pub(super) type Tree = u32;
+
+    pub(super) fn prepare(command: &mut Command) {
+        command.process_group(0);
+    }
+
+    pub(super) fn adopt(child: &Child) -> (Tree, Ownership) {
+        (child.id(), Ownership::ProcessGroup)
+    }
+
+    pub(super) fn end(group: Tree) {
+        let ended = signal_group(group, "-KILL");
+        drop(ended);
+    }
+
+    fn signal_group(group: u32, signal: &str) -> Result<bool, ProcError> {
+        Command::new("kill")
+            .args([signal, "--", &format!("-{group}")])
+            .output()
+            .map(|output| output.status.success())
+            .map_err(|source| ProcError::Tool {
+                tool: "kill",
+                source,
+            })
+    }
+
+    pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
+        signal_group(pid, "-KILL")
+    }
+
+    pub(super) fn is_alive(pid: u32) -> Result<bool, ProcError> {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|output| output.status.success())
+            .map_err(|source| ProcError::Tool {
+                tool: "kill",
+                source,
+            })
+    }
+}

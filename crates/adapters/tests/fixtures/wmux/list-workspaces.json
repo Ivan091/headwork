@@ -1,0 +1,6 @@
+{
+  "workspaces": [
+    { "id": "ws-c71e83a0-7350-48dd-975b-b9b9ff8d38ac", "title": "Workspace 1", "isActive": false, "cwd": "S:\\Youtube", "shell": "" },
+    { "id": "ws-ee26d8f1-a97f-4fa3-88e8-55b725f4f72b", "title": "me-sim", "isActive": true, "cwd": "S:\\Code\\me-sim\\me-sim", "shell": "" }
+  ]
+}

@@ -17,13 +17,15 @@ Cargo.toml              workspace: shared package settings, dependencies, lints,
 crates/
   core/                 headwork-core: lifecycle state machine, guards, config model; pure, no I/O
   store/                headwork-store: SQLite (rusqlite, bundled), numbered migrations, queries
-  headwork/             the binary: CLI (board, log)
+  adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the claude
+                        runtime, worktrees
+  headwork/             the binary: CLI (board, log, spawn, queue, launch) over a small lib (home, ops)
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
 ```
 
-Later milestones add `crates/adapters` (hosts, git, runtime, processes) and `plugin/` (hooks, MCP registration).
+Later milestones add `plugin/` (hooks, MCP registration).
 
 ## Commands
 
@@ -32,6 +34,8 @@ bash scripts/check.sh                      # the full gate; must pass before eve
 cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks, sessions, states, asks
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
+cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   # a task in its own pane, or queued
+cargo run -p headwork -- queue             # start every queued task that fits
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the

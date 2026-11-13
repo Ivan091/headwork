@@ -222,6 +222,20 @@ text_enum!(
 );
 
 text_enum!(
+    /// The permission mode a session starts in, as `claude --permission-mode` spells it.
+    PermissionMode, "permission mode" {
+        /// Auto mode: a classifier reviews risky actions.
+        Auto => "auto",
+        /// Plan mode: read-only until a plan is approved.
+        Plan => "plan",
+        /// Every risky action asks.
+        Default => "default",
+        /// File edits pass without asking.
+        AcceptEdits => "acceptEdits",
+    }
+);
+
+text_enum!(
     /// A session's role.
     Role, "role" {
         /// The coordinating session.

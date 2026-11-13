@@ -38,3 +38,34 @@ and the reason.
 - 2026-11-13 `board` and `log` record the configured projects on every run, so the store follows config edits without
   a separate command; a sync is logged only when something changed.
 - 2026-11-13 rustfmt keeps its default style (100 columns), as in me-sim.
+- 2026-11-13 Milestone 2 ships as two pull requests: the adapters, the launcher and `spawn` with the queue first (the
+  launcher test needs a spawned task), then `close`, queue order and `import`.
+- 2026-11-13 The `headwork` package has a small library (`home`, `ops`) beside `main.rs` so spawn, the queue and close
+  can be tested in-process against the fake host; it is the binary's internals and uses `anyhow` like the binary.
+- 2026-11-13 The wmux adapter runs `node wmux.js` directly (from `WMUX_NODE` and `WMUX_CLI`, else `node` and the
+  default install folder), because `wmux` and `wmux.cmd` are shims and `cmd` quoting would break arguments.
+  `machine.host_bin` overrides the script.
+- 2026-11-13 The Job Object comes from the `win32job` crate, since the workspace forbids `unsafe`. The child joins the
+  job right after it starts instead of being started suspended (that needs `unsafe`); `claude` starts nothing in that
+  first instant. If joining fails the launcher logs `tree: unowned` and the session still runs.
+- 2026-11-13 The launcher ignores Ctrl+C and Ctrl+Break (`ctrlc` with an empty handler), so an interrupt typed into a
+  pane only reaches Claude. Closing the pane still ends the launcher and, through the job, the whole tree.
+- 2026-11-13 Until the `SessionStart` hook exists (milestone 3), the launcher fires `session-started` itself once
+  `claude` runs; when `claude` exits on its own it moves a `spawning` task to `failed` and a running one to
+  `interrupted`.
+- 2026-11-13 New triggers: `launch-failed` (`spawning` → `failed`, the pane or `claude` did not start) and
+  `force-close` (any live state → `closing`, the root's `close` of a keep task or a stuck one, without pretending it
+  was dropped).
+- 2026-11-13 The permission mode is a closed set (`auto`, `plan`, `default`, `acceptEdits`) stored in
+  `tasks.permission_mode`, which milestone 1's schema already had.
+- 2026-11-13 `machine.shell` names the shell for command templates (worktree scripts), `bash` from `PATH` when absent;
+  on this machine `PATH` also holds WSL's `bash`, so the config should name Git Bash.
+- 2026-11-13 A pane runs `<absolute headwork.exe> launch --task N --home <home>`: wmux starts panes with its own
+  environment, so neither `PATH` nor `HEADWORK_HOME` can be relied on. The launcher moves its own working folder to the
+  home, so only `claude` stands in the worktree and the worktree can be removed once `claude` is gone.
+- 2026-11-13 In a workspace headwork just created, the first pane replaces the workspace's shell tab
+  (`--replace-tab`), so the workspace holds only its children and can close with the last one.
+- 2026-11-13 `spawn --main` defaults the kind to the slug (`car-training` in main is kind `car-training`); other tasks
+  default to kind `task`.
+- 2026-11-13 Each queue run tries every queued task in order and logs a refusal for each one that still waits; the log
+  shows why a task has not started, at the price of repeated lines.

@@ -2,7 +2,22 @@
 
 use std::fmt::Write;
 
+use headwork::ops::spawn::{Outcome, Pumped};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord};
+
+/// What a queue run did, one line per queued task.
+#[must_use]
+pub(crate) fn pumped(pumped: &[Pumped]) -> String {
+    let mut text = String::new();
+    for item in pumped {
+        let _ = match &item.outcome {
+            Outcome::Started { surface } => writeln!(text, "  {} started in {surface}", item.name),
+            Outcome::Waiting { reason } => writeln!(text, "  {} waits: {reason}", item.name),
+            Outcome::Failed { error } => writeln!(text, "  {} failed: {error}", item.name),
+        };
+    }
+    text
+}
 
 /// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
 #[must_use]
@@ -160,7 +175,9 @@ fn describe(event: &EventRecord) -> String {
 mod tests {
     use std::path::Path;
 
-    use headwork_core::{Actor, AskKind, Config, ProjectName, Slug, TaskRequest, Trigger};
+    use headwork_core::{
+        Actor, AskKind, Config, PermissionMode, ProjectName, Slug, TaskRequest, Trigger,
+    };
     use headwork_store::{EventFilter, NewAsk, NewTask, Store};
 
     fn store() -> (Store, Config) {
@@ -183,6 +200,7 @@ mod tests {
             },
             brief_path: "brief.md".to_owned(),
             depends_on: None,
+            permission_mode: PermissionMode::Auto,
         };
         store.create_task(config, &new, Actor::Root).unwrap()
     }

@@ -152,6 +152,9 @@ pub enum Trigger {
     SessionStarted(SessionFacts),
     /// No `SessionStart` within 120 s: `spawning` → `failed`.
     SpawnTimedOut,
+    /// The pane or `claude` could not be started, or `claude` exited before its session started: `spawning` →
+    /// `failed`.
+    LaunchFailed,
     /// `AskUserQuestion` or a permission prompt: `working` → `needs_user`.
     AskOpened,
     /// The answer is recorded: `needs_user` → `working`.
@@ -176,6 +179,9 @@ pub enum Trigger {
     Drop,
     /// `dropped` → `closing`, at once.
     BeginClosing,
+    /// The root or the user closes a task without dropping it, such as a keep task or one stuck after `done`: any
+    /// state that is not closing or over → `closing`.
+    ForceClose,
     /// Pane, processes and worktree are verified gone: `closing` → `closed`.
     Cleaned(CleanupFacts),
     /// The launcher or claude process vanished: a running state → `interrupted`.
@@ -202,6 +208,7 @@ impl Trigger {
             Self::Start(_) => "start",
             Self::SessionStarted(_) => "session-started",
             Self::SpawnTimedOut => "spawn-timed-out",
+            Self::LaunchFailed => "launch-failed",
             Self::AskOpened => "ask-opened",
             Self::AskAnswered => "ask-answered",
             Self::ReviewOpened { .. } => "review-opened",
@@ -210,6 +217,7 @@ impl Trigger {
             Self::Close(_) => "close",
             Self::Drop => "drop",
             Self::BeginClosing => "begin-closing",
+            Self::ForceClose => "force-close",
             Self::Cleaned(_) => "cleaned",
             Self::ProcessLost { .. } => "process-lost",
             Self::Park => "park",
@@ -310,12 +318,14 @@ impl Trigger {
         use TaskState as S;
         match self {
             Self::Start(_) => matches!(state, S::Queued),
-            Self::SessionStarted(_) | Self::SpawnTimedOut => matches!(state, S::Spawning),
+            Self::SessionStarted(_) | Self::SpawnTimedOut | Self::LaunchFailed => {
+                matches!(state, S::Spawning)
+            }
             Self::AskOpened | Self::ReviewOpened { .. } => matches!(state, S::Working),
             Self::AskAnswered => matches!(state, S::NeedsUser),
             Self::ChangesRequested | Self::Merged { .. } => matches!(state, S::InReview),
             Self::Close(_) => matches!(state, S::Merged),
-            Self::Drop => droppable(state),
+            Self::Drop | Self::ForceClose => droppable(state),
             Self::BeginClosing => matches!(state, S::Dropped),
             Self::Cleaned(_) => matches!(state, S::Closing),
             Self::ProcessLost { .. } => {
@@ -364,6 +374,8 @@ impl Trigger {
                 machine: machine @ (MachineMode::Parking | MachineMode::Parked),
             } => Err(Refusal::MachineMode(machine)),
             Self::SpawnTimedOut
+            | Self::LaunchFailed
+            | Self::ForceClose
             | Self::AskOpened
             | Self::AskAnswered
             | Self::ReviewOpened { repo_allowed: true }
@@ -385,12 +397,13 @@ impl Trigger {
         let (to, state_before_park) = match self {
             Self::Start(_) | Self::Resume { .. } => (S::Spawning, keep),
             Self::SessionStarted(_) => (resume_target(keep), None),
-            Self::SpawnTimedOut => (S::Failed, keep),
+            Self::SpawnTimedOut | Self::LaunchFailed => (S::Failed, keep),
             Self::AskOpened => (S::NeedsUser, keep),
             Self::AskAnswered | Self::ChangesRequested => (S::Working, keep),
             Self::ReviewOpened { .. } => (S::InReview, keep),
             Self::Merged { .. } => (S::Merged, keep),
             Self::Close(_) | Self::BeginClosing => (S::Closing, keep),
+            Self::ForceClose => (S::Closing, None),
             Self::Drop => (S::Dropped, None),
             Self::Cleaned(_) => (S::Closed, keep),
             Self::ProcessLost { .. } => (S::Interrupted, Some(from)),
