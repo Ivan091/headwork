@@ -150,7 +150,8 @@ pub fn parse_porcelain(text: &str) -> Vec<(PathBuf, Option<String>)> {
     out
 }
 
-/// Whether two paths name the same folder, ignoring case, separators and a trailing separator, as Windows does.
+/// Whether two paths name the same folder, ignoring case and separators, as Windows does.
+///
 /// When both exist they are compared in canonical form, so a short `RUNNER~1` name matches its long name.
 #[must_use]
 pub fn same_path(a: &Path, b: &Path) -> bool {
