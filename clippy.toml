@@ -1,0 +1,14 @@
+doc-valid-idents = [
+    "AskUserQuestion",
+    "PushNotification",
+    "SendUserFile",
+    "SendMessage",
+    "SessionStart",
+    "SessionEnd",
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "GitHub",
+    "SQLite",
+    "..",
+]

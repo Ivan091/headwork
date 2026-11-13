@@ -1,0 +1,844 @@
+//! Reads and writes of tasks, sessions, asks, projects and events.
+
+use headwork_core::lifecycle::{Dependency, FableGate, StartFacts};
+use headwork_core::{
+    Actor, AskKind, AskState, Config, MachineMode, ProjectConfig, ProjectName, Role, SessionState,
+    Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit, apply,
+};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+
+use crate::records::{
+    AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
+};
+use crate::{NOW, Store, StoreError};
+
+/// The answer to a Fable approval ask that lets the task start.
+pub const FABLE_ALLOW: &str = "Allow Fable";
+
+const FABLE_DECLINE: &str = "Use Opus instead";
+
+const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
+                            fable_ask, brief_path, last_report, queued_at, updated_at";
+
+/// A task to create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTask {
+    /// What was asked for.
+    pub request: TaskRequest,
+    /// The brief file.
+    pub brief_path: String,
+    /// The task it waits for.
+    pub depends_on: Option<TaskId>,
+}
+
+/// A session to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSession {
+    /// The Claude session id.
+    pub id: String,
+    /// The task, none for the root.
+    pub task_id: Option<TaskId>,
+    /// The role.
+    pub role: Role,
+    /// The Remote Control name.
+    pub rc_name: String,
+    /// The terminal host.
+    pub host: String,
+    /// The host pane.
+    pub host_surface: Option<String>,
+}
+
+/// An ask to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAsk {
+    /// The task, if any.
+    pub task_id: Option<TaskId>,
+    /// The asking session, if any.
+    pub session_id: Option<String>,
+    /// What it waits on.
+    pub kind: AskKind,
+    /// The question.
+    pub question: String,
+    /// The options, in order.
+    pub options: Vec<String>,
+}
+
+/// Which events to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventFilter {
+    /// Only this task's events.
+    pub task: Option<TaskId>,
+    /// At most this many, the newest, returned oldest first.
+    pub limit: u32,
+}
+
+struct RawTask {
+    id: i64,
+    project: String,
+    slug: String,
+    kind: String,
+    state: String,
+    state_before_park: Option<String>,
+    model: String,
+    keep: bool,
+    in_main: bool,
+    depends_on: Option<i64>,
+    fable_ask: Option<i64>,
+    brief_path: String,
+    last_report: Option<String>,
+    queued_at: String,
+    updated_at: String,
+}
+
+impl RawTask {
+    fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            project: row.get(1)?,
+            slug: row.get(2)?,
+            kind: row.get(3)?,
+            state: row.get(4)?,
+            state_before_park: row.get(5)?,
+            model: row.get(6)?,
+            keep: row.get(7)?,
+            in_main: row.get(8)?,
+            depends_on: row.get(9)?,
+            fable_ask: row.get(10)?,
+            brief_path: row.get(11)?,
+            last_report: row.get(12)?,
+            queued_at: row.get(13)?,
+            updated_at: row.get(14)?,
+        })
+    }
+
+    fn into_task(self) -> Result<Task, StoreError> {
+        Ok(Task {
+            id: TaskId(self.id),
+            name: TaskName::new(ProjectName::new(self.project)?, Slug::new(self.slug)?),
+            kind: self.kind,
+            state: self.state.parse()?,
+            state_before_park: self
+                .state_before_park
+                .map(|state| state.parse())
+                .transpose()?,
+            model: self.model.parse()?,
+            keep: self.keep,
+            in_main: self.in_main,
+            depends_on: self.depends_on.map(TaskId),
+            fable_ask: self.fable_ask.map(AskId),
+            brief_path: self.brief_path,
+            last_report: self.last_report,
+            queued_at: self.queued_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+pub(crate) fn insert_event(
+    conn: &Connection,
+    actor: Actor,
+    task: Option<TaskId>,
+    session: Option<&str>,
+    kind: &str,
+    data: &serde_json::Value,
+) -> Result<(), StoreError> {
+    conn.execute(
+        &format!("INSERT INTO events (at, actor, task_id, session_id, type, data) VALUES ({NOW}, ?1, ?2, ?3, ?4, ?5)"),
+        params![actor.as_str(), task.map(|id| id.0), session, kind, data.to_string()],
+    )?;
+    Ok(())
+}
+
+fn load_task(conn: &Connection, id: TaskId) -> Result<Task, StoreError> {
+    conn.query_row(
+        &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
+        params![id.0],
+        RawTask::read,
+    )
+    .optional()?
+    .ok_or(StoreError::UnknownTask(id.0))?
+    .into_task()
+}
+
+fn machine_mode(conn: &Connection) -> Result<MachineMode, StoreError> {
+    let mode: String = conn.query_row("SELECT mode FROM machine WHERE id = 1", [], |row| {
+        row.get(0)
+    })?;
+    Ok(mode.parse()?)
+}
+
+/// A stable FNV-1a hash of a project's config, to see when it changed.
+fn config_hash(project: &ProjectConfig) -> Result<String, StoreError> {
+    let text = serde_json::to_string(project)?;
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    Ok(format!("{hash:016x}"))
+}
+
+fn upsert_project(
+    tx: &Transaction<'_>,
+    name: &ProjectName,
+    project: &ProjectConfig,
+) -> Result<bool, StoreError> {
+    let hash = config_hash(project)?;
+    let enabled = project.enabled;
+    let changed = tx.execute(
+        "INSERT INTO projects (name, main_path, config_hash, enabled) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(name) DO UPDATE SET main_path = excluded.main_path, config_hash = excluded.config_hash,
+             enabled = excluded.enabled
+         WHERE projects.main_path <> excluded.main_path OR projects.config_hash <> excluded.config_hash
+             OR projects.enabled <> excluded.enabled",
+        params![name.as_str(), project.main, hash, enabled],
+    )?;
+    Ok(changed > 0)
+}
+
+struct LiveTask {
+    project: String,
+    kind: String,
+    state: TaskState,
+    in_main: bool,
+}
+
+fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
+    let mut statement =
+        conn.prepare("SELECT project, kind, state, in_main FROM tasks WHERE state <> 'closed'")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get::<_, String>(2)?,
+                row.get(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(project, kind, state, in_main)| {
+            Ok(LiveTask {
+                project,
+                kind,
+                state: state.parse()?,
+                in_main,
+            })
+        })
+        .collect()
+}
+
+fn count(n: usize) -> Result<u32, StoreError> {
+    u32::try_from(n).map_err(|_| StoreError::OutOfRange(i64::MAX))
+}
+
+impl Store {
+    /// Records the configured projects: new and changed ones are written, ones gone from the config are disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn sync_projects(&mut self, config: &Config) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let mut changed = Vec::new();
+        for (name, project) in &config.projects {
+            if upsert_project(&tx, name, project)? {
+                changed.push(name.as_str().to_owned());
+            }
+        }
+        let known: Vec<String> = tx
+            .prepare("SELECT name FROM projects WHERE enabled = 1")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for name in known {
+            if !config
+                .projects
+                .keys()
+                .any(|configured| configured.as_str() == name)
+            {
+                tx.execute(
+                    "UPDATE projects SET enabled = 0 WHERE name = ?1",
+                    params![name],
+                )?;
+                changed.push(name);
+            }
+        }
+        if !changed.is_empty() {
+            insert_event(
+                &tx,
+                Actor::User,
+                None,
+                None,
+                "projects-synced",
+                &serde_json::json!({ "changed": changed }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Creates a task in `queued` after the admission guard. A Fable task that needs the user's approval gets a tool
+    /// ask, which must be answered with [`FABLE_ALLOW`] before the task may start.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotAdmitted`] when the guard refuses, or the SQLite error.
+    pub fn create_task(
+        &mut self,
+        config: &Config,
+        new: &NewTask,
+        actor: Actor,
+    ) -> Result<Task, StoreError> {
+        let request = &new.request;
+        let tx = self.conn.transaction()?;
+        let name_taken: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks WHERE project = ?1 AND slug = ?2 AND state <> 'closed')",
+            params![request.project.as_str(), request.slug.as_str()],
+            |row| row.get(0),
+        )?;
+        let admitted = admit(config, request, name_taken, machine_mode(&tx)?)?;
+        if let Some(project) = config.project(&request.project) {
+            upsert_project(&tx, &request.project, project)?;
+        }
+        tx.execute(
+            &format!(
+                "INSERT INTO tasks (project, slug, kind, state, model, keep, in_main, depends_on, brief_path, queued_at,
+                     updated_at)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW})"
+            ),
+            params![
+                request.project.as_str(),
+                request.slug.as_str(),
+                request.kind,
+                admitted.model.as_str(),
+                request.keep,
+                request.in_main,
+                new.depends_on.map(|id| id.0),
+                new.brief_path,
+            ],
+        )?;
+        let id = TaskId(tx.last_insert_rowid());
+        let name = TaskName::new(request.project.clone(), request.slug.clone());
+        if admitted.needs_fable_approval {
+            let ask = NewAsk {
+                task_id: Some(id),
+                session_id: None,
+                kind: AskKind::Tool,
+                question: format!("Allow Fable for {name}?"),
+                options: vec![FABLE_ALLOW.to_owned(), FABLE_DECLINE.to_owned()],
+            };
+            let ask_id = insert_ask(&tx, &ask, AskState::Pending)?;
+            tx.execute(
+                "UPDATE tasks SET fable_ask = ?1 WHERE id = ?2",
+                params![ask_id.0, id.0],
+            )?;
+        }
+        let data = serde_json::json!({
+            "name": name.to_string(), "kind": request.kind, "model": admitted.model, "in_main": request.in_main,
+            "keep": request.keep,
+        });
+        insert_event(&tx, actor, Some(id), None, "task-created", &data)?;
+        tx.commit()?;
+        load_task(&self.conn, id)
+    }
+
+    /// The task with this id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownTask`] or a read error.
+    pub fn task(&self, id: TaskId) -> Result<Task, StoreError> {
+        load_task(&self.conn, id)
+    }
+
+    /// Finds a task by `<project>-<slug>` or `<project>/<slug>`: the live one, else the newest closed one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn find_task(&self, name: &str) -> Result<Option<Task>, StoreError> {
+        let projects = self.projects()?;
+        let Some(name) = TaskName::resolve(name, projects.iter().map(|project| &project.name))
+        else {
+            return Ok(None);
+        };
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {TASK_COLUMNS} FROM tasks WHERE project = ?1 AND slug = ?2
+                     ORDER BY state <> 'closed' DESC, id DESC LIMIT 1"
+                ),
+                params![name.project().as_str(), name.slug().as_str()],
+                RawTask::read,
+            )
+            .optional()?
+            .map(RawTask::into_task)
+            .transpose()
+    }
+
+    /// Moves a queued task to `spawning` when the start guard passes, with the facts read from the store: slots,
+    /// the project cap, main-only kinds, the dependency and the Fable approval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Refused`] when the guard refuses, or a read or write error.
+    pub fn start_task(
+        &mut self,
+        config: &Config,
+        id: TaskId,
+        actor: Actor,
+    ) -> Result<Step, StoreError> {
+        let facts = self.start_facts(config, id)?;
+        self.transition(id, &Trigger::Start(facts), actor)
+    }
+
+    fn start_facts(&self, config: &Config, id: TaskId) -> Result<StartFacts, StoreError> {
+        let task = load_task(&self.conn, id)?;
+        let live = live_tasks(&self.conn)?;
+        let slots = live.iter().filter(|other| other.state.takes_slot());
+        let project = task.project().as_str();
+        let project_config = config.project(task.project());
+        Ok(StartFacts {
+            live_children: count(slots.clone().count())?,
+            max_children: config.machine.max_children.get(),
+            project_live: count(
+                slots
+                    .clone()
+                    .filter(|other| other.project == project)
+                    .count(),
+            )?,
+            project_cap: project_config
+                .and_then(|p| p.max_children)
+                .map(std::num::NonZeroU32::get),
+            main_only_kind_busy: task.in_main
+                && slots
+                    .filter(|other| {
+                        other.project == project && other.in_main && other.kind == task.kind
+                    })
+                    .count()
+                    > 0,
+            dependency: self.dependency(task.depends_on)?,
+            fable: self.fable_gate(&task)?,
+            machine: machine_mode(&self.conn)?,
+        })
+    }
+
+    fn dependency(&self, depends_on: Option<TaskId>) -> Result<Dependency, StoreError> {
+        let Some(id) = depends_on else {
+            return Ok(Dependency::None);
+        };
+        let merged: bool = self.conn.query_row(
+            "SELECT state = 'merged' OR EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND type = 'transition'
+                 AND json_extract(data, '$.to') = 'merged')
+             FROM tasks WHERE id = ?1",
+            params![id.0],
+            |row| row.get(0),
+        )?;
+        Ok(if merged {
+            Dependency::Merged
+        } else {
+            Dependency::Waiting
+        })
+    }
+
+    fn fable_gate(&self, task: &Task) -> Result<FableGate, StoreError> {
+        let Some(ask) = task.fable_ask else {
+            return Ok(FableGate::NotNeeded);
+        };
+        let answer: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT answer FROM asks WHERE id = ?1 AND state = 'answered'",
+                params![ask.0],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(if answer.as_deref() == Some(FABLE_ALLOW) {
+            FableGate::Allowed
+        } else {
+            FableGate::Waiting
+        })
+    }
+
+    /// Applies a trigger to a task and logs the transition, or logs the refusal and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Refused`] when the lifecycle refuses, or a read or write error.
+    pub fn transition(
+        &mut self,
+        id: TaskId,
+        trigger: &Trigger,
+        actor: Actor,
+    ) -> Result<Step, StoreError> {
+        let tx = self.conn.transaction()?;
+        let task = load_task(&tx, id)?;
+        match apply(&task.snapshot(), trigger) {
+            Ok(step) => {
+                tx.execute(
+                    &format!("UPDATE tasks SET state = ?1, state_before_park = ?2, updated_at = {NOW} WHERE id = ?3"),
+                    params![step.to.as_str(), step.state_before_park.map(TaskState::as_str), id.0],
+                )?;
+                let data = serde_json::json!({ "trigger": trigger.name(), "from": step.from, "to": step.to });
+                insert_event(&tx, actor, Some(id), None, "transition", &data)?;
+                tx.commit()?;
+                Ok(step)
+            }
+            Err(refusal) => {
+                drop(tx);
+                let data = serde_json::json!({
+                    "trigger": trigger.name(), "state": task.state, "reason": refusal.to_string(),
+                });
+                insert_event(&self.conn, actor, Some(id), None, "refused", &data)?;
+                Err(StoreError::Refused {
+                    task: task.name.to_string(),
+                    refusal,
+                })
+            }
+        }
+    }
+
+    /// Records a new session in `starting`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_session(&mut self, session: &NewSession, actor: Actor) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            &format!(
+                "INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, host_surface, state, started_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pane', ?5, ?6, 'starting', {NOW})"
+            ),
+            params![
+                session.id,
+                session.task_id.map(|id| id.0),
+                session.role.as_str(),
+                session.rc_name,
+                session.host,
+                session.host_surface,
+            ],
+        )?;
+        let data = serde_json::json!({ "rc_name": session.rc_name, "role": session.role });
+        insert_event(
+            &tx,
+            actor,
+            session.task_id,
+            Some(&session.id),
+            "session-recorded",
+            &data,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Sets a session's state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_session_state(
+        &mut self,
+        id: &str,
+        state: SessionState,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let task: Option<i64> = tx.query_row(
+            "SELECT task_id FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            &format!("UPDATE sessions SET state = ?1, last_event_at = {NOW} WHERE id = ?2"),
+            params![state.as_str(), id],
+        )?;
+        insert_event(
+            &tx,
+            actor,
+            task.map(TaskId),
+            Some(id),
+            "session-state",
+            &serde_json::json!({ "state": state }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records an ask put to the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn open_ask(&mut self, ask: &NewAsk, actor: Actor) -> Result<AskId, StoreError> {
+        let tx = self.conn.transaction()?;
+        let id = insert_ask(&tx, ask, AskState::Open)?;
+        let data = serde_json::json!({ "ask": id.0, "kind": ask.kind, "question": ask.question });
+        insert_event(
+            &tx,
+            actor,
+            ask.task_id,
+            ask.session_id.as_deref(),
+            "ask-opened",
+            &data,
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Records the answer to an ask.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn answer_ask(&mut self, id: AskId, answer: &str, actor: Actor) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let (task, session): (Option<i64>, Option<String>) = tx.query_row(
+            "SELECT task_id, session_id FROM asks WHERE id = ?1",
+            params![id.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE asks SET state = 'answered', answer = ?1, answered_at = {NOW} WHERE id = ?2"
+            ),
+            params![answer, id.0],
+        )?;
+        let data = serde_json::json!({ "ask": id.0, "answer": answer });
+        insert_event(
+            &tx,
+            actor,
+            task.map(TaskId),
+            session.as_deref(),
+            "ask-answered",
+            &data,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The known projects, by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn projects(&self) -> Result<Vec<ProjectRow>, StoreError> {
+        let rows: Vec<(String, String, bool)> = self
+            .conn
+            .prepare("SELECT name, main_path, enabled FROM projects ORDER BY name")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(|(name, main_path, enabled)| {
+                Ok(ProjectRow {
+                    name: ProjectName::new(name)?,
+                    main_path,
+                    enabled,
+                })
+            })
+            .collect()
+    }
+
+    /// The board: the machine mode, projects, and every task that is not closed (all tasks with `all`), each with
+    /// its latest session, waiting asks and latest pull request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn board(&self, all: bool) -> Result<Board, StoreError> {
+        let filter = if all { "" } else { "WHERE state <> 'closed'" };
+        let tasks: Vec<RawTask> = self
+            .conn
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks {filter} ORDER BY project, id"
+            ))?
+            .query_map([], RawTask::read)?
+            .collect::<Result<_, _>>()?;
+        let asks = self.waiting_asks()?;
+        let mut board_tasks = Vec::with_capacity(tasks.len());
+        for raw in tasks {
+            let task = raw.into_task()?;
+            let task_asks = asks
+                .iter()
+                .filter(|ask| ask.task_id == Some(task.id))
+                .cloned()
+                .collect();
+            board_tasks.push(BoardTask {
+                session: self.latest_session(task.id)?,
+                pr: self.latest_pr(task.id)?,
+                asks: task_asks,
+                task,
+            });
+        }
+        let live = live_tasks(&self.conn)?;
+        Ok(Board {
+            machine: machine_mode(&self.conn)?,
+            live_children: count(live.iter().filter(|task| task.state.takes_slot()).count())?,
+            projects: self.projects()?,
+            tasks: board_tasks,
+            other_asks: asks
+                .into_iter()
+                .filter(|ask| ask.task_id.is_none())
+                .collect(),
+        })
+    }
+
+    fn waiting_asks(&self) -> Result<Vec<AskRow>, StoreError> {
+        type RawAsk = (
+            i64,
+            Option<i64>,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+        );
+        let rows: Vec<RawAsk> = self
+            .conn
+            .prepare(
+                "SELECT id, task_id, kind, question, options, state, answer, created_at FROM asks
+                 WHERE state IN ('pending', 'open') ORDER BY id",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(
+                |(id, task_id, kind, question, options, state, answer, created_at)| {
+                    Ok(AskRow {
+                        id: AskId(id),
+                        task_id: task_id.map(TaskId),
+                        kind: kind.parse()?,
+                        question,
+                        options: serde_json::from_str(&options)?,
+                        state: state.parse()?,
+                        answer,
+                        created_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    fn latest_session(&self, task: TaskId) -> Result<Option<SessionRow>, StoreError> {
+        type RawSession = (String, String, String, Option<String>, Option<String>);
+        let row: Option<RawSession> = self
+            .conn
+            .query_row(
+                "SELECT id, state, rc_name, host_surface, last_event_at FROM sessions WHERE task_id = ?1
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                params![task.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        row.map(|(id, state, rc_name, host_surface, last_event_at)| {
+            Ok(SessionRow {
+                id,
+                state: state.parse()?,
+                rc_name,
+                host_surface,
+                last_event_at,
+            })
+        })
+        .transpose()
+    }
+
+    fn latest_pr(&self, task: TaskId) -> Result<Option<PrRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT url, state FROM prs WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![task.0],
+                |row| {
+                    Ok(PrRow {
+                        url: row.get(0)?,
+                        state: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// The newest events, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn events(&self, filter: EventFilter) -> Result<Vec<EventRecord>, StoreError> {
+        type RawEvent = (
+            i64,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        );
+        let rows: Vec<RawEvent> = self
+            .conn
+            .prepare(
+                "SELECT * FROM (
+                     SELECT e.id, e.at, e.actor, e.task_id, t.project || '-' || t.slug, e.session_id, e.type, e.data
+                     FROM events e LEFT JOIN tasks t ON t.id = e.task_id
+                     WHERE ?1 IS NULL OR e.task_id = ?1
+                     ORDER BY e.id DESC LIMIT ?2
+                 ) ORDER BY id",
+            )?
+            .query_map(params![filter.task.map(|id| id.0), filter.limit], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(|(id, at, actor, task_id, task, session_id, kind, data)| {
+                Ok(EventRecord {
+                    id,
+                    at,
+                    actor: actor.parse()?,
+                    task_id: task_id.map(TaskId),
+                    task,
+                    session_id,
+                    kind,
+                    data: serde_json::from_str(&data)?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn insert_ask(tx: &Transaction<'_>, ask: &NewAsk, state: AskState) -> Result<AskId, StoreError> {
+    tx.execute(
+        &format!(
+            "INSERT INTO asks (task_id, session_id, kind, question, options, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, {NOW})"
+        ),
+        params![
+            ask.task_id.map(|id| id.0),
+            ask.session_id,
+            ask.kind.as_str(),
+            ask.question,
+            serde_json::to_string(&ask.options)?,
+            state.as_str(),
+        ],
+    )?;
+    Ok(AskId(tx.last_insert_rowid()))
+}
