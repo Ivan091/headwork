@@ -11,6 +11,9 @@ pub const ENV_TASK: &str = "HEADWORK_TASK";
 /// The headwork home, so tools started inside the session use the same store.
 pub const ENV_HOME: &str = "HEADWORK_HOME";
 
+/// The `headwork` program, so the plugin's hooks can call it without `PATH`.
+pub const ENV_EXE: &str = "HEADWORK_EXE";
+
 /// The program a pane starts.
 pub const CLAUDE: &str = "claude";
 
@@ -31,6 +34,8 @@ pub struct ClaudeLaunch<'a> {
     pub permission_mode: PermissionMode,
     /// An agent definition, such as `root`.
     pub agent: Option<&'a str>,
+    /// A plugin folder to load for this session only (`--plugin-dir`).
+    pub plugin_dir: Option<&'a str>,
     /// The first prompt.
     pub prompt: &'a str,
 }
@@ -62,6 +67,9 @@ impl ClaudeLaunch<'_> {
         ]);
         if let Some(agent) = self.agent {
             argv.extend(["--agent".to_owned(), agent.to_owned()]);
+        }
+        if let Some(dir) = self.plugin_dir {
+            argv.extend(["--plugin-dir".to_owned(), dir.to_owned()]);
         }
         argv.extend(["--".to_owned(), self.prompt.to_owned()]);
         argv

@@ -135,3 +135,77 @@ fn a_widening_overlay_is_refused() {
         stderr(&output)
     );
 }
+
+fn hook(home: &Path, session: Option<&str>, event: &str, input: &str) -> Output {
+    use std::io::Write as _;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_headwork"));
+    command
+        .args(["hook", event])
+        .env("HEADWORK_HOME", home)
+        .env_remove("HEADWORK_SESSION")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(session) = session {
+        command.env("HEADWORK_SESSION", session);
+    }
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn hooks_of_unmanaged_sessions_allow_without_touching_the_store() {
+    let home = home_with_fixture();
+    let recorded = fixture("hooks/pre-tool-use-edit.json");
+    let output = hook(home.path(), None, "pre-tool-use", &recorded);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stdout.is_empty(), "no output");
+    assert!(!home.path().join("state.db").exists(), "no store opened");
+    let output = hook(
+        home.path(),
+        Some("not-in-the-store"),
+        "pre-tool-use",
+        &recorded,
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stdout.is_empty(), "unknown sessions are unmanaged");
+}
+
+#[test]
+fn a_broken_hook_input_never_blocks() {
+    let home = home_with_fixture();
+    let output = hook(home.path(), Some("s"), "stop", "{not json");
+    assert_eq!(output.status.code(), Some(1), "a non-blocking error");
+    assert!(
+        stderr(&output).contains("headwork hook Stop"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn rule_test_decides_a_command_as_the_root() {
+    let home = home_with_fixture();
+    let output = headwork(home.path(), &["rule", "test", "git push origin master"]);
+    assert_eq!(output.status.code(), Some(1), "denied");
+    assert!(
+        stdout(&output).starts_with("deny root-git (root, shadow): "),
+        "{}",
+        stdout(&output)
+    );
+    let output = headwork(home.path(), &["rule", "test", "git status && gh pr list"]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert_eq!(stdout(&output), "allow (root, shadow)\n", "allowed");
+    let output = headwork(
+        home.path(),
+        &["rule", "test", "scripts/publish-now.sh", "--json"],
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["result"]["rule"], "user-only", "{json}");
+}

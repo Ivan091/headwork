@@ -13,10 +13,14 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
 use headwork::ops::close::{CloseReport, close, finish_after, reap};
+use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::{Env, host_for};
-use headwork_core::{Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest};
+use headwork_core::guard::{ToolCall, check_tool};
+use headwork_core::{
+    Actor, Config, Decision, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest,
+};
 use headwork_store::{EventFilter, Store, TaskId};
 
 /// Manages Claude Code sessions with hard rules in code.
@@ -96,6 +100,17 @@ enum Command {
         #[arg(long)]
         home: Option<PathBuf>,
     },
+    /// Answer a Claude Code hook: the plugin's hooks run this with the event's JSON on stdin.
+    #[command(hide = true)]
+    Hook {
+        /// The event: session-start, user-prompt-submit, pre-tool-use, post-tool-use, stop or session-end.
+        event: HookEvent,
+    },
+    /// Check the hard rules by hand.
+    Rule {
+        #[command(subcommand)]
+        action: RuleAction,
+    },
     /// Run a task's session: the program each pane runs.
     Launch {
         /// The task's id.
@@ -104,6 +119,31 @@ enum Command {
         /// The headwork home; panes do not inherit the caller's environment.
         #[arg(long)]
         home: Option<PathBuf>,
+    },
+}
+
+/// What `rule` does.
+#[derive(Debug, Subcommand)]
+enum RuleAction {
+    /// Decide a Bash command as the root, or as a task's child with `--task`; exits 1 on a deny.
+    Test {
+        /// The command line.
+        command: String,
+        /// Decide as this task's child session.
+        #[arg(long)]
+        task: Option<String>,
+        /// The working folder; the task's folder or the current one when absent.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// The checked-out branch, instead of asking git.
+        #[arg(long)]
+        branch: Option<String>,
+        /// As if run with `run_in_background`.
+        #[arg(long)]
+        background: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -156,6 +196,27 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     let command = match cli.command {
+        Command::Hook { event } => return Ok(hook_command(event, out)),
+        Command::Rule {
+            action:
+                RuleAction::Test {
+                    command,
+                    task,
+                    cwd,
+                    branch,
+                    background,
+                    json,
+                },
+        } => {
+            let probe = RuleProbe {
+                command: &command,
+                task: task.as_deref(),
+                cwd,
+                branch,
+                background,
+            };
+            return rule_test(&probe, json, out);
+        }
         Command::Launch { task, home } => {
             let home = Home::at(home)?;
             let code = headwork::ops::launch::launch(&home, TaskId(task))?;
@@ -197,9 +258,11 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
-        Command::Launch { .. } | Command::Finish { .. } | Command::Import { .. } => {
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Launch { .. }
+        | Command::Finish { .. }
+        | Command::Import { .. }
+        | Command::Hook { .. }
+        | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
     }
 }
 
@@ -474,4 +537,145 @@ fn import_command(
         out.write_all(render::imported(&added, &report, dry_run).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs one hook. A session without `HEADWORK_SESSION` is unmanaged and allowed at once. A failure inside the hook
+/// never blocks: it goes to stderr with exit code 1, which Claude shows without stopping the call.
+fn hook_command(event: HookEvent, out: &mut impl Write) -> ExitCode {
+    let Ok(session) = std::env::var(headwork_adapters::runtime::ENV_SESSION) else {
+        return ExitCode::SUCCESS;
+    };
+    match answer_hook(event, &session) {
+        Ok(reply) => {
+            let stdout_ok = reply
+                .stdout
+                .is_none_or(|text| writeln!(out, "{text}").is_ok());
+            let stderr_ok = reply
+                .stderr
+                .is_none_or(|text| writeln!(io::stderr().lock(), "{text}").is_ok());
+            ExitCode::from(if stdout_ok && stderr_ok {
+                reply.exit
+            } else {
+                1
+            })
+        }
+        Err(error) => {
+            let written = writeln!(
+                io::stderr().lock(),
+                "headwork hook {}: {error:#}",
+                event.claude_name()
+            );
+            ExitCode::from(if written.is_ok() { 1 } else { 3 })
+        }
+    }
+}
+
+fn answer_hook(event: HookEvent, session: &str) -> Result<headwork::ops::hook::HookReply> {
+    let mut text = String::new();
+    io::Read::read_to_string(&mut io::stdin().lock(), &mut text)
+        .context("reading the hook's input")?;
+    let input = parse_input(&text)?;
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    let host = host_for(&config)?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let temp = std::env::temp_dir();
+    let env = HookEnv {
+        home: &home,
+        config: &config,
+        host: host.as_ref(),
+        git: &Git,
+        exe: &exe,
+        temp: &temp,
+    };
+    run_hook(&mut store, &env, event, session, &input)
+}
+
+/// What `rule test` decides.
+struct RuleProbe<'a> {
+    command: &'a str,
+    task: Option<&'a str>,
+    cwd: Option<PathBuf>,
+    branch: Option<String>,
+    background: bool,
+}
+
+fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    store.sync_projects(&config)?;
+    let task = probe
+        .task
+        .map(|name| {
+            store
+                .find_task(name)?
+                .with_context(|| format!("no task named `{name}`"))
+        })
+        .transpose()?;
+    let host = host_for(&config)?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let temp = std::env::temp_dir();
+    let env = HookEnv {
+        home: &home,
+        config: &config,
+        host: host.as_ref(),
+        git: &Git,
+        exe: &exe,
+        temp: &temp,
+    };
+    let cwd = match (&probe.cwd, &task) {
+        (Some(cwd), _) => cwd.clone(),
+        (None, Some(task)) => Env {
+            home: &home,
+            config: &config,
+            host: host.as_ref(),
+            exe: &exe,
+            actor: Actor::User,
+        }
+        .task_dir(task)?,
+        (None, None) => std::env::current_dir()?,
+    };
+    let role = if task.is_some() {
+        Role::Child
+    } else {
+        Role::Root
+    };
+    let cwd = headwork::ops::slashed(&cwd);
+    let mut scope = scope_for(&store, &env, role, task.as_ref(), &cwd, Some(probe.command))?;
+    if let Some(branch) = &probe.branch {
+        scope.branch = Some(branch.clone());
+    }
+    let decision = check_tool(
+        &scope,
+        &ToolCall::Bash {
+            command: probe.command,
+            background: probe.background,
+        },
+    );
+    let mode = if config.hooks.enforce {
+        "enforced"
+    } else {
+        "shadow"
+    };
+    if json {
+        json_out(
+            out,
+            &serde_json::json!({ "role": role, "mode": mode, "result": decision }),
+        )?;
+    } else {
+        match &decision {
+            Decision::Allow => writeln!(out, "allow ({role}, {mode})")?,
+            Decision::Deny(verdict) => writeln!(
+                out,
+                "deny {} ({role}, {mode}): {}",
+                verdict.rule, verdict.reason
+            )?,
+        }
+    }
+    Ok(match decision {
+        Decision::Allow => ExitCode::SUCCESS,
+        Decision::Deny(_) => ExitCode::FAILURE,
+    })
 }

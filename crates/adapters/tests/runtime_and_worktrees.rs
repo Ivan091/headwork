@@ -20,6 +20,7 @@ fn argv_for_a_new_child() {
         model: Model::Haiku,
         permission_mode: PermissionMode::Auto,
         agent: None,
+        plugin_dir: None,
         prompt: "Read your brief.",
     };
     assert_eq!(
@@ -53,6 +54,7 @@ fn argv_for_a_resumed_root_without_remote_control() {
         model: Model::Opus,
         permission_mode: PermissionMode::Default,
         agent: Some("root"),
+        plugin_dir: Some("S:/x/plugin"),
         prompt: "Resumed.",
     };
     let argv = launch.argv();
@@ -64,6 +66,16 @@ fn argv_for_a_resumed_root_without_remote_control() {
     assert!(
         argv.windows(2).any(|pair| pair == ["--agent", "root"]),
         "agent"
+    );
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--plugin-dir", "S:/x/plugin"]),
+        "plugin"
+    );
+    assert_eq!(
+        argv.iter().rev().nth(1).map(String::as_str),
+        Some("--"),
+        "the prompt stays last"
     );
 }
 

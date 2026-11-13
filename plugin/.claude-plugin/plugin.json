@@ -1,0 +1,5 @@
+{
+  "name": "headwork",
+  "version": "0.1.0",
+  "description": "headwork's hooks: rules injection, the role guard, ask checks, the Stop gate and session records. Each hook calls the headwork binary named in HEADWORK_EXE; sessions headwork did not launch are left alone."
+}

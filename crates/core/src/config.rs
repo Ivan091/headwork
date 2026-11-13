@@ -242,6 +242,9 @@ pub struct Config {
     /// Models.
     #[serde(default)]
     pub models: ModelsConfig,
+    /// The Claude Code hooks.
+    #[serde(default)]
+    pub hooks: HooksConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -329,6 +332,41 @@ impl Default for ModelsConfig {
             default: Model::Sonnet,
             allowed: Model::ALL.to_vec(),
             fable_needs_user: true,
+        }
+    }
+}
+
+/// `[hooks]`: how the Claude Code hooks act.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HooksConfig {
+    /// Denies block the call. Off is shadow mode: every hook decides and logs what it would deny, and allows.
+    pub enforce: bool,
+    /// The plugin folder the launcher passes to `claude --plugin-dir`; none starts sessions without the plugin, and
+    /// the launcher then reports the session as started itself.
+    pub plugin_dir: Option<String>,
+    /// Folders every managed session may write besides its own (Claude's memory and plans).
+    pub writable: Vec<String>,
+    /// Folders the root may also write, such as the orchestrate skill's brief cache.
+    pub root_writable: Vec<String>,
+    /// A push notification counts for an ask within this many seconds.
+    pub push_window_secs: u32,
+    /// A sent file counts for a review ask within this many seconds.
+    pub file_window_secs: u32,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            enforce: false,
+            plugin_dir: None,
+            writable: vec![
+                "~/.claude/projects".to_owned(),
+                "~/.claude/plans".to_owned(),
+            ],
+            root_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
+            push_window_secs: 120,
+            file_window_secs: 300,
         }
     }
 }

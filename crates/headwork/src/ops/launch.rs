@@ -2,14 +2,17 @@
 //!
 //! It gives the session its identity through the environment, starts `claude` with the task's fixed session id,
 //! name, model and permission mode inside a tree it owns, records both process ids, waits, and records the exit.
-//! Until the `SessionStart` hook arrives in milestone 3, the launcher itself reports the session as started once
-//! `claude` runs.
+//! With the plugin configured (`hooks.plugin_dir`), its `SessionStart` hook reports the session as started; without
+//! it, the launcher does so itself once `claude` runs.
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use headwork_adapters::proc::{self, OwnedChild, Ownership};
-use headwork_adapters::runtime::{ClaudeLaunch, ENV_HOME, ENV_ROLE, ENV_SESSION, ENV_TASK};
+use headwork_adapters::runtime::{
+    ClaudeLaunch, ENV_EXE, ENV_HOME, ENV_ROLE, ENV_SESSION, ENV_TASK,
+};
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role, TaskState};
 use headwork_store::{SessionRow, Store, Task, TaskId};
@@ -26,7 +29,8 @@ pub fn first_prompt(task: &Task) -> String {
     )
 }
 
-/// The `claude` command for a task's session, with its identity in the environment.
+/// The `claude` command for a task's session, with its identity in the environment. `exe` is the `headwork` program
+/// the plugin's hooks call; with `hooks.plugin_dir` set, the session loads that plugin.
 ///
 /// # Errors
 ///
@@ -36,14 +40,17 @@ pub fn claude_command(
     config: &Config,
     task: &Task,
     session: &SessionRow,
-    dir: &std::path::Path,
+    dir: &Path,
+    exe: &Path,
 ) -> Result<Command> {
     let project = config
         .project(task.project())
         .with_context(|| format!("project `{}` is not configured", task.project()))?;
     let name = task.name.to_string();
     let prompt = first_prompt(task);
+    let plugin_dir = plugin_dir(home, config);
     let argv = ClaudeLaunch {
+        plugin_dir: plugin_dir.as_deref(),
         session_id: &session.id,
         resume: false,
         name: &name,
@@ -64,8 +71,19 @@ pub fn claude_command(
         .env(ENV_SESSION, &session.id)
         .env(ENV_ROLE, Role::Child.as_str())
         .env(ENV_TASK, task.id.to_string())
-        .env(ENV_HOME, home.root());
+        .env(ENV_HOME, home.root())
+        .env(ENV_EXE, exe);
     Ok(command)
+}
+
+/// The plugin folder sessions load, expanded, when the config names one.
+#[must_use]
+pub fn plugin_dir(home: &Home, config: &Config) -> Option<String> {
+    config
+        .hooks
+        .plugin_dir
+        .as_deref()
+        .map(|dir| super::slashed(&home.expand(dir)))
 }
 
 /// Runs a task's session to its end and returns the exit code of `claude`.
@@ -148,7 +166,8 @@ fn start(
             .with_context(|| format!("task {} has no worktree", task.name))?;
         std::path::PathBuf::from(worktree.path)
     };
-    let mut command = claude_command(home, config, task, session, &dir)?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let mut command = claude_command(home, config, task, session, &dir, &exe)?;
     let child = OwnedChild::spawn(&mut command)?;
     let tree = match child.ownership() {
         Ownership::Job => "job".to_owned(),
@@ -156,6 +175,9 @@ fn start(
         Ownership::Unowned(reason) => format!("unowned: {reason}"),
     };
     store.session_launched(&session.id, std::process::id(), child.pid(), &tree)?;
+    if plugin_dir(home, config).is_some() {
+        return Ok(child);
+    }
     let facts = SessionFacts {
         session_matches: true,
         launcher_alive: true,

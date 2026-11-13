@@ -245,6 +245,50 @@ text_enum!(
     }
 );
 
+text_enum!(
+    /// A hard rule a hook enforces; every decision in the event log names one.
+    RuleId, "rule" {
+        /// The root edits a file outside the headwork home, the temp folder and the configured writable folders.
+        RootEdit => "root-edit",
+        /// The root commits, pushes, merges or rebases, or merges or opens a pull request.
+        RootGit => "root-git",
+        /// The root runs a build tool.
+        RootBuild => "root-build",
+        /// The root runs a project's delivery or worktree script.
+        RootDelivery => "root-delivery",
+        /// A session runs a command only the user runs (publish, upload, release, login).
+        UserOnly => "user-only",
+        /// A child edits a file outside its worktree, the temp folder and the configured writable folders.
+        ChildEditOutside => "child-edit-outside",
+        /// A child edits a file under one of its project's read-only paths.
+        ChildReadOnly => "child-read-only",
+        /// A child commits or pushes on the default branch.
+        ChildDefaultBranch => "child-default-branch",
+        /// A child pushes to a repository its project does not allow.
+        ChildPushRepo => "child-push-repo",
+        /// A child uses a global delivery skill where its project names its own delivery command.
+        ChildGlobalSkill => "child-global-skill",
+        /// A child starts a Fable subagent without the user's approval.
+        ChildFable => "child-fable",
+        /// A child starts a long job in the background instead of registering it.
+        ChildLongJob => "child-long-job",
+        /// A question has fewer than two or more than four options.
+        AskOptionCount => "ask-option-count",
+        /// An option means "needs changes"; the user types changes instead.
+        AskChangesOption => "ask-changes-option",
+        /// The recommended option is not the first, or more than one is recommended.
+        AskRecommendedFirst => "ask-recommended-first",
+        /// No push notification preceded the ask.
+        AskPush => "ask-push",
+        /// A review ask without the file sent first.
+        AskReviewFile => "ask-review-file",
+        /// A child stops while working, without asking, reporting or closing.
+        StopUnfinished => "stop-unfinished",
+        /// A session ends its turn with a plain-text question.
+        StopPlainQuestion => "stop-plain-question",
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,6 +19,8 @@ use headwork_core::{
 };
 use headwork_store::{EventFilter, Store};
 
+const EXE: &str = "S:/bin/headwork.exe";
+
 struct World {
     dir: tempfile::TempDir,
     home: Home,
@@ -111,7 +113,7 @@ impl World {
             home: &self.home,
             config: &self.config,
             host: &self.host,
-            exe: Path::new("S:/bin/headwork.exe"),
+            exe: Path::new(EXE),
             actor: Actor::User,
         };
         spawn(&mut self.store, &env, &request).unwrap()
@@ -220,7 +222,7 @@ fn tasks_beyond_the_cap_wait_in_the_queue_and_start_when_a_slot_frees() {
         home: &w.home,
         config: &w.config,
         host: &w.host,
-        exe: Path::new("S:/bin/headwork.exe"),
+        exe: Path::new(EXE),
         actor: Actor::User,
     };
     let pumped = pump(&mut w.store, &env).unwrap();
@@ -267,7 +269,8 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
     let (task, _) = w.spawn("sand", false);
     let session = w.store.session_of(task.id).unwrap().unwrap();
     let dir = w.dir.path().join("demo-sand");
-    let command = claude_command(&w.home, &w.config, &task, &session, &dir).unwrap();
+    let command =
+        claude_command(&w.home, &w.config, &task, &session, &dir, Path::new(EXE)).unwrap();
     assert_eq!(command.get_program(), "claude", "program");
     let args: Vec<String> = command
         .get_args()
@@ -306,6 +309,7 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
         ("HEADWORK_SESSION", session.id.clone()),
         ("HEADWORK_ROLE", "child".to_owned()),
         ("HEADWORK_TASK", task.id.to_string()),
+        ("HEADWORK_EXE", EXE.to_owned()),
     ] {
         assert!(envs.contains(&(key.to_owned(), value)), "{key} in {envs:?}");
     }
