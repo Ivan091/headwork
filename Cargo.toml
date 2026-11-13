@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+authors = ["Ivan Karnasevich"]
+description = "An orchestrator for Claude Code sessions with hard rules in code"
+repository = "https://github.com/Ivan091/headwork"
+readme = "README.md"
+keywords = ["claude", "orchestration", "agents"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+headwork-core = { path = "crates/core" }
+headwork-store = { path = "crates/store" }
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+let_underscore_drop = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+as_conversions = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+float_cmp_const = "deny"
+missing_assert_message = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+redundant_pub_crate = "allow"
+multiple_crate_versions = "allow"
+str_to_string = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_in_result = "deny"
+unwrap_used = "deny"
+wildcard_enum_match_arm = "deny"
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
