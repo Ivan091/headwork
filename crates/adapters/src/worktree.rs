@@ -151,13 +151,20 @@ pub fn parse_porcelain(text: &str) -> Vec<(PathBuf, Option<String>)> {
 }
 
 /// Whether two paths name the same folder, ignoring case, separators and a trailing separator, as Windows does.
+/// When both exist they are compared in canonical form, so a short `RUNNER~1` name matches its long name.
 #[must_use]
 pub fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
-        p.to_string_lossy()
-            .replace('\\', "/")
+        let text = p.to_string_lossy().replace('\\', "/");
+        text.trim_start_matches("//?/")
             .trim_end_matches('/')
             .to_lowercase()
     };
-    norm(a) == norm(b)
+    if norm(a) == norm(b) {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => norm(&a) == norm(&b),
+        _ => false,
+    }
 }
