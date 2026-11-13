@@ -13,5 +13,6 @@ pub use config::{Config, ConfigError, ProjectConfig, ProjectOverlay};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
 pub use names::{NameError, ProjectName, Slug, TaskName};
 pub use vocabulary::{
-    Actor, AskKind, AskState, MachineMode, Model, Role, SessionState, TaskState, UnknownWord,
+    Actor, AskKind, AskState, MachineMode, Model, PermissionMode, Role, SessionState, TaskState,
+    UnknownWord,
 };

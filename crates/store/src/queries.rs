@@ -2,13 +2,13 @@
 
 use headwork_core::lifecycle::{Dependency, FableGate, StartFacts};
 use headwork_core::{
-    Actor, AskKind, AskState, Config, MachineMode, ProjectConfig, ProjectName, Role, SessionState,
-    Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit, apply,
+    Actor, AskKind, AskState, Config, MachineMode, PermissionMode, ProjectConfig, ProjectName,
+    Role, SessionState, Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit, apply,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::records::{
-    AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
+    AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, Task, TaskId,
 };
 use crate::{NOW, Store, StoreError};
 
@@ -18,7 +18,7 @@ pub const FABLE_ALLOW: &str = "Allow Fable";
 const FABLE_DECLINE: &str = "Use Opus instead";
 
 const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
-                            fable_ask, brief_path, last_report, queued_at, updated_at";
+                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode";
 
 /// A task to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub struct NewTask {
     pub brief_path: String,
     /// The task it waits for.
     pub depends_on: Option<TaskId>,
+    /// The permission mode its sessions start in.
+    pub permission_mode: PermissionMode,
 }
 
 /// A session to record.
@@ -44,6 +46,8 @@ pub struct NewSession {
     pub rc_name: String,
     /// The terminal host.
     pub host: String,
+    /// The host workspace.
+    pub host_workspace: Option<String>,
     /// The host pane.
     pub host_surface: Option<String>,
 }
@@ -88,6 +92,7 @@ struct RawTask {
     last_report: Option<String>,
     queued_at: String,
     updated_at: String,
+    permission_mode: String,
 }
 
 impl RawTask {
@@ -108,6 +113,7 @@ impl RawTask {
             last_report: row.get(12)?,
             queued_at: row.get(13)?,
             updated_at: row.get(14)?,
+            permission_mode: row.get(15)?,
         })
     }
 
@@ -122,6 +128,7 @@ impl RawTask {
                 .map(|state| state.parse())
                 .transpose()?,
             model: self.model.parse()?,
+            permission_mode: self.permission_mode.parse()?,
             keep: self.keep,
             in_main: self.in_main,
             depends_on: self.depends_on.map(TaskId),
@@ -149,7 +156,7 @@ pub(crate) fn insert_event(
     Ok(())
 }
 
-fn load_task(conn: &Connection, id: TaskId) -> Result<Task, StoreError> {
+pub(crate) fn load_task(conn: &Connection, id: TaskId) -> Result<Task, StoreError> {
     conn.query_row(
         &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
         params![id.0],
@@ -301,8 +308,8 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO tasks (project, slug, kind, state, model, keep, in_main, depends_on, brief_path, queued_at,
-                     updated_at)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW})"
+                     updated_at, permission_mode)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9)"
             ),
             params![
                 request.project.as_str(),
@@ -313,6 +320,7 @@ impl Store {
                 request.in_main,
                 new.depends_on.map(|id| id.0),
                 new.brief_path,
+                new.permission_mode.as_str(),
             ],
         )?;
         let id = TaskId(tx.last_insert_rowid());
@@ -506,8 +514,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             &format!(
-                "INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, host_surface, state, started_at)
-                 VALUES (?1, ?2, ?3, ?4, 'pane', ?5, ?6, 'starting', {NOW})"
+                "INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, host_workspace, host_surface, state, started_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pane', ?5, ?6, ?7, 'starting', {NOW})"
             ),
             params![
                 session.id,
@@ -515,6 +523,7 @@ impl Store {
                 session.role.as_str(),
                 session.rc_name,
                 session.host,
+                session.host_workspace,
                 session.host_surface,
             ],
         )?;
@@ -663,7 +672,7 @@ impl Store {
                 .cloned()
                 .collect();
             board_tasks.push(BoardTask {
-                session: self.latest_session(task.id)?,
+                session: self.session_of(task.id)?,
                 pr: self.latest_pr(task.id)?,
                 asks: task_asks,
                 task,
@@ -728,29 +737,6 @@ impl Store {
                 },
             )
             .collect()
-    }
-
-    fn latest_session(&self, task: TaskId) -> Result<Option<SessionRow>, StoreError> {
-        type RawSession = (String, String, String, Option<String>, Option<String>);
-        let row: Option<RawSession> = self
-            .conn
-            .query_row(
-                "SELECT id, state, rc_name, host_surface, last_event_at FROM sessions WHERE task_id = ?1
-                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                params![task.0],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )
-            .optional()?;
-        row.map(|(id, state, rc_name, host_surface, last_event_at)| {
-            Ok(SessionRow {
-                id,
-                state: state.parse()?,
-                rc_name,
-                host_surface,
-                last_event_at,
-            })
-        })
-        .transpose()
     }
 
     fn latest_pr(&self, task: TaskId) -> Result<Option<PrRow>, StoreError> {

@@ -7,6 +7,7 @@ mod error;
 mod migrate;
 mod queries;
 mod records;
+mod sessions;
 
 use std::path::Path;
 
@@ -18,6 +19,7 @@ pub use migrate::{MIGRATIONS, migrate};
 pub use queries::{EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
 pub use records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
+    WorktreeRow,
 };
 
 /// The SQL expression for the current time, UTC, with milliseconds.

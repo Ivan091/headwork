@@ -3,8 +3,8 @@
 use std::fmt;
 
 use headwork_core::{
-    Actor, AskKind, AskState, MachineMode, Model, ProjectName, SessionState, Slug, TaskName,
-    TaskSnapshot, TaskState,
+    Actor, AskKind, AskState, MachineMode, Model, PermissionMode, ProjectName, SessionState, Slug,
+    TaskName, TaskSnapshot, TaskState,
 };
 use serde::{Serialize, Serializer};
 
@@ -47,6 +47,8 @@ pub struct Task {
     pub state_before_park: Option<TaskState>,
     /// The model.
     pub model: Model,
+    /// The permission mode its sessions start in.
+    pub permission_mode: PermissionMode,
     /// A standing role.
     pub keep: bool,
     /// Runs in the main checkout.
@@ -109,10 +111,18 @@ pub struct SessionRow {
     pub state: SessionState,
     /// The Remote Control name.
     pub rc_name: String,
+    /// The host workspace.
+    pub host_workspace: Option<String>,
     /// The host pane.
     pub host_surface: Option<String>,
+    /// The launcher process.
+    pub launcher_pid: Option<u32>,
+    /// The `claude` process.
+    pub claude_pid: Option<u32>,
     /// The last hook event.
     pub last_event_at: Option<String>,
+    /// The exit code of `claude`, once it ended.
+    pub exit_code: Option<i32>,
 }
 
 /// An ask.
@@ -194,4 +204,15 @@ pub struct EventRecord {
     pub kind: String,
     /// The details.
     pub data: serde_json::Value,
+}
+
+/// A task's worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorktreeRow {
+    /// The folder.
+    pub path: String,
+    /// The branch.
+    pub branch: String,
+    /// `present`, `removing`, `removed` or `kept`.
+    pub state: String,
 }

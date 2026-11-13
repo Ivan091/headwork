@@ -101,6 +101,17 @@ pub enum HostKind {
     Cmux,
 }
 
+impl HostKind {
+    /// The config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wmux => "wmux",
+            Self::Cmux => "cmux",
+        }
+    }
+}
+
 /// Who pushes notifications to the phone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -260,6 +271,13 @@ pub struct MachineConfig {
     /// What resume does after a crash.
     #[serde(default)]
     pub resume_after_crash: CrashResume,
+    /// The shell that runs project command templates, such as a worktree script; `bash` from `PATH` when absent. On
+    /// Windows this should name Git Bash, because `PATH` may also hold WSL's `bash`.
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// The terminal host's command line program; found on `PATH` or in its default install folder when absent.
+    #[serde(default)]
+    pub host_bin: Option<String>,
 }
 
 /// `[watch]`.
@@ -606,6 +624,65 @@ pub fn check_template(template: &str) -> Result<(), TemplateProblem> {
         rest = after.get(close + 1..).unwrap_or_default();
     }
     Ok(())
+}
+
+/// Fills a template's `{placeholders}` from `lookup`.
+///
+/// # Errors
+///
+/// Returns a [`TemplateProblem`] for an unclosed brace or a placeholder `lookup` has no value for.
+pub fn expand_template<'a>(
+    template: &str,
+    lookup: impl Fn(&str) -> Option<&'a str>,
+) -> Result<String, TemplateProblem> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(rest.get(..open).unwrap_or_default());
+        let after = rest.get(open + 1..).unwrap_or_default();
+        let close = after.find('}').ok_or(TemplateProblem::Unclosed)?;
+        let name = after.get(..close).unwrap_or_default();
+        out.push_str(lookup(name).ok_or_else(|| TemplateProblem::Unknown(name.to_owned()))?);
+        rest = after.get(close + 1..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The values a task's command templates see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskVars<'a> {
+    /// The task's slug.
+    pub slug: &'a str,
+    /// The task's branch.
+    pub branch: &'a str,
+    /// The project's main checkout.
+    pub main: &'a str,
+    /// The task's worktree, empty until it is known.
+    pub worktree: &'a str,
+}
+
+impl<'a> TaskVars<'a> {
+    /// The value of a placeholder.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&'a str> {
+        match name {
+            "slug" => Some(self.slug),
+            "branch" => Some(self.branch),
+            "main" => Some(self.main),
+            "worktree" => Some(self.worktree),
+            _ => None,
+        }
+    }
+
+    /// Fills a template with these values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TemplateProblem`] for a placeholder a task has no value for, such as `{out}`.
+    pub fn expand(&self, template: &str) -> Result<String, TemplateProblem> {
+        expand_template(template, |name| self.get(name))
+    }
 }
 
 /// Expands a leading `~` to the home folder.

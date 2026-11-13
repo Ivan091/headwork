@@ -1,0 +1,13 @@
+{
+  "panes": [
+    {
+      "paneId": "pane-2dcb65d9-5a7b-41c7-8c7c-01a7b556c853",
+      "surfaces": [
+        { "id": "surf-1fc6032a-4af2-4f07-b4ed-16f809020bc3", "type": "terminal" },
+        { "id": "surf-6b07b971-26a8-464a-90af-2acf0d7d7619", "type": "terminal" }
+      ],
+      "tabCount": 2,
+      "activeSurfaceIndex": 0
+    }
+  ]
+}

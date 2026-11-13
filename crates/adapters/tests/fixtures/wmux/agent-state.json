@@ -1,0 +1,36 @@
+{
+  "states": [
+    {
+      "surfaceId": "surf-f329cbf2-f0e7-4a73-b816-b9b33306490b",
+      "state": "working",
+      "blockedReason": null,
+      "choices": [],
+      "answeredAt": null,
+      "sessionId": "d36cc867-1d8e-4167-9049-862e6fbedd50",
+      "sessionProvider": "claude",
+      "runDepth": 1,
+      "metadata": { "model": "Opus 5.5", "contextPct": 14, "tokens": "143k", "expiresAt": 1794640984716 },
+      "updatedAt": 1794597784716,
+      "blockedSince": null,
+      "agent": null,
+      "agentSource": null
+    },
+    {
+      "surfaceId": "surf-1fc6032a-4af2-4f07-b4ed-16f809020bc3",
+      "state": "blocked",
+      "blockedReason": "Review m2",
+      "choices": [],
+      "answeredAt": null,
+      "sessionId": null,
+      "sessionProvider": null,
+      "runDepth": 0,
+      "metadata": null,
+      "updatedAt": 1794597784316,
+      "blockedSince": 1794597780000,
+      "agent": null,
+      "agentSource": null
+    }
+  ],
+  "blocked": [],
+  "identified": []
+}

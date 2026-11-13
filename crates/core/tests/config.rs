@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use headwork_core::config::{
-    ConfigError, Delivery, HostKind, ParkPolicy, PushMode, TemplateProblem, WorktreeCommand,
-    check_template, expand_home,
+    ConfigError, Delivery, HostKind, ParkPolicy, PushMode, TaskVars, TemplateProblem,
+    WorktreeCommand, check_template, expand_home,
 };
 use headwork_core::lifecycle::MergePolicy;
 use headwork_core::{Config, Model, ProjectName, ProjectOverlay};
@@ -238,4 +238,49 @@ fn home_expands_only_a_leading_tilde() {
         Path::new("S:/Code"),
         "absolute path unchanged"
     );
+}
+
+#[test]
+fn task_templates_expand() {
+    let vars = TaskVars {
+        slug: "sand",
+        branch: "sand",
+        main: "S:/Code/me-sim/me-sim",
+        worktree: "",
+    };
+    assert_eq!(
+        vars.expand("{main}-{slug}").unwrap(),
+        "S:/Code/me-sim/me-sim-sand",
+        "path"
+    );
+    assert_eq!(
+        vars.expand("scripts/worktree.sh new {slug}").unwrap(),
+        "scripts/worktree.sh new sand",
+        "command"
+    );
+    assert_eq!(
+        vars.expand("{out}/x"),
+        Err(TemplateProblem::Unknown("out".to_owned())),
+        "a task has no out"
+    );
+    assert_eq!(
+        vars.expand("{slug"),
+        Err(TemplateProblem::Unclosed),
+        "unclosed"
+    );
+}
+
+#[test]
+fn machine_shell_and_host_bin_are_optional() {
+    let config = Config::parse(
+        "[machine]\nhost = \"wmux\"\nshell = \"C:/Program Files/Git/bin/bash.exe\"\n",
+        "shell",
+    )
+    .unwrap();
+    assert_eq!(
+        config.machine.shell.as_deref(),
+        Some("C:/Program Files/Git/bin/bash.exe"),
+        "shell"
+    );
+    assert_eq!(config.machine.host_bin, None, "host_bin");
 }
