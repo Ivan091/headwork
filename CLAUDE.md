@@ -19,7 +19,7 @@ crates/
   store/                headwork-store: SQLite (rusqlite, bundled), numbered migrations, queries
   adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the claude
                         runtime, worktrees
-  headwork/             the binary: CLI (board, log, spawn, queue, launch) over a small lib (home, ops)
+  headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch) over a small lib (home, ops)
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
@@ -35,7 +35,9 @@ cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks, sessions, states, asks
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   # a task in its own pane, or queued
-cargo run -p headwork -- queue             # start every queued task that fits
+cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
+cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
+cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the

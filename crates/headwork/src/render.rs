@@ -2,8 +2,34 @@
 
 use std::fmt::Write;
 
+use headwork::ops::import::ImportReport;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord};
+
+/// What an import found and did.
+#[must_use]
+pub(crate) fn imported(added: &[String], report: &ImportReport, dry_run: bool) -> String {
+    let verb = if dry_run { "would adopt" } else { "adopted" };
+    let mut text = String::new();
+    if !added.is_empty() {
+        let what = if dry_run { "would add" } else { "added" };
+        let _ = writeln!(text, "{what} to config.toml: {}", added.join(", "));
+    }
+    let _ = writeln!(text, "{verb} {} running children", report.adopted.len());
+    for name in &report.adopted {
+        let _ = writeln!(text, "  {name}");
+    }
+    for line in &report.skipped {
+        let _ = writeln!(text, "  skipped {line}");
+    }
+    if !report.stray_worktrees.is_empty() {
+        text.push_str("worktrees without a running child\n");
+        for path in &report.stray_worktrees {
+            let _ = writeln!(text, "  {path}");
+        }
+    }
+    text
+}
 
 /// What a queue run did, one line per queued task.
 #[must_use]

@@ -82,10 +82,27 @@ pub fn spawn(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let brief = if new.request.keep {
+        brief
+    } else {
+        format!("{}{}", brief.trim_end(), closing_section(env, &name))
+    };
     std::fs::write(&brief_path, brief)
         .with_context(|| format!("writing {}", brief_path.display()))?;
     let pumped = pump(store, env)?;
     Ok((store.task(task.id)?, pumped))
+}
+
+/// The paragraph every brief but a keep task's ends with: how the child closes itself.
+#[must_use]
+pub fn closing_section(env: &Env<'_>, name: &TaskName) -> String {
+    format!(
+        "\n\n## Closing yourself\n\nWhen your task is completely finished (its pull requests merged or the task dropped by the \
+         user, your report sent to\n`root`, no question or review waiting on the user, and nothing of yours still running \
+         in the background), close your\nown session as your very last action: `\"{}\" close {name}`. It ends this pane, \
+         so run nothing after it.\nWhile anything is still pending, stay open.\n",
+        slashed(env.exe)
+    )
 }
 
 /// Starts every queued task the start guard lets through, in queue order, and opens its pane. A task whose pane

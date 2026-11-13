@@ -25,6 +25,10 @@ impl State {
     }
 }
 
+/// The base of the pids the fake host makes up: odd and above any real Windows pid, which are multiples of four, so a
+/// test that ends a made-up pid can never hit a real process.
+pub const FAKE_PID_BASE: u32 = 4_000_000_001;
+
 /// A host in memory. Spawned panes run until they are killed or their surface is closed.
 #[derive(Debug, Default)]
 pub struct FakeHost {
@@ -64,6 +68,17 @@ impl FakeHost {
         state.surfaces.push((ws, surface));
         state.panes.push(pane.clone());
         pane
+    }
+
+    /// Adds a surface that holds no host agent, such as a Claude pane the host restored after a restart.
+    pub fn add_restored_surface(&self, workspace: &str) -> SurfaceId {
+        let (ws, _) = self
+            .ensure_workspace(workspace, Path::new("."))
+            .unwrap_or_else(|_| (WorkspaceId(String::new()), false));
+        let mut state = self.state.borrow_mut();
+        let surface = SurfaceId(state.id("surf"));
+        state.surfaces.push((ws, surface.clone()));
+        surface
     }
 
     /// Adds a surface state, as `agent-state` reports it.
@@ -127,7 +142,7 @@ impl TerminalHost for FakeHost {
             label: label.to_owned(),
             command: command_line(argv),
             running: true,
-            pid: Some(state.next),
+            pid: Some(FAKE_PID_BASE + state.next * 2),
             started_ms: Some(u64::from(state.next)),
         };
         state.surfaces.push((workspace.clone(), surface));

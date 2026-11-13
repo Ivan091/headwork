@@ -114,6 +114,19 @@ impl OwnedChild {
     }
 }
 
+/// Starts `command` with no console and outside every job, so it outlives the pane and the tree that started it.
+/// Returns its pid; nothing waits for it.
+///
+/// On Windows it asks to leave the enclosing jobs; when a job forbids that it starts inside them, and the reason is
+/// returned beside the pid.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Spawn`] when the program does not start.
+pub fn spawn_detached(command: &mut Command) -> Result<(u32, Option<String>), ProcError> {
+    imp::spawn_detached(command)
+}
+
 /// Ends the process `pid` and all its descendants.
 ///
 /// Returns `false` when no such process was running.
@@ -183,6 +196,37 @@ mod imp {
         drop(tree);
     }
 
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+    pub(super) fn spawn_detached(
+        command: &mut Command,
+    ) -> Result<(u32, Option<String>), ProcError> {
+        use std::os::windows::process::CommandExt;
+        let program = command.get_program().to_string_lossy().into_owned();
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command.creation_flags(
+            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+        );
+        match command.spawn() {
+            Ok(child) => Ok((child.id(), None)),
+            Err(breakaway) => {
+                command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+                let child = command
+                    .spawn()
+                    .map_err(|source| ProcError::Spawn { program, source })?;
+                Ok((
+                    child.id(),
+                    Some(format!("could not leave the job: {breakaway}")),
+                ))
+            }
+        }
+    }
+
     pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
         let status = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -224,6 +268,21 @@ mod imp {
 
     pub(super) fn adopt(child: &Child) -> (Tree, Ownership) {
         (child.id(), Ownership::ProcessGroup)
+    }
+
+    pub(super) fn spawn_detached(
+        command: &mut Command,
+    ) -> Result<(u32, Option<String>), ProcError> {
+        let program = command.get_program().to_string_lossy().into_owned();
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0);
+        let child = command
+            .spawn()
+            .map_err(|source| ProcError::Spawn { program, source })?;
+        Ok((child.id(), None))
     }
 
     pub(super) fn end(group: Tree) {

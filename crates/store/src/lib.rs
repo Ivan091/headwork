@@ -6,6 +6,7 @@
 mod error;
 mod migrate;
 mod queries;
+mod queue;
 mod records;
 mod sessions;
 
@@ -17,6 +18,7 @@ use rusqlite::{Connection, params};
 pub use error::StoreError;
 pub use migrate::{MIGRATIONS, migrate};
 pub use queries::{EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
+pub use queue::AdoptTask;
 pub use records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
     WorktreeRow,

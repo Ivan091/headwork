@@ -1,5 +1,7 @@
 //! What the commands do, against a store, a config and a [`TerminalHost`], so it can be tested with the fake host.
 
+pub mod close;
+pub mod import;
 pub mod launch;
 pub mod spawn;
 
@@ -7,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
+use headwork_adapters::host::wmux::{Cli as WmuxCli, Wmux};
 use headwork_adapters::worktree::Worktrees;
-use headwork_core::config::{ProjectConfig, TaskVars};
+use headwork_core::config::{HostKind, ProjectConfig, TaskVars};
 use headwork_core::{Actor, Config};
 use headwork_store::Task;
 
@@ -79,6 +82,20 @@ impl Env<'_> {
     pub fn worktrees(&self, task: &Task) -> Result<Worktrees> {
         let shell = self.config.machine.shell.as_deref().unwrap_or("bash");
         Ok(Worktrees::new(shell, self.main_path(task)?))
+    }
+}
+
+/// The terminal host the config names.
+///
+/// # Errors
+///
+/// Fails for a host this build does not drive yet.
+pub fn host_for(config: &Config) -> Result<Box<dyn TerminalHost>> {
+    match config.machine.host {
+        HostKind::Wmux => Ok(Box::new(Wmux::new(WmuxCli::locate(
+            config.machine.host_bin.as_deref().map(Path::new),
+        )))),
+        HostKind::Cmux => anyhow::bail!("the cmux host arrives in milestone 8"),
     }
 }
 

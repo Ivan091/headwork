@@ -14,6 +14,7 @@ use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role, TaskState};
 use headwork_store::{SessionRow, Store, Task, TaskId};
 
+use super::{Env, close};
 use crate::home::Home;
 
 /// The first prompt of a new child session.
@@ -112,6 +113,19 @@ pub fn launch(home: &Home, id: TaskId) -> Result<Option<i32>> {
         .and_then(std::process::ExitStatus::code);
     store.session_ended(&session.id, code)?;
     after_exit(&mut store, id)?;
+    if store.task(id)?.state == TaskState::Closing {
+        let host = super::host_for(&config)?;
+        let exe = std::env::current_exe().context("finding the headwork program")?;
+        let env = Env {
+            home,
+            config: &config,
+            host: host.as_ref(),
+            exe: &exe,
+            actor: Actor::Child,
+        };
+        let placed = store.session_of(id)?.unwrap_or(session);
+        close::hand_off(&mut store, &env, id, &placed)?;
+    }
     status?;
     Ok(code)
 }

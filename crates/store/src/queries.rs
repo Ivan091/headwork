@@ -183,7 +183,7 @@ fn config_hash(project: &ProjectConfig) -> Result<String, StoreError> {
     Ok(format!("{hash:016x}"))
 }
 
-fn upsert_project(
+pub(crate) fn upsert_project(
     tx: &Transaction<'_>,
     name: &ProjectName,
     project: &ProjectConfig,
