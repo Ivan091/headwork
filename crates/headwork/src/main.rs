@@ -12,10 +12,10 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
-use headwork::ops::Env;
+use headwork::ops::close::{CloseReport, close, finish_after, reap};
+use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
-use headwork_adapters::host::wmux::{Cli as WmuxCli, Wmux};
-use headwork_core::config::HostKind;
+use headwork::ops::{Env, host_for};
 use headwork_core::{Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest};
 use headwork_store::{EventFilter, Store, TaskId};
 
@@ -51,11 +51,50 @@ enum Command {
     },
     /// Create a task and start it in its own pane when a slot is free; otherwise it waits in the queue.
     Spawn(SpawnArgs),
-    /// Start every queued task that fits.
+    /// Start every queued task that fits; with `--order`, put these queued tasks first, in this order.
     Queue {
+        /// Task names, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        order: Vec<String>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
+    },
+    /// Close a task: its session, pane, process tree and worktree, verified before it is marked closed.
+    Close {
+        /// A task, as `<project>-<slug>` or `<project>/<slug>`.
+        name: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Adopt the children, projects and worktrees of the orchestrate scripts.
+    Import {
+        /// The orchestrate `projects.conf`; projects missing from `config.toml` are appended to it.
+        #[arg(long)]
+        projects_conf: Option<PathBuf>,
+        /// The Claude config folder.
+        #[arg(long)]
+        claude_dir: Option<PathBuf>,
+        /// Show what would be adopted and appended, change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Finish closing a task once a process is gone: what a closing launcher leaves behind.
+    #[command(hide = true)]
+    Finish {
+        /// The task's id.
+        #[arg(long)]
+        task: i64,
+        /// Wait for this process to end first.
+        #[arg(long)]
+        wait_pid: u32,
+        /// The headwork home.
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
     /// Run a task's session: the program each pane runs.
     Launch {
@@ -115,22 +154,31 @@ fn main() -> ExitCode {
     }
 }
 
-fn host(config: &Config) -> Result<Wmux<WmuxCli>> {
-    match config.machine.host {
-        HostKind::Wmux => Ok(Wmux::new(WmuxCli::locate(
-            config.machine.host_bin.as_deref().map(Path::new),
-        ))),
-        HostKind::Cmux => bail!("the cmux host arrives in milestone 8"),
-    }
-}
-
 fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
-    if let Command::Launch { task, home } = cli.command {
-        let home = Home::at(home)?;
-        let code = headwork::ops::launch::launch(&home, TaskId(task))?;
-        let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
-        return Ok(ExitCode::from(code));
-    }
+    let command = match cli.command {
+        Command::Launch { task, home } => {
+            let home = Home::at(home)?;
+            let code = headwork::ops::launch::launch(&home, TaskId(task))?;
+            let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
+            return Ok(ExitCode::from(code));
+        }
+        Command::Finish {
+            task,
+            wait_pid,
+            home,
+        } => return finish_command(&Home::at(home)?, TaskId(task), wait_pid),
+        Command::Import {
+            projects_conf,
+            claude_dir,
+            dry_run,
+            json,
+        } => return import_command(projects_conf, claude_dir, dry_run, json, out),
+        other @ (Command::Board { .. }
+        | Command::Log { .. }
+        | Command::Spawn(_)
+        | Command::Queue { .. }
+        | Command::Close { .. }) => other,
+    };
     let home = Home::locate()?;
     let config = home.load_config()?;
     let mut store = home.open_store()?;
@@ -143,12 +191,15 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         config: &config,
         exe: &exe,
     };
-    match cli.command {
+    match command {
         Command::Board { all, json } => board(&store, &config, all, json, out),
         Command::Log { name, limit, json } => log(&store, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
-        Command::Queue { json } => queue_command(&mut store, &ctx, json, out),
-        Command::Launch { .. } => Ok(ExitCode::SUCCESS),
+        Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
+        Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
+        Command::Launch { .. } | Command::Finish { .. } | Command::Import { .. } => {
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -161,11 +212,11 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn with_env<T>(&self, act: impl FnOnce(&Env<'_>) -> Result<T>) -> Result<T> {
-        let host = host(self.config)?;
+        let host = host_for(self.config)?;
         act(&Env {
             home: self.home,
             config: self.config,
-            host: &host,
+            host: host.as_ref(),
             exe: self.exe,
             actor: Actor::User,
         })
@@ -252,7 +303,10 @@ fn spawn_command(
         depends_on,
         permission_mode: args.mode,
     };
-    let (task, pumped) = ctx.with_env(|env| spawn(store, env, &request))?;
+    let (task, pumped) = ctx.with_env(|env| {
+        reap(store, env)?;
+        spawn(store, env, &request)
+    })?;
     if args.json {
         json_out(out, &serde_json::json!({ "task": task, "queue": pumped }))?;
     } else {
@@ -265,10 +319,26 @@ fn spawn_command(
 fn queue_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
+    order: &[String],
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    let pumped = ctx.with_env(|env| pump(store, env))?;
+    if !order.is_empty() {
+        let ids = order
+            .iter()
+            .map(|name| {
+                store
+                    .find_task(name)?
+                    .map(|task| task.id)
+                    .with_context(|| format!("no task named `{name}`"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        store.set_queue_order(&ids, Actor::User)?;
+    }
+    let pumped = ctx.with_env(|env| {
+        reap(store, env)?;
+        pump(store, env)
+    })?;
     if json {
         json_out(out, &pumped)?;
     } else if pumped.is_empty() {
@@ -288,4 +358,120 @@ fn exit_for(pumped: &[Pumped]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn close_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    name: &str,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let task = store
+        .find_task(name)?
+        .with_context(|| format!("no task named `{name}`"))?;
+    let own_session = std::env::var(headwork_adapters::runtime::ENV_SESSION).ok();
+    let report: CloseReport = ctx.with_env(|env| {
+        let report = close(store, env, task.id, own_session.as_deref())?;
+        pump(store, env)?;
+        Ok(report)
+    })?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        match &report.pending {
+            None => writeln!(out, "{} {}", report.name, report.state)?,
+            Some(pending) => writeln!(out, "{} {}: {pending}", report.name, report.state)?,
+        }
+    }
+    Ok(if report.pending.is_none() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn finish_command(home: &Home, task: TaskId, wait_pid: u32) -> Result<ExitCode> {
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let ctx = Ctx {
+        home,
+        config: &config,
+        exe: &exe,
+    };
+    let report = ctx.with_env(|env| finish_after(&mut store, env, task, wait_pid))?;
+    Ok(if report.pending.is_none() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn import_command(
+    projects_conf: Option<PathBuf>,
+    claude_dir: Option<PathBuf>,
+    dry_run: bool,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let claude_dir = claude_dir.unwrap_or_else(|| home.expand("~/.claude"));
+    let conf_path =
+        projects_conf.unwrap_or_else(|| claude_dir.join("skills/orchestrate/projects.conf"));
+    let config_path = home.root().join("config.toml");
+    let existing = std::fs::read_to_string(&config_path).ok();
+    let base = existing
+        .clone()
+        .unwrap_or_else(|| "[machine]\nhost = \"wmux\"\n".to_owned());
+    let base_config = Config::parse(&base, &config_path.display().to_string())?;
+    let conf = std::fs::read_to_string(&conf_path).unwrap_or_default();
+    let mut sections = String::new();
+    let mut added = Vec::new();
+    for (name, main) in missing_projects(&conf, &base_config) {
+        let origin = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(&main)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+        sections.push_str(&config_section(&name, &main, origin.as_deref()));
+        added.push(name);
+    }
+    let merged = format!(
+        "{}{sections}",
+        base.trim_end_matches('\n').to_owned() + "\n"
+    );
+    let config = Config::parse(&merged, "the imported config")?;
+    if !dry_run && (existing.is_none() || !sections.is_empty()) {
+        std::fs::create_dir_all(home.root())?;
+        std::fs::write(&config_path, &merged)
+            .with_context(|| format!("writing {}", config_path.display()))?;
+    }
+    let mut store = home.open_store()?;
+    if !dry_run {
+        store.sync_projects(&config)?;
+    }
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let ctx = Ctx {
+        home: &home,
+        config: &config,
+        exe: &exe,
+    };
+    let briefs_dir = claude_dir.join("cache/orchestrate/briefs");
+    let sources = Sources {
+        claude_dir: &claude_dir,
+        briefs_dir: &briefs_dir,
+    };
+    let report = ctx.with_env(|env| import(&mut store, env, sources, dry_run))?;
+    if json {
+        json_out(
+            out,
+            &serde_json::json!({ "projects_added": added, "report": report, "dry_run": dry_run }),
+        )?;
+    } else {
+        out.write_all(render::imported(&added, &report, dry_run).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
 }

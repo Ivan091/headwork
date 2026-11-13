@@ -133,3 +133,19 @@ fn kill_only(pid: u32) {
         .unwrap();
     assert!(status.success(), "kill");
 }
+
+#[test]
+fn a_detached_process_runs_on_its_own() {
+    let mut command = helper("helper_sleeper");
+    command.env(ROLE, "sleeper");
+    let (pid, _) = headwork_adapters::proc::spawn_detached(&mut command).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(5), || is_alive(pid).unwrap()),
+        "it runs"
+    );
+    assert!(kill_tree(pid).unwrap(), "killed");
+    assert!(
+        wait_until(Duration::from_secs(5), || !is_alive(pid).unwrap()),
+        "gone"
+    );
+}

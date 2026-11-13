@@ -279,17 +279,4 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
-
-    /// The queued tasks, in queue order.
-    ///
-    /// # Errors
-    ///
-    /// Returns a read error.
-    pub fn queued(&self) -> Result<Vec<TaskId>, StoreError> {
-        Ok(self
-            .conn
-            .prepare("SELECT id FROM tasks WHERE state = 'queued' ORDER BY queued_at, id")?
-            .query_map([], |row| row.get(0).map(TaskId))?
-            .collect::<Result<_, _>>()?)
-    }
 }

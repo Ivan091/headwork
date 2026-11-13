@@ -69,3 +69,30 @@ and the reason.
   default to kind `task`.
 - 2026-11-13 Each queue run tries every queued task in order and logs a refusal for each one that still waits; the log
   shows why a task has not started, at the price of repeated lines.
+- 2026-11-13 A child closes itself by ending its own `claude` tree, which takes the calling `headwork close` with it.
+  The launcher sees `claude` exit with the task `closing`, starts a detached `headwork finish` (no console, breaking
+  away from wmux's job, verified on this machine), and closes its own pane, or the workspace it leaves empty, as its
+  last act; `finish` waits for the launcher to be gone, removes the worktree, verifies and marks `closed`. Measured:
+  about 4 s from the child's call to `closed`.
+- 2026-11-13 `close` from outside ends `claude`'s tree and waits up to 60 s for the launcher's hand-off, then finishes
+  itself; tasks without a launcher (adopted ones) get today's order: the pane or the empty workspace, then
+  `agent kill`, then leftover processes, then the worktree.
+- 2026-11-13 A worktree whose remove command refuses (dirty, unpushed) is never forced: the task stays `closing` with a
+  `worktree-refused` event, and the next `spawn`, `queue` or `close` reaps it once it can go. The user's "keep or
+  delete" ask arrives with the tick (milestone 5).
+- 2026-11-13 `spawn` and `queue` first reap `closing` tasks whose launcher is gone, a small part of the tick, so a
+  self-closed child frees its slot even before milestone 5.
+- 2026-11-13 Queue order is a nullable `tasks.queue_rank` (migration 0002): `queue --order a,b` ranks those first, the
+  rest follow oldest first.
+- 2026-11-13 Every brief except a keep task's ends with "Closing yourself", naming `"<headwork.exe>" close <name>`,
+  as `spawn-child.sh` does today with `close-child.sh`; milestone 3 moves this into `rules/child.md`. `close` deletes
+  only briefs under the headwork home, so adopted tasks keep the orchestrate copies.
+- 2026-11-13 `import` finds children two ways: running wmux agents labelled `<project>/<slug>`, and panes wmux
+  restored after a restart (no longer agents), named from the first prompt of the transcript that `agent-state`'s
+  session id points to. Only surfaces that still exist in a workspace count, because wmux keeps stale agents and
+  states after their panes close. Adopted tasks enter `working` without the start guard, logged as `adopted`, with the
+  session id from wmux (else `wmux:<surface>`), `keep` when the orchestrate brief has no "Closing yourself", the model
+  from the agent's command line or the transcript.
+- 2026-11-13 `import` appends projects of `projects.conf` missing from `config.toml` (creating it when absent): the
+  project's own `scripts/worktree.sh` and `scripts/ship.sh` when present, else `builtin` and `pr`, and its `origin`
+  as the only allowed repository. `--dry-run` shows the plan and writes nothing.

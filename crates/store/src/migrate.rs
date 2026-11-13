@@ -5,7 +5,10 @@ use rusqlite::Connection;
 use crate::error::StoreError;
 
 /// Every migration in order; the schema version is the number applied.
-pub const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_queue_rank.sql"),
+];
 
 /// Applies the migrations the database lacks, each in its own transaction.
 ///

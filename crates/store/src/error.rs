@@ -42,6 +42,12 @@ pub enum StoreError {
     /// A stored number does not fit.
     #[error("stored number {0} is out of range")]
     OutOfRange(i64),
+    /// A task meant to be queued is not.
+    #[error("task `{0}` is not queued")]
+    NotQueued(String),
+    /// A live task already has the name.
+    #[error("a live task `{0}` already exists")]
+    NameTaken(String),
     /// Event data is not valid JSON.
     #[error("event data: {0}")]
     Json(#[from] serde_json::Error),
