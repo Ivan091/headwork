@@ -1,0 +1,5 @@
+{"hooks":{
+"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"bash hook.sh PreToolUse"}]}],
+"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash hook.sh UserPromptSubmit"}]}],
+"SessionStart":[{"hooks":[{"type":"command","command":"bash hook.sh SessionStart"}]}]
+}}

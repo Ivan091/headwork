@@ -1,0 +1,23 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/check.sh
+        shell: bash
