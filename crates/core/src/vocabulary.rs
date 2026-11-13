@@ -1,0 +1,270 @@
+//! Closed sets of words stored as text: task and machine states, models, actors.
+
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+/// A word that is not one of an enum's known spellings.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown {kind} `{word}`")]
+pub struct UnknownWord {
+    /// What was being parsed, such as "task state".
+    pub kind: &'static str,
+    /// The word that did not match.
+    pub word: String,
+}
+
+macro_rules! text_enum {
+    (
+        $(#[$doc:meta])*
+        $name:ident, $kind:literal {
+            $($(#[$vdoc:meta])* $variant:ident => $text:literal,)+
+        }
+    ) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        pub enum $name {
+            $(
+                $(#[$vdoc])*
+                #[serde(rename = $text)]
+                $variant,
+            )+
+        }
+
+        impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// The stored spelling.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)+
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.pad(self.as_str())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = UnknownWord;
+
+            fn from_str(word: &str) -> Result<Self, Self::Err> {
+                match word {
+                    $($text => Ok(Self::$variant),)+
+                    other => Err(UnknownWord { kind: $kind, word: other.to_owned() }),
+                }
+            }
+        }
+    };
+}
+
+text_enum!(
+    /// Where a task is in its lifecycle (design section 2.3).
+    TaskState, "task state" {
+        /// Waiting for a slot, its dependency or the Fable approval.
+        Queued => "queued",
+        /// A pane and launcher are starting; no `SessionStart` seen yet.
+        Spawning => "spawning",
+        /// The session runs.
+        Working => "working",
+        /// The session waits on the user.
+        NeedsUser => "needs_user",
+        /// A pull request is open or a review was reported.
+        InReview => "in_review",
+        /// The pull request is merged.
+        Merged => "merged",
+        /// Pane, process tree and worktree are being removed.
+        Closing => "closing",
+        /// Everything is gone and verified.
+        Closed => "closed",
+        /// Dropped by the root or the user; closing follows at once.
+        Dropped => "dropped",
+        /// The session never started.
+        Failed => "failed",
+        /// The process went away without `done` or a park.
+        Interrupted => "interrupted",
+        /// Reaching a safe point before a restart.
+        Parking => "parking",
+        /// Stopped for a restart, waiting for resume.
+        Parked => "parked",
+    }
+);
+
+impl TaskState {
+    /// Whether the task still holds its name: every state but `closed`, as in the store's unique index. A dropped task
+    /// keeps it until its worktree and pane are gone, so a new task cannot collide with them.
+    #[must_use]
+    pub const fn holds_name(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
+    /// Whether the task occupies a child slot: a session is starting, running, or being closed.
+    #[must_use]
+    pub const fn takes_slot(self) -> bool {
+        match self {
+            Self::Spawning
+            | Self::Working
+            | Self::NeedsUser
+            | Self::InReview
+            | Self::Merged
+            | Self::Closing
+            | Self::Parking => true,
+            Self::Queued
+            | Self::Closed
+            | Self::Dropped
+            | Self::Failed
+            | Self::Interrupted
+            | Self::Parked => false,
+        }
+    }
+}
+
+text_enum!(
+    /// The machine-wide mode (design section 6).
+    MachineMode, "machine mode" {
+        /// Everything runs.
+        Normal => "normal",
+        /// A park is in progress; spawns and the queue refuse.
+        Parking => "parking",
+        /// Everything is stopped; safe to restart.
+        Parked => "parked",
+        /// A resume is in progress.
+        Resuming => "resuming",
+    }
+);
+
+text_enum!(
+    /// A Claude model a session may run.
+    Model, "model" {
+        /// Lookups and trivial runs.
+        Haiku => "haiku",
+        /// Small tweaks and routine edits.
+        Sonnet => "sonnet",
+        /// Substantial or delicate work.
+        Opus => "opus",
+        /// Only with the user's approval.
+        Fable => "fable",
+    }
+);
+
+text_enum!(
+    /// Who caused an event.
+    Actor, "actor" {
+        /// The root session.
+        Root => "root",
+        /// A child session.
+        Child => "child",
+        /// A person at the CLI.
+        User => "user",
+        /// The watchdog tick.
+        Tick => "tick",
+        /// A Claude Code hook.
+        Hook => "hook",
+    }
+);
+
+text_enum!(
+    /// What kind of thing an ask waits on.
+    AskKind, "ask kind" {
+        /// A question with options.
+        Question => "question",
+        /// A review of a render, preview or pull request.
+        Review => "review",
+        /// A permission prompt.
+        Permission => "permission",
+        /// A decision the tool itself needs, such as a Fable approval.
+        Tool => "tool",
+    }
+);
+
+text_enum!(
+    /// Where an ask is.
+    AskState, "ask state" {
+        /// Stored, not yet put to the user.
+        Pending => "pending",
+        /// Put to the user.
+        Open => "open",
+        /// Answered.
+        Answered => "answered",
+        /// Timed out.
+        Expired => "expired",
+        /// Replaced by a newer ask, for example after a resume.
+        Superseded => "superseded",
+    }
+);
+
+impl AskState {
+    /// Whether the ask still waits on the user.
+    #[must_use]
+    pub const fn is_waiting(self) -> bool {
+        matches!(self, Self::Pending | Self::Open)
+    }
+}
+
+text_enum!(
+    /// Where a session's process is.
+    SessionState, "session state" {
+        /// Launched, no `SessionStart` yet.
+        Starting => "starting",
+        /// Running.
+        Live => "live",
+        /// Ended normally.
+        Ended => "ended",
+        /// Vanished without an end.
+        Gone => "gone",
+    }
+);
+
+text_enum!(
+    /// A session's role.
+    Role, "role" {
+        /// The coordinating session.
+        Root => "root",
+        /// A task session.
+        Child => "child",
+    }
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_spelling_round_trips() {
+        for state in TaskState::ALL {
+            assert_eq!(state.as_str().parse::<TaskState>(), Ok(*state), "{state}");
+        }
+        for model in Model::ALL {
+            assert_eq!(model.as_str().parse::<Model>(), Ok(*model), "{model}");
+        }
+    }
+
+    #[test]
+    fn unknown_words_are_refused() {
+        let error = "asleep".parse::<TaskState>();
+        assert_eq!(
+            error,
+            Err(UnknownWord {
+                kind: "task state",
+                word: "asleep".to_owned()
+            }),
+            "unknown state"
+        );
+    }
+
+    #[test]
+    fn only_closed_releases_the_name() {
+        let releasing: Vec<_> = TaskState::ALL.iter().filter(|s| !s.holds_name()).collect();
+        assert_eq!(
+            releasing,
+            [&TaskState::Closed],
+            "only closed releases the name"
+        );
+    }
+}

@@ -1,0 +1,2 @@
+long_jobs = ["make bench"]
+allowed_repos = ["someone/else"]

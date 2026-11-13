@@ -1,0 +1,2 @@
+long_jobs = ["scripts/night-render.sh"]
+user_only = ["scripts/upload-short.sh"]

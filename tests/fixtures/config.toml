@@ -1,0 +1,64 @@
+[machine]
+host = "wmux"
+max_children = 10
+remote_control = true
+push = "claude"
+notify_ntfy = ""
+rules_dir = "~/.headwork/rules"
+
+[watch]
+disk_warn_gb = 15
+disk_stop_gb = 5
+growth_limit_gb_per_min = 1
+file_limit_gb = 20
+stuck_after_min = 30
+roots = ["~/.claude/projects", "{temp}", "S:/Code"]
+
+[models]
+default = "sonnet"
+allowed = ["haiku", "sonnet", "opus", "fable"]
+fable_needs_user = true
+
+[project.me-sim]
+main = "S:/Code/me-sim/me-sim"
+worktree_new = "scripts/worktree.sh new {slug}"
+worktree_remove = "scripts/worktree.sh remove {slug}"
+worktree_path = "{main}-{slug}"
+deliver = "scripts/ship.sh"
+merge = "deliver"
+main_only = ["car-training", "pro-render", "publish", "release"]
+user_only = ["scripts/publish-now.sh", "scripts/publish.sh", "scripts/reupload.sh", "scripts/release.sh"]
+allowed_repos = ["Ivan091/me-sim"]
+heavy_slots = 2
+heavy_gate = "scripts/heavy.sh"
+review = { send_file = true }
+long_jobs = ["scripts/rl-run.sh", "cargo run --release -p render"]
+jobs.car-training = { park_policy = "checkpoint", checkpoint = "{out}/checkpoint.json" }
+jobs.pro-render = { park_policy = "rerun" }
+jobs.publish = { park_policy = "finish" }
+
+[project.me-studio]
+main = "S:/Code/me-studio/me-studio"
+worktree_new = "scripts/worktree.sh new {slug}"
+worktree_remove = "scripts/worktree.sh remove {slug}"
+worktree_path = "{main}-{slug}"
+deliver = "scripts/ship.sh"
+merge = "deliver"
+main_only = ["dashboard", "library-import"]
+allowed_repos = ["Ivan091/me-studio"]
+read_only_paths = ["S:/Code/me-sim"]
+review = { send_file = true }
+
+[project.work-service]
+main = "~/work/service"
+worktree_new = "builtin"
+worktree_remove = "builtin"
+worktree_path = "~/work/service-wt/{slug}"
+deliver = "pr"
+merge = "human"
+max_children = 3
+allowed_repos = ["acme/service"]
+remote_control = false
+push = "none"
+models.allowed = ["haiku", "sonnet", "opus"]
+review = { send_file = false }
