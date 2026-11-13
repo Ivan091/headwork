@@ -13,4 +13,5 @@ and the reason.
   the line-length check; the trial scripts are kept as they ran.
 - 2026-11-13 The comment-ban step needs the user-wide checker in `~/.claude`; CI runners do not have it and skip that
   step, so the local gate stays the authority for comments.
-- 2026-11-13 CI runs on Windows and macOS, matching the two target hosts (wmux, cmux).
+- 2026-11-13 CI runs on Windows only. A macOS job stayed queued with no runner for over 20 minutes on this private
+  repository (macOS minutes cost ten times as much); it comes back with the cmux adapter (milestone 8).
