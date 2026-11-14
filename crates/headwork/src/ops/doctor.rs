@@ -195,6 +195,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
             "run `headwork import` to write config.toml from the orchestrate projects.conf, or write one as in docs/design.md section 5",
         )),
     }
+    if config.is_ok() {
+        checks.push(deprecated_keys_check(d));
+    }
     let store = store_check(d, &mut checks);
     if let Ok(config) = &config {
         checks.push(host_check(d, config));
@@ -210,6 +213,23 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.extend(store_checks(d, store));
     }
     DoctorReport { checks }
+}
+
+fn deprecated_keys_check(d: &Doctor<'_>) -> Check {
+    let text = std::fs::read_to_string(d.home.config_path()).unwrap_or_default();
+    let renamed = Config::deprecated_keys(&text);
+    if renamed.is_empty() {
+        return Check::ok("config-keys", "no deprecated keys");
+    }
+    let list: Vec<String> = renamed
+        .iter()
+        .map(|(old, new)| format!("{old} (now {new})"))
+        .collect();
+    Check::warn(
+        "config-keys",
+        format!("deprecated keys, still read: {}", list.join(", ")),
+        "rename them in config.toml",
+    )
 }
 
 fn binary(d: &Doctor<'_>) -> Check {
@@ -577,17 +597,17 @@ fn disk_check(d: &Doctor<'_>, config: &Config) -> Check {
 
 fn store_checks(d: &Doctor<'_>, store: &Store) -> Vec<Check> {
     let mut checks = Vec::new();
-    checks.push(match store.live_root_session() {
+    checks.push(match store.live_orchestrator_session() {
         Ok(Some(root)) => Check::ok(
-            "root",
-            format!("root session {} is in the store", root.rc_name),
+            "orchestrator",
+            format!("orchestrator session {} is in the store", root.rc_name),
         ),
         Ok(None) => Check::warn(
-            "root",
-            "no live root session in the store: the root runs unmanaged",
-            "start the root with `headwork root` instead of root.sh",
+            "orchestrator",
+            "no live orchestrator session in the store: the orchestrator runs unmanaged",
+            "start the orchestrator with `headwork orchestrator` instead of root.sh",
         ),
-        Err(error) => Check::warn("root", format!("{error}"), "check the store"),
+        Err(error) => Check::warn("orchestrator", format!("{error}"), "check the store"),
     });
     checks.push(orphans(d, store));
     checks.push(builds(store));

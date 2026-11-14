@@ -42,10 +42,10 @@ pub enum FableGate {
 /// Facts for `queued` → `spawning`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartFacts {
-    /// Tasks on the machine that take a child slot now.
-    pub live_children: u32,
-    /// The machine's `max_children`.
-    pub max_children: u32,
+    /// Tasks on the machine that take a worker slot now.
+    pub live_workers: u32,
+    /// The machine's `max_workers`.
+    pub max_workers: u32,
     /// Tasks of the same project that take a slot now.
     pub project_live: u32,
     /// The project's own cap, if it has one.
@@ -74,15 +74,15 @@ pub struct SessionFacts {
 pub enum MergeSource {
     /// The tick, from the git host.
     GitHost,
-    /// The child, after its delivery command merged.
-    Child,
+    /// The worker, after its delivery command merged.
+    Worker,
 }
 
 /// How a project's pull requests get merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MergePolicy {
-    /// The project's delivery command merges; the child may report it.
+    /// The project's delivery command merges; the worker may report it.
     Deliver,
     /// A person merges; only the git host can report it.
     Human,
@@ -91,7 +91,7 @@ pub enum MergePolicy {
 /// Why a merged task starts closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseCause {
-    /// The child called `done`.
+    /// The worker called `done`.
     Done,
     /// The tick, ten minutes after the merge.
     GraceElapsed,
@@ -106,7 +106,7 @@ pub struct CloseFacts {
     pub open_ask: bool,
     /// A job of the task still runs.
     pub running_job: bool,
-    /// The child sent its report to the root.
+    /// The worker sent its report to the orchestrator.
     pub report_sent: bool,
 }
 
@@ -175,11 +175,11 @@ pub enum Trigger {
     },
     /// `merged` → `closing`.
     Close(CloseFacts),
-    /// The root or the user drops the task: any state that is not closing or over → `dropped`.
+    /// The orchestrator or the user drops the task: any state that is not closing or over → `dropped`.
     Drop,
     /// `dropped` → `closing`, at once.
     BeginClosing,
-    /// The root or the user closes a task without dropping it, such as a keep task or one stuck after `done`: any
+    /// The orchestrator or the user closes a task without dropping it, such as a keep task or one stuck after `done`: any
     /// state that is not closing or over → `closing`.
     ForceClose,
     /// Pane, processes and worktree are verified gone: `closing` → `closed`.
@@ -249,8 +249,8 @@ pub enum Refusal {
         /// The task's state.
         state: TaskState,
     },
-    /// All child slots are taken.
-    #[error("all {max} child slots are taken")]
+    /// All worker slots are taken.
+    #[error("all {max} worker slots are taken")]
     NoFreeSlot {
         /// The machine's cap.
         max: u32,
@@ -286,7 +286,7 @@ pub enum Refusal {
     #[error("the project merges by hand; only the git host can mark the task merged")]
     HumanMergeOnly,
     /// Keep tasks do not close on their own.
-    #[error("a keep task closes only when the root closes it")]
+    #[error("a keep task closes only when the orchestrator closes it")]
     KeepTask,
     /// An ask waits on the user.
     #[error("an ask of the task still waits on the user")]
@@ -294,8 +294,8 @@ pub enum Refusal {
     /// A job still runs.
     #[error("a job of the task still runs")]
     RunningJob,
-    /// The report to the root is missing.
-    #[error("the task has not sent its report to the root")]
+    /// The report to the orchestrator is missing.
+    #[error("the task has not sent its report to the orchestrator")]
     ReportMissing,
     /// The pane is still open.
     #[error("the host pane is still open")]
@@ -358,7 +358,7 @@ impl Trigger {
                 repo_allowed: false,
             } => Err(Refusal::RepoNotAllowed),
             Self::Merged {
-                source: MergeSource::Child,
+                source: MergeSource::Worker,
                 policy: MergePolicy::Human,
             } => Err(Refusal::HumanMergeOnly),
             Self::Close(facts) => check_close(task.keep, facts),
@@ -478,9 +478,9 @@ pub const fn check_start(facts: &StartFacts) -> Result<(), Refusal> {
     if !matches!(facts.machine, MachineMode::Normal | MachineMode::Resuming) {
         return Err(Refusal::MachineMode(facts.machine));
     }
-    if facts.live_children >= facts.max_children {
+    if facts.live_workers >= facts.max_workers {
         return Err(Refusal::NoFreeSlot {
-            max: facts.max_children,
+            max: facts.max_workers,
         });
     }
     if let Some(cap) = facts.project_cap

@@ -75,7 +75,7 @@ const fn roomy_limits() -> Limits {
     }
 }
 
-fn world_with(enforce: bool, max_children: u32) -> World {
+fn world_with(enforce: bool, max_workers: u32) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -83,7 +83,7 @@ fn world_with(enforce: bool, max_children: u32) -> World {
     git_in(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
     let main_text = main.display().to_string().replace('\\', "/");
     let text = format!(
-        "[machine]\nhost = \"wmux\"\nmax_children = {max_children}\n\n[hooks]\nenforce = {enforce}\n\n\
+        "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[hooks]\nenforce = {enforce}\n\n\
          [project.demo]\nmain = \"{main_text}\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
          worktree_path = \"{{main}}-{{slug}}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\n\
          allowed_repos = [\"acme/demo\"]\n"
@@ -92,7 +92,7 @@ fn world_with(enforce: bool, max_children: u32) -> World {
     let home = Home::at(Some(dir.path().join("home"))).unwrap();
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
-    let hash = RuleFiles::load(&home, &config, &[])
+    let hash = RuleFiles::load(&home, &config, &[], "orchestrator")
         .unwrap()
         .hash()
         .to_owned();
@@ -636,7 +636,7 @@ fn a_worktree_that_cannot_be_removed_becomes_one_ask() {
     assert_eq!(
         ask.state,
         headwork_core::AskState::Pending,
-        "waits for the root to put it"
+        "waits for the orchestrator to put it"
     );
     run_tick(&mut w);
     assert_eq!(count(&w, "ask-opened"), 1, "asked once");

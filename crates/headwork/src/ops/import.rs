@@ -1,9 +1,10 @@
 //! `import`: adopt what today's orchestrate scripts started, so headwork can shadow the current setup.
 //!
-//! Children are found two ways: running wmux agents labelled `<project>/<slug>` (what `spawn-child.sh` makes), and
+//! Workers are found two ways: running wmux agents labelled `<project>/<slug>` (what `spawn-child.sh` makes), and
 //! Claude panes wmux restored after a restart, which are no longer agents. For those, wmux's `agent-state` gives the
-//! session id, and the session's transcript gives the name (from the first prompt, "You are the child session …")
-//! and the folder it runs in. Projects come from `projects.conf`; worktrees from `git worktree list`.
+//! session id, and the session's transcript gives the name (from the first prompt, "You are the worker session …", or
+//! "child" in the scripts' wording) and the folder it runs in. Projects come from `projects.conf`; worktrees from
+//! `git worktree list`.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
@@ -19,8 +20,8 @@ use serde::Serialize;
 
 use super::{Env, slashed};
 
-/// The words of the first prompt that today's scripts give a child.
-const CHILD_PROMPT: &str = "You are the child session ";
+/// The words of the first prompt a worker gets: from headwork, and from the orchestrate scripts, which call it a child.
+const WORKER_PROMPTS: &[&str] = &["You are the worker session ", "You are the child session "];
 
 /// The heading `spawn-child.sh` appends to every brief except a keep task's.
 const CLOSING_HEADING: &str = "## Closing yourself";
@@ -42,13 +43,13 @@ pub struct Sources<'a> {
 pub struct ImportReport {
     /// Tasks adopted as `working`.
     pub adopted: Vec<String>,
-    /// Children left alone, with the reason.
+    /// Workers left alone, with the reason.
     pub skipped: Vec<String>,
-    /// Worktrees no running child stands in.
+    /// Worktrees no running worker stands in.
     pub stray_worktrees: Vec<String>,
 }
 
-/// A running child found on the host.
+/// A running worker found on the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Found {
     name: TaskName,
@@ -114,7 +115,7 @@ pub fn repo_of_remote(url: &str) -> Option<String> {
     (!owner.is_empty() && !name.is_empty()).then(|| format!("{owner}/{name}"))
 }
 
-/// Adopts every running child of a configured project that has no live task yet.
+/// Adopts every running worker of a configured project that has no live task yet.
 ///
 /// # Errors
 ///
@@ -264,7 +265,7 @@ fn find_transcript(claude_dir: &Path, session_id: &str) -> Option<PathBuf> {
 /// What a transcript says about its session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranscriptFacts {
-    /// The child name from the first prompt.
+    /// The worker name from the first prompt.
     pub name: Option<String>,
     /// The folder the session runs in.
     pub cwd: Option<PathBuf>,
@@ -272,7 +273,7 @@ pub struct TranscriptFacts {
     pub model: Option<Model>,
 }
 
-/// Reads the start of a transcript for the child name, the folder and the model.
+/// Reads the start of a transcript for the worker name, the folder and the model.
 #[must_use]
 pub fn read_transcript(path: &Path) -> TranscriptFacts {
     let mut facts = TranscriptFacts::default();
@@ -294,7 +295,7 @@ pub fn read_transcript(path: &Path) -> TranscriptFacts {
             facts.model = value["message"]["model"].as_str().and_then(model_of);
         }
         if facts.name.is_none() && value["type"] == "user" {
-            facts.name = text_of(&value["message"]["content"]).and_then(|text| child_name(&text));
+            facts.name = text_of(&value["message"]["content"]).and_then(|text| worker_name(&text));
         }
         if facts.name.is_some() && facts.cwd.is_some() && facts.model.is_some() {
             break;
@@ -315,10 +316,12 @@ fn text_of(content: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// The name in a first prompt such as "You are the child session me-sim-sand. Read your brief …".
+/// The name in a first prompt such as "You are the worker session me-sim-sand. Read your brief …".
 #[must_use]
-pub fn child_name(text: &str) -> Option<String> {
-    let start = text.find(CHILD_PROMPT)? + CHILD_PROMPT.len();
+pub fn worker_name(text: &str) -> Option<String> {
+    let start = WORKER_PROMPTS
+        .iter()
+        .find_map(|prompt| text.find(prompt).map(|at| at + prompt.len()))?;
     let name: String = text
         .get(start..)?
         .chars()
@@ -334,7 +337,7 @@ fn model_of(id: &str) -> Option<Model> {
         .find(|model| id.contains(model.as_str()))
 }
 
-/// Turns a found child into a task to adopt, or says why not.
+/// Turns a found worker into a task to adopt, or says why not.
 fn plan(env: &Env<'_>, sources: Sources<'_>, child: &Found) -> Result<AdoptTask, String> {
     let project = env
         .config

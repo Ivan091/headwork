@@ -1,4 +1,8 @@
 //! Closed sets of words stored as text: task and machine states, models, actors.
+//!
+//! A word may have older spellings after `|`: they still parse, from a store, an environment or an event log written
+//! before a rename, and are never written. The orchestrator and its workers were called root and children until
+//! 2026-11-14.
 
 use std::fmt;
 use std::str::FromStr;
@@ -19,7 +23,7 @@ macro_rules! text_enum {
     (
         $(#[$doc:meta])*
         $name:ident, $kind:literal {
-            $($(#[$vdoc:meta])* $variant:ident => $text:literal,)+
+            $($(#[$vdoc:meta])* $variant:ident => $text:literal $(| $alias:literal)*,)+
         }
     ) => {
         $(#[$doc])*
@@ -27,7 +31,7 @@ macro_rules! text_enum {
         pub enum $name {
             $(
                 $(#[$vdoc])*
-                #[serde(rename = $text)]
+                #[serde(rename = $text $(, alias = $alias)*)]
                 $variant,
             )+
         }
@@ -56,7 +60,7 @@ macro_rules! text_enum {
 
             fn from_str(word: &str) -> Result<Self, Self::Err> {
                 match word {
-                    $($text => Ok(Self::$variant),)+
+                    $($text $(| $alias)* => Ok(Self::$variant),)+
                     other => Err(UnknownWord { kind: $kind, word: other.to_owned() }),
                 }
             }
@@ -83,7 +87,7 @@ text_enum!(
         Closing => "closing",
         /// Everything is gone and verified.
         Closed => "closed",
-        /// Dropped by the root or the user; closing follows at once.
+        /// Dropped by the orchestrator or the user; closing follows at once.
         Dropped => "dropped",
         /// The session never started.
         Failed => "failed",
@@ -104,7 +108,7 @@ impl TaskState {
         !matches!(self, Self::Closed)
     }
 
-    /// Whether the task occupies a child slot: a session is starting, running, or being closed.
+    /// Whether the task occupies a worker slot: a session is starting, running, or being closed.
     #[must_use]
     pub const fn takes_slot(self) -> bool {
         match self {
@@ -172,10 +176,10 @@ text_enum!(
 text_enum!(
     /// Who caused an event.
     Actor, "actor" {
-        /// The root session.
-        Root => "root",
-        /// A child session.
-        Child => "child",
+        /// The orchestrator session.
+        Orchestrator => "orchestrator" | "root",
+        /// A worker session.
+        Worker => "worker" | "child",
         /// A person at the CLI.
         User => "user",
         /// The watchdog tick.
@@ -285,39 +289,39 @@ text_enum!(
     /// A session's role.
     Role, "role" {
         /// The coordinating session.
-        Root => "root",
+        Orchestrator => "orchestrator" | "root",
         /// A task session.
-        Child => "child",
+        Worker => "worker" | "child",
     }
 );
 
 text_enum!(
     /// A hard rule a hook enforces; every decision in the event log names one.
     RuleId, "rule" {
-        /// The root edits a file outside the headwork home, the temp folder and the configured writable folders.
-        RootEdit => "root-edit",
-        /// The root commits, pushes, merges or rebases, or merges or opens a pull request.
-        RootGit => "root-git",
-        /// The root runs a build tool.
-        RootBuild => "root-build",
-        /// The root runs a project's delivery or worktree script.
-        RootDelivery => "root-delivery",
+        /// The orchestrator edits a file outside the headwork home, the temp folder and the configured writable folders.
+        OrchestratorEdit => "orchestrator-edit" | "root-edit",
+        /// The orchestrator commits, pushes, merges or rebases, or merges or opens a pull request.
+        OrchestratorGit => "orchestrator-git" | "root-git",
+        /// The orchestrator runs a build tool.
+        OrchestratorBuild => "orchestrator-build" | "root-build",
+        /// The orchestrator runs a project's delivery or worktree script.
+        OrchestratorDelivery => "orchestrator-delivery" | "root-delivery",
         /// A session runs a command only the user runs (publish, upload, release, login).
         UserOnly => "user-only",
-        /// A child edits a file outside its worktree, the temp folder and the configured writable folders.
-        ChildEditOutside => "child-edit-outside",
-        /// A child edits a file under one of its project's read-only paths.
-        ChildReadOnly => "child-read-only",
-        /// A child commits or pushes on the default branch.
-        ChildDefaultBranch => "child-default-branch",
-        /// A child pushes to a repository its project does not allow.
-        ChildPushRepo => "child-push-repo",
-        /// A child uses a global delivery skill where its project names its own delivery command.
-        ChildGlobalSkill => "child-global-skill",
-        /// A child starts a Fable subagent without the user's approval.
-        ChildFable => "child-fable",
-        /// A child starts a long job in the background instead of registering it.
-        ChildLongJob => "child-long-job",
+        /// A worker edits a file outside its worktree, the temp folder and the configured writable folders.
+        WorkerEditOutside => "worker-edit-outside" | "child-edit-outside",
+        /// A worker edits a file under one of its project's read-only paths.
+        WorkerReadOnly => "worker-read-only" | "child-read-only",
+        /// A worker commits or pushes on the default branch.
+        WorkerDefaultBranch => "worker-default-branch" | "child-default-branch",
+        /// A worker pushes to a repository its project does not allow.
+        WorkerPushRepo => "worker-push-repo" | "child-push-repo",
+        /// A worker uses a global delivery skill where its project names its own delivery command.
+        WorkerGlobalSkill => "worker-global-skill" | "child-global-skill",
+        /// A worker starts a Fable subagent without the user's approval.
+        WorkerFable => "worker-fable" | "child-fable",
+        /// A worker starts a long job in the background instead of registering it.
+        WorkerLongJob => "worker-long-job" | "child-long-job",
         /// A question has fewer than two or more than four options.
         AskOptionCount => "ask-option-count",
         /// An option means "needs changes"; the user types changes instead.
@@ -328,7 +332,7 @@ text_enum!(
         AskPush => "ask-push",
         /// A review ask without the file sent first.
         AskReviewFile => "ask-review-file",
-        /// A child stops while working, without asking, reporting or closing.
+        /// A worker stops while working, without asking, reporting or closing.
         StopUnfinished => "stop-unfinished",
         /// A session ends its turn with a plain-text question.
         StopPlainQuestion => "stop-plain-question",
@@ -394,6 +398,27 @@ mod tests {
         }
         for model in Model::ALL {
             assert_eq!(model.as_str().parse::<Model>(), Ok(*model), "{model}");
+        }
+    }
+
+    #[test]
+    fn old_role_spellings_parse_and_new_ones_are_written() {
+        assert_eq!("root".parse::<Role>(), Ok(Role::Orchestrator), "root");
+        assert_eq!("child".parse::<Role>(), Ok(Role::Worker), "child");
+        assert_eq!("child".parse::<Actor>(), Ok(Actor::Worker), "actor");
+        assert_eq!(
+            "child-edit-outside".parse::<RuleId>(),
+            Ok(RuleId::WorkerEditOutside),
+            "rule id"
+        );
+        assert_eq!(Role::Orchestrator.as_str(), "orchestrator", "role written");
+        assert_eq!(
+            RuleId::OrchestratorGit.as_str(),
+            "orchestrator-git",
+            "rule written"
+        );
+        for rule in RuleId::ALL {
+            assert_eq!(rule.as_str().parse::<RuleId>(), Ok(*rule), "{rule}");
         }
     }
 

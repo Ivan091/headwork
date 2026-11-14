@@ -18,14 +18,14 @@ pub use shell::{SimpleCommand, commands};
 /// The global skills that deliver a change; a project with its own delivery command forbids them.
 pub const DELIVERY_SKILLS: &[&str] = &["commit", "push", "create-pr", "contribute", "ship"];
 
-/// Build tools the root may not run.
+/// Build tools the orchestrator may not run.
 pub const BUILD_TOOLS: &[&str] = &[
     "cargo", "mvnd", "mvn", "npm", "pnpm", "yarn", "gradle", "gradlew", "make", "rustc", "dotnet",
     "go",
 ];
 
-/// Git subcommands the root may not run.
-const ROOT_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
+/// Git subcommands the orchestrator may not run.
+const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
 
 /// Branch names that count as a default branch when the project does not say otherwise.
 pub const DEFAULT_BRANCHES: &[&str] = &["main", "master"];
@@ -107,20 +107,20 @@ pub struct Scope {
     pub role: Option<Role>,
     /// The session's working folder.
     pub cwd: String,
-    /// Folders the session may write: a child's worktree or main checkout, the temp folder, the headwork home for the
-    /// root, and the configured extras.
+    /// Folders the session may write: a worker's worktree or main checkout, the temp folder, the headwork home for
+    /// the orchestrator, and the configured extras.
     pub writable: Vec<GuardPath>,
-    /// Folders a child may read and never write.
+    /// Folders a worker may read and never write.
     pub read_only: Vec<GuardPath>,
-    /// Delivery and worktree scripts the root may not run, such as `scripts/ship.sh`.
+    /// Delivery and worktree scripts the orchestrator may not run, such as `scripts/ship.sh`.
     pub scripts: Vec<String>,
     /// Commands only the user runs.
     pub user_only: Vec<String>,
     /// Commands that must run as registered jobs, never in the background.
     pub long_jobs: Vec<String>,
-    /// The child's project names its own delivery command.
+    /// The worker's project names its own delivery command.
     pub own_delivery: bool,
-    /// Repositories a child may push to, `owner/name`; empty allows any.
+    /// Repositories a worker may push to, `owner/name`; empty allows any.
     pub allowed_repos: Vec<String>,
     /// The branch checked out in the session's folder.
     pub branch: Option<String>,
@@ -154,33 +154,37 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
     let target = GuardPath::resolve(&scope.cwd, path);
     let inside = scope.writable.iter().any(|root| target.is_within(root));
     match role {
-        Role::Root if !inside => Decision::deny(
-            RuleId::RootEdit,
+        Role::Orchestrator if !inside => Decision::deny(
+            RuleId::OrchestratorEdit,
             format!(
-                "the root owns no code: {tool} on {path} is outside the headwork home and the scratchpad; spawn a child \
-                 for project work"
+                "the orchestrator owns no code: {tool} on {path} is outside the headwork home and the scratchpad; \
+                 spawn a worker for project work"
             ),
         ),
-        Role::Child if scope.read_only.iter().any(|root| target.is_within(root)) => Decision::deny(
-            RuleId::ChildReadOnly,
-            format!("{path} is under a read-only path of this project; read it, never write it"),
-        ),
-        Role::Child if !inside => Decision::deny(
-            RuleId::ChildEditOutside,
+        Role::Worker if scope.read_only.iter().any(|root| target.is_within(root)) => {
+            Decision::deny(
+                RuleId::WorkerReadOnly,
+                format!(
+                    "{path} is under a read-only path of this project; read it, never write it"
+                ),
+            )
+        }
+        Role::Worker if !inside => Decision::deny(
+            RuleId::WorkerEditOutside,
             format!(
                 "{tool} on {path} is outside this task's folder ({}); edit only your own worktree",
                 scope.cwd
             ),
         ),
-        Role::Root | Role::Child => Decision::Allow,
+        Role::Orchestrator | Role::Worker => Decision::Allow,
     }
 }
 
 fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decision {
     for command in commands(line) {
         let decision = match role {
-            Role::Root => check_root_command(scope, &command),
-            Role::Child => check_child_command(scope, &command, background),
+            Role::Orchestrator => check_orchestrator_command(scope, &command),
+            Role::Worker => check_worker_command(scope, &command, background),
         };
         if decision != Decision::Allow {
             return decision;
@@ -202,45 +206,47 @@ fn user_only(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
         })
 }
 
-fn check_root_command(scope: &Scope, command: &SimpleCommand) -> Decision {
+fn check_orchestrator_command(scope: &Scope, command: &SimpleCommand) -> Decision {
     if let Some(decision) = user_only(scope, command) {
         return decision;
     }
     let name = command.program_name();
     if name == "git"
         && let Some((sub, _)) = git_subcommand(command)
-        && ROOT_GIT.contains(&sub.as_str())
+        && ORCHESTRATOR_GIT.contains(&sub.as_str())
     {
         return Decision::deny(
-            RuleId::RootGit,
-            format!("the root owns no code: `git {sub}` belongs in a child session"),
+            RuleId::OrchestratorGit,
+            format!("the orchestrator owns no code: `git {sub}` belongs in a worker session"),
         );
     }
     if name == "gh" {
         let args: Vec<&str> = command.args().iter().map(String::as_str).collect();
         if let ["pr", verb @ ("merge" | "create"), ..] = args.as_slice() {
             return Decision::deny(
-                RuleId::RootGit,
-                format!("the root owns no code: `gh pr {verb}` belongs in a child session"),
+                RuleId::OrchestratorGit,
+                format!(
+                    "the orchestrator owns no code: `gh pr {verb}` belongs in a worker session"
+                ),
             );
         }
     }
     if BUILD_TOOLS.contains(&name.as_str()) {
         return Decision::deny(
-            RuleId::RootBuild,
-            format!("the root owns no code: `{name}` builds belong in a child session"),
+            RuleId::OrchestratorBuild,
+            format!("the orchestrator owns no code: `{name}` builds belong in a worker session"),
         );
     }
     if let Some(script) = scope.scripts.iter().find(|script| command.runs(script)) {
         return Decision::deny(
-            RuleId::RootDelivery,
-            format!("the root owns no code: `{script}` runs in a child session"),
+            RuleId::OrchestratorDelivery,
+            format!("the orchestrator owns no code: `{script}` runs in a worker session"),
         );
     }
     Decision::Allow
 }
 
-fn check_child_command(scope: &Scope, command: &SimpleCommand, background: bool) -> Decision {
+fn check_worker_command(scope: &Scope, command: &SimpleCommand, background: bool) -> Decision {
     if let Some(decision) = user_only(scope, command) {
         return decision;
     }
@@ -248,7 +254,7 @@ fn check_child_command(scope: &Scope, command: &SimpleCommand, background: bool)
         && let Some(pattern) = scope.long_jobs.iter().find(|pattern| command.runs(pattern))
     {
         return Decision::deny(
-            RuleId::ChildLongJob,
+            RuleId::WorkerLongJob,
             format!(
                 "`{pattern}` is a long job: start it with the headwork `job_start` tool (or register a running one with \
                  `job_register`) so a park can manage it"
@@ -267,7 +273,7 @@ fn check_child_command(scope: &Scope, command: &SimpleCommand, background: bool)
         .is_some_and(|branch| is_default(scope, branch));
     match sub.as_str() {
         "commit" if on_default => Decision::deny(
-            RuleId::ChildDefaultBranch,
+            RuleId::WorkerDefaultBranch,
             "never commit on the default branch: create a kebab-case branch first",
         ),
         "push" => check_push(scope, &args, on_default),
@@ -292,7 +298,7 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
     });
     if targets_default || (refspecs.is_empty() && on_default) {
         return Decision::deny(
-            RuleId::ChildDefaultBranch,
+            RuleId::WorkerDefaultBranch,
             "never push to the default branch: push your task branch and open a pull request",
         );
     }
@@ -314,7 +320,7 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
                 .any(|allowed| allowed.eq_ignore_ascii_case(&repo)) =>
         {
             Decision::deny(
-                RuleId::ChildPushRepo,
+                RuleId::WorkerPushRepo,
                 format!(
                     "{repo} is not one of this project's repositories ({})",
                     scope.allowed_repos.join(", ")
@@ -346,9 +352,9 @@ fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
 
 fn check_skill(scope: &Scope, role: Role, name: &str) -> Decision {
     let base = name.rsplit(':').next().unwrap_or(name);
-    if role == Role::Child && scope.own_delivery && DELIVERY_SKILLS.contains(&base) {
+    if role == Role::Worker && scope.own_delivery && DELIVERY_SKILLS.contains(&base) {
         return Decision::deny(
-            RuleId::ChildGlobalSkill,
+            RuleId::WorkerGlobalSkill,
             format!(
                 "this project delivers with its own command; do not use the global `{base}` skill"
             ),
@@ -359,9 +365,9 @@ fn check_skill(scope: &Scope, role: Role, name: &str) -> Decision {
 
 fn check_agent(scope: &Scope, role: Role, tool: &str, model: Option<&str>) -> Decision {
     let fable = model.is_some_and(|model| model.eq_ignore_ascii_case("fable"));
-    if role == Role::Child && fable && !scope.fable_allowed {
+    if role == Role::Worker && fable && !scope.fable_allowed {
         return Decision::deny(
-            RuleId::ChildFable,
+            RuleId::WorkerFable,
             format!(
                 "{tool} with Fable needs the user's approval for this task; use opus, or ask the user first"
             ),

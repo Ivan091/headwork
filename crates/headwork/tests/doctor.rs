@@ -150,7 +150,11 @@ fn a_complete_install_is_healthy() {
     assert_eq!(status(&report, "plugin"), Status::Ok, "plugin");
     assert_eq!(status(&report, "hooks"), Status::Ok, "hooks");
     assert_eq!(status(&report, "enforce"), Status::Ok, "enforce");
-    assert_eq!(status(&report, "root"), Status::Warn, "no root session yet");
+    assert_eq!(
+        status(&report, "orchestrator"),
+        Status::Warn,
+        "no orchestrator session yet"
+    );
 }
 
 #[test]
@@ -212,7 +216,7 @@ fn little_free_disk_warns_and_almost_none_fails() {
 }
 
 #[test]
-fn a_root_session_in_the_store_satisfies_the_root_check() {
+fn an_orchestrator_session_in_the_store_satisfies_the_orchestrator_check() {
     let install = install();
     let mut store = install.home.open_store().unwrap();
     store
@@ -220,7 +224,7 @@ fn a_root_session_in_the_store_satisfies_the_root_check() {
             &NewSession {
                 id: "root-1".to_owned(),
                 task_id: None,
-                role: Role::Root,
+                role: Role::Orchestrator,
                 rc_name: "root".to_owned(),
                 host: "wmux".to_owned(),
                 host_workspace: None,
@@ -236,7 +240,7 @@ fn a_root_session_in_the_store_satisfies_the_root_check() {
         claude: vec![11, 99],
     };
     let report = run(&install, &probe);
-    assert_eq!(status(&report, "root"), Status::Ok, "root");
+    assert_eq!(status(&report, "orchestrator"), Status::Ok, "root");
     let processes = report.checks.iter().find(|c| c.id == "processes").unwrap();
     assert!(
         processes.detail.contains("2 ") && processes.detail.contains(": 99"),

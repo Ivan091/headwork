@@ -39,7 +39,7 @@ pub struct NewTask {
 pub struct NewSession {
     /// The Claude session id.
     pub id: String,
-    /// The task, none for the root.
+    /// The task, none for the orchestrator.
     pub task_id: Option<TaskId>,
     /// The role.
     pub role: Role,
@@ -410,8 +410,8 @@ impl Store {
         let project = task.project().as_str();
         let project_config = config.project(task.project());
         Ok(StartFacts {
-            live_children: count(slots.clone().count())?,
-            max_children: config.machine.max_children.get(),
+            live_workers: count(slots.clone().count())?,
+            max_workers: config.machine.max_workers.get(),
             project_live: count(
                 slots
                     .clone()
@@ -419,7 +419,7 @@ impl Store {
                     .count(),
             )?,
             project_cap: project_config
-                .and_then(|p| p.max_children)
+                .and_then(|p| p.max_workers)
                 .map(std::num::NonZeroU32::get),
             main_only_kind_busy: task.in_main
                 && slots
@@ -686,7 +686,7 @@ impl Store {
         let live = live_tasks(&self.conn)?;
         Ok(Board {
             machine: machine_mode(&self.conn)?,
-            live_children: count(live.iter().filter(|task| task.state.takes_slot()).count())?,
+            live_workers: count(live.iter().filter(|task| task.state.takes_slot()).count())?,
             projects: self.projects()?,
             tasks: board_tasks,
             other_asks: asks

@@ -80,7 +80,9 @@ impl Home {
         self.root.join("jobs")
     }
 
-    fn config_path(&self) -> PathBuf {
+    /// The machine configuration file.
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
         self.root.join("config.toml")
     }
 

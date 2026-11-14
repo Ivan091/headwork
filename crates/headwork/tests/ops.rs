@@ -11,7 +11,7 @@ use std::process::Command;
 use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::close::close_surface_or_workspace;
-use headwork::ops::launch::{StartMode, claude_command, exited};
+use headwork::ops::launch::{StartMode, claude_command, exited, orchestrator_agent};
 use headwork::ops::spawn::{Outcome, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
@@ -50,11 +50,11 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-fn world(max_children: u32, worktree_new: &str) -> World {
-    world_with(max_children, worktree_new, "")
+fn world(max_workers: u32, worktree_new: &str) -> World {
+    world_with(max_workers, worktree_new, "")
 }
 
-fn world_with(max_children: u32, worktree_new: &str, extra: &str) -> World {
+fn world_with(max_workers: u32, worktree_new: &str, extra: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -64,7 +64,7 @@ fn world_with(max_children: u32, worktree_new: &str, extra: &str) -> World {
     let text = format!(
         r#"[machine]
 host = "wmux"
-max_children = {max_children}
+max_workers = {max_workers}
 
 [project.demo]
 main = "{main_text}"
@@ -230,7 +230,7 @@ fn tasks_beyond_the_cap_wait_in_the_queue_and_start_when_a_slot_frees() {
     assert_eq!(
         pumped.first().map(|p| &p.outcome),
         Some(&Outcome::Waiting {
-            reason: "all 1 child slots are taken".to_owned()
+            reason: "all 1 worker slots are taken".to_owned()
         }),
         "{pumped:?}"
     );
@@ -322,7 +322,7 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
     assert!(
         args.last()
             .unwrap()
-            .starts_with("You are the child session demo-sand. Read your brief at "),
+            .starts_with("You are the worker session demo-sand. Read your brief at "),
         "{args:?}"
     );
     let envs: Vec<(String, String)> = command
@@ -336,7 +336,7 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
         .collect();
     for (key, value) in [
         ("HEADWORK_SESSION", session.id.clone()),
-        ("HEADWORK_ROLE", "child".to_owned()),
+        ("HEADWORK_ROLE", "worker".to_owned()),
         ("HEADWORK_TASK", task.id.to_string()),
         ("HEADWORK_EXE", EXE.to_owned()),
     ] {
@@ -537,12 +537,12 @@ fn a_closing_child_leaves_its_pane_to_the_next_one() {
 }
 
 #[test]
-fn the_workspace_closes_with_its_last_child() {
+fn the_workspace_closes_with_its_last_worker() {
     let mut w = world(10, "builtin");
     let (a, _) = w.spawn("task-a", false);
     let (b, _) = w.spawn("task-b", false);
     release(&w, &b);
-    assert_eq!(w.host.workspaces().unwrap().len(), 1, "a child is left");
+    assert_eq!(w.host.workspaces().unwrap().len(), 1, "a worker is left");
     release(&w, &a);
     assert!(
         w.host.workspaces().unwrap().is_empty(),
@@ -761,5 +761,22 @@ fn a_spawn_without_an_effort_stores_the_level_the_settings_give_its_model() {
             .contains(&format!("rename-surface {surface} demo-sand - haiku xhigh")),
         "{:?}",
         w.host.calls()
+    );
+}
+
+#[test]
+fn the_orchestrator_runs_its_agent_file_once_it_exists() {
+    let claude = tempfile::tempdir().unwrap();
+    assert_eq!(
+        orchestrator_agent(claude.path()),
+        "root",
+        "the old agent until then"
+    );
+    std::fs::create_dir(claude.path().join("agents")).unwrap();
+    std::fs::write(claude.path().join("agents/orchestrator.md"), "x").unwrap();
+    assert_eq!(
+        orchestrator_agent(claude.path()),
+        "orchestrator",
+        "the new agent"
     );
 }

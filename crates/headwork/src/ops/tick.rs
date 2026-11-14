@@ -21,7 +21,7 @@ use headwork_store::{PrSeen, SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
 use super::close::{finish, remove_worktree, surface_present};
-use super::rules::{RuleFiles, fnv1a};
+use super::rules::{self, fnv1a};
 use super::spawn::{Pumped, pump};
 use super::{Env, slashed};
 
@@ -253,8 +253,8 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn rules(&mut self) -> Result<()> {
-        let added = self.store.active_rules()?;
-        let files = RuleFiles::load(self.env().home, self.env().config, &added)?;
+        let env = self.env();
+        let files = rules::current(self.store, env.home, env.config, env.host)?;
         let actor = self.actor();
         self.store.observe_rules(files.hash(), actor)?;
         for (task, session, seen) in self.store.sessions_behind_rules()? {
@@ -899,7 +899,7 @@ impl<'b> Run<'_, 'b> {
             }
             let who = match ask.task_id {
                 Some(id) => self.name(id)?,
-                None => "root".to_owned(),
+                None => "orchestrator".to_owned(),
             };
             self.notify(&format!(
                 "{who} has waited {} min for your answer: {}",

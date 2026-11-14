@@ -19,14 +19,16 @@ use headwork_core::guard::{
     DEFAULT_BRANCHES, Decision, GuardPath, Scope, ToolCall, check_tool, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
-use headwork_core::{Actor, AskKind, Config, Role, SessionState, TaskState};
+use headwork_core::{
+    Actor, AskKind, Config, Role, SessionState, TaskState, is_orchestrator_address,
+};
 use headwork_store::{
-    EVENT_DENY, EVENT_PROMPT, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk, Store, StoreError,
-    Task,
+    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk,
+    Store, StoreError, Task,
 };
 use serde_json::{Value, json};
 
-use super::rules::{Card, RuleFiles};
+use super::rules::{self, Card};
 use super::slashed;
 use crate::home::Home;
 
@@ -245,7 +247,7 @@ fn task_dir(store: &Store, env: &HookEnv<'_>, task: &Task) -> Result<Option<Path
 
 fn rules_for(store: &mut Store, call: &Call<'_>) -> Result<(String, i64)> {
     let env = call.env;
-    let files = RuleFiles::load(env.home, env.config, &store.active_rules()?)?;
+    let files = rules::current(store, env.home, env.config, env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     let dir = call
         .task
@@ -295,7 +297,7 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         EVENT_PROMPT,
         &json!({ "cross_session": text.starts_with("<cross-session-message"), "from": from }),
     )?;
-    let files = RuleFiles::load(call.env.home, call.env.config, &store.active_rules()?)?;
+    let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
         return Ok(HookReply::default());
@@ -339,12 +341,12 @@ pub fn scope_for(
         ..Scope::default()
     };
     match role {
-        Role::Root => {
+        Role::Orchestrator => {
             writable.push(GuardPath::new(&slashed(env.home.root())));
             writable.extend(
                 config
                     .hooks
-                    .root_writable
+                    .orchestrator_writable
                     .iter()
                     .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir)))),
             );
@@ -362,7 +364,7 @@ pub fn scope_for(
             scope.scripts.sort();
             scope.scripts.dedup();
         }
-        Role::Child => {
+        Role::Worker => {
             if let Some(task) = task {
                 if let Some(dir) = task_dir(store, env, task)? {
                     writable.push(GuardPath::new(&slashed(&dir)));
@@ -516,7 +518,54 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     if tool == "AskUserQuestion" && reply.exit == 0 {
         open_ask(store, call, tool_input)?;
     }
+    if tool == "SendMessage"
+        && reply.exit == 0
+        && let Some(input) = readdress(store, call, tool_input)?
+    {
+        return Ok(HookReply {
+            stdout: Some(
+                json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": HookEvent::PreToolUse.claude_name(),
+                        "permissionDecision": "allow",
+                        "permissionDecisionReason": "headwork: sent to the orchestrator's current address",
+                        "updatedInput": input,
+                    }
+                })
+                .to_string(),
+            ),
+            ..reply
+        });
+    }
     Ok(reply)
+}
+
+/// A session message to `orchestrator` or `root`, the orchestrator's old name, goes to the orchestrator's live address
+/// when that is the other one: workers told one name keep reaching an orchestrator started under the other. Returns
+/// the tool input with `to` replaced, or none when nothing changes.
+fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Option<Value>> {
+    let Some(to) = tool_input.get("to").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !is_orchestrator_address(to) {
+        return Ok(None);
+    }
+    let address = rules::orchestrator_address(store, call.env.host)?;
+    if address == to {
+        return Ok(None);
+    }
+    store.append_event(
+        Actor::Hook,
+        call.session.task_id,
+        Some(&call.session.id),
+        EVENT_READDRESSED,
+        &json!({ "from": to, "to": address }),
+    )?;
+    let mut input = tool_input.clone();
+    if let Some(fields) = input.as_object_mut() {
+        fields.insert("to".to_owned(), Value::String(address));
+    }
+    Ok(Some(input))
 }
 
 fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Decision> {

@@ -18,7 +18,9 @@ use headwork::ops::effort;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
-use headwork::ops::launch::{RootOrigin, RootStart, StartMode, exited, launch_root};
+use headwork::ops::launch::{
+    OrchestratorOrigin, OrchestratorStart, StartMode, exited, launch_orchestrator,
+};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
 use headwork::ops::relay::Relay;
@@ -86,7 +88,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Adopt the children, projects and worktrees of the orchestrate scripts.
+    /// Adopt the workers, projects and worktrees of the orchestrate scripts.
     Import {
         /// The orchestrate `projects.conf`; projects missing from `config.toml` are appended to it.
         #[arg(long)]
@@ -120,7 +122,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// After a restart: reopen parked sessions with their recaps, restart jobs, write a summary for the root.
+    /// After a restart: reopen parked sessions with their recaps, restart jobs, write a summary for the orchestrator.
     Resume {
         /// Started by a logon task: sessions interrupted by a crash come back only as `resume_after_crash` allows.
         #[arg(long)]
@@ -141,7 +143,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Set the title of every live child pane (or one task's) from its model and effort.
+    /// Set the title of every live worker pane (or one task's) from its model and effort.
     Retitle {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`; every live task when absent.
         name: Option<String>,
@@ -184,7 +186,7 @@ enum Command {
         /// The Claude session id.
         #[arg(long)]
         session: String,
-        /// The session's task, absent for the root.
+        /// The session's task, absent for the orchestrator.
         #[arg(long)]
         task: Option<i64>,
         /// The exit code of `claude`.
@@ -222,8 +224,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Run the root session here, recorded in the store, as `root.sh` starts it.
-    Root {
+    /// Run the orchestrator session here, recorded in the store. `headwork root` is its old name and still works.
+    #[command(alias = "root")]
+    Orchestrator {
+        /// The session and Remote Control name; workers message it. A session brought back keeps its own name.
+        #[arg(long, default_value = headwork_core::ORCHESTRATOR_ADDRESS)]
+        name: String,
+        /// The agent definition; `orchestrator` when `~/.claude/agents/orchestrator.md` exists, else `root`.
+        #[arg(long)]
+        agent: Option<String>,
         /// The model; claude's own default (the user's settings) when absent.
         #[arg(long)]
         model: Option<Model>,
@@ -236,16 +245,16 @@ enum Command {
         /// The first prompt.
         #[arg(
             long,
-            default_value = "You are the root session. Read HANDOFF.md beside CLAUDE.md and wait for the user."
+            default_value = "You are the orchestrator session. Read HANDOFF.md beside CLAUDE.md and wait for the user."
         )]
         prompt: String,
-        /// Run this recorded root session, as a resume does, instead of recording a new one.
+        /// Run this recorded orchestrator session, as a resume does, instead of recording a new one.
         #[arg(long)]
         session: Option<String>,
         /// Continue that session's conversation; without it the session starts fresh from its recap.
         #[arg(long, requires = "session")]
         resume: bool,
-        /// The resume's summary, named in the first prompt of a root that comes back.
+        /// The resume's summary, named in the first prompt of an orchestrator that comes back.
         #[arg(long, requires = "session")]
         summary: Option<String>,
         /// The headwork home; panes do not inherit the caller's environment.
@@ -257,7 +266,7 @@ enum Command {
         #[command(subcommand)]
         action: RuleAction,
     },
-    /// Hold a free pane of a project's workspace until the next child replaces it.
+    /// Hold a free pane of a project's workspace until the next worker replaces it.
     Idle {
         /// The project whose workspace the pane belongs to.
         project: String,
@@ -285,11 +294,11 @@ enum Command {
 /// What `rule` does.
 #[derive(Debug, Subcommand)]
 enum RuleAction {
-    /// Decide a Bash command as the root, or as a task's child with `--task`; exits 1 on a deny.
+    /// Decide a Bash command as the orchestrator, or as a task's worker with `--task`; exits 1 on a deny.
     Test {
         /// The command line.
         command: String,
-        /// Decide as this task's child session.
+        /// Decide as this task's worker session.
         #[arg(long)]
         task: Option<String>,
         /// The working folder; the task's folder or the current one when absent.
@@ -405,7 +414,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return rule_test(&probe, json, out);
         }
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
-        Command::Root {
+        Command::Orchestrator {
+            name,
+            agent,
             model,
             effort,
             mode,
@@ -415,14 +426,18 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             summary,
             home,
         } => {
-            let origin = session.map_or(RootOrigin::New, |session| RootOrigin::Back {
-                session,
-                resume,
-                summary,
+            let origin = session.map_or(OrchestratorOrigin::New, |session| {
+                OrchestratorOrigin::Back {
+                    session,
+                    resume,
+                    summary,
+                }
             });
-            return root_command(
+            return orchestrator_command(
                 &Home::at(home)?,
-                &RootStart {
+                &OrchestratorStart {
+                    name,
+                    agent,
                     prompt,
                     model,
                     effort,
@@ -501,7 +516,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Doctor { .. }
-        | Command::Root { .. }
+        | Command::Orchestrator { .. }
         | Command::Hook { .. }
         | Command::Mcp { .. }
         | Command::Exited { .. }
@@ -682,7 +697,7 @@ fn board(
     if json {
         json_out(out, &board)?;
     } else {
-        out.write_all(render::board(&board, ctx.config.machine.max_children.get()).as_bytes())?;
+        out.write_all(render::board(&board, ctx.config.machine.max_workers.get()).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1102,9 +1117,9 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
         (None, None) => std::env::current_dir()?,
     };
     let role = if task.is_some() {
-        Role::Child
+        Role::Worker
     } else {
-        Role::Root
+        Role::Orchestrator
     };
     let cwd = headwork::ops::slashed(&cwd);
     let mut scope = scope_for(&store, &env, role, task.as_ref(), &cwd, Some(probe.command))?;
@@ -1248,8 +1263,8 @@ fn shadow_command(
     Ok(ExitCode::SUCCESS)
 }
 
-fn root_command(home: &Home, start: &RootStart) -> Result<ExitCode> {
-    let code = launch_root(home, start)?;
+fn orchestrator_command(home: &Home, start: &OrchestratorStart) -> Result<ExitCode> {
+    let code = launch_orchestrator(home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
 }
@@ -1257,7 +1272,7 @@ fn root_command(home: &Home, start: &RootStart) -> Result<ExitCode> {
 fn idle_command(project: &str, out: &mut impl Write) -> Result<ExitCode> {
     writeln!(
         out,
-        "headwork: this pane of {project} is free; the next child opens here."
+        "headwork: this pane of {project} is free; the next worker opens here."
     )?;
     out.flush()?;
     loop {

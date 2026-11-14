@@ -1,12 +1,12 @@
-//! Where a new child goes in its project's workspace: a free pane, a grid made of a lone pane, or a tab.
+//! Where a new worker goes in its project's workspace: a free pane, a grid made of a lone pane, or a tab.
 //!
 //! The binary reads the workspace's panes from the host, marks the surfaces that hold a session, and acts on the
 //! [`Placement`] this returns. A pane is free when none of its surfaces holds a session, so a pane the user closed
 //! or rearranged by hand is simply read as it now is.
 //!
 //! The choices follow what wmux can do without moving a surface: it can cut a workspace that holds one pane into a
-//! grid of any size, and split a workspace's first pane in two; it cannot split any other pane. So the second child
-//! turns the lone pane into the whole grid at once, and a closing child leaves its pane behind for the next one.
+//! grid of any size, and split a workspace's first pane in two; it cannot split any other pane. So the second worker
+//! turns the lone pane into the whole grid at once, and a closing worker leaves its pane behind for the next one.
 
 use std::num::NonZeroU32;
 
@@ -37,7 +37,7 @@ impl Cell {
     }
 }
 
-/// What to do with a new child, by the index of a cell in the slice given to [`place`].
+/// What to do with a new worker, by the index of a cell in the slice given to [`place`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
     /// Start it in this free pane. With `replace_tab`, it replaces the pane's only surface, an idle shell.
@@ -67,10 +67,10 @@ pub enum Placement {
     },
 }
 
-/// Chooses a place for a new child among `cells`, in the host's order (left to right, top to bottom).
+/// Chooses a place for a new worker among `cells`, in the host's order (left to right, top to bottom).
 ///
 /// The first free pane wins. Without one, a lone pane becomes a grid of `max_panes`, and a workspace with fewer
-/// panes than that gets its first pane split. Otherwise the child stacks on the pane with the fewest sessions, the
+/// panes than that gets its first pane split. Otherwise the worker stacks on the pane with the fewest sessions, the
 /// later pane on a tie. `None` when there are no cells.
 #[must_use]
 pub fn place(cells: &[Cell], max_panes: NonZeroU32) -> Option<Placement> {
@@ -148,7 +148,7 @@ mod tests {
                 }),
             ),
             (
-                "the second child makes the grid",
+                "the second worker makes the grid",
                 vec![cell(1.0, 1.0, 1, 1)],
                 Some(Placement::Grid {
                     cell: 0,
@@ -156,7 +156,7 @@ mod tests {
                 }),
             ),
             (
-                "a pane freed by a closed child is reused",
+                "a pane freed by a closed worker is reused",
                 vec![quarter, cell(0.5, 0.5, 2, 0), quarter, quarter],
                 Some(Placement::Free {
                     cell: 1,

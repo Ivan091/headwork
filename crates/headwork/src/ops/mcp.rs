@@ -1,8 +1,8 @@
-//! The MCP server (design section 3.3): JSON-RPC over stdio, newline-delimited, offering the root's or a child's tools
+//! The MCP server (design section 3.3): JSON-RPC over stdio, newline-delimited, offering the orchestrator's or a worker's tools
 //! by the identity the launcher put in the environment.
 //!
 //! The role is read once and checked again on every call. A session without an identity is unmanaged: it sees no
-//! tools and every call is refused. A child's tools also need the session row of a task, so a forged role alone gets
+//! tools and every call is refused. A worker's tools also need the session row of a task, so a forged role alone gets
 //! nothing.
 
 use std::io::{BufRead, Write};
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::close::close;
 use super::jobs::{self, Registration};
-use super::rules::RuleFiles;
+use super::rules;
 use super::spawn::{SpawnRequest, pump, spawn};
 use super::{Env, close::reap};
 
@@ -60,9 +60,9 @@ struct ToolDef {
     schema: fn() -> Value,
 }
 
-const BOTH: &[Role] = &[Role::Root, Role::Child];
-const ROOT: &[Role] = &[Role::Root];
-const CHILD: &[Role] = &[Role::Child];
+const BOTH: &[Role] = &[Role::Orchestrator, Role::Worker];
+const ORCHESTRATOR: &[Role] = &[Role::Orchestrator];
+const WORKER: &[Role] = &[Role::Worker];
 
 const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -78,14 +78,14 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "inbox",
-        description: "Everything waiting on the user, oldest first, each with the child's name.",
+        description: "Everything waiting on the user, oldest first, each with the worker's name.",
         roles: BOTH,
         schema: || object(json!({}), &[]),
     },
     ToolDef {
         name: "spawn",
         description: "Create a task from a brief and start it in its own pane when a slot is free; otherwise it queues.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({
@@ -106,7 +106,7 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "drop",
         description: "Drop a task and close it; the user's words are recorded in the event log.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({ "name": { "type": "string" }, "user_words": { "type": "string" } }),
@@ -117,13 +117,13 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "close",
         description: "Close a task without dropping it: a keep task, or one stuck after done.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || object(json!({ "name": { "type": "string" } }), &["name"]),
     },
     ToolDef {
         name: "queue",
         description: "Put these queued tasks first, in this order, and start every queued task that fits.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({ "order": { "type": "array", "items": { "type": "string" } } }),
@@ -134,13 +134,13 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "rules",
         description: "The rules added at run time that are still active.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || object(json!({}), &[]),
     },
     ToolDef {
         name: "rule_add",
-        description: "Add a soft rule for `global`, `root`, `child` or a project; every session gets it on its next prompt.",
-        roles: ROOT,
+        description: "Add a soft rule for `global`, `orchestrator`, `worker` or a project; every session gets it on its next prompt.",
+        roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({ "scope": { "type": "string" }, "text": { "type": "string" } }),
@@ -151,14 +151,14 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "rule_retire",
         description: "Retire a rule added with rule_add; every session gets the change on its next prompt.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
     },
     ToolDef {
         name: "report",
         description: "Report progress. `blocked` and `done` let you end a turn with the task unfinished; `review` with a \
                       pull request moves the task to in_review.",
-        roles: CHILD,
+        roles: WORKER,
         schema: || {
             object(
                 json!({
@@ -175,7 +175,7 @@ const TOOLS: &[ToolDef] = &[
         name: "done",
         description: "Finish the task: records the report, then closes this session, its pane and its worktree. Refused \
                       while a question to the user is open.",
-        roles: CHILD,
+        roles: WORKER,
         schema: || {
             object(
                 json!({ "summary": { "type": "string", "description": "What was built, test results, pull request links." } }),
@@ -200,7 +200,7 @@ const TOOLS: &[ToolDef] = &[
         description: "Register a long-running process you started (a training run, a render) so a park can stop it \
                       cleanly and a resume can start it again. Policy `checkpoint` waits for a fresh checkpoint file \
                       before stopping, `rerun` stops it at once and runs it again, `finish` is left to run.",
-        roles: CHILD,
+        roles: WORKER,
         schema: || {
             object(
                 json!({
@@ -222,7 +222,7 @@ const TOOLS: &[ToolDef] = &[
         description: "Start a long-running process (a training run, a render) detached from this session and register \
                       it, so it survives your turn and a park can stop it cleanly and a resume can start it again. \
                       Use this instead of a background shell. Policies as for job_register.",
-        roles: CHILD,
+        roles: WORKER,
         schema: || {
             object(
                 json!({
@@ -240,14 +240,14 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "job_status",
-        description: "The registered jobs that are not over: your own for a child, all for the root.",
+        description: "The registered jobs that are not over: your own for a worker, all for the orchestrator.",
         roles: BOTH,
         schema: || object(json!({}), &[]),
     },
     ToolDef {
         name: "job_stop",
         description: "Stop one of your registered jobs now and record it as stopped.",
-        roles: CHILD,
+        roles: WORKER,
         schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
     },
     ToolDef {
@@ -255,7 +255,7 @@ const TOOLS: &[ToolDef] = &[
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
                       panes close. It runs in the background; read `board` for the machine mode, and write your own \
                       recap first.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({
@@ -272,7 +272,7 @@ const TOOLS: &[ToolDef] = &[
         name: "resume",
         description: "Bring parked sessions back after a restart and restart jobs. It runs in the background and \
                       writes a summary file.",
-        roles: ROOT,
+        roles: ORCHESTRATOR,
         schema: || object(json!({}), &[]),
     },
 ];
@@ -299,8 +299,8 @@ impl<'a> Server<'a> {
     #[must_use]
     pub const fn new(store: &'a mut Store, mut env: Env<'a>, identity: Identity) -> Self {
         env.actor = match identity.role {
-            Some(Role::Root) => Actor::Root,
-            Some(Role::Child) => Actor::Child,
+            Some(Role::Orchestrator) => Actor::Orchestrator,
+            Some(Role::Worker) => Actor::Worker,
             None => Actor::User,
         };
         Self {
@@ -455,8 +455,8 @@ impl<'a> Server<'a> {
             }
             "recap" => {
                 let task = match role {
-                    Role::Root => None,
-                    Role::Child => Some(self.own_task(&session)?),
+                    Role::Orchestrator => None,
+                    Role::Worker => Some(self.own_task(&session)?),
                 };
                 self.recap(&session, task.as_ref(), args)
             }
@@ -528,7 +528,7 @@ impl<'a> Server<'a> {
 
     fn job_status(&mut self, session: &str, role: Role) -> Result<String> {
         jobs::refresh(self.store, self.env.actor)?;
-        let task = if role == Role::Child {
+        let task = if role == Role::Worker {
             Some(self.own_task(session)?.id)
         } else {
             None
@@ -579,7 +579,7 @@ impl<'a> Server<'a> {
         let row = self
             .store
             .hook_session(session)?
-            .filter(|row| row.role == Role::Child)
+            .filter(|row| row.role == Role::Worker)
             .and_then(|row| row.task_id)
             .ok_or_else(|| anyhow!("this session has no task in headwork"))?;
         Ok(self.store.task(row)?)
@@ -725,8 +725,11 @@ impl<'a> Server<'a> {
 
     fn rule_add(&mut self, args: &Value) -> Result<String> {
         let scope = text(args, "scope")?;
+        let scope = scope
+            .parse::<Role>()
+            .map_or(scope, |role| role.as_str().to_owned());
         let body = text(args, "text")?;
-        let known = matches!(scope.as_str(), "global" | "root" | "child")
+        let known = matches!(scope.as_str(), "global" | "orchestrator" | "worker")
             || self
                 .env
                 .config
@@ -734,7 +737,9 @@ impl<'a> Server<'a> {
                 .keys()
                 .any(|project| project.as_str() == scope);
         if !known {
-            bail!("unknown scope `{scope}`: use global, root, child or a configured project");
+            bail!(
+                "unknown scope `{scope}`: use global, orchestrator, worker or a configured project"
+            );
         }
         if body.trim().is_empty() {
             bail!("a rule needs text");
@@ -755,7 +760,7 @@ impl<'a> Server<'a> {
     }
 
     fn bump_rules(&mut self) -> Result<i64> {
-        let files = RuleFiles::load(self.env.home, self.env.config, &self.store.active_rules()?)?;
+        let files = rules::current(self.store, self.env.home, self.env.config, self.env.host)?;
         Ok(self.store.observe_rules(files.hash(), self.env.actor)?)
     }
 
@@ -820,7 +825,7 @@ impl<'a> Server<'a> {
 
     fn done(&mut self, session: &str, task: Task, args: &Value) -> Result<String> {
         if task.keep {
-            bail!("a keep task does not finish by itself: the root or the user closes it");
+            bail!("a keep task does not finish by itself: the orchestrator or the user closes it");
         }
         if self.store.open_ask_of(session)?.is_some() {
             bail!("a question to the user is still open: wait for the answer before `done`");

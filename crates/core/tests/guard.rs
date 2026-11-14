@@ -11,9 +11,9 @@ const WORKTREE: &str = "S:/Code/me-sim/me-sim-sand";
 const HOME: &str = "C:/Users/User/.headwork";
 const TEMP: &str = "C:/Users/User/AppData/Local/Temp";
 
-fn root() -> Scope {
+fn orchestrator() -> Scope {
     Scope {
-        role: Some(Role::Root),
+        role: Some(Role::Orchestrator),
         cwd: "S:/Code".to_owned(),
         writable: vec![GuardPath::new(HOME), GuardPath::new(TEMP)],
         scripts: vec![
@@ -26,9 +26,9 @@ fn root() -> Scope {
     }
 }
 
-fn child(branch: &str) -> Scope {
+fn worker(branch: &str) -> Scope {
     Scope {
-        role: Some(Role::Child),
+        role: Some(Role::Worker),
         cwd: WORKTREE.to_owned(),
         writable: vec![GuardPath::new(WORKTREE), GuardPath::new(TEMP)],
         read_only: vec![GuardPath::new("S:/Code/me-studio")],
@@ -62,7 +62,7 @@ const fn bash(command: &str) -> ToolCall<'_> {
 }
 
 #[test]
-fn root_bash_table() {
+fn orchestrator_bash_table() {
     let table: &[(&str, Option<RuleId>)] = &[
         ("git status", None),
         ("git log --oneline -5", None),
@@ -70,23 +70,35 @@ fn root_bash_table() {
         ("gh pr list", None),
         ("headwork board", None),
         ("wmux read-screen --surface s", None),
-        ("git commit -m x", Some(RuleId::RootGit)),
-        ("git -C S:/Code/me-sim/me-sim push", Some(RuleId::RootGit)),
-        ("cd me-sim && git merge feature", Some(RuleId::RootGit)),
-        ("gh pr merge 12 --squash", Some(RuleId::RootGit)),
-        ("gh pr create --fill", Some(RuleId::RootGit)),
-        ("cargo build --release", Some(RuleId::RootBuild)),
-        ("rtk bypass mvnd -B test-compile", Some(RuleId::RootBuild)),
-        ("bash -c 'npm install'", Some(RuleId::RootBuild)),
-        ("scripts/ship.sh -m 'feat: x'", Some(RuleId::RootDelivery)),
+        ("git commit -m x", Some(RuleId::OrchestratorGit)),
+        (
+            "git -C S:/Code/me-sim/me-sim push",
+            Some(RuleId::OrchestratorGit),
+        ),
+        (
+            "cd me-sim && git merge feature",
+            Some(RuleId::OrchestratorGit),
+        ),
+        ("gh pr merge 12 --squash", Some(RuleId::OrchestratorGit)),
+        ("gh pr create --fill", Some(RuleId::OrchestratorGit)),
+        ("cargo build --release", Some(RuleId::OrchestratorBuild)),
+        (
+            "rtk bypass mvnd -B test-compile",
+            Some(RuleId::OrchestratorBuild),
+        ),
+        ("bash -c 'npm install'", Some(RuleId::OrchestratorBuild)),
+        (
+            "scripts/ship.sh -m 'feat: x'",
+            Some(RuleId::OrchestratorDelivery),
+        ),
         (
             "bash S:/Code/me-sim/me-sim/scripts/worktree.sh new x",
-            Some(RuleId::RootDelivery),
+            Some(RuleId::OrchestratorDelivery),
         ),
         ("./scripts/publish-now.sh", Some(RuleId::UserOnly)),
         ("echo 'git commit' > notes.txt", None),
     ];
-    let scope = root();
+    let scope = orchestrator();
     for (command, expected) in table {
         assert_eq!(
             rule(&check_tool(&scope, &bash(command))),
@@ -97,47 +109,47 @@ fn root_bash_table() {
 }
 
 #[test]
-fn child_bash_table() {
+fn worker_bash_table() {
     let table: &[(&str, &str, bool, Option<RuleId>)] = &[
         ("git commit -m x", "sand", false, None),
         (
             "git commit -m x",
             "master",
             false,
-            Some(RuleId::ChildDefaultBranch),
+            Some(RuleId::WorkerDefaultBranch),
         ),
         ("git push", "sand", false, None),
         ("git push -u origin sand", "sand", false, None),
-        ("git push", "main", false, Some(RuleId::ChildDefaultBranch)),
+        ("git push", "main", false, Some(RuleId::WorkerDefaultBranch)),
         (
             "git push origin HEAD:master",
             "sand",
             false,
-            Some(RuleId::ChildDefaultBranch),
+            Some(RuleId::WorkerDefaultBranch),
         ),
         (
             "git push origin sand:refs/heads/main",
             "sand",
             false,
-            Some(RuleId::ChildDefaultBranch),
+            Some(RuleId::WorkerDefaultBranch),
         ),
         (
             "git push --force origin +main",
             "sand",
             false,
-            Some(RuleId::ChildDefaultBranch),
+            Some(RuleId::WorkerDefaultBranch),
         ),
         (
             "git push fork sand",
             "sand",
             false,
-            Some(RuleId::ChildPushRepo),
+            Some(RuleId::WorkerPushRepo),
         ),
         (
             "git push git@github.com:other/repo.git sand",
             "sand",
             false,
-            Some(RuleId::ChildPushRepo),
+            Some(RuleId::WorkerPushRepo),
         ),
         ("git push unknown-remote sand", "sand", false, None),
         (
@@ -150,14 +162,14 @@ fn child_bash_table() {
             "scripts/rl-run.sh car",
             "sand",
             true,
-            Some(RuleId::ChildLongJob),
+            Some(RuleId::WorkerLongJob),
         ),
         ("scripts/rl-run.sh car", "sand", false, None),
         (
             "cargo run --release -p render -- sand",
             "sand",
             true,
-            Some(RuleId::ChildLongJob),
+            Some(RuleId::WorkerLongJob),
         ),
         ("cargo test", "sand", true, None),
         ("scripts/ship.sh -m 'feat: x'", "sand", false, None),
@@ -169,7 +181,7 @@ fn child_bash_table() {
             background: *background,
         };
         assert_eq!(
-            rule(&check_tool(&child(branch), &call)),
+            rule(&check_tool(&worker(branch), &call)),
             *expected,
             "{command} on {branch}"
         );
@@ -179,44 +191,48 @@ fn child_bash_table() {
 #[test]
 fn write_table() {
     let table: &[(Role, &str, Option<RuleId>)] = &[
-        (Role::Root, "C:/Users/User/.headwork/briefs/x.md", None),
         (
-            Role::Root,
+            Role::Orchestrator,
+            "C:/Users/User/.headwork/briefs/x.md",
+            None,
+        ),
+        (
+            Role::Orchestrator,
             "C:\\Users\\User\\AppData\\Local\\Temp\\claude\\pad\\a.txt",
             None,
         ),
         (
-            Role::Root,
+            Role::Orchestrator,
             "S:/Code/me-sim/me-sim/src/lib.rs",
-            Some(RuleId::RootEdit),
+            Some(RuleId::OrchestratorEdit),
         ),
-        (Role::Child, "S:/Code/me-sim/me-sim-sand/src/lib.rs", None),
-        (Role::Child, "src/lib.rs", None),
+        (Role::Worker, "S:/Code/me-sim/me-sim-sand/src/lib.rs", None),
+        (Role::Worker, "src/lib.rs", None),
         (
-            Role::Child,
+            Role::Worker,
             "/s/Code/me-sim/me-sim-sand/../me-sim-sand/a.rs",
             None,
         ),
         (
-            Role::Child,
+            Role::Worker,
             "S:/Code/me-sim/me-sim/src/lib.rs",
-            Some(RuleId::ChildEditOutside),
+            Some(RuleId::WorkerEditOutside),
         ),
         (
-            Role::Child,
+            Role::Worker,
             "../me-sim/src/lib.rs",
-            Some(RuleId::ChildEditOutside),
+            Some(RuleId::WorkerEditOutside),
         ),
         (
-            Role::Child,
+            Role::Worker,
             "S:/Code/me-studio/me-studio/a.rs",
-            Some(RuleId::ChildReadOnly),
+            Some(RuleId::WorkerReadOnly),
         ),
     ];
     for (role, path, expected) in table {
         let scope = match role {
-            Role::Root => root(),
-            Role::Child => child("sand"),
+            Role::Orchestrator => orchestrator(),
+            Role::Worker => worker("sand"),
         };
         let call = ToolCall::Write { tool: "Edit", path };
         assert_eq!(rule(&check_tool(&scope, &call)), *expected, "{role} {path}");
@@ -225,18 +241,18 @@ fn write_table() {
 
 #[test]
 fn skills_and_agents() {
-    let scope = child("sand");
+    let scope = worker("sand");
     let deny = |call: ToolCall<'_>| rule(&check_tool(&scope, &call));
     assert_eq!(
         deny(ToolCall::Skill { name: "ship" }),
-        Some(RuleId::ChildGlobalSkill),
+        Some(RuleId::WorkerGlobalSkill),
         "ship"
     );
     assert_eq!(
         deny(ToolCall::Skill {
             name: "user:contribute"
         }),
-        Some(RuleId::ChildGlobalSkill),
+        Some(RuleId::WorkerGlobalSkill),
         "qualified"
     );
     assert_eq!(
@@ -248,7 +264,7 @@ fn skills_and_agents() {
     );
     let pr_project = Scope {
         own_delivery: false,
-        ..child("sand")
+        ..worker("sand")
     };
     assert_eq!(
         rule(&check_tool(&pr_project, &ToolCall::Skill { name: "ship" })),
@@ -259,13 +275,17 @@ fn skills_and_agents() {
         tool: "Agent",
         model: Some("fable"),
     };
-    assert_eq!(deny(fable), Some(RuleId::ChildFable), "fable");
+    assert_eq!(deny(fable), Some(RuleId::WorkerFable), "fable");
     let allowed = Scope {
         fable_allowed: true,
-        ..child("sand")
+        ..worker("sand")
     };
     assert_eq!(rule(&check_tool(&allowed, &fable)), None, "approved fable");
-    assert_eq!(rule(&check_tool(&root(), &fable)), None, "the root may");
+    assert_eq!(
+        rule(&check_tool(&orchestrator(), &fable)),
+        None,
+        "the orchestrator may"
+    );
     assert_eq!(
         deny(ToolCall::Agent {
             tool: "Agent",
@@ -393,7 +413,7 @@ fn stop(facts: StopFacts<'_>) -> Option<RuleId> {
 #[test]
 fn stop_table() {
     let base = StopFacts {
-        role: Role::Child,
+        role: Role::Worker,
         task: Some(TaskState::Working),
         blocked_in_row: 0,
         asked: false,
@@ -461,22 +481,22 @@ fn stop_table() {
         ),
         (
             StopFacts {
-                role: Role::Root,
+                role: Role::Orchestrator,
                 task: None,
                 last_message: Some("Want me to spawn it?**"),
                 ..base
             },
             Some(RuleId::StopPlainQuestion),
-            "the root asks in text",
+            "the orchestrator asks in text",
         ),
         (
             StopFacts {
-                role: Role::Root,
+                role: Role::Orchestrator,
                 task: None,
                 ..base
             },
             None,
-            "the root ends a turn",
+            "the orchestrator ends a turn",
         ),
         (
             StopFacts {

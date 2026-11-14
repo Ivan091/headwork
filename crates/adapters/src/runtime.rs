@@ -4,7 +4,7 @@ use headwork_core::{Effort, Model, PermissionMode};
 
 /// The Claude session id, read by hooks and the MCP server.
 pub const ENV_SESSION: &str = "HEADWORK_SESSION";
-/// `root` or `child`.
+/// `orchestrator` or `worker`; sessions started before 2026-11-14 hold `root` or `child`, which still parse.
 pub const ENV_ROLE: &str = "HEADWORK_ROLE";
 /// The task's id.
 pub const ENV_TASK: &str = "HEADWORK_TASK";
@@ -34,7 +34,7 @@ pub struct ClaudeLaunch<'a> {
     pub effort: Option<Effort>,
     /// The permission mode.
     pub permission_mode: PermissionMode,
-    /// An agent definition, such as `root`.
+    /// An agent definition, such as `orchestrator`.
     pub agent: Option<&'a str>,
     /// A plugin folder to load for this session only (`--plugin-dir`).
     pub plugin_dir: Option<&'a str>,

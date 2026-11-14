@@ -2,7 +2,7 @@
 //! gone.
 //!
 //! The order is the one today's `close-child.sh` learned: everything else first, the pane (or the workspace it leaves
-//! empty) next, ending the program last, because a child usually closes itself from inside the pane being closed.
+//! empty) next, ending the program last, because a worker usually closes itself from inside the pane being closed.
 //! Under headwork a self-close ends `claude`'s tree, which takes the calling command with it; the launcher sees
 //! `claude` exit with the task `closing`, starts a detached `headwork finish` that outlives the pane, and closes its
 //! own pane as its last act. `finish` waits for the launcher to be gone, removes the worktree, verifies, and marks the
@@ -407,7 +407,7 @@ fn start_finisher(
         Ok((pid, note)) => serde_json::json!({ "finisher": pid, "note": note }),
         Err(error) => serde_json::json!({ "error": error.to_string() }),
     };
-    store.append_event(Actor::Child, Some(id), Some(session), kind, &data)?;
+    store.append_event(Actor::Worker, Some(id), Some(session), kind, &data)?;
     started?;
     Ok(())
 }

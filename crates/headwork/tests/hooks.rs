@@ -20,7 +20,7 @@ use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Role, SessionState, Slug, TaskRequest,
     TaskState,
 };
-use headwork_store::{EventFilter, EventRecord, Store, Task};
+use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
 use serde_json::{Value, json};
 
 const EXE: &str = "S:/bin/headwork.exe";
@@ -205,7 +205,7 @@ fn session_start_marks_the_task_working_and_injects_the_rules() {
     let reply = w.start();
     assert_eq!(reply.exit, 0, "allowed");
     let text = context(&reply);
-    assert!(text.contains("child session `demo-sand`"), "{text}");
+    assert!(text.contains("worker session `demo-sand`"), "{text}");
     assert!(
         text.contains(&format!("`\"{EXE}\" close demo-sand`")),
         "{text}"
@@ -276,10 +276,10 @@ fn shadow_mode_logs_what_it_would_deny_and_allows() {
     w.pre("Edit", &json!({ "file_path": inside }));
     w.pre("Bash", &json!({ "command": "git status" }));
     let rules: Vec<(String, String)> = [
-        "child-default-branch",
-        "child-edit-outside",
+        "worker-default-branch",
+        "worker-edit-outside",
         "user-only",
-        "child-global-skill",
+        "worker-global-skill",
     ]
     .iter()
     .map(|rule| ("would-deny".to_owned(), (*rule).to_owned()))
@@ -296,12 +296,12 @@ fn enforced_denies_exit_2_with_the_reason() {
     assert_eq!(reply.exit, 2, "blocked");
     let reason = reply.stderr.unwrap();
     assert!(
-        reason.starts_with("headwork rule child-default-branch: "),
+        reason.starts_with("headwork rule worker-default-branch: "),
         "{reason}"
     );
     assert_eq!(
         w.denies(),
-        [("deny".to_owned(), "child-default-branch".to_owned())],
+        [("deny".to_owned(), "worker-default-branch".to_owned())],
         "logged as a deny"
     );
     w.git = FixedGit("sand");
@@ -466,23 +466,23 @@ fn unknown_sessions_are_left_alone() {
 #[test]
 fn root_rules_name_the_binary_and_fit_the_hook_limit() {
     let w = world("", false);
-    let files = RuleFiles::load(&w.home, &w.config, &[]).unwrap();
-    let text = files.render(Role::Root, &w.config, Path::new(EXE), None);
+    let files = RuleFiles::load(&w.home, &w.config, &[], "orchestrator").unwrap();
+    let text = files.render(Role::Orchestrator, &w.config, Path::new(EXE), None);
     assert!(text.contains(&format!("\"{EXE}\" spawn")), "{text}");
     assert!(text.len() < 10_000, "{}", text.len());
 }
 
-fn child_identity(w: &World) -> Identity {
+fn worker_identity(w: &World) -> Identity {
     Identity {
         session: Some(w.session.clone()),
-        role: Some(Role::Child),
+        role: Some(Role::Worker),
     }
 }
 
-fn root_identity() -> Identity {
+fn orchestrator_identity() -> Identity {
     Identity {
         session: Some("root-session".to_owned()),
-        role: Some(Role::Root),
+        role: Some(Role::Orchestrator),
     }
 }
 
@@ -531,7 +531,7 @@ fn mcp_initialize_is_golden() {
         "jsonrpc": "2.0", "id": 0, "method": "initialize",
         "params": { "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": { "name": "t", "version": "1" } },
     });
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let reply = w.rpc(identity, &message);
     assert_eq!(
         reply,
@@ -547,13 +547,13 @@ fn mcp_initialize_is_golden() {
     );
     let ping = json!({ "jsonrpc": "2.0", "id": 3, "method": "ping" });
     assert_eq!(
-        w.rpc(root_identity(), &ping),
+        w.rpc(orchestrator_identity(), &ping),
         json!({ "jsonrpc": "2.0", "id": 3, "result": {} }),
         "ping"
     );
     let unknown = json!({ "jsonrpc": "2.0", "id": 4, "method": "nope" });
     assert_eq!(
-        w.rpc(root_identity(), &unknown),
+        w.rpc(orchestrator_identity(), &unknown),
         json!({ "jsonrpc": "2.0", "id": 4, "error": { "code": -32601, "message": "method not found: nope" } }),
         "unknown method"
     );
@@ -562,7 +562,7 @@ fn mcp_initialize_is_golden() {
 #[test]
 fn mcp_notifications_get_no_answer_and_serve_reads_lines() {
     let mut w = world("", false);
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let input = [
         json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string(),
         "not json".to_owned(),
@@ -586,7 +586,7 @@ fn mcp_notifications_get_no_answer_and_serve_reads_lines() {
 #[test]
 fn mcp_tools_follow_the_role() {
     let mut w = world("", false);
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let child = w.tool_names(identity);
     assert_eq!(
         child,
@@ -603,7 +603,7 @@ fn mcp_tools_follow_the_role() {
         ],
         "child"
     );
-    let root = w.tool_names(root_identity());
+    let root = w.tool_names(orchestrator_identity());
     assert_eq!(
         root,
         [
@@ -630,7 +630,7 @@ fn mcp_tools_follow_the_role() {
 fn mcp_report_schema_is_golden() {
     let mut w = world("", false);
     let message = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let reply = w.rpc(identity, &message);
     let report = reply["result"]["tools"]
         .as_array()
@@ -658,19 +658,22 @@ fn mcp_report_schema_is_golden() {
 #[test]
 fn mcp_calls_check_the_role_again() {
     let mut w = world("", false);
-    let child = child_identity(&w);
+    let child = worker_identity(&w);
     let (is_error, text) = w.tool(child.clone(), "spawn", &json!({}));
-    assert!(is_error && text.contains("tool of the root role"), "{text}");
-    let (is_error, text) = w.tool(root_identity(), "report", &json!({}));
     assert!(
-        is_error && text.contains("tool of the child role"),
+        is_error && text.contains("tool of the orchestrator role"),
+        "{text}"
+    );
+    let (is_error, text) = w.tool(orchestrator_identity(), "report", &json!({}));
+    assert!(
+        is_error && text.contains("tool of the worker role"),
         "{text}"
     );
     let (is_error, text) = w.tool(Identity::default(), "board", &json!({}));
     assert!(is_error && text.contains("not managed"), "{text}");
     let forged = Identity {
         session: Some("no-such-session".to_owned()),
-        role: Some(Role::Child),
+        role: Some(Role::Worker),
     };
     let (is_error, text) = w.tool(
         forged,
@@ -686,9 +689,9 @@ fn mcp_calls_check_the_role_again() {
 fn mcp_board_and_inbox_answer_both_roles() {
     let mut w = world("", false);
     w.start();
-    let (is_error, text) = w.tool(root_identity(), "board", &json!({}));
+    let (is_error, text) = w.tool(orchestrator_identity(), "board", &json!({}));
     assert!(!is_error && text.contains("demo-sand"), "{text}");
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(identity, "inbox", &json!({}));
     assert!(!is_error && text.trim() == "[]", "{text}");
 }
@@ -700,7 +703,7 @@ fn a_blocked_or_done_report_lets_the_stop_gate_through() {
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     let stop = json!({ "last_assistant_message": "Waiting on the API key." });
     w.hook(HookEvent::Stop, &stop);
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(
         identity.clone(),
         "report",
@@ -732,7 +735,7 @@ fn a_blocked_or_done_report_lets_the_stop_gate_through() {
 fn a_review_report_with_an_allowed_pull_request_moves_the_task() {
     let mut w = world("", false);
     w.start();
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(
         identity.clone(),
         "report",
@@ -755,7 +758,7 @@ fn a_review_report_with_an_allowed_pull_request_moves_the_task() {
 fn a_review_report_naming_a_foreign_repository_is_refused_by_the_lifecycle() {
     let mut w = world("", false);
     w.start();
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(
         identity,
         "report",
@@ -776,7 +779,7 @@ fn rule_add_reaches_running_sessions_and_rule_retire_takes_it_back() {
         "unchanged"
     );
     let (is_error, text) = w.tool(
-        root_identity(),
+        orchestrator_identity(),
         "rule_add",
         &json!({ "scope": "child", "text": "Always say KUMQUAT." }),
     );
@@ -791,19 +794,19 @@ fn rule_add_reaches_running_sessions_and_rule_retire_takes_it_back() {
         None,
         "pushed once"
     );
-    let (_, listed) = w.tool(root_identity(), "rules", &json!({}));
+    let (_, listed) = w.tool(orchestrator_identity(), "rules", &json!({}));
     assert!(listed.contains("KUMQUAT"), "{listed}");
-    let (is_error, text) = w.tool(root_identity(), "rule_retire", &json!({ "id": 1 }));
+    let (is_error, text) = w.tool(orchestrator_identity(), "rule_retire", &json!({ "id": 1 }));
     assert!(!is_error && text.contains("\"rules_version\": 3"), "{text}");
     let pushed = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
     assert!(
         !pushed.contains("KUMQUAT") && pushed.contains("version 3"),
         "{pushed}"
     );
-    let (is_error, _) = w.tool(root_identity(), "rule_retire", &json!({ "id": 1 }));
+    let (is_error, _) = w.tool(orchestrator_identity(), "rule_retire", &json!({ "id": 1 }));
     assert!(is_error, "already retired");
     let (is_error, text) = w.tool(
-        root_identity(),
+        orchestrator_identity(),
         "rule_add",
         &json!({ "scope": "nowhere", "text": "x" }),
     );
@@ -818,7 +821,7 @@ fn done_refuses_an_open_ask_then_closes_after_the_response() {
         "AskUserQuestion",
         &ask_input(&["Ship (Recommended)", "Drop"], "Ship"),
     );
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(identity.clone(), "done", &json!({}));
     assert!(is_error && text.contains("still open"), "{text}");
     w.post("AskUserQuestion", &json!({ "answers": "Ship" }));
@@ -844,7 +847,7 @@ fn drop_records_the_users_words_and_closes() {
     let mut w = world("", false);
     w.start();
     let (is_error, text) = w.tool(
-        root_identity(),
+        orchestrator_identity(),
         "drop",
         &json!({ "name": "demo-sand", "user_words": "not needed any more" }),
     );
@@ -864,7 +867,7 @@ fn drop_records_the_users_words_and_closes() {
 fn the_root_writes_a_recap_of_its_own_session_and_a_park_keeps_it() {
     let mut w = world("", false);
     let (is_error, text) = w.tool(
-        root_identity(),
+        orchestrator_identity(),
         "recap",
         &json!({ "text": "Watching sand." }),
     );
@@ -877,11 +880,15 @@ fn the_root_writes_a_recap_of_its_own_session_and_a_park_keeps_it() {
     assert_eq!(recap.task_id, None, "no task");
     assert_eq!(recap.park_id, None, "not a park");
     let park = w.store.begin_park(60, Actor::User).unwrap();
-    let (is_error, text) = w.tool(root_identity(), "recap", &json!({ "text": "Parking." }));
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "recap",
+        &json!({ "text": "Parking." }),
+    );
     assert!(!is_error && text.contains("reopens you"), "{text}");
     let parked = w
         .store
-        .root_park_recap(park.id, "root-session")
+        .orchestrator_park_recap(park.id, "root-session")
         .unwrap()
         .unwrap();
     assert_eq!(parked.body, "Parking.", "the park's recap");
@@ -891,7 +898,7 @@ fn the_root_writes_a_recap_of_its_own_session_and_a_park_keeps_it() {
 fn a_child_writes_a_recap_and_registers_a_job_that_blocks_done() {
     let mut w = world("", false);
     w.start();
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let (is_error, text) = w.tool(identity.clone(), "recap", &json!({ "text": "  " }));
     assert!(is_error && text.contains("empty"), "{text}");
     let (is_error, text) = w.tool(
@@ -924,20 +931,20 @@ fn a_child_writes_a_recap_and_registers_a_job_that_blocks_done() {
     assert!(status.contains("train"), "{status}");
     let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "x" }));
     assert!(is_error && text.contains("still runs"), "{text}");
-    let (_, root_status) = w.tool(root_identity(), "job_status", &json!({}));
+    let (_, root_status) = w.tool(orchestrator_identity(), "job_status", &json!({}));
     assert!(
         root_status.contains("train"),
-        "the root sees every job: {root_status}"
+        "the orchestrator sees every job: {root_status}"
     );
     let (is_error, text) = w.tool(identity, "park", &json!({}));
-    assert!(is_error && text.contains("root role"), "{text}");
+    assert!(is_error && text.contains("orchestrator role"), "{text}");
 }
 
 #[test]
 fn job_start_runs_the_command_detached_and_logs_to_the_job_log() {
     let mut w = world("", false);
     w.start();
-    let identity = child_identity(&w);
+    let identity = worker_identity(&w);
     let cwd = w.dir.path().display().to_string();
     let (is_error, text) = w.tool(
         identity,
@@ -961,4 +968,58 @@ fn job_start_runs_the_command_detached_and_logs_to_the_job_log() {
             .contains("git version"),
         "output in the log"
     );
+}
+
+#[test]
+fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
+    let mut w = world("", false);
+    let text = context(&w.start());
+    assert!(text.contains("the session named `orchestrator`"), "{text}");
+    let message = |to: &str| json!({ "to": to, "message": "done" });
+    assert_eq!(
+        w.pre("SendMessage", &message("orchestrator")),
+        HookReply::default(),
+        "the default address goes through unchanged"
+    );
+    let readdressed = |reply: &HookReply| -> Value {
+        let body: Value = serde_json::from_str(reply.stdout.as_deref().unwrap()).unwrap();
+        body["hookSpecificOutput"]["updatedInput"].clone()
+    };
+    let reply = w.pre("SendMessage", &message("root"));
+    assert_eq!(
+        readdressed(&reply),
+        message("orchestrator"),
+        "root is an alias"
+    );
+    w.store
+        .record_session(
+            &NewSession {
+                id: "old-root".to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "root".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    let reply = w.pre("SendMessage", &message("orchestrator"));
+    assert_eq!(
+        readdressed(&reply),
+        message("root"),
+        "an orchestrator still named root gets the new name's messages"
+    );
+    assert_eq!(
+        w.pre("SendMessage", &message("me-sim-x")),
+        HookReply::default(),
+        "messages to workers are left alone"
+    );
+    let moved = w
+        .events()
+        .iter()
+        .filter(|event| event.kind == "readdressed")
+        .count();
+    assert_eq!(moved, 2, "each readdress logged");
 }
