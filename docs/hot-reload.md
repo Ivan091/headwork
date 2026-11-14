@@ -57,12 +57,12 @@ session's end is never recorded (the tick only cleans it up later).
 
 | What | Why | Refresh |
 |---|---|---|
-| Sessions launched before this change ("pinned") | their MCP server is the old, non-relay code | in that session: `/mcp`, choose `headwork`, Reconnect; or park and resume. Their launcher records the exit with its own code, which works while the store schema stays at 5 |
+| Sessions launched before this change ("pinned") | their MCP server is the old, non-relay code | in that session: `/mcp`, choose `headwork`, Reconnect; or park and resume. Their launcher records the exit with its own code, which a newer schema refuses (see the migration row) |
 | The relay process itself | Claude holds it for the session | nothing needed: it only passes lines; the server behind it is replaced |
 | A running launcher's start-up logic (how it started `claude`) | already done | nothing; its exit is handed to the installed build |
 | Plugin files (`hooks.json`, `.mcp.json`, `plugin.json`) | Claude Code reads them at session start | a new session (park and resume restarts every session) |
 | Tool descriptions and schemas | Claude caches them | the relay's `list_changed` makes Claude list them again; if a client ignored it, `/mcp` Reconnect |
-| A store migration | old processes that open the store anew would be refused | after this change only pinned launchers still open it with old code; ship a migration only when `headwork doctor` lists no pinned sessions |
+| A store migration (0006, task effort, arrived with this install) | a pinned launcher reopens the store with old code when `claude` exits, is refused, and records nothing | a close from outside (root, `headwork close`) waits for the launcher, then finishes the close itself; a self-close of a pinned session also starts a backup finisher from the new build, and every finisher records the session end its launcher missed. A session that simply exits stays `working` until `headwork close <name>` or the tick |
 
 ## Using it
 

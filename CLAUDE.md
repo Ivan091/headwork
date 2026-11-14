@@ -120,8 +120,8 @@ target/release/headwork.exe install    # renames the running copy aside, puts th
 Hooks, the CLI and finishers use the new build from their next call. Sessions launched by a hot-reload build switch
 their MCP server at the next tool call and hand their exit to the new build. Sessions launched before hot reload
 (`headwork doctor`, check `builds`, "pinned") keep their old MCP server until `/mcp` → headwork → Reconnect in that
-session, or park and resume. Plugin files (`hooks.json`, `.mcp.json`) need a new session. Do not ship a store
-migration while doctor lists pinned sessions.
+session, or park and resume. Plugin files (`hooks.json`, `.mcp.json`) need a new session. A pinned launcher cannot
+record its exit once a newer migration ran; `headwork close <name>` finishes such a session (docs/hot-reload.md).
 
 **Undo, step 1 (spawn wrappers):** `echo legacy > ~/.claude/skills/orchestrate/engine`. Every script then runs its
 `*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Children already in the store keep closing through

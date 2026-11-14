@@ -287,6 +287,12 @@ and the reason.
   inside `exited` is not retried by the launcher, so a close is never handed off twice.
 - 2026-11-14 The build record is an event (`build`, with the program path and stamp), not a column: a migration would
   make every launcher running the previous build fail to record its exit, which is the very thing to avoid while
-  me-sim-car-training runs. Shipping a migration waits until doctor lists no pinned sessions.
+  me-sim-car-training runs.
 - 2026-11-14 `headwork install` defaults to `~/.local/bin` and refuses to install the installed copy over itself. It
   opens the store only to report the sessions, so it also runs the new build's migrations, like any other command.
+- 2026-11-14 Migration 0006 (task effort) merged before hot reload shipped, so the first install of a hot-reload build
+  also moves the store to schema 6 while every running launcher is pinned. Rather than holding the install back, a
+  self-close of a session without a build record starts a backup `finish` from the new build before it ends `claude`
+  (the old launcher is refused by the schema and hands nothing off), and `finish` records a session end the launcher
+  missed. A close from outside already finished by itself once the launcher was gone. A pinned session that exits on
+  its own stays `working` until `headwork close` or the tick; nothing is lost.
