@@ -51,6 +51,7 @@ cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
+cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, effort) of live sessions
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
@@ -87,6 +88,13 @@ its pane. The workspace closes with its last child. `mode = "tabs"` keeps every 
 never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that it is a tab. Why it
 works this way is in `docs/decisions.md` (2026-11-14, split panes). Run the real check with
 `cargo test -p headwork --test live -- --ignored`; it opens and closes a `headwork-test` workspace.
+
+### Pane titles
+
+Each child's pane or tab is titled `<task name> - <model> <effort>`, from `[layout] title` (`{name}`, `{model}`, `{effort}`), set
+when the pane opens, re-asserted by every tick, and by `headwork retitle [<name>]` on demand. The effort is the stored
+one, else the level Claude's settings give the model (`ops/effort.rs`), else `medium`; spawn stores it. `?` shows only when
+it cannot be told. See `docs/decisions.md` (2026-11-14, pane titles).
 
 ### Restart: park, then resume
 

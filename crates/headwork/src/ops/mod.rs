@@ -2,6 +2,7 @@
 
 pub mod close;
 pub mod doctor;
+pub mod effort;
 pub mod hook;
 pub mod import;
 pub mod install;
@@ -18,6 +19,7 @@ pub mod rules;
 pub mod shadow;
 pub mod spawn;
 pub mod tick;
+pub mod title;
 
 use std::path::{Path, PathBuf};
 

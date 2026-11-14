@@ -432,21 +432,43 @@ pub enum LayoutMode {
 }
 
 /// `[layout]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LayoutConfig {
     /// Panes or tabs.
     pub mode: LayoutMode,
     /// The most panes headwork splits a workspace into before children stack as tabs.
     pub panes: NonZeroU32,
+    /// The title of a child's pane or tab. `{name}` is `<project>-<slug>`, `{model}` the model, `{effort}` the effort
+    /// word, or `?` when it is unknown.
+    pub title: String,
 }
+
+/// The default `[layout] title`.
+pub const DEFAULT_TITLE: &str = "{name} - {model} {effort}";
 
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             mode: LayoutMode::Panes,
             panes: NonZeroU32::new(4).unwrap_or(NonZeroU32::MIN),
+            title: DEFAULT_TITLE.to_owned(),
         }
+    }
+}
+
+impl LayoutConfig {
+    /// The title of a child's pane or tab: the template with `{name}`, `{model}` and `{effort}` filled in.
+    #[must_use]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the placeholders are the config template's own, not format arguments"
+    )]
+    pub fn title_for(&self, name: &str, model: &str, effort: Option<&str>) -> String {
+        self.title
+            .replace("{name}", name)
+            .replace("{model}", model)
+            .replace("{effort}", effort.unwrap_or("?"))
     }
 }
 

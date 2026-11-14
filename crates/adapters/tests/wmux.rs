@@ -260,3 +260,16 @@ fn keys_blocked_states_and_closes_name_the_surface() {
         "commands"
     );
 }
+
+#[test]
+fn rename_surface_sets_the_custom_title() {
+    let recorder = Recorder::answering(&[""]);
+    Wmux::new(&recorder)
+        .rename_surface(&SurfaceId("surf-1".to_owned()), "me-sim-cars - opus high")
+        .unwrap();
+    assert_eq!(
+        recorder.calls.borrow().first().unwrap(),
+        "rename-surface surf-1 me-sim-cars - opus high",
+        "command"
+    );
+}

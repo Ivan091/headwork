@@ -362,6 +362,13 @@ pub trait TerminalHost: fmt::Debug {
     /// Returns the host's failure.
     fn send_key(&self, surface: &SurfaceId, key: Key) -> Result<(), HostError>;
 
+    /// Sets the title a surface shows as its tab and in the sidebar. The program running in it cannot overwrite it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn rename_surface(&self, surface: &SurfaceId, title: &str) -> Result<(), HostError>;
+
     /// Closes a surface.
     ///
     /// # Errors

@@ -16,7 +16,7 @@ use headwork_core::layout::{self, Cell, Placement};
 use headwork_core::{LayoutMode, PlaceKind};
 use headwork_store::{Place, Store, Task};
 
-use super::{Env, label};
+use super::{Env, label, title};
 
 /// The host label of a free pane's placeholder. It has no `/`, so the tick and import, which read `<project>/<slug>`
 /// labels, never take it for a child.
@@ -59,6 +59,7 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
         opening.argv,
         &target,
     )?;
+    title::set(env, opening.task, &started.surface).ok();
     let pane = match &target {
         Target::Pane { pane, .. } => Some(pane.as_str()),
         Target::Tab => None,

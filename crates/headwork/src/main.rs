@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use headwork::home::Home;
 use headwork::ops::close::{CloseReport, close, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
+use headwork::ops::effort;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
@@ -139,6 +140,11 @@ enum Command {
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
+    },
+    /// Set the title of every live child pane (or one task's) from its model and effort.
+    Retitle {
+        /// A task, as `<project>-<slug>` or `<project>/<slug>`; every live task when absent.
+        name: Option<String>,
     },
     /// Show a task's newest recap.
     Recap {
@@ -436,6 +442,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Close { .. }
         | Command::Tick { .. }
         | Command::Jobs { .. }
+        | Command::Retitle { .. }
         | Command::Recap { .. }
         | Command::ShadowReport { .. }) => other,
     };
@@ -452,14 +459,15 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         exe: &exe,
     };
     match command {
-        Command::Board { all, json } => board(&store, &config, all, json, out),
-        Command::Log { name, limit, json } => log(&store, name, limit, json, out),
+        Command::Board { all, json } => board(&store, &ctx, all, json, out),
+        Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
         Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
         Command::Recap { name } => recap_command(&store, &name, out),
+        Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
         Command::ShadowReport { json } => shadow_command(&store, &ctx, json, out),
         Command::Launch { .. }
         | Command::Idle { .. }
@@ -559,6 +567,37 @@ fn jobs_command(store: &mut Store, json: bool, out: &mut impl Write) -> Result<E
     Ok(ExitCode::SUCCESS)
 }
 
+fn retitle_command(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    name: Option<&str>,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let only = name
+        .map(|name| {
+            store
+                .find_task(name)?
+                .with_context(|| format!("no task named `{name}`"))
+        })
+        .transpose()?;
+    let (done, failed) =
+        ctx.with_env(|env| headwork::ops::title::retitle(store, env, only.as_ref()))?;
+    for item in &done {
+        writeln!(out, "{} -> {}", item.surface, item.title)?;
+    }
+    for line in &failed {
+        writeln!(out, "failed: {line}")?;
+    }
+    if done.is_empty() && failed.is_empty() {
+        writeln!(out, "no live session to retitle")?;
+    }
+    Ok(if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 fn recap_command(store: &Store, name: &str, out: &mut impl Write) -> Result<ExitCode> {
     let task = store
         .find_task(name)?
@@ -606,22 +645,26 @@ fn json_out(out: &mut impl Write, value: &impl serde::Serialize) -> Result<()> {
 
 fn board(
     store: &Store,
-    config: &Config,
+    ctx: &Ctx<'_>,
     all: bool,
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    let board = store.board(all)?;
+    let mut board = store.board(all)?;
+    for entry in &mut board.tasks {
+        entry.task.effort = Some(effort::of_task(ctx.home, ctx.config, &entry.task));
+    }
     if json {
         json_out(out, &board)?;
     } else {
-        out.write_all(render::board(&board, config.machine.max_children.get()).as_bytes())?;
+        out.write_all(render::board(&board, ctx.config.machine.max_children.get()).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
 fn log(
     store: &Store,
+    ctx: &Ctx<'_>,
     name: Option<String>,
     limit: u32,
     json: bool,
@@ -634,7 +677,21 @@ fn log(
         },
         None => None,
     };
-    let events = store.events(EventFilter { task, limit })?;
+    let mut events = store.events(EventFilter { task, limit })?;
+    for event in &mut events {
+        if event.kind != "task-created"
+            || !event
+                .data
+                .get("effort")
+                .is_some_and(serde_json::Value::is_null)
+        {
+            continue;
+        }
+        if let Some(id) = event.task_id {
+            let found = store.task(id)?;
+            event.data["effort"] = serde_json::json!(effort::of_task(ctx.home, ctx.config, &found));
+        }
+    }
     if json {
         json_out(out, &events)?;
     } else {

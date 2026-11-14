@@ -70,13 +70,11 @@ pub struct Task {
 }
 
 impl Task {
-    /// The effort as shown next to the model: its word, or `default effort` when the machine default applies.
+    /// The effort as shown next to the model: its word, or `?` when none is stored.
     #[must_use]
     pub fn effort_label(&self) -> String {
-        self.effort.map_or_else(
-            || "default effort".to_owned(),
-            |effort| format!("{effort} effort"),
-        )
+        self.effort
+            .map_or_else(|| "?".to_owned(), |effort| effort.to_string())
     }
 
     /// The parts the lifecycle reads.

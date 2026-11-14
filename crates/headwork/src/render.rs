@@ -111,7 +111,7 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize) {
     let name = t.name.to_string();
     let _ = write!(
         text,
-        "  #{:<3} {name:<width$}  {:<11} {:<6} {:<14} {}",
+        "  #{:<3} {name:<width$}  {:<11} {:<6} {:<6} {}",
         t.id.0,
         t.state.as_str(),
         t.model,
@@ -209,18 +209,7 @@ fn describe(event: &EventRecord) -> String {
             field("state"),
             field("reason")
         ),
-        "task-created" => format!(
-            "model {}, {}",
-            field("model"),
-            event
-                .data
-                .get("effort")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(
-                    || "default effort".to_owned(),
-                    |effort| format!("{effort} effort")
-                )
-        ),
+        "task-created" => format!("model {}, effort {}", field("model"), field("effort")),
         _ => event.data.to_string(),
     }
 }
@@ -517,7 +506,7 @@ mod tests {
         };
         store.create_task(&config, &new, Actor::Root).unwrap();
         let text = super::board(&store.board(false).unwrap(), 10);
-        assert!(text.contains("opus   xhigh effort"), "{text}");
+        assert!(text.contains("opus   xhigh  "), "{text}");
         let log = super::events(
             &store
                 .events(EventFilter {
@@ -526,7 +515,7 @@ mod tests {
                 })
                 .unwrap(),
         );
-        assert!(log.contains("model opus, xhigh effort"), "{log}");
+        assert!(log.contains("model opus, effort xhigh"), "{log}");
     }
 
     #[test]
@@ -593,7 +582,7 @@ mod tests {
         );
         assert!(text.contains("me-sim (S:/Code/me-sim/me-sim)"), "{text}");
         assert!(
-            text.contains("#1   me-sim-sand-cascade  queued      sonnet default effort scene"),
+            text.contains("#1   me-sim-sand-cascade  queued      sonnet ?      scene"),
             "{text}"
         );
         assert!(

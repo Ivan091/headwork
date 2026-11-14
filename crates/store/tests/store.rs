@@ -839,16 +839,16 @@ fn jobs_keep_their_command_line_and_move_through_states() {
 }
 
 #[test]
-fn a_task_keeps_its_effort_and_none_means_the_default() {
+fn a_task_keeps_its_effort_and_none_shows_a_question_mark() {
     let (mut store, config) = store();
     let plain = create(&mut store, &config, "me-sim", "plain");
     assert_eq!(plain.effort, None, "no effort by default");
-    assert_eq!(plain.effort_label(), "default effort", "label");
+    assert_eq!(plain.effort_label(), "?", "label");
     let mut new = request("me-sim", "deep", "scene");
     new.request.effort = Some(Effort::High);
     let deep = store.create_task(&config, &new, Actor::Root).unwrap();
     assert_eq!(deep.effort, Some(Effort::High), "stored");
-    assert_eq!(deep.effort_label(), "high effort", "label");
+    assert_eq!(deep.effort_label(), "high", "label");
     let loaded = store.find_task("me-sim-deep").unwrap().unwrap();
     assert_eq!(loaded.effort, Some(Effort::High), "reloaded");
     let events = store

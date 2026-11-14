@@ -280,6 +280,28 @@ impl Store {
         Ok(rows)
     }
 
+    /// The tasks whose sessions have not ended and sit in a host surface, with that surface, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_task_surfaces(&self) -> Result<Vec<(TaskId, String)>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT task_id, host_surface FROM sessions
+             WHERE state IN ('starting', 'live') AND host_surface IS NOT NULL AND task_id IS NOT NULL
+             ORDER BY started_at",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, surface)| (TaskId(id), surface))
+            .collect())
+    }
+
     /// Records that the launcher started `claude`: both process ids, and how the launcher holds the tree.
     ///
     /// # Errors
