@@ -210,6 +210,45 @@ fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
 }
 
 #[test]
+fn an_empty_folder_git_no_longer_counts_as_a_worktree_closes() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "stale", false, false);
+    let worktree = w.dir.path().join("demo-stale");
+    git(
+        &w.main,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
+    std::fs::create_dir(&worktree).unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(!worktree.exists(), "the empty folder is deleted");
+}
+
+#[test]
+fn a_stray_folder_with_files_is_refused_and_kept() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "stray", false, false);
+    let worktree = w.dir.path().join("demo-stray");
+    git(
+        &w.main,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
+    std::fs::create_dir(&worktree).unwrap();
+    std::fs::write(worktree.join("notes.txt"), "mine").unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "{report:?}");
+    assert!(worktree.join("notes.txt").exists(), "never deleted");
+    assert!(
+        event_kinds(&w.store, &task)
+            .iter()
+            .any(|k| k == "worktree-refused"),
+        "logged"
+    );
+}
+
+#[test]
 fn closing_a_queued_task_closes_it_at_once_and_the_queue_moves() {
     let mut w = world(1);
     let (running, _) = spawn_task(&mut w, "one", false, false);

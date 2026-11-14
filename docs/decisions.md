@@ -355,3 +355,6 @@ and the reason.
   resumed root starts the same way, with the default permission mode. Model and mode are not stored per session.
 - 2026-11-14 `root.sh` starts the root with `headwork root` (step 3), passing its arguments through; the `engine`
   switch (`echo legacy > ~/.claude/skills/orchestrate/engine`, or `ORCH_ENGINE=legacy`) keeps the old unmanaged start.
+- 2026-11-14 Closing checks `git worktree prune` and `git worktree list --porcelain` before the remove command. A task
+  folder git does not list is deleted when empty and recorded `removed`; with files it is left, and the close is refused
+  with a `worktree-refused` event naming it, so the user decides. The check applies to custom remove commands too.

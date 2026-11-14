@@ -269,6 +269,9 @@ pub(super) fn remove_worktree(
     };
     let command = &env.project(&task)?.worktree_remove;
     let worktrees = env.worktrees(&task)?;
+    if !worktrees.is_registered(Path::new(&worktree.path))? {
+        return remove_stray_folder(store, env, id, &worktree.path);
+    }
     let result = if force {
         worktrees.remove_forced(command, &vars)
     } else {
@@ -302,6 +305,34 @@ pub(super) fn remove_worktree(
             Ok(WorktreeEnd::Present)
         }
     }
+}
+
+/// Ends a task's folder that git no longer counts as a worktree: an empty one is deleted and recorded `removed`, one
+/// with files is left for the user.
+fn remove_stray_folder(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    path: &str,
+) -> Result<WorktreeEnd> {
+    let folder = Path::new(path);
+    let empty = std::fs::read_dir(folder)?.next().is_none();
+    if empty {
+        std::fs::remove_dir(folder)?;
+        store.set_worktree_state(id, "removed", env.actor)?;
+        return Ok(WorktreeEnd::Removed);
+    }
+    let error = format!(
+        "{path} is not a worktree of the repository and still holds files; remove it by hand"
+    );
+    store.append_event(
+        env.actor,
+        Some(id),
+        None,
+        "worktree-refused",
+        &serde_json::json!({ "error": error }),
+    )?;
+    Ok(WorktreeEnd::Present)
 }
 
 /// Finishes every `closing` task whose launcher is gone, such as one that closed itself.

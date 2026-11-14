@@ -112,6 +112,19 @@ impl Worktrees {
         Ok(parse_porcelain(&output))
     }
 
+    /// Whether git counts `path` as a worktree of the main checkout, after forgetting the ones whose folder is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn is_registered(&self, path: &Path) -> Result<bool, WorktreeError> {
+        self.git(&["worktree", "prune"])?;
+        Ok(self
+            .list()?
+            .iter()
+            .any(|(listed, _)| same_path(listed, path)))
+    }
+
     fn git(&self, args: &[&str]) -> Result<(), WorktreeError> {
         let shown = format!("git {}", args.join(" "));
         self.output(Command::new("git").args(args), &shown)
