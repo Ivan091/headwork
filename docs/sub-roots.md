@@ -39,8 +39,8 @@ queue tasks through the CLI**, unguarded and recorded as the user (see Q1).
 
 There is no parent link. `tasks` has `depends_on` (one task, "start after it merged") and nothing else
 (`crates/store/migrations/0001_initial.sql`). The board is flat. Adding `parent_id` is cheap: `ALTER TABLE tasks ADD
-COLUMN parent_id INTEGER REFERENCES tasks(id)` in a new migration 0006, and an indented `board` render. A new session
-role is not cheap: `sessions.role` has `CHECK (role IN ('root', 'child'))` (`0001_initial.sql:55`), and SQLite cannot
+COLUMN parent_id INTEGER REFERENCES tasks(id)` in the next migration (0007; 0006 added `tasks.effort`), and an
+indented `board` render. A new session role is not cheap: `sessions.role` has `CHECK (role IN ('root', 'child'))` (`0001_initial.sql:55`), and SQLite cannot
 alter a CHECK, so a `subroot` role means rebuilding `sessions`. A flag on the task (`can_spawn`) with the session role
 left `child` avoids that.
 
@@ -119,7 +119,7 @@ unchanged. Its limits:
 
 ### Smallest change set, if sub-roots are built later
 
-1. Migration 0006: `tasks.parent_id`, `tasks.can_spawn` (no session role change).
+1. Migration 0007: `tasks.parent_id`, `tasks.can_spawn` (no session role change).
 2. MCP: `spawn`, `close`, `drop` open to a child whose task has `can_spawn`, limited to its own project and its own
    descendants; `spawn` sets `parent_id`. `board`/`inbox` scoped to descendants for such a caller.
 3. Guard: a coordinator scope (writes only in the home's task folder and temp, no git delivery or builds) and a task
