@@ -17,7 +17,7 @@ fn argv_for_a_new_child() {
         resume: false,
         name: "me-sim-sand",
         remote_control: true,
-        model: Model::Haiku,
+        model: Some(Model::Haiku),
         effort: None,
         permission_mode: PermissionMode::Auto,
         agent: None,
@@ -52,7 +52,7 @@ fn effort_becomes_the_effort_flag() {
         resume: false,
         name: "x",
         remote_control: false,
-        model: Model::Sonnet,
+        model: Some(Model::Sonnet),
         effort: Some(Effort::Xhigh),
         permission_mode: PermissionMode::Auto,
         agent: None,
@@ -75,7 +75,7 @@ fn argv_for_a_resumed_root_without_remote_control() {
         resume: true,
         name: "root",
         remote_control: false,
-        model: Model::Opus,
+        model: Some(Model::Opus),
         effort: Some(Effort::High),
         permission_mode: PermissionMode::Default,
         agent: Some("root"),
@@ -101,6 +101,27 @@ fn argv_for_a_resumed_root_without_remote_control() {
         argv.iter().rev().nth(1).map(String::as_str),
         Some("--"),
         "the prompt stays last"
+    );
+}
+
+#[test]
+fn argv_without_a_model_leaves_it_to_claude() {
+    let launch = ClaudeLaunch {
+        session_id: "0f8e",
+        resume: false,
+        name: "root",
+        remote_control: true,
+        model: None,
+        effort: None,
+        permission_mode: PermissionMode::Default,
+        agent: Some("root"),
+        plugin_dir: None,
+        prompt: "Hi.",
+    };
+    assert!(
+        !launch.argv().iter().any(|a| a == "--model"),
+        "{:?}",
+        launch.argv()
     );
 }
 

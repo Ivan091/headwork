@@ -275,10 +275,24 @@ pub(crate) fn parked(report: &ParkReport) -> String {
             let _ = writeln!(text, "    problem: {problem}");
         }
     }
+    if let Some(root) = &report.root {
+        let recap = match root.recap {
+            RecapSource::Session => "own recap",
+            RecapSource::Mechanical => "mechanical recap",
+        };
+        let _ = writeln!(
+            text,
+            "  root {} left running ({recap}); the resume brings it back",
+            root.session
+        );
+        if let Some(problem) = &root.problem {
+            let _ = writeln!(text, "    note: {problem}");
+        }
+    }
     for job in &report.jobs {
         let _ = writeln!(text, "  job {}: {}", job.label, job.outcome);
     }
-    if report.sessions.is_empty() && report.jobs.is_empty() {
+    if report.sessions.is_empty() && report.jobs.is_empty() && report.root.is_none() {
         text.push_str("  nothing was running\n");
     }
     text.push_str(if report.safe_to_restart {
@@ -297,15 +311,11 @@ pub(crate) fn resumed(report: &ResumeReport) -> String {
         .park
         .map_or_else(|| "none (crash)".to_owned(), |id| id.to_string());
     let _ = writeln!(text, "resume of park {park}");
+    if let Some(root) = &report.root {
+        let _ = writeln!(text, "  root: {}", outcome_line(root));
+    }
     for task in &report.tasks {
-        let line = match &task.outcome {
-            TaskOutcome::Resumed { surface } => format!("resumed in {surface}"),
-            TaskOutcome::Fresh { surface, reason } => {
-                format!("started fresh in {surface} ({reason})")
-            }
-            TaskOutcome::Skipped { reason } => format!("skipped: {reason}"),
-            TaskOutcome::Failed { error } => format!("FAILED: {error}"),
-        };
+        let line = outcome_line(&task.outcome);
         let _ = writeln!(text, "  {}: {line}", task.name);
         if let Some(question) = &task.open_question {
             let _ = writeln!(text, "    asks again: {question}");
@@ -319,6 +329,17 @@ pub(crate) fn resumed(report: &ResumeReport) -> String {
     }
     let _ = writeln!(text, "summary for the root: {}", report.summary);
     text
+}
+
+fn outcome_line(outcome: &TaskOutcome) -> String {
+    match outcome {
+        TaskOutcome::Resumed { surface } => format!("resumed in {surface}"),
+        TaskOutcome::Fresh { surface, reason } => {
+            format!("started fresh in {surface} ({reason})")
+        }
+        TaskOutcome::Skipped { reason } => format!("skipped: {reason}"),
+        TaskOutcome::Failed { error } => format!("FAILED: {error}"),
+    }
 }
 
 /// The registered jobs.

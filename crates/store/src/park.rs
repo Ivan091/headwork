@@ -796,3 +796,121 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 }
+
+impl Store {
+    /// Records the folder a session runs in, so a resume can start it there again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_session_dir(&mut self, id: &str, dir: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE sessions SET dir = ?1 WHERE id = ?2",
+            params![dir, id],
+        )?;
+        Ok(())
+    }
+
+    /// The folder a session runs in, when it was recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn session_dir(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT dir FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Records the root session a park found running; the resume after it brings that session back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_park_root(
+        &mut self,
+        park: i64,
+        session: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE parks SET root_session = ?1 WHERE id = ?2",
+            params![session, park],
+        )?;
+        insert_event(
+            &tx,
+            actor,
+            None,
+            Some(session),
+            "park-root",
+            &serde_json::json!({ "park": park }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The root session a park found running.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn park_root(&self, park: i64) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT root_session FROM parks WHERE id = ?1",
+                params![park],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// The newest recap a session without a task (the root) left for a park, of any kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn root_park_recap(
+        &self,
+        park: i64,
+        session: &str,
+    ) -> Result<Option<RecapRow>, StoreError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {RECAP_COLUMNS} FROM recaps WHERE park_id = ?1 AND session_id = ?2 AND task_id IS NULL
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                params![park, session],
+                read_recap,
+            )
+            .optional()?
+            .map(into_recap)
+            .transpose()
+    }
+
+    /// The newest recap of a session, of any kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn latest_session_recap(&self, session: &str) -> Result<Option<RecapRow>, StoreError> {
+        self.conn
+            .query_row(
+                &format!("SELECT {RECAP_COLUMNS} FROM recaps WHERE session_id = ?1 ORDER BY id DESC LIMIT 1"),
+                params![session],
+                read_recap,
+            )
+            .optional()?
+            .map(into_recap)
+            .transpose()
+    }
+}

@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN dir TEXT;
+ALTER TABLE parks ADD COLUMN root_session TEXT;

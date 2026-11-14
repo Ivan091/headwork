@@ -336,3 +336,22 @@ and the reason.
   `CLAUDE_CODE_EFFORT_LEVEL` variable and `/effort` picks are session-only and ignored. Tasks stored with no effort are
   resolved the same way when shown (`board`, `log`, `--json`, titles); the store is not rewritten. `?` shows only when a
   level cannot be told. The built-in level comes from the docs, not from the claude binary.
+- 2026-11-14 The root parks and resumes. Park 1 (2026-11-14 13:19) showed the cause: the root was a store session
+  (`headwork root` recorded it at 09:52), but park and resume only walk tasks, and the root has none, so it was neither
+  asked for a recap nor reopened. Now park records the live root on the park (migration 0008: `parks.root_session`),
+  sends it `ROOT_PARK_PROMPT` and waits for its `recap` (the tool is now the root's too; a root recap has no task and is
+  found by session) within the same deadline, else writes a mechanical one. The root is **not** stopped: it may be the
+  session that started the park, and it tells the user when it is safe to restart; the restart ends it. Resume brings
+  back the root the park recorded, or, without a park, a root the store counts as running whose processes are gone
+  (a crash); it is left alone while any root still runs. It comes back at logon too, whatever `resume_after_crash`
+  says, because the root is the session that asks about the rest. Resume closes the pane wmux restored for it, then
+  opens `headwork root --session <id> [--resume] --summary <file>` in a workspace titled `root`, in the folder the root
+  ran in (migration 0008: `sessions.dir`, recorded by every `headwork root`; a root started before it has none and is
+  reported as failed, to be started by hand). The same conversation continues when Claude still has its transcript;
+  otherwise a new root session starts from `HANDOFF.md` and the summary, whose `## Root` part holds its newest recap.
+  The summary is written before the root's pane opens, so it lists the tasks and jobs but not the root's own outcome;
+  `headwork resume` prints that. `headwork root` without `--model` no longer passes the machine default (sonnet) but
+  leaves the model to claude, so the root keeps the user's settings model (opus) as `root.sh` always gave it; a
+  resumed root starts the same way, with the default permission mode. Model and mode are not stored per session.
+- 2026-11-14 `root.sh` starts the root with `headwork root` (step 3), passing its arguments through; the `engine`
+  switch (`echo legacy > ~/.claude/skills/orchestrate/engine`, or `ORCH_ENGINE=legacy`) keeps the old unmanaged start.

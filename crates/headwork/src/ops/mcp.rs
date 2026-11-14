@@ -187,7 +187,7 @@ const TOOLS: &[ToolDef] = &[
         name: "recap",
         description: "Write down what you were doing, your next step and what is running. A park asks for it before a \
                       restart; also write one when you stop for the day. It is handed back to you when you resume.",
-        roles: CHILD,
+        roles: BOTH,
         schema: || {
             object(
                 json!({ "text": { "type": "string", "description": "What you were doing, the next step, what runs." } }),
@@ -454,8 +454,11 @@ impl<'a> Server<'a> {
                 self.done(&session, task, args)
             }
             "recap" => {
-                let task = self.own_task(&session)?;
-                self.recap(&session, &task, args)
+                let task = match role {
+                    Role::Root => None,
+                    Role::Child => Some(self.own_task(&session)?),
+                };
+                self.recap(&session, task.as_ref(), args)
             }
             "job_register" => {
                 let task = self.own_task(&session)?;
@@ -483,14 +486,14 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn recap(&mut self, session: &str, task: &Task, args: &Value) -> Result<String> {
+    fn recap(&mut self, session: &str, task: Option<&Task>, args: &Value) -> Result<String> {
         let body = text(args, "text")?;
         if body.trim().is_empty() {
             bail!("`text` is empty: write what you were doing, the next step and what runs");
         }
         let id = self.store.add_recap(
             &NewRecap {
-                task_id: Some(task.id),
+                task_id: task.map(|task| task.id),
                 session_id: Some(session),
                 kind: RecapKind::Session,
                 body: &body,
@@ -498,10 +501,17 @@ impl<'a> Server<'a> {
             self.env.actor,
         )?;
         let parking = self.store.machine_mode()? == MachineMode::Parking;
+        let next = match (parking, task) {
+            (false, _) => "recorded",
+            (true, Some(_)) => "stop now: end your turn, headwork closes this pane",
+            (true, None) => {
+                "recorded: tell the user when the park reports safe to restart; headwork reopens you after the restart"
+            }
+        };
         to_text(&json!({
             "recap": id,
             "parking": parking,
-            "next": if parking { "stop now: end your turn, headwork closes this pane" } else { "recorded" },
+            "next": next,
         }))
     }
 

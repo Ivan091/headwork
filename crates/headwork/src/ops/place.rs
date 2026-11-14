@@ -138,7 +138,7 @@ fn keep_pane(env: &Env<'_>, workspace: &WorkspaceId, surface: &SurfaceId) -> Res
 }
 
 /// Today's tabs: a fresh workspace's shell is replaced, else the host picks the pane.
-fn tab(host: &dyn TerminalHost, workspace: &WorkspaceId, fresh: bool) -> Result<Target> {
+pub(super) fn tab(host: &dyn TerminalHost, workspace: &WorkspaceId, fresh: bool) -> Result<Target> {
     if !fresh {
         return Ok(Target::Tab);
     }

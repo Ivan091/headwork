@@ -92,7 +92,7 @@ pub fn claude_command(
         remote_control: project
             .remote_control
             .unwrap_or(config.machine.remote_control),
-        model: task.model,
+        model: Some(task.model),
         effort: task.effort,
         permission_mode: task.permission_mode,
         agent: None,
@@ -328,56 +328,115 @@ fn after_exit(store: &mut Store, id: TaskId) -> Result<()> {
     }
 }
 
+/// Where the root session comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootOrigin {
+    /// A new session, recorded now.
+    New,
+    /// A session a resume recorded or brought back.
+    Back {
+        /// Its id.
+        session: String,
+        /// Continue its conversation; otherwise it is a new conversation that starts from the recap.
+        resume: bool,
+        /// The resume's summary, which holds the root's recap.
+        summary: Option<String>,
+    },
+}
+
 /// How the root session starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootStart {
-    /// The first prompt.
+    /// The first prompt of a new root.
     pub prompt: String,
-    /// The model; the machine default when absent.
+    /// The model; claude's own default (the user's settings) when absent.
     pub model: Option<headwork_core::Model>,
     /// The effort; claude's default when absent.
     pub effort: Option<headwork_core::Effort>,
     /// The permission mode.
     pub mode: headwork_core::PermissionMode,
+    /// A new session, or one a resume brings back.
+    pub origin: RootOrigin,
+}
+
+/// The first prompt of the root session.
+#[must_use]
+pub fn root_prompt(start: &RootStart) -> String {
+    let RootOrigin::Back {
+        resume, summary, ..
+    } = &start.origin
+    else {
+        return start.prompt.clone();
+    };
+    let summary = summary.as_deref().map_or_else(String::new, |path| {
+        format!(" Read the resume summary at {path}: what came back, and your recap.")
+    });
+    if *resume {
+        format!(
+            "Resumed after a restart.{summary} Continue where your recap says; if it names a question you had open, \
+             ask it again with AskUserQuestion."
+        )
+    } else {
+        format!(
+            "You are the root session. Your earlier conversation could not be restored after a restart. Read \
+             HANDOFF.md beside CLAUDE.md.{summary} Then continue where the recap says."
+        )
+    }
 }
 
 /// Runs the root session in the current folder as a store session.
 ///
-/// It gets its identity in the environment and returns
-/// the exit code of `claude`. The agent is `root` and the Remote Control name `root`, as `root.sh` starts it.
+/// It gets its identity in the environment and returns the exit code of `claude`. The agent is `root` and the
+/// Remote Control name `root`, as `root.sh` starts it. The folder is recorded so a resume can start it there again.
 ///
 /// # Errors
 ///
-/// Fails when the store or config cannot be read or `claude` does not start.
+/// Fails when the store or config cannot be read, a session to bring back is unknown, or `claude` does not start.
 pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
     let config = home.load_config()?;
     let mut store = home.open_store()?;
-    let id = uuid::Uuid::new_v4().to_string();
-    store.record_session(
-        &headwork_store::NewSession {
-            id: id.clone(),
-            task_id: None,
-            role: Role::Root,
-            rc_name: "root".to_owned(),
-            host: config.machine.host.as_str().to_owned(),
-            host_workspace: None,
-            host_surface: None,
-        },
-        Actor::User,
-    )?;
+    let (id, resume) = match &start.origin {
+        RootOrigin::New => {
+            let id = uuid::Uuid::new_v4().to_string();
+            store.record_session(
+                &headwork_store::NewSession {
+                    id: id.clone(),
+                    task_id: None,
+                    role: Role::Root,
+                    rc_name: "root".to_owned(),
+                    host: config.machine.host.as_str().to_owned(),
+                    host_workspace: None,
+                    host_surface: None,
+                },
+                Actor::User,
+            )?;
+            (id, false)
+        }
+        RootOrigin::Back {
+            session, resume, ..
+        } => {
+            store
+                .session(session)?
+                .with_context(|| format!("root session {session} is not in the store"))?;
+            (session.clone(), *resume)
+        }
+    };
+    let dir = std::env::current_dir().context("finding the current folder")?;
+    store.set_session_dir(&id, &super::slashed(&dir))?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let plugin_dir = plugin_dir(home, &config);
+    let prompt = root_prompt(start);
     let argv = ClaudeLaunch {
         plugin_dir: plugin_dir.as_deref(),
         session_id: &id,
-        resume: false,
+        resume,
         name: "root",
         remote_control: config.machine.remote_control,
-        model: start.model.unwrap_or(config.models.default),
+        model: start.model,
         effort: start.effort,
         permission_mode: start.mode,
         agent: Some("root"),
-        prompt: &start.prompt,
+        prompt: &prompt,
     }
     .argv();
     let (program, rest) = argv.split_first().context("an empty argv")?;
