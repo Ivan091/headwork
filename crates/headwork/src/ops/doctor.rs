@@ -365,7 +365,11 @@ fn installed_plugin(settings: &Value) -> Option<Installed> {
     })
 }
 
-const INSTALL_FIX: &str = "add `\"extraKnownMarketplaces\": {\"headwork\": {\"source\": {\"source\": \"directory\", \"path\": \"<repo>\"}}}` and `\"enabledPlugins\": {\"headwork@headwork\": true}` to ~/.claude/settings.json, or set `hooks.plugin_dir` in config.toml";
+const INSTALL_FIX: &str = concat!(
+    "add `\"extraKnownMarketplaces\": {\"headwork\": {\"source\": {\"source\": \"directory\", \"path\": \"<repo>\"}}}` ",
+    "and `\"enabledPlugins\": {\"headwork@headwork\": true}` to ~/.claude/settings.json, ",
+    "or set `hooks.plugin_dir` in config.toml"
+);
 
 fn plugin_checks(d: &Doctor<'_>, config: Option<&Config>) -> Vec<Check> {
     let settings = std::fs::read_to_string(d.claude_dir.join("settings.json"))
