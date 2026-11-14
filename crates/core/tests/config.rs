@@ -301,3 +301,30 @@ fn layout_takes_a_mode_and_a_pane_count() {
         assert!(Config::parse(&text, "layout").is_err(), "{bad} is refused");
     }
 }
+
+#[test]
+fn the_pane_title_is_a_template_of_name_model_and_effort() {
+    let default = Config::parse("[machine]\nhost = \"wmux\"\n", "title").unwrap();
+    assert_eq!(
+        default
+            .layout
+            .title_for("me-sim-cars", "opus", Some("high")),
+        "me-sim-cars - opus high",
+        "default with an effort"
+    );
+    assert_eq!(
+        default.layout.title_for("headwork-m7", "sonnet", None),
+        "headwork-m7 - sonnet ?",
+        "default without an effort"
+    );
+    let custom = Config::parse(
+        "[machine]\nhost = \"wmux\"\n\n[layout]\ntitle = \"[{model}/{effort}] {name}\"\n",
+        "title",
+    )
+    .unwrap();
+    assert_eq!(
+        custom.layout.title_for("a-b", "haiku", Some("low")),
+        "[haiku/low] a-b",
+        "custom"
+    );
+}

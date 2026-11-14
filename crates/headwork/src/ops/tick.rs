@@ -118,6 +118,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.spawn_timeouts()?;
     run.lost_sessions()?;
     run.orphan_panes()?;
+    run.titles()?;
     run.pull_requests()?;
     run.merged_grace()?;
     run.closing()?;
@@ -384,6 +385,13 @@ impl<'b> Run<'_, 'b> {
             }
         }
         Ok(None)
+    }
+
+    fn titles(&self) -> Result<()> {
+        if self.report.host_up {
+            super::title::retitle(self.store, self.env(), None)?;
+        }
+        Ok(())
     }
 
     fn orphan_panes(&mut self) -> Result<()> {

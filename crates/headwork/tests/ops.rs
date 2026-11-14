@@ -16,8 +16,8 @@ use headwork::ops::spawn::{Outcome, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, PlaceKind, ProjectName, SessionState, Slug, TaskRequest,
-    TaskState,
+    Actor, Config, Effort, Model, PermissionMode, PlaceKind, ProjectName, SessionState, Slug,
+    TaskRequest, TaskState,
 };
 use headwork_store::{EventFilter, Store};
 
@@ -100,7 +100,7 @@ fn request<'a>(brief: &'a Path, slug: &str, in_main: bool) -> SpawnRequest<'a> {
             slug: Slug::new(slug).unwrap(),
             kind: if in_main { "probe" } else { "task" }.to_owned(),
             model: Some(Model::Haiku),
-            effort: None,
+            effort: Some(Effort::High),
             in_main,
             keep: false,
         },
@@ -211,7 +211,14 @@ fn main_checkout_tasks_need_no_worktree_and_share_the_workspace() {
         calls.iter().any(|c| c.starts_with("grid ")),
         "the second child gets a pane of its own: {calls:?}"
     );
-    assert!(calls.last().unwrap().ends_with(" replace"), "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .rfind(|c| !c.starts_with("rename-surface"))
+            .unwrap()
+            .ends_with(" replace"),
+        "{calls:?}"
+    );
 }
 
 #[test]
@@ -307,9 +314,11 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
         "haiku",
         "--permission-mode",
         "auto",
+        "--effort",
+        "high",
         "--",
     ];
-    assert_eq!(args.get(..11).unwrap(), expected_start, "{args:?}");
+    assert_eq!(args.get(..13).unwrap(), expected_start, "{args:?}");
     assert!(
         args.last()
             .unwrap()
@@ -514,7 +523,13 @@ fn a_closing_child_leaves_its_pane_to_the_next_one() {
     );
     assert_eq!(session.host_pane, pane, "the pane the closed child left");
     assert!(
-        w.host.calls().last().unwrap().ends_with(" replace"),
+        w.host
+            .calls()
+            .iter()
+            .rfind(|c| !c.starts_with("rename-surface"))
+            .unwrap()
+            .clone()
+            .ends_with(" replace"),
         "it replaces the placeholder: {:?}",
         w.host.calls()
     );
@@ -559,7 +574,11 @@ fn a_free_pane_the_user_left_is_used_before_making_a_grid() {
     );
     let replaced = format!("pane {pane} replace");
     assert!(
-        calls.last().unwrap().ends_with(&replaced),
+        calls
+            .iter()
+            .rfind(|c| !c.starts_with("rename-surface"))
+            .unwrap()
+            .ends_with(&replaced),
         "its lone shell is replaced: {calls:?}"
     );
     assert_eq!(
@@ -665,5 +684,82 @@ fn a_limit_of_two_panes_stacks_the_third() {
         layout_of(&w),
         [(1, 0.5, 1.0), (2, 0.5, 1.0)],
         "two panes, the third a tab"
+    );
+}
+
+#[test]
+fn a_pane_is_titled_with_the_task_name_model_and_effort_when_it_opens() {
+    let mut w = world(10, "builtin");
+    let (task, _) = w.spawn("sand", false);
+    let surface = surface_of(&w, &task);
+    assert!(
+        w.host
+            .calls()
+            .contains(&format!("rename-surface {surface} demo-sand - haiku high")),
+        "{:?}",
+        w.host.calls()
+    );
+}
+
+#[test]
+fn retitle_sets_every_live_pane_or_the_one_named_and_follows_the_layout_template() {
+    let mut w = world_with(10, "builtin", "");
+    let (sand, _) = w.spawn("sand", false);
+    let (dune, _) = w.spawn("dune", false);
+    w.config.layout.title = "{effort}|{model}|{name}".to_owned();
+    let (all, failed) = headwork::ops::title::retitle(&w.store, &env(&w), None).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    let titles: Vec<&str> = all.iter().map(|item| item.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["high|haiku|demo-sand", "high|haiku|demo-dune"],
+        "all live tasks"
+    );
+    let (one, _) = headwork::ops::title::retitle(&w.store, &env(&w), Some(&dune)).unwrap();
+    assert_eq!(one.len(), 1, "one task");
+    assert_eq!(
+        one.first().unwrap().surface,
+        surface_of(&w, &dune),
+        "its surface"
+    );
+    assert_ne!(
+        surface_of(&w, &sand),
+        surface_of(&w, &dune),
+        "distinct panes"
+    );
+}
+
+#[test]
+fn a_spawn_without_an_effort_stores_the_level_the_settings_give_its_model() {
+    let mut w = world(10, "builtin");
+    let settings = w.dir.path().join("demo").join(".claude");
+    std::fs::create_dir(&settings).unwrap();
+    std::fs::write(
+        settings.join("settings.json"),
+        r#"{"effortLevel": "xhigh"}"#,
+    )
+    .unwrap();
+    let mut request = request(&w.brief, "sand", false);
+    request.request.effort = None;
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    let (task, _) = spawn(&mut w.store, &env, &request).unwrap();
+    assert_eq!(
+        task.effort,
+        Some(Effort::Xhigh),
+        "the project's setting is stored"
+    );
+    let surface = surface_of(&w, &task);
+    assert!(
+        w.host
+            .calls()
+            .contains(&format!("rename-surface {surface} demo-sand - haiku xhigh")),
+        "{:?}",
+        w.host.calls()
     );
 }

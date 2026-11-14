@@ -516,6 +516,10 @@ impl<R: Runner> TerminalHost for Wmux<R> {
         self.quiet(&args)
     }
 
+    fn rename_surface(&self, surface: &SurfaceId, title: &str) -> Result<(), HostError> {
+        self.quiet(&["rename-surface", surface.as_str(), title])
+    }
+
     fn close_surface(&self, surface: &SurfaceId) -> Result<(), HostError> {
         self.quiet(&["close-surface", surface.as_str()])
     }

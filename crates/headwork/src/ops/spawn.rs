@@ -73,10 +73,20 @@ pub fn spawn(
         .with_context(|| format!("reading the brief {}", new.brief.display()))?;
     let name = TaskName::new(new.request.project.clone(), new.request.slug.clone());
     let brief_path = env.home.brief_path(&name);
+    let mut request = new.request.clone();
+    if request.effort.is_none() {
+        let model = request.model.unwrap_or(env.config.models.default);
+        let main = env
+            .config
+            .project(&request.project)
+            .map(|project| env.home.expand(&project.main))
+            .unwrap_or_default();
+        request.effort = Some(super::effort::resolve(env.home, model, &main));
+    }
     let task = store.create_task(
         env.config,
         &NewTask {
-            request: new.request.clone(),
+            request,
             brief_path: slashed(&brief_path),
             depends_on: new.depends_on,
             permission_mode: new.permission_mode,

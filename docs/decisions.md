@@ -264,7 +264,7 @@ and the reason.
   fuller sections (main-only kinds, user-only scripts, heavy slots, long jobs), since the import cannot know those.
 - 2026-11-14 Effort is `--effort low|medium|high|xhigh|max`, passed to the child as `claude --effort` (the installed
   claude supports it, so no `--settings` workaround). A task stores it in a nullable `tasks.effort` column (migration
-  0006); absent means claude's own default and prints as "default effort". There is no `[effort]` config default and no
+  0006); absent is resolved when shown (see 2026-11-14, pane titles) and prints as the level, or `?`. There is no `[effort]` config default and no
   per-project allowed set. Adopted (imported) tasks have no effort. `headwork root --effort` exists too but is not
   stored. The board shows it after the model; `log` shows it on `task-created`; `--json` carries `effort` (null when
   absent) on tasks and in the event data; the MCP `spawn` takes an optional `effort`.
@@ -322,3 +322,17 @@ and the reason.
 - 2026-11-14 Migration 0007 adds `sessions.host_pane` and `sessions.host_place` (`pane` or `tab`), as placed; the
   board prints "in its own pane <id>", "as a tab of <id>" or "as a tab" after the surface. Sub-roots, planned as 0007
   in `docs/sub-roots.md`, takes the next free number. The split direction uses a window aspect of 16:9.
+- 2026-11-14 Pane titles. A child's pane or tab is titled `<name> - <model> <effort>` (`[layout] title`, placeholders
+  `{name}`, `{model}`, `{effort}`) with wmux `rename-surface`, which sets a custom title that Claude's own terminal title
+  (an escape sequence) does not replace; checked live. It is set when a pane opens (spawn, resume), re-asserted by every
+  tick, and `headwork retitle [<name>]` sets it for live sessions on demand. The agent label stays `<project>/<slug>`,
+  because the tick and import read it. Idle placeholders keep their own title. A failing rename never fails a spawn.
+- 2026-11-14 The word "default effort" is gone. `headwork spawn` without `--effort` stores the level Claude runs with
+  (`ops/effort.rs`): per model id (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-2`) the
+  highest settings layer that names one wins, local project (`.claude/settings.local.json`), shared project
+  (`.claude/settings.json`), then user (`<claude dir>/settings.json`, `CLAUDE_CONFIG_DIR` honoured); in a layer
+  `modelSettings.<id>.effortLevel` beats the top-level `effortLevel`, and the user layer's top level is skipped for the
+  5.5 models, as the Claude Code docs say. Nothing set means `medium`, the documented default of the 5.5 models. The
+  `CLAUDE_CODE_EFFORT_LEVEL` variable and `/effort` picks are session-only and ignored. Tasks stored with no effort are
+  resolved the same way when shown (`board`, `log`, `--json`, titles); the store is not rewritten. `?` shows only when a
+  level cannot be told. The built-in level comes from the docs, not from the claude binary.

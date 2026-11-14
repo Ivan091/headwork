@@ -17,7 +17,7 @@ use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::tick::{Status, TickEnv, tick};
 use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::git::FakeGit;
-use headwork_adapters::host::wmux::{Cli, Wmux};
+use headwork_adapters::host::wmux::{Cli, Runner, Wmux};
 use headwork_adapters::host::{SurfaceId, Target, TerminalHost};
 use headwork_core::watch::Limits;
 use headwork_core::{
@@ -205,12 +205,19 @@ fn children_fill_a_grid_of_panes_in_the_real_host() {
     let refill = start(&mut store, "f");
     let refilled = shape(&host);
     let refill_row = store.session_of(refill.id).unwrap().unwrap();
+    let tree = Cli::locate(None)
+        .run(&["tree", "--workspace", workspace.as_str()])
+        .unwrap();
     host.close_workspace(&workspace).unwrap();
     let quarters = |cells: &[(usize, f64, f64)]| {
         cells
             .iter()
             .all(|(_, w, h)| (w - 0.5).abs() < 1e-9 && (h - 0.5).abs() < 1e-9)
     };
+    assert!(
+        tree.contains("headwork-test-c - haiku medium"),
+        "the pane carries its name, model and effort: {tree}"
+    );
     assert_eq!(grid.len(), 4, "four panes: {grid:?}");
     assert!(quarters(&grid), "a two by two grid: {grid:?}");
     let mut tabs: Vec<usize> = grid.iter().map(|(n, _, _)| *n).collect();

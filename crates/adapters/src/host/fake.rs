@@ -438,6 +438,14 @@ impl TerminalHost for FakeHost {
         Ok(())
     }
 
+    fn rename_surface(&self, surface: &SurfaceId, title: &str) -> Result<(), HostError> {
+        let mut state = self.state.borrow_mut();
+        state
+            .calls
+            .push(format!("rename-surface {surface} {title}"));
+        Ok(())
+    }
+
     fn close_surface(&self, surface: &SurfaceId) -> Result<(), HostError> {
         let mut state = self.state.borrow_mut();
         state.remove_surface(surface);
