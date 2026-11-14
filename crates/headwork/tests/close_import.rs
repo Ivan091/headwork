@@ -456,3 +456,58 @@ fn import_helpers() {
     let facts = read_transcript(Path::new("Z:/missing.jsonl"));
     assert_eq!(facts.name, None, "a missing transcript says nothing");
 }
+
+fn sleeper() -> std::process::Child {
+    if cfg!(windows) {
+        Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("sleep").arg("30").spawn().unwrap()
+    }
+}
+
+#[test]
+fn a_self_close_of_a_session_from_before_hot_reload_starts_a_backup_finisher() {
+    let mut w = world(10);
+    let mut launchers = Vec::new();
+    for (slug, recorded) in [("old", false), ("new", true)] {
+        let (task, _) = spawn_task(&mut w, slug, false, false);
+        let session = w.store.session_of(task.id).unwrap().unwrap();
+        let (launcher, claude) = (sleeper(), sleeper());
+        w.store
+            .session_launched(&session.id, launcher.id(), claude.id(), "job")
+            .unwrap();
+        if recorded {
+            w.store
+                .append_event(
+                    Actor::Child,
+                    Some(task.id),
+                    Some(&session.id),
+                    "build",
+                    &serde_json::json!({ "stamp": "1:1" }),
+                )
+                .unwrap();
+        }
+        let env = env!(w);
+        let report = close(&mut w.store, &env, task.id, Some(&session.id)).unwrap();
+        assert_eq!(
+            report.state,
+            TaskState::Closing,
+            "the launcher finishes: {report:?}"
+        );
+        let backup = event_kinds(&w.store, &task)
+            .iter()
+            .any(|kind| kind == "backup-finisher");
+        assert_eq!(
+            backup, !recorded,
+            "{slug}: a backup finisher only without a build record"
+        );
+        launchers.push(launcher);
+    }
+    for mut launcher in launchers {
+        launcher.kill().unwrap_or(());
+        launcher.wait().unwrap();
+    }
+}

@@ -154,6 +154,27 @@ impl Store {
             .collect()
     }
 
+    /// The data of a session's newest event of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or a JSON error for an event whose data is not JSON.
+    pub fn session_event(
+        &self,
+        session: &str,
+        kind: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        let data: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM events WHERE session_id = ?1 AND type = ?2 ORDER BY id DESC LIMIT 1",
+                params![session, kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(data.map(|data| serde_json::from_str(&data)).transpose()?)
+    }
+
     /// The root's newest session that has not ended.
     ///
     /// # Errors
