@@ -1,6 +1,6 @@
 //! The agent runtime (design section 4.3): how a Claude Code session is started and how it learns who it is.
 
-use headwork_core::{Model, PermissionMode};
+use headwork_core::{Effort, Model, PermissionMode};
 
 /// The Claude session id, read by hooks and the MCP server.
 pub const ENV_SESSION: &str = "HEADWORK_SESSION";
@@ -30,6 +30,8 @@ pub struct ClaudeLaunch<'a> {
     pub remote_control: bool,
     /// The model.
     pub model: Model,
+    /// The effort; claude's own default when absent.
+    pub effort: Option<Effort>,
     /// The permission mode.
     pub permission_mode: PermissionMode,
     /// An agent definition, such as `root`.
@@ -65,6 +67,9 @@ impl ClaudeLaunch<'_> {
             "--permission-mode".to_owned(),
             self.permission_mode.as_str().to_owned(),
         ]);
+        if let Some(effort) = self.effort {
+            argv.extend(["--effort".to_owned(), effort.as_str().to_owned()]);
+        }
         if let Some(agent) = self.agent {
             argv.extend(["--agent".to_owned(), agent.to_owned()]);
         }

@@ -16,6 +16,6 @@ pub use guard::{Decision, Verdict};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
 pub use names::{NameError, ProjectName, Slug, TaskName};
 pub use vocabulary::{
-    Actor, AskKind, AskState, FindingId, JobState, MachineMode, Model, PermissionMode, RecapKind,
-    Role, RuleId, SessionState, TaskState, UnknownWord,
+    Actor, AskKind, AskState, Effort, FindingId, JobState, MachineMode, Model, PermissionMode,
+    RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
 };

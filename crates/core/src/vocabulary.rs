@@ -154,6 +154,22 @@ text_enum!(
 );
 
 text_enum!(
+    /// How much effort a Claude session spends (`claude --effort`).
+    Effort, "effort" {
+        /// The least effort.
+        Low => "low",
+        /// Moderate effort.
+        Medium => "medium",
+        /// High effort.
+        High => "high",
+        /// Higher than high.
+        Xhigh => "xhigh",
+        /// The most effort.
+        Max => "max",
+    }
+);
+
+text_enum!(
     /// Who caused an event.
     Actor, "actor" {
         /// The root session.

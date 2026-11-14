@@ -92,6 +92,7 @@ pub fn claude_command(
             .remote_control
             .unwrap_or(config.machine.remote_control),
         model: task.model,
+        effort: task.effort,
         permission_mode: task.permission_mode,
         agent: None,
         prompt: &prompt,
@@ -262,6 +263,8 @@ pub struct RootStart {
     pub prompt: String,
     /// The model; the machine default when absent.
     pub model: Option<headwork_core::Model>,
+    /// The effort; claude's default when absent.
+    pub effort: Option<headwork_core::Effort>,
     /// The permission mode.
     pub mode: headwork_core::PermissionMode,
 }
@@ -299,6 +302,7 @@ pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
         name: "root",
         remote_control: config.machine.remote_control,
         model: start.model.unwrap_or(config.models.default),
+        effort: start.effort,
         permission_mode: start.mode,
         agent: Some("root"),
         prompt: &start.prompt,

@@ -86,6 +86,7 @@ fn world(hooks: &str, keep: bool) -> World {
             slug: Slug::new("sand").unwrap(),
             kind: "task".to_owned(),
             model: Some(Model::Haiku),
+            effort: None,
             in_main: false,
             keep,
         },

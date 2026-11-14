@@ -45,8 +45,10 @@ pub fn mechanical(store: &Store, env: &Env<'_>, task: &Task, reason: &str) -> Re
     );
     let _ = writeln!(
         text,
-        "- model: {}, mode: {}",
-        task.model, task.permission_mode
+        "- model: {}, {}, mode: {}",
+        task.model,
+        task.effort_label(),
+        task.permission_mode
     );
     let _ = writeln!(text, "- brief: {}", task.brief_path);
     let _ = writeln!(text, "- folder: {}", super::slashed(&dir));

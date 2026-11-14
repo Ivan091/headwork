@@ -131,6 +131,7 @@ fn spawn_task(w: &mut World, slug: &str) -> Task {
             slug: Slug::new(slug).unwrap(),
             kind: "task".to_owned(),
             model: Some(Model::Haiku),
+            effort: None,
             in_main: false,
             keep: false,
         },

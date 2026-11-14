@@ -3,8 +3,8 @@
 use std::fmt;
 
 use headwork_core::{
-    Actor, AskKind, AskState, MachineMode, Model, PermissionMode, ProjectName, SessionState, Slug,
-    TaskName, TaskSnapshot, TaskState,
+    Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, ProjectName,
+    SessionState, Slug, TaskName, TaskSnapshot, TaskState,
 };
 use serde::{Serialize, Serializer};
 
@@ -47,6 +47,8 @@ pub struct Task {
     pub state_before_park: Option<TaskState>,
     /// The model.
     pub model: Model,
+    /// The effort; the machine default when absent.
+    pub effort: Option<Effort>,
     /// The permission mode its sessions start in.
     pub permission_mode: PermissionMode,
     /// A standing role.
@@ -68,6 +70,15 @@ pub struct Task {
 }
 
 impl Task {
+    /// The effort as shown next to the model: its word, or `default effort` when the machine default applies.
+    #[must_use]
+    pub fn effort_label(&self) -> String {
+        self.effort.map_or_else(
+            || "default effort".to_owned(),
+            |effort| format!("{effort} effort"),
+        )
+    }
+
     /// The parts the lifecycle reads.
     #[must_use]
     pub const fn snapshot(&self) -> TaskSnapshot {
