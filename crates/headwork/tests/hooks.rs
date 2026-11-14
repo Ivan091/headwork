@@ -12,6 +12,7 @@ use std::process::Command;
 use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
+use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{CLOSING_HEADING, RuleFiles};
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::host::fake::FakeHost;
@@ -464,8 +465,378 @@ fn unknown_sessions_are_left_alone() {
 #[test]
 fn root_rules_name_the_binary_and_fit_the_hook_limit() {
     let w = world("", false);
-    let files = RuleFiles::load(&w.home, &w.config).unwrap();
+    let files = RuleFiles::load(&w.home, &w.config, &[]).unwrap();
     let text = files.render(Role::Root, &w.config, Path::new(EXE), None);
     assert!(text.contains(&format!("\"{EXE}\" spawn")), "{text}");
     assert!(text.len() < 10_000, "{}", text.len());
+}
+
+fn child_identity(w: &World) -> Identity {
+    Identity {
+        session: Some(w.session.clone()),
+        role: Some(Role::Child),
+    }
+}
+
+fn root_identity() -> Identity {
+    Identity {
+        session: Some("root-session".to_owned()),
+        role: Some(Role::Root),
+    }
+}
+
+impl World {
+    fn server(&mut self, identity: Identity) -> Server<'_> {
+        let env = Env {
+            home: &self.home,
+            config: &self.config,
+            host: &self.host,
+            exe: Path::new(EXE),
+            actor: Actor::User,
+        };
+        Server::new(&mut self.store, env, identity)
+    }
+
+    fn rpc(&mut self, identity: Identity, message: &Value) -> Value {
+        self.server(identity).handle(message).unwrap()
+    }
+
+    fn tool(&mut self, identity: Identity, name: &str, arguments: &Value) -> (bool, String) {
+        let message = json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        let result = self.rpc(identity, &message)["result"].clone();
+        let text = result["content"][0]["text"].as_str().unwrap().to_owned();
+        (result["isError"].as_bool().unwrap(), text)
+    }
+
+    fn tool_names(&mut self, identity: Identity) -> Vec<String> {
+        let message = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let reply = self.rpc(identity, &message);
+        reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+}
+
+#[test]
+fn mcp_initialize_is_golden() {
+    let mut w = world("", false);
+    let message = json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": { "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": { "name": "t", "version": "1" } },
+    });
+    let identity = child_identity(&w);
+    let reply = w.rpc(identity, &message);
+    assert_eq!(
+        reply,
+        json!({
+            "jsonrpc": "2.0", "id": 0,
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "headwork", "version": "0.1.0" },
+            },
+        }),
+        "initialize"
+    );
+    let ping = json!({ "jsonrpc": "2.0", "id": 3, "method": "ping" });
+    assert_eq!(
+        w.rpc(root_identity(), &ping),
+        json!({ "jsonrpc": "2.0", "id": 3, "result": {} }),
+        "ping"
+    );
+    let unknown = json!({ "jsonrpc": "2.0", "id": 4, "method": "nope" });
+    assert_eq!(
+        w.rpc(root_identity(), &unknown),
+        json!({ "jsonrpc": "2.0", "id": 4, "error": { "code": -32601, "message": "method not found: nope" } }),
+        "unknown method"
+    );
+}
+
+#[test]
+fn mcp_notifications_get_no_answer_and_serve_reads_lines() {
+    let mut w = world("", false);
+    let identity = child_identity(&w);
+    let input = [
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string(),
+        "not json".to_owned(),
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }).to_string(),
+    ]
+    .join("\n");
+    let mut out = Vec::new();
+    w.server(identity)
+        .serve(std::io::Cursor::new(input), &mut out)
+        .unwrap();
+    let lines: Vec<Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "one parse error and one pong: {lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32700, "parse error");
+    assert_eq!(lines[1]["result"], json!({}), "pong");
+}
+
+#[test]
+fn mcp_tools_follow_the_role() {
+    let mut w = world("", false);
+    let identity = child_identity(&w);
+    let child = w.tool_names(identity);
+    assert_eq!(child, ["board", "inbox", "report", "done"], "child");
+    let root = w.tool_names(root_identity());
+    assert_eq!(
+        root,
+        [
+            "board",
+            "inbox",
+            "spawn",
+            "drop",
+            "close",
+            "queue",
+            "rules",
+            "rule_add",
+            "rule_retire"
+        ],
+        "root"
+    );
+    assert!(w.tool_names(Identity::default()).is_empty(), "unmanaged");
+}
+
+#[test]
+fn mcp_report_schema_is_golden() {
+    let mut w = world("", false);
+    let message = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+    let identity = child_identity(&w);
+    let reply = w.rpc(identity, &message);
+    let report = reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "report")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        report["inputSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "enum": ["progress", "review", "blocked", "done"] },
+                "summary": { "type": "string" },
+                "links": { "type": "array", "items": { "type": "string" } },
+                "pr": { "type": "string", "description": "A GitHub pull request URL, for status review." },
+            },
+            "required": ["status", "summary"],
+        }),
+        "report schema"
+    );
+}
+
+#[test]
+fn mcp_calls_check_the_role_again() {
+    let mut w = world("", false);
+    let child = child_identity(&w);
+    let (is_error, text) = w.tool(child.clone(), "spawn", &json!({}));
+    assert!(is_error && text.contains("tool of the root role"), "{text}");
+    let (is_error, text) = w.tool(root_identity(), "report", &json!({}));
+    assert!(
+        is_error && text.contains("tool of the child role"),
+        "{text}"
+    );
+    let (is_error, text) = w.tool(Identity::default(), "board", &json!({}));
+    assert!(is_error && text.contains("not managed"), "{text}");
+    let forged = Identity {
+        session: Some("no-such-session".to_owned()),
+        role: Some(Role::Child),
+    };
+    let (is_error, text) = w.tool(
+        forged,
+        "report",
+        &json!({ "status": "progress", "summary": "x" }),
+    );
+    assert!(is_error && text.contains("no task"), "{text}");
+    let (is_error, _) = w.tool(child, "nope", &json!({}));
+    assert!(is_error, "unknown tool");
+}
+
+#[test]
+fn mcp_board_and_inbox_answer_both_roles() {
+    let mut w = world("", false);
+    w.start();
+    let (is_error, text) = w.tool(root_identity(), "board", &json!({}));
+    assert!(!is_error && text.contains("demo-sand"), "{text}");
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(identity, "inbox", &json!({}));
+    assert!(!is_error && text.trim() == "[]", "{text}");
+}
+
+#[test]
+fn a_blocked_or_done_report_lets_the_stop_gate_through() {
+    let mut w = world("", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    let stop = json!({ "last_assistant_message": "Waiting on the API key." });
+    w.hook(HookEvent::Stop, &stop);
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "report",
+        &json!({ "status": "progress", "summary": "half way" }),
+    );
+    assert!(!is_error, "{text}");
+    w.hook(HookEvent::Stop, &stop);
+    let (is_error, text) = w.tool(
+        identity,
+        "report",
+        &json!({ "status": "blocked", "summary": "needs the API key" }),
+    );
+    assert!(!is_error, "{text}");
+    w.hook(HookEvent::Stop, &stop);
+    let rules: Vec<String> = w.denies().into_iter().map(|(_, rule)| rule).collect();
+    assert_eq!(
+        rules,
+        ["stop-unfinished", "stop-unfinished"],
+        "progress does not count; blocked does"
+    );
+    let last = w.store.task(w.task.id).unwrap().last_report;
+    assert_eq!(last.as_deref(), Some("needs the API key"), "last report");
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "again" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(w.denies().len(), 3, "a new turn needs a new report");
+}
+
+#[test]
+fn a_review_report_with_an_allowed_pull_request_moves_the_task() {
+    let mut w = world("", false);
+    w.start();
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "report",
+        &json!({ "status": "review", "summary": "ready" }),
+    );
+    assert!(is_error && text.contains("needs `pr`"), "{text}");
+    let (is_error, text) = w.tool(
+        identity,
+        "report",
+        &json!({ "status": "review", "summary": "ready", "pr": "https://github.com/Ivan091/demo/pull/12" }),
+    );
+    assert!(!is_error && text.contains("in_review"), "{text}");
+    assert_eq!(w.state(), TaskState::InReview, "state");
+    let board = w.store.board(false).unwrap();
+    let pr = board.tasks[0].pr.clone().unwrap();
+    assert_eq!(pr.url, "https://github.com/Ivan091/demo/pull/12", "pr");
+}
+
+#[test]
+fn a_review_report_naming_a_foreign_repository_is_refused_by_the_lifecycle() {
+    let mut w = world("", false);
+    w.start();
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(
+        identity,
+        "report",
+        &json!({ "status": "review", "summary": "ready", "pr": "https://github.com/Other/repo/pull/1" }),
+    );
+    assert!(!is_error && text.contains("note"), "{text}");
+    assert_eq!(w.state(), TaskState::Working, "state");
+}
+
+#[test]
+fn rule_add_reaches_running_sessions_and_rule_retire_takes_it_back() {
+    let mut w = world("", false);
+    w.start();
+    let prompt = json!({ "prompt": "hello" });
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "unchanged"
+    );
+    let (is_error, text) = w.tool(
+        root_identity(),
+        "rule_add",
+        &json!({ "scope": "child", "text": "Always say KUMQUAT." }),
+    );
+    assert!(!is_error && text.contains("\"rules_version\": 2"), "{text}");
+    let pushed = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(
+        pushed.contains("KUMQUAT") && pushed.contains("version 2"),
+        "{pushed}"
+    );
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "pushed once"
+    );
+    let (_, listed) = w.tool(root_identity(), "rules", &json!({}));
+    assert!(listed.contains("KUMQUAT"), "{listed}");
+    let (is_error, text) = w.tool(root_identity(), "rule_retire", &json!({ "id": 1 }));
+    assert!(!is_error && text.contains("\"rules_version\": 3"), "{text}");
+    let pushed = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(
+        !pushed.contains("KUMQUAT") && pushed.contains("version 3"),
+        "{pushed}"
+    );
+    let (is_error, _) = w.tool(root_identity(), "rule_retire", &json!({ "id": 1 }));
+    assert!(is_error, "already retired");
+    let (is_error, text) = w.tool(
+        root_identity(),
+        "rule_add",
+        &json!({ "scope": "nowhere", "text": "x" }),
+    );
+    assert!(is_error && text.contains("unknown scope"), "{text}");
+}
+
+#[test]
+fn done_refuses_an_open_ask_then_closes_after_the_response() {
+    let mut w = world("", false);
+    w.start();
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Ship (Recommended)", "Drop"], "Ship"),
+    );
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({}));
+    assert!(is_error && text.contains("still open"), "{text}");
+    w.post("AskUserQuestion", &json!({ "answers": "Ship" }));
+    let mut server = w.server(identity);
+    let message = json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": { "name": "done", "arguments": { "summary": "built it" } },
+    });
+    let reply = server.handle(&message).unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    server.finish_pending().unwrap();
+    let state = w.state();
+    assert!(
+        matches!(state, TaskState::Closing | TaskState::Closed),
+        "closing after done: {state}"
+    );
+    let last = w.store.task(w.task.id).unwrap().last_report;
+    assert_eq!(last.as_deref(), Some("built it"), "report");
+}
+
+#[test]
+fn drop_records_the_users_words_and_closes() {
+    let mut w = world("", false);
+    w.start();
+    let (is_error, text) = w.tool(
+        root_identity(),
+        "drop",
+        &json!({ "name": "demo-sand", "user_words": "not needed any more" }),
+    );
+    assert!(!is_error, "{text}");
+    let state = w.state();
+    assert!(
+        matches!(state, TaskState::Closing | TaskState::Closed),
+        "{state}"
+    );
+    let words = w.events().into_iter().any(|event| {
+        event.kind == "drop-reason" && event.data["user_words"] == "not needed any more"
+    });
+    assert!(words, "the user's words are logged");
 }

@@ -53,6 +53,8 @@ pub struct TurnSoFar {
     pub asked: bool,
     /// It sent a message to another session.
     pub messaged: bool,
+    /// It reported `done` or `blocked` through the MCP `report` tool.
+    pub reported: bool,
     /// Stops denied (or that would have been) since the prompt.
     pub stops_denied: u32,
 }
@@ -228,7 +230,14 @@ impl Store {
             params![session, since, EVENT_DENY, EVENT_WOULD_DENY],
             |row| row.get(0),
         )?;
+        let reported: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND id > ?2 AND type = ?3
+                 AND json_extract(data, '$.status') IN ('done', 'blocked'))",
+            params![session, since, crate::EVENT_REPORT],
+            |row| row.get(0),
+        )?;
         Ok(TurnSoFar {
+            reported,
             asked: used("AskUserQuestion")?,
             messaged: used("SendMessage")?,
             stops_denied: u32::try_from(stops).map_err(|_| StoreError::OutOfRange(stops))?,

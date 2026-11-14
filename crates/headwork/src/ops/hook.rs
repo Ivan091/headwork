@@ -245,7 +245,7 @@ fn task_dir(store: &Store, env: &HookEnv<'_>, task: &Task) -> Result<Option<Path
 
 fn rules_for(store: &mut Store, call: &Call<'_>) -> Result<(String, i64)> {
     let env = call.env;
-    let files = RuleFiles::load(env.home, env.config)?;
+    let files = RuleFiles::load(env.home, env.config, &store.active_rules()?)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     let dir = call
         .task
@@ -295,7 +295,7 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         EVENT_PROMPT,
         &json!({ "cross_session": text.starts_with("<cross-session-message"), "from": from }),
     )?;
-    let files = RuleFiles::load(call.env.home, call.env.config)?;
+    let files = RuleFiles::load(call.env.home, call.env.config, &store.active_rules()?)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
         return Ok(HookReply::default());
@@ -661,6 +661,7 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
         blocked_in_row: turn.stops_denied,
         asked: turn.asked,
         messaged: turn.messaged,
+        reported: turn.reported,
         keep: call.task.is_some_and(|task| task.keep),
         last_message,
     };

@@ -11,8 +11,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 - Publishing, uploads, logins and releases are the user's alone; never run them.
 - Proceed without asking the user wherever the brief or sensible defaults decide. Record open choices where the project
   keeps its decisions.
-- When you truly need the user, ask with `AskUserQuestion`: 2 to 4 concrete options, the recommendation first and
-  marked `(Recommended)`, never an option that means "needs changes" or "other" (the user types changes in their own
+- When you truly need the user, ask with `AskUserQuestion`: any reasonable number of concrete options (at least 2),
+  the recommendation first and marked `(Recommended)`, never an option that means "needs changes" or "other" (the user types changes in their own
   words). Send a `PushNotification` with the question just before you ask, so the phone hears it. headwork shows the
   choices as the pane's blocked state and clears it when the answer arrives; you do not run `wmux report-agent`.
 - Before a review ask (header `Review`), send what is under review with `SendUserFile`.

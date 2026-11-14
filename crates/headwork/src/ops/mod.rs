@@ -4,6 +4,7 @@ pub mod close;
 pub mod hook;
 pub mod import;
 pub mod launch;
+pub mod mcp;
 pub mod rules;
 pub mod spawn;
 

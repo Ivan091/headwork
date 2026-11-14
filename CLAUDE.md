@@ -20,14 +20,14 @@ crates/
   adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the claude
                         runtime, worktrees
   headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch) over a small lib (home, ops)
-plugin/                 the Claude Code plugin: hooks.json, each hook calling `headwork hook <event>`
+plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
 rules/                  built-in root and child rules, injected at SessionStart
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
 ```
 
-Milestone 4 adds the MCP registration to `plugin/`.
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules, rule_add, rule_retire) and the child tools (board, inbox, report, done) by the session's identity.
 
 ## Commands
 

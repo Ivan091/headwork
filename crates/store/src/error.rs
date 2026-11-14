@@ -48,6 +48,9 @@ pub enum StoreError {
     /// A live task already has the name.
     #[error("a live task `{0}` already exists")]
     NameTaken(String),
+    /// No active rule has this id.
+    #[error("no active rule with id {0}")]
+    UnknownRule(i64),
     /// Event data is not valid JSON.
     #[error("event data: {0}")]
     Json(#[from] serde_json::Error),

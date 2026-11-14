@@ -15,6 +15,7 @@ use headwork::home::Home;
 use headwork::ops::close::{CloseReport, close, finish_after, reap};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
+use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::{Env, host_for};
 use headwork_core::guard::{ToolCall, check_tool};
@@ -106,6 +107,9 @@ enum Command {
         /// The event: session-start, user-prompt-submit, pre-tool-use, post-tool-use, stop or session-end.
         event: HookEvent,
     },
+    /// Serve the MCP tools of the calling session over stdio: the plugin's `.mcp.json` runs this.
+    #[command(hide = true)]
+    Mcp,
     /// Check the hard rules by hand.
     Rule {
         #[command(subcommand)]
@@ -197,6 +201,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     let command = match cli.command {
         Command::Hook { event } => return Ok(hook_command(event, out)),
+        Command::Mcp => return mcp_command(),
         Command::Rule {
             action:
                 RuleAction::Test {
@@ -262,6 +267,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Hook { .. }
+        | Command::Mcp
         | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
     }
 }
@@ -536,6 +542,27 @@ fn import_command(
     } else {
         out.write_all(render::imported(&added, &report, dry_run).as_bytes())?;
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn mcp_command() -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    store
+        .sync_projects(&config)
+        .context("recording the configured projects")?;
+    let host = host_for(&config)?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let env = Env {
+        home: &home,
+        config: &config,
+        host: host.as_ref(),
+        exe: &exe,
+        actor: Actor::User,
+    };
+    let mut server = Server::new(&mut store, env, Identity::from_env());
+    server.serve(io::stdin().lock(), io::stdout().lock())?;
     Ok(ExitCode::SUCCESS)
 }
 

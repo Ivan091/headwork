@@ -10,6 +10,10 @@ pub const MAX_BLOCKS: u32 = 3;
 
 /// What the gate knows about the turn that is ending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent fact the gate reads"
+)]
 pub struct StopFacts<'a> {
     /// The role.
     pub role: Role,
@@ -21,6 +25,8 @@ pub struct StopFacts<'a> {
     pub asked: bool,
     /// Since the last prompt it sent a message to another session (its report).
     pub messaged: bool,
+    /// Since the last prompt it reported `done` or `blocked` through the MCP `report` tool.
+    pub reported: bool,
     /// The task is a standing role that does not close when idle.
     pub keep: bool,
     /// The last assistant message of the turn.
@@ -50,12 +56,13 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         && !facts.keep
         && facts.task == Some(TaskState::Working)
         && !facts.asked
-        && !facts.messaged;
+        && !facts.messaged
+        && !facts.reported;
     if unfinished {
         return Decision::deny(
             RuleId::StopUnfinished,
-            "your task is still working: carry on, ask the user with AskUserQuestion if you are blocked, or report to \
-             root and close yourself when it is finished",
+            "your task is still working: carry on, ask the user with AskUserQuestion if you are blocked, call the headwork \
+             `report` tool with `blocked` or `done`, or close yourself when it is finished",
         );
     }
     Decision::Allow

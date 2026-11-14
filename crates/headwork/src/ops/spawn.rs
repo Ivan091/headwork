@@ -90,7 +90,7 @@ pub fn spawn(
         brief
     } else {
         let dir = env.task_dir(&task)?;
-        let rules = RuleFiles::load(env.home, env.config)?.render(
+        let rules = RuleFiles::load(env.home, env.config, &store.active_rules()?)?.render(
             Role::Child,
             env.config,
             env.exe,
