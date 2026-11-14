@@ -268,3 +268,7 @@ and the reason.
   per-project allowed set. Adopted (imported) tasks have no effort. `headwork root --effort` exists too but is not
   stored. The board shows it after the model; `log` shows it on `task-created`; `--json` carries `effort` (null when
   absent) on tasks and in the event data; the MCP `spawn` takes an optional `effort`.
+- 2026-11-14 Sub-roots are not built. Large work goes to a lead child (subagents in its own worktree; extra sessions
+  proposed to the root, which spawns them with `--after`). Open for the user: whether to build sub-roots later (the
+  change set and triggers are in `docs/sub-roots.md`), and whether to add a shadow guard rule (`child-admin`) against
+  children running `headwork spawn`/`queue`/`drop`/`park`/`resume`/`import` or closing other tasks through the CLI.
