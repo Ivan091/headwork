@@ -17,6 +17,8 @@ use headwork_store::{EVENT_WOULD_DENY, EventFilter, MIGRATIONS, Store};
 use serde::Serialize;
 use serde_json::Value;
 
+use super::install::Stamp;
+use super::reload::{self, Freshness};
 use super::slashed;
 use crate::home::Home;
 
@@ -588,8 +590,24 @@ fn store_checks(d: &Doctor<'_>, store: &Store) -> Vec<Check> {
         Err(error) => Check::warn("root", format!("{error}"), "check the store"),
     });
     checks.push(orphans(d, store));
+    checks.push(builds(store));
     checks.push(shadow_count(store));
     checks
+}
+
+fn builds(store: &Store) -> Check {
+    match store.live_sessions_with_event(reload::EVENT_BUILD) {
+        Ok(live) => {
+            let sessions = reload::classify(&live, |exe| Stamp::of(exe).ok());
+            let detail = reload::summary(&sessions);
+            if reload::named(&sessions, Freshness::Pinned).is_empty() {
+                Check::ok("builds", detail)
+            } else {
+                Check::warn("builds", detail, reload::PINNED_FIX)
+            }
+        }
+        Err(error) => Check::warn("builds", format!("{error}"), "check the store"),
+    }
 }
 
 const fn claude_image() -> &'static str {

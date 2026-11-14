@@ -10,7 +10,7 @@ use std::process::Command;
 
 use headwork::home::Home;
 use headwork::ops::Env;
-use headwork::ops::launch::{StartMode, claude_command};
+use headwork::ops::launch::{StartMode, claude_command, exited};
 use headwork::ops::spawn::{Outcome, SpawnRequest, pump, spawn};
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::host::fake::FakeHost;
@@ -323,4 +323,61 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
         assert!(envs.contains(&(key.to_owned(), value)), "{key} in {envs:?}");
     }
     assert_eq!(command.get_current_dir(), Some(dir.as_path()), "cwd");
+}
+
+#[test]
+fn exited_ends_the_session_and_fails_a_session_that_never_got_going() {
+    let mut w = world(10, "builtin");
+    let (task, _) = w.spawn("sand", false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    w.store.session_launched(&session.id, 1, 2, "job").unwrap();
+    exited(&w.home, &session.id, Some(task.id), Some(3), 1).unwrap();
+    let row = w.store.session_of(task.id).unwrap().unwrap();
+    assert_eq!(row.state, SessionState::Ended, "the session ended");
+    assert_eq!(row.exit_code, Some(3), "with claude's exit code");
+    assert_eq!(
+        w.store.task(task.id).unwrap().state,
+        TaskState::Failed,
+        "a spawning task fails"
+    );
+}
+
+#[test]
+fn the_exited_command_does_the_launchers_exit_work() {
+    let mut w = world(10, "builtin");
+    let (task, _) = w.spawn("sand", false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    w.store.session_launched(&session.id, 1, 2, "job").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_headwork"))
+        .args([
+            "exited",
+            "--session",
+            &session.id,
+            "--launcher-pid",
+            "1",
+            "--code",
+            "-1",
+            "--task",
+        ])
+        .arg(task.id.to_string())
+        .arg("--home")
+        .arg(w.home.root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let row = w.store.session_of(task.id).unwrap().unwrap();
+    assert_eq!(
+        (row.state, row.exit_code),
+        (SessionState::Ended, Some(-1)),
+        "ended with a negative code"
+    );
+    assert_eq!(
+        w.store.task(task.id).unwrap().state,
+        TaskState::Failed,
+        "a spawning task fails"
+    );
 }

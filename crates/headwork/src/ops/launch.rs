@@ -17,6 +17,7 @@ use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role, TaskState};
 use headwork_store::{SessionRow, Store, Task, TaskId};
 
+use super::reload::{EVENT_BUILD, build_event};
 use super::{Env, close};
 use crate::home::Home;
 
@@ -159,28 +160,86 @@ pub fn launch(home: &Home, id: TaskId, mode: StartMode) -> Result<Option<i32>> {
     };
     drop(store);
     let status = child.wait();
-    let mut store = home.open_store()?;
     let code = status
         .as_ref()
         .ok()
         .and_then(std::process::ExitStatus::code);
-    store.session_ended(&session.id, code)?;
-    after_exit(&mut store, id)?;
-    if store.task(id)?.state == TaskState::Closing {
-        let host = super::host_for(&config)?;
-        let exe = std::env::current_exe().context("finding the headwork program")?;
-        let env = Env {
-            home,
-            config: &config,
-            host: host.as_ref(),
-            exe: &exe,
-            actor: Actor::Child,
-        };
-        let placed = store.session_of(id)?.unwrap_or(session);
-        close::hand_off(&mut store, &env, id, &placed)?;
-    }
+    hand_exit(home, &session.id, Some(id), code)?;
     status?;
     Ok(code)
+}
+
+/// Has the installed build record the end of a session (`headwork exited`), so a launcher that has run for days
+/// does not apply its own, older rules or meet a store schema it does not know. Only when that program cannot run
+/// the command at all does the launcher do the work itself.
+fn hand_exit(home: &Home, session: &str, task: Option<TaskId>, code: Option<i32>) -> Result<()> {
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let mut command = Command::new(&exe);
+    command
+        .args(["exited", "--session", session, "--launcher-pid"])
+        .arg(std::process::id().to_string())
+        .arg("--home")
+        .arg(home.root());
+    if let Some(task) = task {
+        command.args(["--task", &task.to_string()]);
+    }
+    if let Some(code) = code {
+        command.args(["--code", &code.to_string()]);
+    }
+    match command.status() {
+        Ok(status) if status.code() == Some(USAGE_ERROR) => {}
+        Ok(status) if status.success() => return Ok(()),
+        Ok(status) => anyhow::bail!("`headwork exited` failed with {status}"),
+        Err(_) => {}
+    }
+    exited(home, session, task, code, std::process::id())
+}
+
+/// The exit code `clap` gives a command line it does not know.
+const USAGE_ERROR: i32 = 2;
+
+/// Records that a session's `claude` exited with `code`.
+///
+/// The session ends, a task whose session never got going fails, a running one is interrupted, and a closing one is
+/// handed to a detached finisher that waits for the launcher `launcher_pid` before it closes the pane.
+///
+/// # Errors
+///
+/// Fails when the store or config cannot be read or the finisher cannot start.
+pub fn exited(
+    home: &Home,
+    session: &str,
+    task: Option<TaskId>,
+    code: Option<i32>,
+    launcher_pid: u32,
+) -> Result<()> {
+    let mut store = home.open_store()?;
+    store.session_ended(session, code)?;
+    let Some(id) = task else {
+        return Ok(());
+    };
+    after_exit(&mut store, id)?;
+    if store.task(id)?.state != TaskState::Closing {
+        return Ok(());
+    }
+    let config = home.load_config()?;
+    let host = super::host_for(&config)?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let env = Env {
+        home,
+        config: &config,
+        host: host.as_ref(),
+        exe: &exe,
+        actor: Actor::Child,
+    };
+    let placed = match store.session_of(id)? {
+        Some(row) => row,
+        None => store
+            .session(session)?
+            .map(|(row, _)| row)
+            .with_context(|| format!("session {session} is not in the store"))?,
+    };
+    close::hand_off(&mut store, &env, id, &placed, launcher_pid)
 }
 
 fn start(
@@ -211,6 +270,7 @@ fn start(
         Ownership::Unowned(reason) => format!("unowned: {reason}"),
     };
     store.session_launched(&session.id, std::process::id(), child.pid(), &tree)?;
+    record_build(store, Some(task.id), &session.id, &exe)?;
     if plugin_dir(home, config).is_some() {
         return Ok(child);
     }
@@ -228,6 +288,18 @@ fn start(
         )?;
     }
     Ok(child)
+}
+
+/// Records which build this launcher runs and which program its hooks and MCP server call ([`super::reload`]).
+fn record_build(store: &Store, task: Option<TaskId>, session: &str, exe: &Path) -> Result<()> {
+    store.append_event(
+        Actor::Child,
+        task,
+        Some(session),
+        EVENT_BUILD,
+        &build_event(exe),
+    )?;
+    Ok(())
 }
 
 /// Moves a task whose `claude` exited on its own: a session that never got going fails, a running one is
@@ -315,7 +387,7 @@ pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
         .env(ENV_SESSION, &id)
         .env(ENV_ROLE, Role::Root.as_str())
         .env(ENV_HOME, home.root())
-        .env(ENV_EXE, exe);
+        .env(ENV_EXE, &exe);
     proc::ignore_interrupts()?;
     let child = OwnedChild::spawn(&mut command)?;
     let tree = match child.ownership() {
@@ -324,14 +396,14 @@ pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
         Ownership::Unowned(reason) => format!("unowned: {reason}"),
     };
     store.session_launched(&id, std::process::id(), child.pid(), &tree)?;
+    record_build(&store, None, &id, &exe)?;
     drop(store);
     let status = child.wait();
-    let mut store = home.open_store()?;
     let code = status
         .as_ref()
         .ok()
         .and_then(std::process::ExitStatus::code);
-    store.session_ended(&id, code)?;
+    hand_exit(home, &id, None, code)?;
     status?;
     Ok(code)
 }

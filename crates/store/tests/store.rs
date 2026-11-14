@@ -483,8 +483,36 @@ fn launcher_records_place_pids_exit_and_worktree() {
         "pids"
     );
     assert_eq!(row.host_surface.as_deref(), Some("surf-1"), "surface");
+    assert_eq!(
+        store.live_sessions_with_event("build").unwrap(),
+        vec![("me-sim-sand".to_owned(), None)],
+        "a live session without a build event"
+    );
+    for stamp in ["1:1", "2:2"] {
+        store
+            .append_event(
+                Actor::Child,
+                Some(task.id),
+                Some(id),
+                "build",
+                &serde_json::json!({ "stamp": stamp }),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.live_sessions_with_event("build").unwrap(),
+        vec![(
+            "me-sim-sand".to_owned(),
+            Some(serde_json::json!({ "stamp": "2:2" }))
+        )],
+        "the newest build event"
+    );
 
     store.session_ended(id, Some(3)).unwrap();
+    assert!(
+        store.live_sessions_with_event("build").unwrap().is_empty(),
+        "ended sessions are not live"
+    );
     let row = store.session_of(task.id).unwrap().unwrap();
     assert_eq!(row.state, SessionState::Ended, "ended");
     assert_eq!(row.exit_code, Some(3), "exit code");

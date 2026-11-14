@@ -327,13 +327,19 @@ pub fn reap(store: &mut Store, env: &Env<'_>) -> Result<Vec<CloseReport>> {
 
 /// The launcher's part of a close, once `claude` has exited and the task is `closing`.
 ///
-/// It starts a detached `headwork finish` that waits for this launcher to be gone, then closes this pane, or the
-/// workspace it leaves empty, as the very last act.
+/// It starts a detached `headwork finish` that waits for the launcher (`launcher_pid`) to be gone, then closes this
+/// pane, or the workspace it leaves empty, as the very last act.
 ///
 /// # Errors
 ///
 /// Fails when the finisher cannot start; the pane is closed anyway.
-pub fn hand_off(store: &mut Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> Result<()> {
+pub fn hand_off(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    session: &SessionRow,
+    launcher_pid: u32,
+) -> Result<()> {
     let mut finisher = Command::new(env.exe);
     finisher
         .args([
@@ -341,7 +347,7 @@ pub fn hand_off(store: &mut Store, env: &Env<'_>, id: TaskId, session: &SessionR
             "--task",
             &id.to_string(),
             "--wait-pid",
-            &std::process::id().to_string(),
+            &launcher_pid.to_string(),
             "--home",
         ])
         .arg(env.home.root())
