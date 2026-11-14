@@ -96,3 +96,27 @@ and the reason.
 - 2026-11-13 `import` appends projects of `projects.conf` missing from `config.toml` (creating it when absent): the
   project's own `scripts/worktree.sh` and `scripts/ship.sh` when present, else `builtin` and `pr`, and its `origin`
   as the only allowed repository. `--dry-run` shows the plan and writes nothing.
+- 2026-11-13 Hooks live in a `[hooks]` config section: `enforce` (default false, shadow mode: every rule a call
+  breaks is logged as `would-deny` with its rule id and the call goes through), `plugin_dir`, extra `writable` paths
+  for every session (`~/.claude/projects`, `~/.claude/plans`), `root_writable` (`~/.claude/cache/orchestrate`), and
+  the windows in which a push (120 s) or a sent file (300 s) counts as preceding an ask.
+- 2026-11-13 The plugin is loaded per session with `--plugin-dir`, only when `hooks.plugin_dir` is set, never
+  installed into `~/.claude`. Each hook runs `"${HEADWORK_EXE:-true}" hook <event>`; the launcher sets
+  `HEADWORK_EXE`, so a session without it runs `true` and is untouched.
+- 2026-11-13 With the plugin, the SessionStart hook, not the launcher, fires session-started, and the brief holds only
+  the task: the rules arrive as SessionStart context. Without the plugin, spawn appends the rendered child rules to
+  the brief. The tick's spawn timeout (milestone 5) is the backstop for a session whose hook never fires.
+- 2026-11-13 Rules are `rules/root.md` and `rules/child.md`, built into the binary and overridable in `rules_dir`,
+  plus optional `global.md` and `<project>.md`. Their hash is `machine.rules_hash` (migration 0003); a session whose
+  seen hash differs gets the rules again once, on its next prompt.
+- 2026-11-13 Only denies are logged (`deny`, `would-deny`), plus prompts and the tool calls the ask and Stop checks
+  need; allowed calls are not, to keep the log readable and hooks fast.
+- 2026-11-13 The root may not run build tools anywhere, not only in project folders: it owns no code, and a cwd test
+  is easy to dodge with `cd`.
+- 2026-11-13 The Stop gate's plain-question check applies even after an ask in the same turn. The gate gives up after
+  3 blocks in one turn instead of trusting `stop_hook_active`, so a stuck model cannot loop.
+- 2026-11-13 `(Recommended)` on an ask option is optional, but when present it must be on the first option.
+- 2026-11-13 In shadow mode an ask is still recorded, moves the task to `needs_user` and raises the blocked state:
+  that is bookkeeping, not enforcement.
+- 2026-11-13 A hook that fails exits 1, which Claude Code shows but never treats as a block; only a rule deny in
+  enforce mode exits 2.
