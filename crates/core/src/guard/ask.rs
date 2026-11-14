@@ -1,8 +1,11 @@
-//! The `AskUserQuestion` checks: two to four concrete options, the recommendation first, no "needs changes" option,
+//! The `AskUserQuestion` checks: at least two concrete options, the recommendation first, no "needs changes" option,
 //! and the push or file the ask must follow.
 
 use super::Decision;
 use crate::RuleId;
+
+/// The fewest options an ask may have. There is no upper bound of our own: `AskUserQuestion` caps its own options.
+pub const MIN_OPTIONS: usize = 2;
 
 /// The mark of the recommended option.
 pub const RECOMMENDED: &str = "(recommended)";
@@ -59,11 +62,11 @@ pub struct AskFacts {
 pub fn check_ask(questions: &[Question<'_>], facts: AskFacts) -> Decision {
     for question in questions {
         let count = question.options.len();
-        if !(2..=4).contains(&count) {
+        if count < MIN_OPTIONS {
             return Decision::deny(
                 RuleId::AskOptionCount,
                 format!(
-                    "give 2 to 4 concrete options, not {count}; the user can always type their own answer"
+                    "give at least {MIN_OPTIONS} concrete options, not {count}; the user can always type their own answer"
                 ),
             );
         }

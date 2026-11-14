@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use headwork_core::config::Delivery;
 use headwork_core::{Config, Role};
-use headwork_store::Task;
+use headwork_store::{AddedRule, Task};
 
 use super::slashed;
 use crate::home::Home;
@@ -33,6 +33,7 @@ pub struct RuleFiles {
     root: String,
     child: String,
     projects: Vec<(String, String)>,
+    added: Vec<AddedRule>,
     hash: String,
 }
 
@@ -46,12 +47,12 @@ pub struct Card<'a> {
 }
 
 impl RuleFiles {
-    /// Reads the rules folder.
+    /// Reads the rules folder; `added` are the rules added with `rule_add`, which join the files.
     ///
     /// # Errors
     ///
     /// Fails when a file exists and cannot be read.
-    pub fn load(home: &Home, config: &Config) -> Result<Self> {
+    pub fn load(home: &Home, config: &Config, added: &[AddedRule]) -> Result<Self> {
         let dir = config
             .machine
             .rules_dir
@@ -81,12 +82,16 @@ impl RuleFiles {
         for (name, text) in &projects {
             all.extend(["\u{0}", name.as_str(), "\u{0}", text.as_str()]);
         }
+        for rule in added {
+            all.extend(["\u{0}", rule.scope.as_str(), "\u{0}", rule.body.as_str()]);
+        }
         Ok(Self {
             dir,
             global,
             root,
             child,
             projects,
+            added: added.to_vec(),
             hash: format!("{:016x}", fnv1a(all.as_bytes())),
         })
     }
@@ -129,6 +134,18 @@ impl RuleFiles {
                     parts.push(text.clone());
                 }
             }
+        }
+        let project = card.map(|card| card.task.project().as_str());
+        let scopes = ["global", role.as_str()].into_iter().chain(project);
+        let added: Vec<String> = scopes
+            .flat_map(|scope| self.added.iter().filter(move |rule| rule.scope == scope))
+            .map(|rule| format!("- {}", rule.body.trim()))
+            .collect();
+        if !added.is_empty() {
+            parts.push(format!(
+                "## Rules added by the root\n\n{}",
+                added.join("\n")
+            ));
         }
         let text = fill(&parts.join("\n\n"), config, exe, card);
         if text.len() <= CONTEXT_LIMIT {

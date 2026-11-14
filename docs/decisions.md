@@ -120,3 +120,30 @@ and the reason.
   that is bookkeeping, not enforcement.
 - 2026-11-13 A hook that fails exits 1, which Claude Code shows but never treats as a block; only a rule deny in
   enforce mode exits 2.
+- 2026-11-14 The ask check wants at least 2 options and has no upper bound of its own (the user wants any reasonable
+  number). `AskUserQuestion`'s own schema caps a question at 4 options, so the tool's cap still applies where it
+  exists; the check stays aligned with the tool by adding nothing stricter. The rules files say the same.
+- 2026-11-14 `headwork mcp` is registered in `plugin/.mcp.json` as `${HEADWORK_EXE} mcp`; the launcher sets
+  `HEADWORK_EXE`, `HEADWORK_SESSION` and `HEADWORK_ROLE`, so the server needs no arguments. A session without them is
+  unmanaged: `tools/list` is empty and every call is refused.
+- 2026-11-14 Roles gate twice: `tools/list` shows only the role's tools, and each call checks the role again. A child's
+  tools also need the session's row with a task, so a forged `HEADWORK_ROLE` alone gets nothing. The root has no
+  session row yet (its launcher arrives later), so root tools trust `HEADWORK_ROLE=root`, which only a launcher sets.
+- 2026-11-14 Milestone 4 offers the tools that do not need the tick, parking or jobs: root `board`, `inbox`, `spawn`,
+  `drop`, `close`, `queue`, `rules`, `rule_add`, `rule_retire`; child `board`, `inbox`, `report`, `done`. `park`,
+  `resume`, `park_status`, `handoff` and the job tools arrive with their milestones.
+- 2026-11-14 `report(status, summary, links?, pr?)` has statuses `progress`, `review`, `blocked`, `done`. It is stored
+  as a `report` event and as the task's `last_report`. `review` needs a GitHub pull request URL, records it in `prs`
+  and moves the task to `in_review` when the repository is in `allowed_repos`; otherwise the lifecycle refuses, the
+  report stays, and the reply carries the refusal as a note.
+- 2026-11-14 The Stop gate lets a working child end a turn when it reported `blocked` or `done` since its last prompt,
+  as it already did after an ask or a message to another session. `progress` does not count.
+- 2026-11-14 `done` records the report, then closes the task through the same `close` as the CLI, after its response is
+  written, because closing ends the session that called it. It refuses a keep task and an open ask. It does not check
+  pull request state or "report sent to root" yet: the tick (milestone 5) is what learns that a pull request merged.
+- 2026-11-14 `rule_add` and `rule_retire` write the `rules` table; those rules join the files' hash and render under
+  "Rules added by the root" for `global`, the role, or the project, so the version bumps at once and each session gets
+  the change on its next prompt. Scopes are `global`, `root`, `child` or a configured project.
+- 2026-11-14 `spawn` through MCP takes the brief as text, writes it to `<home>/incoming/` for the spawn operation and
+  removes it afterwards; MCP spawns run in `auto` permission mode. `drop` records the user's words as a `drop-reason`
+  event, then closes.

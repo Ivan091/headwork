@@ -323,12 +323,7 @@ fn ask_table() {
     let table: &[(&[&str], &str, AskFacts, Option<RuleId>)] = &[
         (&["Ship it (Recommended)", "Drop it"], "Ship", met, None),
         (&["Ship it"], "Ship", met, Some(RuleId::AskOptionCount)),
-        (
-            &["a", "b", "c", "d", "e"],
-            "Ship",
-            met,
-            Some(RuleId::AskOptionCount),
-        ),
+        (&["a", "b", "c", "d", "e"], "Ship", met, None),
         (
             &["Ship it (Recommended)", "Needs changes"],
             "Ship",
@@ -403,6 +398,7 @@ fn stop_table() {
         blocked_in_row: 0,
         asked: false,
         messaged: false,
+        reported: false,
         keep: false,
         last_message: Some("Done with step 3."),
     };
@@ -436,6 +432,14 @@ fn stop_table() {
             },
             None,
             "reported",
+        ),
+        (
+            StopFacts {
+                reported: true,
+                ..base
+            },
+            None,
+            "reported done or blocked",
         ),
         (StopFacts { keep: true, ..base }, None, "a keep task"),
         (

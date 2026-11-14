@@ -9,6 +9,7 @@ mod migrate;
 mod queries;
 mod queue;
 mod records;
+mod reports;
 mod sessions;
 
 use std::path::Path;
@@ -27,6 +28,7 @@ pub use records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
     WorktreeRow,
 };
+pub use reports::{AddedRule, EVENT_REPORT, NewPr};
 
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
