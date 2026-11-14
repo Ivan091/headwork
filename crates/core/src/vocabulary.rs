@@ -373,6 +373,16 @@ text_enum!(
     }
 );
 
+text_enum!(
+    /// How a session sits in its workspace: alone in a pane, or as one tab among others.
+    PlaceKind, "place kind" {
+        /// A pane of its own.
+        Pane => "pane",
+        /// A tab: stacked on a pane that holds other sessions, or placed by the host in tabs mode.
+        Tab => "tab",
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

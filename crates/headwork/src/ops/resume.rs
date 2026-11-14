@@ -20,7 +20,8 @@ use headwork_core::{JobState, MachineMode, Role, TaskState};
 use headwork_store::{NewSession, Store, Task};
 use serde::Serialize;
 
-use super::{Env, jobs, label, spawn};
+use super::place::{self, Opening};
+use super::{Env, jobs, spawn};
 
 /// How a resume runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,16 +315,18 @@ fn open_pane(
     ];
     argv.extend(flags.iter().map(|flag| (*flag).to_owned()));
     argv.extend(["--home".to_owned(), env.home.root().display().to_string()]);
-    let pane = env
-        .host
-        .spawn(&workspace, dir, &label(task), &argv, fresh)?;
-    store.set_session_place(
-        session,
-        workspace.as_str(),
-        pane.surface.as_str(),
-        env.actor,
-    )?;
-    Ok(pane.surface.to_string())
+    place::open(
+        store,
+        env,
+        &Opening {
+            task,
+            session,
+            workspace: &workspace,
+            fresh,
+            dir,
+            argv: &argv,
+        },
+    )
 }
 
 fn restart_jobs(store: &mut Store, env: &Env<'_>) -> Result<Vec<RestartedJob>> {

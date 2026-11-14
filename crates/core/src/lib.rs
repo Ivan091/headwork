@@ -5,17 +5,18 @@
 pub mod admission;
 pub mod config;
 pub mod guard;
+pub mod layout;
 pub mod lifecycle;
 pub mod names;
 pub mod vocabulary;
 pub mod watch;
 
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
-pub use config::{Config, ConfigError, ProjectConfig, ProjectOverlay};
+pub use config::{Config, ConfigError, LayoutConfig, LayoutMode, ProjectConfig, ProjectOverlay};
 pub use guard::{Decision, Verdict};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
 pub use names::{NameError, ProjectName, Slug, TaskName};
 pub use vocabulary::{
     Actor, AskKind, AskState, Effort, FindingId, JobState, MachineMode, Model, PermissionMode,
-    RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
+    PlaceKind, RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
 };

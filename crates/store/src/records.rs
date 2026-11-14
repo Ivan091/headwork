@@ -3,7 +3,7 @@
 use std::fmt;
 
 use headwork_core::{
-    Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, ProjectName,
+    Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, PlaceKind, ProjectName,
     SessionState, Slug, TaskName, TaskSnapshot, TaskState,
 };
 use serde::{Serialize, Serializer};
@@ -124,8 +124,12 @@ pub struct SessionRow {
     pub rc_name: String,
     /// The host workspace.
     pub host_workspace: Option<String>,
-    /// The host pane.
+    /// The host surface: the terminal tab the session runs in.
     pub host_surface: Option<String>,
+    /// The host pane holding that surface, as placed.
+    pub host_pane: Option<String>,
+    /// A pane of its own or a tab, as placed.
+    pub host_place: Option<PlaceKind>,
     /// The launcher process.
     pub launcher_pid: Option<u32>,
     /// The `claude` process.

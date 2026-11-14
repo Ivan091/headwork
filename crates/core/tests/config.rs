@@ -9,7 +9,7 @@ use headwork_core::config::{
     WorktreeCommand, check_template, expand_home,
 };
 use headwork_core::lifecycle::MergePolicy;
-use headwork_core::{Config, Model, ProjectName, ProjectOverlay};
+use headwork_core::{Config, LayoutMode, Model, ProjectName, ProjectOverlay};
 
 fn fixture(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -97,6 +97,8 @@ fn defaults_fill_a_minimal_config() {
     assert_eq!(config.models.default, Model::Sonnet, "default model");
     assert_eq!(config.watch.disk_warn_gb, 15, "default disk warning");
     assert!(config.projects.is_empty(), "no projects");
+    assert_eq!(config.layout.mode, LayoutMode::Panes, "panes by default");
+    assert_eq!(config.layout.panes.get(), 4, "four panes by default");
 }
 
 #[test]
@@ -283,4 +285,19 @@ fn machine_shell_and_host_bin_are_optional() {
         "shell"
     );
     assert_eq!(config.machine.host_bin, None, "host_bin");
+}
+
+#[test]
+fn layout_takes_a_mode_and_a_pane_count() {
+    let config = Config::parse(
+        "[machine]\nhost = \"wmux\"\n\n[layout]\nmode = \"tabs\"\npanes = 2\n",
+        "layout",
+    )
+    .unwrap();
+    assert_eq!(config.layout.mode, LayoutMode::Tabs, "tabs");
+    assert_eq!(config.layout.panes.get(), 2, "two panes");
+    for bad in ["mode = \"grid\"", "panes = 0", "columns = 2"] {
+        let text = format!("[machine]\nhost = \"wmux\"\n\n[layout]\n{bad}\n");
+        assert!(Config::parse(&text, "layout").is_err(), "{bad} is refused");
+    }
 }

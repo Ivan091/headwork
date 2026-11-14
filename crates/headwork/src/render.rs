@@ -12,6 +12,7 @@ use headwork::ops::shadow::ShadowReport;
 use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::tick::TickReport;
+use headwork_core::PlaceKind;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
@@ -127,6 +128,16 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize) {
         let _ = write!(text, " · session {}", session.state);
         if let Some(surface) = &session.host_surface {
             let _ = write!(text, " {surface}");
+        }
+        match (session.host_place, &session.host_pane) {
+            (Some(PlaceKind::Pane), Some(pane)) => {
+                let _ = write!(text, " in its own pane {pane}");
+            }
+            (Some(PlaceKind::Tab), Some(pane)) => {
+                let _ = write!(text, " as a tab of {pane}");
+            }
+            (Some(PlaceKind::Tab), None) => text.push_str(" as a tab"),
+            (Some(PlaceKind::Pane), None) | (None, _) => {}
         }
     }
     if let Some(pr) = &task.pr {
@@ -456,9 +467,10 @@ mod tests {
     use std::path::Path;
 
     use headwork_core::{
-        Actor, AskKind, Config, PermissionMode, ProjectName, Slug, TaskRequest, Trigger,
+        Actor, AskKind, Config, PermissionMode, PlaceKind, ProjectName, Role, Slug, TaskRequest,
+        Trigger,
     };
-    use headwork_store::{EventFilter, NewAsk, NewTask, Store};
+    use headwork_store::{EventFilter, NewAsk, NewSession, NewTask, Place, Store};
 
     fn store() -> (Store, Config) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
@@ -515,6 +527,49 @@ mod tests {
                 .unwrap(),
         );
         assert!(log.contains("model opus, xhigh effort"), "{log}");
+    }
+
+    #[test]
+    fn board_shows_whether_a_session_has_a_pane_or_a_tab() {
+        let (mut store, config) = store();
+        let mut place = |slug: &str, pane: Option<&str>, kind: Option<PlaceKind>| {
+            let made = task(&mut store, &config, "me-sim", slug);
+            let id = format!("00000000-0000-0000-0000-00000000000{}", made.id.0);
+            store
+                .record_session(
+                    &NewSession {
+                        id: id.clone(),
+                        task_id: Some(made.id),
+                        role: Role::Child,
+                        rc_name: made.name.to_string(),
+                        host: "wmux".to_owned(),
+                        host_workspace: None,
+                        host_surface: None,
+                    },
+                    Actor::User,
+                )
+                .unwrap();
+            let surface = format!("surf-{slug}");
+            store
+                .set_session_place(
+                    &id,
+                    &Place {
+                        workspace: "ws-1",
+                        surface: &surface,
+                        pane,
+                        kind,
+                    },
+                    Actor::User,
+                )
+                .unwrap();
+        };
+        place("own", Some("pane-1"), Some(PlaceKind::Pane));
+        place("stacked", Some("pane-1"), Some(PlaceKind::Tab));
+        place("tabbed", None, Some(PlaceKind::Tab));
+        let text = super::board(&store.board(false).unwrap(), 10);
+        assert!(text.contains("surf-own in its own pane pane-1"), "{text}");
+        assert!(text.contains("surf-stacked as a tab of pane-1"), "{text}");
+        assert!(text.contains("surf-tabbed as a tab\n"), "{text}");
     }
 
     #[test]

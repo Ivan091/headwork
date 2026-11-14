@@ -151,7 +151,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
     let session = store.session_of(id)?;
     let mut pane_gone = true;
     if let Some(session) = &session {
-        pane_gone = close_pane(env.host, session)?;
+        pane_gone = close_pane(env, session)?;
         for pid in [session.claude_pid, session.launcher_pid]
             .into_iter()
             .flatten()
@@ -188,7 +188,8 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
 
 /// Closes the session's pane, or its workspace when the pane is the last thing in it, then ends the host's program.
 /// Returns whether the pane is gone.
-pub(super) fn close_pane(host: &dyn TerminalHost, session: &SessionRow) -> Result<bool> {
+pub(super) fn close_pane(env: &Env<'_>, session: &SessionRow) -> Result<bool> {
+    let host = env.host;
     let Some(surface) = session
         .host_surface
         .as_deref()
@@ -201,7 +202,7 @@ pub(super) fn close_pane(host: &dyn TerminalHost, session: &SessionRow) -> Resul
         .as_deref()
         .map(|w| WorkspaceId(w.to_owned()));
     if surface_present(host, workspace.as_ref(), &surface)? {
-        close_surface_or_workspace(host, workspace.as_ref(), &surface)?;
+        close_surface_or_workspace(env, workspace.as_ref(), &surface)?;
     }
     for pane in host.panes()? {
         if pane.surface == surface && pane.running {
@@ -226,25 +227,18 @@ pub(super) fn surface_present(
     Ok(exists && host.surfaces(workspace)?.contains(surface))
 }
 
-/// Closes the workspace when `surface` is all it holds, else just the surface.
+/// Closes a session's surface, or its workspace when nothing else there holds a session, keeping its pane in `panes`
+/// mode (see [`super::place::release`]).
 ///
 /// # Errors
 ///
 /// Returns the host's failure.
 pub fn close_surface_or_workspace(
-    host: &dyn TerminalHost,
+    env: &Env<'_>,
     workspace: Option<&WorkspaceId>,
     surface: &SurfaceId,
 ) -> Result<()> {
-    if let Some(workspace) = workspace {
-        let surfaces = host.surfaces(workspace)?;
-        if surfaces.iter().all(|s| s == surface) {
-            host.close_workspace(workspace)?;
-            return Ok(());
-        }
-    }
-    host.close_surface(surface)?;
-    Ok(())
+    super::place::release(env, workspace, surface)
 }
 
 pub(super) fn remove_worktree(
@@ -350,7 +344,7 @@ pub fn hand_off(
             .host_workspace
             .as_deref()
             .map(|w| WorkspaceId(w.to_owned()));
-        close_surface_or_workspace(env.host, workspace.as_ref(), &SurfaceId(surface.to_owned()))?;
+        close_surface_or_workspace(env, workspace.as_ref(), &SurfaceId(surface.to_owned()))?;
     }
     started?;
     Ok(())

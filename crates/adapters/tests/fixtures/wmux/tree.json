@@ -1,0 +1,37 @@
+{
+  "tree": {
+    "type": "branch",
+    "direction": "horizontal",
+    "ratio": 0.5,
+    "children": [
+      {
+        "type": "branch",
+        "direction": "vertical",
+        "ratio": 0.5,
+        "children": [
+          {
+            "type": "leaf",
+            "paneId": "pane-a",
+            "surfaces": [
+              { "id": "surf-1", "type": "terminal", "resolvedShell": "C:/Program Files/Git/bin/bash.exe", "launchShell": "bash.exe", "currentCwd": "S:/Code/headwork" },
+              { "id": "surf-2", "type": "terminal" }
+            ],
+            "activeSurfaceIndex": 0
+          },
+          {
+            "type": "leaf",
+            "paneId": "pane-c",
+            "surfaces": [{ "id": "surf-3", "type": "terminal" }],
+            "activeSurfaceIndex": 0
+          }
+        ]
+      },
+      {
+        "type": "leaf",
+        "paneId": "pane-b",
+        "surfaces": [{ "id": "surf-4", "type": "terminal" }],
+        "activeSurfaceIndex": 0
+      }
+    ]
+  }
+}

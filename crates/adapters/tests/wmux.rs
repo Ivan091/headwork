@@ -7,10 +7,10 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use headwork_adapters::host::wmux::{
-    Runner, Wmux, parse_agents, parse_states, parse_surfaces, parse_workspaces,
+    Runner, Wmux, parse_agents, parse_states, parse_surfaces, parse_tree, parse_workspaces,
 };
 use headwork_adapters::host::{
-    Choice, HostError, Key, SurfaceId, TerminalHost, WorkspaceId, command_line,
+    Choice, HostError, Key, PaneId, SurfaceId, Target, TerminalHost, WorkspaceId, command_line,
 };
 
 fn fixture(name: &str) -> String {
@@ -36,8 +36,11 @@ impl Recorder {
 }
 
 impl Runner for &Recorder {
-    fn run(&self, args: &[&str]) -> Result<String, HostError> {
-        self.calls.borrow_mut().push(args.join(" "));
+    fn run_as(&self, caller: Option<&str>, args: &[&str]) -> Result<String, HostError> {
+        let line = args.join(" ");
+        self.calls
+            .borrow_mut()
+            .push(caller.map_or_else(|| line.clone(), |c| format!("{c}> {line}")));
         Ok(self.answers.borrow_mut().pop_front().unwrap_or_default())
     }
 }
@@ -141,12 +144,11 @@ fn ensure_workspace_creates_it_once() {
 }
 
 #[test]
-fn spawn_replaces_the_shell_of_a_fresh_workspace_and_finds_the_new_agent() {
+fn spawn_replaces_the_shell_of_a_pane_and_finds_the_new_agent() {
     let before = r#"{"agents": []}"#;
-    let panes = r#"{"panes": [{"paneId": "pane-1", "surfaces": [{"id": "surf-0"}]}]}"#;
     let after = r#"{"agents": [{"agentId": "agent-1", "surfaceId": "surf-1", "workspaceId": "ws-9",
         "label": "headwork-test/probe", "cmd": "x", "status": "running", "pid": 42, "spawnTime": 5}]}"#;
-    let recorder = Recorder::answering(&[before, panes, "", after]);
+    let recorder = Recorder::answering(&[before, "", after]);
     let argv = vec![
         "headwork".to_owned(),
         "launch".to_owned(),
@@ -159,16 +161,71 @@ fn spawn_replaces_the_shell_of_a_fresh_workspace_and_finds_the_new_agent() {
             Path::new("S:/w"),
             "headwork-test/probe",
             &argv,
-            true,
+            &Target::Pane {
+                pane: PaneId("pane-1".to_owned()),
+                replace_tab: true,
+            },
         )
         .unwrap();
     assert_eq!(pane.surface.as_str(), "surf-1", "surface");
     assert_eq!(pane.pid, Some(42), "pid");
     assert_eq!(
-        recorder.calls.borrow().get(2).unwrap(),
+        recorder.calls.borrow().get(1).unwrap(),
         "agent spawn --workspace ws-9 --cwd S:/w --label headwork-test/probe --cmd headwork launch --task 3 \
          --pane pane-1 --replace-tab",
         "spawn command"
+    );
+    let tab = Recorder::answering(&[before, "", after]);
+    Wmux::new(&tab)
+        .spawn(
+            &WorkspaceId("ws-9".to_owned()),
+            Path::new("S:/w"),
+            "headwork-test/probe",
+            &argv,
+            &Target::Tab,
+        )
+        .unwrap();
+    assert_eq!(
+        tab.calls.borrow().get(1).unwrap(),
+        "agent spawn --workspace ws-9 --cwd S:/w --label headwork-test/probe --cmd headwork launch --task 3",
+        "a tab names no pane"
+    );
+}
+
+#[test]
+fn tree_parses_into_panes_with_their_sizes() {
+    let tree = parse_tree(&fixture("tree.json")).unwrap();
+    let cells = tree.cells();
+    let summary: Vec<(&str, usize, f64, f64)> = cells
+        .iter()
+        .map(|c| (c.pane.as_str(), c.surfaces.len(), c.width, c.height))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("pane-a", 2, 0.5, 0.5),
+            ("pane-c", 1, 0.5, 0.5),
+            ("pane-b", 1, 0.5, 1.0),
+        ],
+        "a left column split top and bottom beside a right pane"
+    );
+}
+
+#[test]
+fn split_runs_as_the_surface_beside_it() {
+    let recorder = Recorder::answering(&[r#"{"paneId": "pane-2", "surfaceId": "surf-9"}"#]);
+    let host = Wmux::new(&recorder);
+    let (pane, shell) = host.split(&SurfaceId("surf-1".to_owned()), true).unwrap();
+    assert_eq!(
+        (pane.as_str(), shell.as_str()),
+        ("pane-2", "surf-9"),
+        "new pane"
+    );
+    host.close_pane(&pane).unwrap();
+    assert_eq!(
+        *recorder.calls.borrow(),
+        ["surf-1> split --down", "close-pane pane-2"],
+        "commands"
     );
 }
 

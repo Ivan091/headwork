@@ -408,8 +408,7 @@ fn stop_session(
     let Some(session) = session else {
         return Ok(None);
     };
-    let mut problem =
-        (!close_pane(env.host, session)?).then(|| "the pane is still open".to_owned());
+    let mut problem = (!close_pane(env, session)?).then(|| "the pane is still open".to_owned());
     let pids: Vec<u32> = [session.claude_pid, session.launcher_pid]
         .into_iter()
         .flatten()

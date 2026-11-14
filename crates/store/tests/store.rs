@@ -11,12 +11,12 @@ use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
 use headwork_core::{
     Actor, AdmissionRefusal, AskKind, AskState, Config, Effort, JobState, MachineMode, Model,
-    PermissionMode, ProjectName, RecapKind, Refusal, Role, SessionState, Slug, TaskRequest,
-    TaskState, Trigger,
+    PermissionMode, PlaceKind, ProjectName, RecapKind, Refusal, Role, SessionState, Slug,
+    TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
-    EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession, NewTask, Store,
-    StoreError, Task,
+    EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession, NewTask, Place,
+    Store, StoreError, Task,
 };
 
 fn config() -> Config {
@@ -471,7 +471,16 @@ fn launcher_records_place_pids_exit_and_worktree() {
     };
     store.record_session(&session, Actor::User).unwrap();
     store
-        .set_session_place(id, "ws-1", "surf-1", Actor::User)
+        .set_session_place(
+            id,
+            &Place {
+                workspace: "ws-1",
+                surface: "surf-1",
+                pane: Some("pane-1"),
+                kind: Some(PlaceKind::Pane),
+            },
+            Actor::User,
+        )
         .unwrap();
     store.session_launched(id, 100, 101, "job").unwrap();
     let (row, owner) = store.session(id).unwrap().unwrap();
@@ -855,5 +864,50 @@ fn a_task_keeps_its_effort_and_none_means_the_default() {
             .and_then(|v| v.as_str()),
         Some("high"),
         "event"
+    );
+}
+
+#[test]
+fn a_placed_session_records_its_pane_and_holds_its_surface_while_live() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    store.start_task(&config, task.id, Actor::Tick).unwrap();
+    let id = "0b6c1d2e-0000-4000-8000-000000000003";
+    let session = NewSession {
+        id: id.to_owned(),
+        task_id: Some(task.id),
+        role: Role::Child,
+        rc_name: "me-sim-sand".to_owned(),
+        host: "wmux".to_owned(),
+        host_workspace: None,
+        host_surface: None,
+    };
+    store.record_session(&session, Actor::User).unwrap();
+    assert!(
+        store.live_session_surfaces().unwrap().is_empty(),
+        "not placed yet"
+    );
+    let place = Place {
+        workspace: "ws-1",
+        surface: "surf-1",
+        pane: Some("pane-1"),
+        kind: Some(PlaceKind::Pane),
+    };
+    store.set_session_place(id, &place, Actor::User).unwrap();
+    assert_eq!(
+        store.live_session_surfaces().unwrap(),
+        ["surf-1"],
+        "a starting session holds its surface"
+    );
+    let row = store.session_of(task.id).unwrap().unwrap();
+    assert_eq!(
+        (row.host_pane.as_deref(), row.host_place),
+        (Some("pane-1"), Some(PlaceKind::Pane)),
+        "pane"
+    );
+    store.session_ended(id, Some(0)).unwrap();
+    assert!(
+        store.live_session_surfaces().unwrap().is_empty(),
+        "an ended session frees its surface"
     );
 }

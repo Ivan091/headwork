@@ -12,8 +12,9 @@ use headwork_core::{PermissionMode, Role, TaskName, TaskRequest};
 use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
+use super::place::{self, Opening};
 use super::rules::{Card, RuleFiles};
-use super::{Env, label, launch, slashed};
+use super::{Env, launch, slashed};
 
 /// A task to create.
 #[derive(Debug, Clone)]
@@ -191,14 +192,16 @@ fn open_pane(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<String> {
         "--home".to_owned(),
         env.home.root().display().to_string(),
     ];
-    let pane = env
-        .host
-        .spawn(&workspace, &dir, &label(task), &argv, fresh)?;
-    store.set_session_place(
-        &session_id,
-        workspace.as_str(),
-        pane.surface.as_str(),
-        env.actor,
-    )?;
-    Ok(pane.surface.to_string())
+    place::open(
+        store,
+        env,
+        &Opening {
+            task,
+            session: &session_id,
+            workspace: &workspace,
+            fresh,
+            dir: &dir,
+            argv: &argv,
+        },
+    )
 }

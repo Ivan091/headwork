@@ -9,6 +9,7 @@ pub mod jobs;
 pub mod launch;
 pub mod mcp;
 pub mod park;
+pub mod place;
 pub mod recap;
 pub mod relay;
 pub mod reload;

@@ -239,6 +239,11 @@ enum Command {
         #[command(subcommand)]
         action: RuleAction,
     },
+    /// Hold a free pane of a project's workspace until the next child replaces it.
+    Idle {
+        /// The project whose workspace the pane belongs to.
+        project: String,
+    },
     /// Run a task's session: the program each pane runs.
     Launch {
         /// The task's id.
@@ -360,6 +365,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Install { dir, json } => return install_command(&dir, json, out),
+        Command::Idle { project } => return idle_command(&project, out),
         Command::Rule {
             action:
                 RuleAction::Test {
@@ -456,6 +462,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Recap { name } => recap_command(&store, &name, out),
         Command::ShadowReport { json } => shadow_command(&store, &ctx, json, out),
         Command::Launch { .. }
+        | Command::Idle { .. }
         | Command::Park { .. }
         | Command::Resume { .. }
         | Command::Finish { .. }
@@ -1164,4 +1171,15 @@ fn root_command(start: &RootStart) -> Result<ExitCode> {
     let code = launch_root(&home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+fn idle_command(project: &str, out: &mut impl Write) -> Result<ExitCode> {
+    writeln!(
+        out,
+        "headwork: this pane of {project} is free; the next child opens here."
+    )?;
+    out.flush()?;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
 }

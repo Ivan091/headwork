@@ -279,6 +279,9 @@ pub struct Config {
     /// The Claude Code hooks.
     #[serde(default)]
     pub hooks: HooksConfig,
+    /// Where new children appear in their project's workspace.
+    #[serde(default)]
+    pub layout: LayoutConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -413,6 +416,36 @@ impl Default for HooksConfig {
             root_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
             push_window_secs: 120,
             file_window_secs: 300,
+        }
+    }
+}
+
+/// How a project's workspace shows its children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutMode {
+    /// Each child gets a pane of its own, up to `layout.panes`; later ones stack as tabs.
+    #[default]
+    Panes,
+    /// Every child is a tab, as the host places it.
+    Tabs,
+}
+
+/// `[layout]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LayoutConfig {
+    /// Panes or tabs.
+    pub mode: LayoutMode,
+    /// The most panes headwork splits a workspace into before children stack as tabs.
+    pub panes: NonZeroU32,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            mode: LayoutMode::Panes,
+            panes: NonZeroU32::new(4).unwrap_or(NonZeroU32::MIN),
         }
     }
 }
