@@ -1,0 +1,11 @@
+{
+  "name": "headwork",
+  "owner": { "name": "Ivan091" },
+  "plugins": [
+    {
+      "name": "headwork",
+      "source": "./plugin",
+      "description": "Hooks and MCP tools of headwork; they do nothing unless the launcher gave the session HEADWORK_EXE."
+    }
+  ]
+}

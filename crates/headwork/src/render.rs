@@ -2,9 +2,11 @@
 
 use std::fmt::Write;
 
+use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::import::ImportReport;
 use headwork::ops::park::{ParkReport, RecapSource};
 use headwork::ops::resume::{ResumeReport, TaskOutcome};
+use headwork::ops::shadow::ShadowReport;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::tick::TickReport;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
@@ -326,6 +328,72 @@ pub(crate) fn jobs(jobs: &[JobRow]) -> String {
         if let Some(note) = &job.note {
             let _ = writeln!(text, "      {note}");
         }
+    }
+    text
+}
+
+/// What doctor found, one check per line with its fix beneath.
+#[must_use]
+pub(crate) fn doctored(report: &DoctorReport) -> String {
+    let mut text = String::new();
+    for check in &report.checks {
+        let mark = match check.status {
+            Status::Ok => "ok  ",
+            Status::Warn => "warn",
+            Status::Fail => "FAIL",
+        };
+        let _ = writeln!(text, "[{mark}] {:<14} {}", check.id, check.detail);
+        if let Some(fix) = &check.fix {
+            let _ = writeln!(text, "       fix: {fix}");
+        }
+    }
+    let _ = writeln!(
+        text,
+        "\n{} ok, {} warnings, {} problems",
+        report.count(Status::Ok),
+        report.count(Status::Warn),
+        report.count(Status::Fail)
+    );
+    text
+}
+
+/// The shadow log by rule.
+#[must_use]
+pub(crate) fn shadowed(report: &ShadowReport) -> String {
+    let mut text = String::new();
+    let mode = if report.enforcing {
+        "enforcing"
+    } else {
+        "shadow"
+    };
+    let _ = writeln!(
+        text,
+        "{mode}: {} events from {} sessions over {} days ({}), {} would-deny",
+        report.events,
+        report.sessions,
+        report.days.len(),
+        match (report.days.first(), report.days.last()) {
+            (Some(first), Some(last)) => format!("{first} to {last}"),
+            _ => "no events".to_owned(),
+        },
+        report.would_deny
+    );
+    for rule in &report.rules {
+        let _ = writeln!(
+            text,
+            "\n{} x{}  {}\n  tools: {}\n  tasks: {}",
+            rule.rule,
+            rule.count,
+            rule.reason,
+            rule.tools.join(", "),
+            rule.tasks.join(", ")
+        );
+        for sample in &rule.samples {
+            let _ = writeln!(text, "  {} {} {}", sample.at, sample.tool, sample.input);
+        }
+    }
+    if report.rules.is_empty() {
+        text.push_str("no rule would have denied anything\n");
     }
     text
 }

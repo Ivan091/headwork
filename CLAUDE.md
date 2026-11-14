@@ -53,6 +53,9 @@ cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpo
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- recap <name>      # a task's newest recap
+cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
+cargo run -p headwork -- shadow-report     # would-deny events by rule id
+cargo run -p headwork -- root              # run the root session, recorded in the store
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the
@@ -83,6 +86,45 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 ```
 
 `--logon` leaves sessions a crash interrupted to `machine.resume_after_crash`; by hand they are resumed too.
+
+### Migration on this machine (steps 0 and 1)
+
+Milestone 7 installed headwork for real, with `hooks.enforce = false` (shadow mode). `headwork doctor` checks all of it
+(binary, PATH, config, store, wmux, gh, claude, plugin entry, hooks file, enforce switch, disk, root session, claude
+processes) and exits 1 on a problem; `headwork shadow-report` lists the would-deny events by rule id.
+
+What changed in the live setup:
+
+| What | Where |
+|---|---|
+| The binary, copied from `target/release/headwork.exe` | `~/.local/bin/headwork.exe` (on PATH) |
+| Config and store | `~/.headwork/config.toml`, `state.db` (`config.toml.import` is what `headwork import` wrote) |
+| The plugin, as a local marketplace pointing at `S:/Code/headwork/headwork` | `extraKnownMarketplaces.headwork` and `enabledPlugins."headwork@headwork"` in `~/.claude/settings.json` |
+| Spawn wrappers | `~/.claude/skills/orchestrate/scripts/{spawn-child,close-child,children}.sh`, the old ones as `*.legacy.sh` |
+
+The plugin does nothing in a session headwork did not start: its hooks run `${HEADWORK_EXE:-true}`, and only the
+launcher sets `HEADWORK_EXE`. Its MCP server connects with no tools in such a session. A hook that fails (missing
+binary: exit 127, broken config: exit 1) never blocks a call, and a hook takes about 30 ms.
+
+Update the installed binary after a merge: `cargo build --release -p headwork`, then copy it over
+`~/.local/bin/headwork.exe` (nothing may be running it; `headwork doctor` shows the version).
+
+**Undo, step 1 (spawn wrappers):** `echo legacy > ~/.claude/skills/orchestrate/engine`. Every script then runs its
+`*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Children already in the store keep closing through
+`headwork close`; the close wrapper falls back to the legacy script for a child the store does not know.
+
+**Undo, step 0 (plugin and hooks):** delete the keys `extraKnownMarketplaces.headwork` and
+`enabledPlugins."headwork@headwork"` from `~/.claude/settings.json` (then `sync-config`). New sessions load no plugin.
+The binary, `~/.headwork` and the PATH copy can stay; remove them with `rm -r ~/.headwork ~/.local/bin/headwork.exe`.
+
+**The root as a store session:** `headwork root` starts `claude --agent root --remote-control root -n root` here, records
+it as the store's root session and gives it its identity. `root.sh` still starts the root unmanaged; switching it is
+step 3.
+
+**The shadow week** runs from 2026-11-14 to 2026-11-21. Managed sessions (children spawned through the wrappers, and the
+root once it starts with `headwork root`) log every would-deny in the store. On 2026-11-21 read
+`headwork shadow-report`; step 2 (`[hooks] enforce = true`, tick scheduled) waits for the user to review it. Do not
+turn enforcement on before that.
 
 ## Code rules
 

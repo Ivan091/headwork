@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "headwork": {
-      "command": "${HEADWORK_EXE}",
+      "command": "${HEADWORK_EXE:-headwork}",
       "args": ["mcp"]
     }
   }

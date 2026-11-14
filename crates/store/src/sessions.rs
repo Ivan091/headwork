@@ -21,6 +21,9 @@ type RawSession = (
     Option<i64>,
 );
 
+/// A live session's id, `claude` process and launcher process.
+pub type LivePids = (String, Option<u32>, Option<u32>);
+
 fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
     Ok((
         row.get(0)?,
@@ -96,6 +99,49 @@ impl Store {
             .optional()?;
         found
             .map(|(raw, task)| Ok((into_row(raw)?, task.map(TaskId))))
+            .transpose()
+    }
+
+    /// The processes of every session that has not ended: `(session id, claude pid, launcher pid)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_session_pids(&self) -> Result<Vec<LivePids>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, claude_pid, launcher_pid FROM sessions WHERE state IN ('starting', 'live') ORDER BY started_at",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(id, claude, launcher)| Ok((id, pid(claude)?, pid(launcher)?)))
+            .collect()
+    }
+
+    /// The root's newest session that has not ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_root_session(&self) -> Result<Option<SessionRow>, StoreError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {SESSION_COLUMNS} FROM sessions WHERE role = 'root' AND state IN ('starting', 'live')
+                     ORDER BY started_at DESC, rowid DESC LIMIT 1"
+                ),
+                [],
+                read_session,
+            )
+            .optional()?
+            .map(into_row)
             .transpose()
     }
 

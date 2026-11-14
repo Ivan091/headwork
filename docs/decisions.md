@@ -240,3 +240,25 @@ and the reason.
   `resume` tools start the CLI detached and return at once, because park outlives the call.
 - 2026-11-14 Left for milestone 7: the scan for `claude` and `node` processes that descend from no launcher (still no
   safe, cheap process list on Windows without `unsafe` or PowerShell; park and resume end only the trees they know).
+- 2026-11-14 Milestone 7 install: the plugin is installed as a local marketplace (`extraKnownMarketplaces.headwork`, a
+  `directory` source on the main checkout, plus `enabledPlugins."headwork@headwork"`), because two keys in
+  `settings.json` are the cleanest thing to delete. `hooks.plugin_dir` stays unset so a managed session does not load
+  the plugin twice; doctor warns when both are set. The binary is copied to `~/.local/bin/headwork.exe`, so the build
+  folder of a task worktree can go.
+- 2026-11-14 The plugin's MCP command is `${HEADWORK_EXE:-headwork}`: with `HEADWORK_EXE` unset (every unmanaged
+  session) the server used to be `failed` in each one; now it connects and offers no tools.
+- 2026-11-14 Doctor fails (exit 1) on: a missing binary, config, store schema newer than the build, a silent host, gh or
+  claude missing, no plugin entry, a hooks file without one of the six events, almost no disk. It only warns on PATH,
+  a missing store file, no root session, low disk, and a `claude plugin list` that does not show the plugin.
+- 2026-11-14 The orphan scan stays in doctor and is informational. Windows offers no parent process ids without
+  PowerShell or `unsafe`, so doctor lists `claude.exe` processes the store does not track and says it cannot call any of
+  them an orphan; tracked means a live session's launcher or `claude` pid.
+- 2026-11-14 The root is a store session through a new command, `headwork root` (role `root`, no task, Remote Control
+  name `root`, the agent `root`). It does not replace `root.sh` yet; that is step 3.
+- 2026-11-14 Step 1 wrappers keep the old arguments. `spawn-child.sh` prints the same JSON (agentId, surfaceId and
+  workspaceId come from `wmux agent list`, cwd from `projects.conf`); a spawn the start guard holds back exits 3 with
+  the reason, where the old script exited 1 at the cap. The "Closing yourself" footer is the `child.md` rule now.
+  `close-child.sh` falls back to the legacy script for a child the store does not know. `children.sh` prints the old
+  table and then the queue and asks from the board. `~/.claude/skills/orchestrate/engine` holds `headwork` or `legacy`.
+- 2026-11-14 The config written on this machine is the import's, with `me-sim` and `me-studio` replaced by the fixture's
+  fuller sections (main-only kinds, user-only scripts, heavy slots, long jobs), since the import cannot know those.

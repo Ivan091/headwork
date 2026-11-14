@@ -254,3 +254,80 @@ fn after_exit(store: &mut Store, id: TaskId) -> Result<()> {
         Err(error) => Err(error.into()),
     }
 }
+
+/// How the root session starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootStart {
+    /// The first prompt.
+    pub prompt: String,
+    /// The model; the machine default when absent.
+    pub model: Option<headwork_core::Model>,
+    /// The permission mode.
+    pub mode: headwork_core::PermissionMode,
+}
+
+/// Runs the root session in the current folder as a store session.
+///
+/// It gets its identity in the environment and returns
+/// the exit code of `claude`. The agent is `root` and the Remote Control name `root`, as `root.sh` starts it.
+///
+/// # Errors
+///
+/// Fails when the store or config cannot be read or `claude` does not start.
+pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    store.record_session(
+        &headwork_store::NewSession {
+            id: id.clone(),
+            task_id: None,
+            role: Role::Root,
+            rc_name: "root".to_owned(),
+            host: config.machine.host.as_str().to_owned(),
+            host_workspace: None,
+            host_surface: None,
+        },
+        Actor::User,
+    )?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let plugin_dir = plugin_dir(home, &config);
+    let argv = ClaudeLaunch {
+        plugin_dir: plugin_dir.as_deref(),
+        session_id: &id,
+        resume: false,
+        name: "root",
+        remote_control: config.machine.remote_control,
+        model: start.model.unwrap_or(config.models.default),
+        permission_mode: start.mode,
+        agent: Some("root"),
+        prompt: &start.prompt,
+    }
+    .argv();
+    let (program, rest) = argv.split_first().context("an empty argv")?;
+    let mut command = Command::new(program);
+    command
+        .args(rest)
+        .env(ENV_SESSION, &id)
+        .env(ENV_ROLE, Role::Root.as_str())
+        .env(ENV_HOME, home.root())
+        .env(ENV_EXE, exe);
+    proc::ignore_interrupts()?;
+    let child = OwnedChild::spawn(&mut command)?;
+    let tree = match child.ownership() {
+        Ownership::Job => "job".to_owned(),
+        Ownership::ProcessGroup => "process-group".to_owned(),
+        Ownership::Unowned(reason) => format!("unowned: {reason}"),
+    };
+    store.session_launched(&id, std::process::id(), child.pid(), &tree)?;
+    drop(store);
+    let status = child.wait();
+    let mut store = home.open_store()?;
+    let code = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::code);
+    store.session_ended(&id, code)?;
+    status?;
+    Ok(code)
+}
