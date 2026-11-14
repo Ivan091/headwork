@@ -29,9 +29,12 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules, rule_add, rule_retire) and the child tools (board, inbox, report, done) by the session's identity.
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules,
+rule_add, rule_retire, job_status, park, resume) and the child tools (board, inbox, report, done, recap, job_start,
+job_register, job_status, job_stop) by the session's identity.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
-`core/src/watch.rs`, its memory in migration 0004).
+`core/src/watch.rs`, its memory in migration 0004). Milestone 6 is park and resume (`ops/park.rs`,
+`ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 
 ## Commands
 
@@ -46,6 +49,10 @@ cargo run -p headwork -- close <name>      # close a task: pane, process tree, w
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
+cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
+cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
+cargo run -p headwork -- jobs              # the registered long-running jobs
+cargo run -p headwork -- recap <name>      # a task's newest recap
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the
@@ -61,6 +68,21 @@ schtasks /Create /SC MINUTE /MO 1 /TN "headwork tick" /TR "\"S:\Code\headwork\he
 ```
 
 It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
+
+### Restart: park, then resume
+
+Before restarting the computer, tell the root "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
+up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, then
+closes the panes and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
+back with the same Claude sessions (names, Remote Control, recaps), registered jobs restart, and
+`<home>/recaps/park-<id>.md` is the summary for the root. Nothing installs a logon task. To resume at logon the user
+would run:
+
+```bash
+schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code\headwork\headwork\target\release\headwork.exe\" resume --logon --wait 180"
+```
+
+`--logon` leaves sessions a crash interrupted to `machine.resume_after_crash`; by hand they are resumed too.
 
 ## Code rules
 

@@ -3,9 +3,11 @@
 use std::fmt::Write;
 
 use headwork::ops::import::ImportReport;
+use headwork::ops::park::{ParkReport, RecapSource};
+use headwork::ops::resume::{ResumeReport, TaskOutcome};
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::tick::TickReport;
-use headwork_store::{AskRow, Board, BoardTask, EventRecord};
+use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
 #[must_use]
@@ -226,6 +228,108 @@ pub(crate) fn ticked(report: &TickReport) -> String {
     text.push_str(&pumped(&report.started));
     text
 }
+
+/// What a park did.
+#[must_use]
+pub(crate) fn parked(report: &ParkReport) -> String {
+    let mut text = String::new();
+    let _ = writeln!(text, "park {}", report.park);
+    for session in &report.sessions {
+        let recap = match session.recap {
+            RecapSource::Session => "own recap",
+            RecapSource::Mechanical => "mechanical recap",
+        };
+        let _ = writeln!(
+            text,
+            "  parked {} ({recap}, was {})",
+            session.name, session.was
+        );
+        if let Some(snapshot) = &session.snapshot {
+            let _ = writeln!(text, "    uncommitted changes saved as {snapshot}");
+        }
+        if let Some(question) = &session.open_question {
+            let _ = writeln!(
+                text,
+                "    open question, asked again after the resume: {question}"
+            );
+        }
+        if let Some(problem) = &session.problem {
+            let _ = writeln!(text, "    problem: {problem}");
+        }
+    }
+    for job in &report.jobs {
+        let _ = writeln!(text, "  job {}: {}", job.label, job.outcome);
+    }
+    if report.sessions.is_empty() && report.jobs.is_empty() {
+        text.push_str("  nothing was running\n");
+    }
+    text.push_str(if report.safe_to_restart {
+        "safe to restart\n"
+    } else {
+        "NOT safe to restart: see the problems and jobs left running above\n"
+    });
+    text
+}
+
+/// What a resume did.
+#[must_use]
+pub(crate) fn resumed(report: &ResumeReport) -> String {
+    let mut text = String::new();
+    let park = report
+        .park
+        .map_or_else(|| "none (crash)".to_owned(), |id| id.to_string());
+    let _ = writeln!(text, "resume of park {park}");
+    for task in &report.tasks {
+        let line = match &task.outcome {
+            TaskOutcome::Resumed { surface } => format!("resumed in {surface}"),
+            TaskOutcome::Fresh { surface, reason } => {
+                format!("started fresh in {surface} ({reason})")
+            }
+            TaskOutcome::Skipped { reason } => format!("skipped: {reason}"),
+            TaskOutcome::Failed { error } => format!("FAILED: {error}"),
+        };
+        let _ = writeln!(text, "  {}: {line}", task.name);
+        if let Some(question) = &task.open_question {
+            let _ = writeln!(text, "    asks again: {question}");
+        }
+    }
+    for job in &report.jobs {
+        let _ = writeln!(text, "  job {}: {}", job.label, job.outcome);
+    }
+    if report.queue_started > 0 {
+        let _ = writeln!(text, "  {} queued task(s) started", report.queue_started);
+    }
+    let _ = writeln!(text, "summary for the root: {}", report.summary);
+    text
+}
+
+/// The registered jobs.
+#[must_use]
+pub(crate) fn jobs(jobs: &[JobRow]) -> String {
+    if jobs.is_empty() {
+        return "no registered jobs\n".to_owned();
+    }
+    let mut text = String::new();
+    for job in jobs {
+        let pid = job
+            .pid
+            .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
+        let _ = writeln!(
+            text,
+            "{:>3} {:<10} {:<10} pid {pid:<7} {} [{}]",
+            job.id,
+            job.state,
+            job.park_policy,
+            job.label,
+            job.argv.join(" ")
+        );
+        if let Some(note) = &job.note {
+            let _ = writeln!(text, "      {note}");
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,

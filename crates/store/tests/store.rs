@@ -7,13 +7,16 @@
 
 use std::path::Path;
 
+use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
 use headwork_core::{
-    Actor, AdmissionRefusal, AskKind, AskState, Config, MachineMode, Model, PermissionMode,
-    ProjectName, Refusal, Role, SessionState, Slug, TaskRequest, TaskState, Trigger,
+    Actor, AdmissionRefusal, AskKind, AskState, Config, JobState, MachineMode, Model,
+    PermissionMode, ProjectName, RecapKind, Refusal, Role, SessionState, Slug, TaskRequest,
+    TaskState, Trigger,
 };
 use headwork_store::{
-    EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewSession, NewTask, Store, StoreError, Task,
+    EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession, NewTask, Store,
+    StoreError, Task,
 };
 
 fn config() -> Config {
@@ -677,4 +680,122 @@ fn recent_tool_calls_and_open_asks() {
     store.answer_ask(ask, "Ship it", Actor::Hook).unwrap();
     assert!(store.open_ask_of(&id).unwrap().is_none(), "answered");
     assert!(!store.fable_allowed(task.id).unwrap(), "no fable ask");
+}
+
+#[test]
+fn a_park_collects_the_recap_a_session_writes_during_it() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    let before = NewRecap {
+        task_id: Some(task.id),
+        session_id: None,
+        kind: RecapKind::Session,
+        body: "day to day",
+    };
+    store.add_recap(&before, Actor::Child).unwrap();
+    let park = store.begin_park(300, Actor::User).unwrap();
+    assert_eq!(
+        store.machine_mode().unwrap(),
+        MachineMode::Parking,
+        "parking"
+    );
+    assert!(
+        store
+            .session_park_recap(park.id, task.id)
+            .unwrap()
+            .is_none(),
+        "none yet"
+    );
+    assert!(
+        !store.park_deadline_passed(park.id).unwrap(),
+        "deadline ahead"
+    );
+    store
+        .add_recap(
+            &NewRecap {
+                body: "at the park",
+                ..before
+            },
+            Actor::Child,
+        )
+        .unwrap();
+    let found = store.session_park_recap(park.id, task.id).unwrap().unwrap();
+    assert_eq!(found.body, "at the park", "attached to the park");
+    assert_eq!(
+        store.latest_recap(task.id).unwrap().unwrap().id,
+        found.id,
+        "newest"
+    );
+    store.finish_park(park.id, Actor::User).unwrap();
+    assert_eq!(store.machine_mode().unwrap(), MachineMode::Parked, "parked");
+    store
+        .finish_resume(Some(park.id), "recaps/park-1.md", Actor::User)
+        .unwrap();
+    let done = store.park(park.id).unwrap().unwrap();
+    assert!(
+        done.finished_at.is_some() && done.resumed_at.is_some(),
+        "{done:?}"
+    );
+    assert_eq!(
+        store.machine_mode().unwrap(),
+        MachineMode::Normal,
+        "normal again"
+    );
+}
+
+#[test]
+fn jobs_keep_their_command_line_and_move_through_states() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    let argv = vec![
+        "bash".to_owned(),
+        "scripts/rl-run.sh".to_owned(),
+        "--stage 2".to_owned(),
+    ];
+    let id = store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "me-sim",
+                label: "car-training",
+                park_policy: ParkPolicy::Checkpoint,
+                argv: &argv,
+                cwd: "S:/Code/me-sim",
+                pid: Some(4242),
+                checkpoint_path: Some("out/checkpoint.json"),
+                heavy: true,
+                restart: true,
+                log_path: "jobs/car.log",
+            },
+            Actor::Child,
+        )
+        .unwrap();
+    let job = store.job(id).unwrap().unwrap();
+    assert_eq!(job.argv, argv, "argv round trip");
+    assert_eq!(job.park_policy, ParkPolicy::Checkpoint, "policy");
+    assert_eq!(store.open_jobs(Some(task.id)).unwrap().len(), 1, "open");
+    store
+        .set_job_state(id, JobState::Parked, Some("checkpointed"), Actor::User)
+        .unwrap();
+    assert_eq!(
+        store.jobs_in(JobState::Parked, None).unwrap().len(),
+        1,
+        "parked"
+    );
+    store.set_job_pid(id, 4343, Actor::User).unwrap();
+    let job = store.job(id).unwrap().unwrap();
+    assert_eq!(
+        (job.state, job.pid),
+        (JobState::Running, Some(4343)),
+        "restarted"
+    );
+    assert_eq!(
+        job.note, None,
+        "the note of the stop is cleared by the restart"
+    );
+    store
+        .set_job_state(id, JobState::Done, None, Actor::User)
+        .unwrap();
+    assert!(store.open_jobs(None).unwrap().is_empty(), "over");
 }

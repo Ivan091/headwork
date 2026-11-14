@@ -10,7 +10,7 @@ use std::process::Command;
 
 use headwork::home::Home;
 use headwork::ops::Env;
-use headwork::ops::launch::claude_command;
+use headwork::ops::launch::{StartMode, claude_command};
 use headwork::ops::spawn::{Outcome, SpawnRequest, pump, spawn};
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::host::fake::FakeHost;
@@ -269,8 +269,16 @@ fn the_launcher_starts_claude_with_identity_name_model_and_mode() {
     let (task, _) = w.spawn("sand", false);
     let session = w.store.session_of(task.id).unwrap().unwrap();
     let dir = w.dir.path().join("demo-sand");
-    let command =
-        claude_command(&w.home, &w.config, &task, &session, &dir, Path::new(EXE)).unwrap();
+    let command = claude_command(
+        &w.home,
+        &w.config,
+        &task,
+        &session,
+        &dir,
+        Path::new(EXE),
+        StartMode::New,
+    )
+    .unwrap();
     assert_eq!(command.get_program(), "claude", "program");
     let args: Vec<String> = command
         .get_args()

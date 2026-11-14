@@ -346,6 +346,14 @@ impl<'b> Run<'_, 'b> {
                 {
                     continue;
                 }
+                let task = self.store.task(id)?;
+                super::recap::note(
+                    self.store,
+                    self.env(),
+                    &task,
+                    headwork_core::RecapKind::Interrupted,
+                    "the session was found gone",
+                );
                 self.store
                     .set_session_state(&session.id, SessionState::Gone, actor)?;
                 self.applied(

@@ -10,6 +10,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_queue_rank.sql"),
     include_str!("../migrations/0003_rules_hash.sql"),
     include_str!("../migrations/0004_tick.sql"),
+    include_str!("../migrations/0005_park_recaps.sql"),
 ];
 
 /// Applies the migrations the database lacks, each in its own transaction.

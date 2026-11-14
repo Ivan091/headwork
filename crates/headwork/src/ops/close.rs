@@ -52,6 +52,16 @@ pub fn close(
     id: TaskId,
     own_session: Option<&str>,
 ) -> Result<CloseReport> {
+    let before = store.task(id)?;
+    if !matches!(before.state, TaskState::Closing | TaskState::Closed) {
+        super::recap::note(
+            store,
+            env,
+            &before,
+            headwork_core::RecapKind::Close,
+            "closing",
+        );
+    }
     begin_closing(store, env, id)?;
     let task = store.task(id)?;
     remove_brief(env, &task.brief_path);
@@ -174,7 +184,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
 
 /// Closes the session's pane, or its workspace when the pane is the last thing in it, then ends the host's program.
 /// Returns whether the pane is gone.
-fn close_pane(host: &dyn TerminalHost, session: &SessionRow) -> Result<bool> {
+pub(super) fn close_pane(host: &dyn TerminalHost, session: &SessionRow) -> Result<bool> {
     let Some(surface) = session
         .host_surface
         .as_deref()
@@ -374,7 +384,7 @@ fn report(store: &Store, id: TaskId, pending: Option<String>) -> Result<CloseRep
     })
 }
 
-fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+pub(super) fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     loop {
         if done() {

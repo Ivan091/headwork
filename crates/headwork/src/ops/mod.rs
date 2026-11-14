@@ -3,8 +3,12 @@
 pub mod close;
 pub mod hook;
 pub mod import;
+pub mod jobs;
 pub mod launch;
 pub mod mcp;
+pub mod park;
+pub mod recap;
+pub mod resume;
 pub mod rules;
 pub mod spawn;
 pub mod tick;

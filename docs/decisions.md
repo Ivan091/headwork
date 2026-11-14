@@ -200,3 +200,43 @@ and the reason.
 - 2026-11-14 `headwork tick` takes `tick.lock` in the home (`File::try_lock`), so overlapping scheduler runs exit at
   once with "another tick is running". Its thresholds are a `Limits` value in bytes and seconds that tests build
   directly, so no test needs a gigabyte.
+- 2026-11-14 Milestone 6 names. The design's `handoff` tool is `recap` (the brief says recaps). A recap is a row in the
+  new `recaps` table (migration 0005, kinds `session`, `mechanical`, `close`, `interrupted`) and, on a park, the file
+  `handoffs/<name>.md`: the session's own text first, then the facts the tool recorded (state, branch, head,
+  uncommitted files, last report, open questions, jobs). A session recap written while the machine is `parking` belongs
+  to that park; that is how `park` knows it arrived. The tick writes an `interrupted` recap when it finds a session
+  gone, and `close` writes a `close` one, so recaps also serve the day-to-day case (`headwork recap <name>` shows the
+  newest).
+- 2026-11-14 Jobs: `job_start` starts the command detached (`spawn_detached_to`, output appended to
+  `jobs/<task>-<label>.log`, which is not capped yet) and registers it, because the `long_jobs` rule denies background
+  shells and a session needs an allowed way to run one; `job_register` records a process started elsewhere; `job_status`
+  and `job_stop` complete the set. The park policy comes from the call, else the project's `jobs.<label>`, else `rerun`.
+  A configured checkpoint path with a `{placeholder}` (me-sim's `{out}`) cannot be expanded here, so the session must pass
+  `checkpoint_path`. `done` refuses while a job of the task runs. `heavy` is recorded; heavy slots are not enforced.
+- 2026-11-14 Park waits for three things, polling the store: a session recap for each session that can write one, a
+  checkpoint file newer than the park's start for each `checkpoint` job, and the end of each `finish` job. `rerun` jobs
+  stop at once. At the deadline (default 300 s, `park --deadline`) a missing recap becomes a mechanical one, a
+  `checkpoint` job is stopped and its note says work since the last checkpoint is lost, and a `finish` job is left
+  running and reported (`NOT safe to restart`, exit code 1). The machine is `parked` either way. Not built: the Stop gate
+  that refuses a stop until the recap exists, the extension of the deadline for a running tool call, and the tool ask
+  "wait or force"; the prompt typed into the pane and the deadline carry the park.
+- 2026-11-14 A session waiting on the user is not asked for a recap (it cannot answer): its asks become `superseded`,
+  its blocked state is cleared, and its mechanical recap lists the question as "ask this again after the resume"; the
+  resume prompt tells the session to ask it again. Uncommitted tracked changes are saved with `git stash create` as
+  `refs/headwork/park/<slug>` (worktree untouched).
+- 2026-11-14 Resume is a command, by hand or from a logon task the user installs (`headwork resume --logon --wait 180`);
+  nothing is installed here. By hand it also resumes `interrupted` tasks (a crash); with `--logon` those wait unless
+  `machine.resume_after_crash = "always"` (`ask` leaves them for the root, `never` leaves them). Each task gets a pane
+  running `headwork launch --resume`, which starts `claude --resume <same id>` with the same name, model and mode in the
+  task's folder. When Claude's transcript for the id is gone (checked as `<id>.jsonl` under `projects/*` of
+  `CLAUDE_CONFIG_DIR` or `~/.claude`) the task starts a new session from its brief and recap (`--fresh`). A pane that
+  cannot be opened is retried once, then the task is `failed`. Before relaunching, panes the host restored by itself
+  for those session ids (the reboot trial: wmux reopens plain `claude --resume <id>` panes) are closed, so no
+  conversation runs twice. The user may also switch `restoreClaudeSessions` off in wmux.
+- 2026-11-14 After the sessions, jobs in `parked` that asked to be restarted run again, `checkpoint` ones first; a job
+  that cannot start is `failed`. The summary for the root is `recaps/park-<id>.md` (or `crash-<time>.md`), also set on
+  the park row, plus a host notification. The root is not a store session yet (no `launch --root`), so park and resume
+  act on children; the root writes its own recap before calling `park`, and reads the summary after. The MCP `park` and
+  `resume` tools start the CLI detached and return at once, because park outlives the call.
+- 2026-11-14 Left for milestone 7: the scan for `claude` and `node` processes that descend from no launcher (still no
+  safe, cheap process list on Windows without `unsafe` or PowerShell; park and resume end only the trees they know).

@@ -15,7 +15,10 @@ use headwork::home::Home;
 use headwork::ops::close::{CloseReport, close, finish_after, reap};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
+use headwork::ops::launch::StartMode;
 use headwork::ops::mcp::{Identity, Server};
+use headwork::ops::park::{ParkOptions, park};
+use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::tick::{TickEnv, tick};
 use headwork::ops::{Env, host_for};
@@ -99,6 +102,44 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Prepare for a restart: every session writes a recap, registered jobs stop at a checkpoint, the panes close.
+    Park {
+        /// Seconds to wait for recaps and checkpoints before forcing what is left.
+        #[arg(long, default_value_t = 300)]
+        deadline: u64,
+        /// The headwork home.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// After a restart: reopen parked sessions with their recaps, restart jobs, write a summary for the root.
+    Resume {
+        /// Started by a logon task: sessions interrupted by a crash come back only as `resume_after_crash` allows.
+        #[arg(long)]
+        logon: bool,
+        /// Seconds to wait for the terminal host to answer.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+        /// The headwork home.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the registered jobs that are not over.
+    Jobs {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a task's newest recap.
+    Recap {
+        /// A task, as `<project>-<slug>` or `<project>/<slug>`.
+        name: String,
+    },
     /// Finish closing a task once a process is gone: what a closing launcher leaves behind.
     #[command(hide = true)]
     Finish {
@@ -131,6 +172,15 @@ enum Command {
         /// The task's id.
         #[arg(long)]
         task: i64,
+        /// Continue the task's earlier conversation.
+        #[arg(long, conflicts_with = "fresh")]
+        resume: bool,
+        /// Start a new conversation from the brief and the recap, because the earlier one is gone.
+        #[arg(long)]
+        fresh: bool,
+        /// The session was cut off by a crash, not parked.
+        #[arg(long)]
+        crash: bool,
         /// The headwork home; panes do not inherit the caller's environment.
         #[arg(long)]
         home: Option<PathBuf>,
@@ -233,12 +283,24 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             };
             return rule_test(&probe, json, out);
         }
-        Command::Launch { task, home } => {
-            let home = Home::at(home)?;
-            let code = headwork::ops::launch::launch(&home, TaskId(task))?;
-            let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
-            return Ok(ExitCode::from(code));
-        }
+        Command::Launch {
+            task,
+            resume,
+            fresh,
+            crash,
+            home,
+        } => return launch_command(&Home::at(home)?, task, (resume, fresh, crash)),
+        Command::Park {
+            deadline,
+            home,
+            json,
+        } => return park_command(&Home::at(home)?, deadline, json, out),
+        Command::Resume {
+            logon,
+            wait,
+            home,
+            json,
+        } => return resume_command(&Home::at(home)?, logon, wait, json, out),
         Command::Finish {
             task,
             wait_pid,
@@ -255,7 +317,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Spawn(_)
         | Command::Queue { .. }
         | Command::Close { .. }
-        | Command::Tick { .. }) => other,
+        | Command::Tick { .. }
+        | Command::Jobs { .. }
+        | Command::Recap { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -276,13 +340,114 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
         Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
+        Command::Jobs { json } => jobs_command(&mut store, json, out),
+        Command::Recap { name } => recap_command(&store, &name, out),
         Command::Launch { .. }
+        | Command::Park { .. }
+        | Command::Resume { .. }
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Hook { .. }
         | Command::Mcp
         | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
     }
+}
+
+fn standalone<T>(
+    home: &Home,
+    actor: Actor,
+    act: impl FnOnce(&mut Store, &Env<'_>) -> Result<T>,
+) -> Result<T> {
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    store
+        .sync_projects(&config)
+        .context("recording the configured projects")?;
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let host = host_for(&config)?;
+    let env = Env {
+        home,
+        config: &config,
+        host: host.as_ref(),
+        exe: &exe,
+        actor,
+    };
+    act(&mut store, &env)
+}
+
+fn park_command(home: &Home, deadline: u64, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    let opts = ParkOptions {
+        deadline: std::time::Duration::from_secs(deadline),
+        ..ParkOptions::default()
+    };
+    let report = standalone(home, Actor::User, |store, env| park(store, env, opts))?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::parked(&report).as_bytes())?;
+    }
+    Ok(if report.safe_to_restart {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn resume_command(
+    home: &Home,
+    logon: bool,
+    wait: u64,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map_or_else(|| home.expand("~/.claude"), PathBuf::from);
+    let opts = ResumeOptions {
+        logon,
+        wait_for_host: std::time::Duration::from_secs(wait),
+        claude_dir,
+    };
+    let report = standalone(home, Actor::User, |store, env| resume(store, env, &opts))?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::resumed(&report).as_bytes())?;
+    }
+    let failed = report
+        .tasks
+        .iter()
+        .any(|task| matches!(task.outcome, TaskOutcome::Failed { .. }));
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn jobs_command(store: &mut Store, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    headwork::ops::jobs::refresh(store, Actor::User)?;
+    let jobs = store.open_jobs(None)?;
+    if json {
+        json_out(out, &jobs)?;
+    } else {
+        out.write_all(render::jobs(&jobs).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn recap_command(store: &Store, name: &str, out: &mut impl Write) -> Result<ExitCode> {
+    let task = store
+        .find_task(name)?
+        .with_context(|| format!("no task named `{name}`"))?;
+    match store.latest_recap(task.id)? {
+        Some(recap) => writeln!(
+            out,
+            "{} ({}, {})\n\n{}",
+            task.name, recap.kind, recap.created_at, recap.body
+        )?,
+        None => writeln!(out, "{} has no recap", task.name)?,
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What every command that opens panes needs, besides the store.
@@ -769,4 +934,16 @@ fn tick_command(
         out.write_all(render::ticked(&report).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn launch_command(home: &Home, task: i64, flags: (bool, bool, bool)) -> Result<ExitCode> {
+    let (resume, fresh, crash) = flags;
+    let mode = match (resume, fresh) {
+        (true, _) => StartMode::Resumed { crash },
+        (false, true) => StartMode::Fresh { crash },
+        (false, false) => StartMode::New,
+    };
+    let code = headwork::ops::launch::launch(home, TaskId(task), mode)?;
+    let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
+    Ok(ExitCode::from(code))
 }

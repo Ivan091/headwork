@@ -20,13 +20,46 @@ use headwork_store::{SessionRow, Store, Task, TaskId};
 use super::{Env, close};
 use crate::home::Home;
 
-/// The first prompt of a new child session.
+/// How a session starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartMode {
+    /// A new conversation with the brief.
+    New,
+    /// The earlier conversation continues after a park or a crash.
+    Resumed {
+        /// The session was cut off, not parked.
+        crash: bool,
+    },
+    /// The earlier conversation is gone; a new one starts from the brief and the recap.
+    Fresh {
+        /// The session was cut off, not parked.
+        crash: bool,
+    },
+}
+
+/// The first prompt of a session.
 #[must_use]
-pub fn first_prompt(task: &Task) -> String {
-    format!(
-        "You are the child session {}. Read your brief at {} and carry it out.",
-        task.name, task.brief_path
-    )
+pub fn first_prompt(home: &Home, task: &Task, mode: StartMode) -> String {
+    let handoff = super::slashed(&home.handoff_path(&task.name));
+    let cause = |crash: bool| if crash { "crash" } else { "restart" };
+    match mode {
+        StartMode::New => format!(
+            "You are the child session {}. Read your brief at {} and carry it out.",
+            task.name, task.brief_path
+        ),
+        StartMode::Resumed { crash } => format!(
+            "Resumed after a {}. Read your recap at {handoff} and continue where it says; if it names a question \
+             you had open, ask it again with AskUserQuestion.",
+            cause(crash)
+        ),
+        StartMode::Fresh { crash } => format!(
+            "You are the child session {}. Your earlier conversation could not be restored after a {}. \
+             Read your brief at {} and your recap at {handoff}, then continue where the recap says.",
+            task.name,
+            cause(crash),
+            task.brief_path
+        ),
+    }
 }
 
 /// The `claude` command for a task's session, with its identity in the environment. `exe` is the `headwork` program
@@ -42,17 +75,18 @@ pub fn claude_command(
     session: &SessionRow,
     dir: &Path,
     exe: &Path,
+    mode: StartMode,
 ) -> Result<Command> {
     let project = config
         .project(task.project())
         .with_context(|| format!("project `{}` is not configured", task.project()))?;
     let name = task.name.to_string();
-    let prompt = first_prompt(task);
+    let prompt = first_prompt(home, task, mode);
     let plugin_dir = plugin_dir(home, config);
     let argv = ClaudeLaunch {
         plugin_dir: plugin_dir.as_deref(),
         session_id: &session.id,
-        resume: false,
+        resume: matches!(mode, StartMode::Resumed { .. }),
         name: &name,
         remote_control: project
             .remote_control
@@ -91,7 +125,7 @@ pub fn plugin_dir(home: &Home, config: &Config) -> Option<String> {
 /// # Errors
 ///
 /// Fails when the store or config cannot be read; a `claude` that does not start moves the task to `failed` first.
-pub fn launch(home: &Home, id: TaskId) -> Result<Option<i32>> {
+pub fn launch(home: &Home, id: TaskId, mode: StartMode) -> Result<Option<i32>> {
     let config = home.load_config()?;
     let mut store = home.open_store()?;
     let task = store.task(id)?;
@@ -104,7 +138,7 @@ pub fn launch(home: &Home, id: TaskId) -> Result<Option<i32>> {
     std::env::set_current_dir(home.root())
         .with_context(|| format!("entering {}", home.root().display()))?;
     proc::ignore_interrupts()?;
-    let started = start(home, &config, &mut store, &task, &session);
+    let started = start(home, &config, &mut store, &task, &session, mode);
     let child = match started {
         Ok(child) => child,
         Err(error) => {
@@ -154,6 +188,7 @@ fn start(
     store: &mut Store,
     task: &Task,
     session: &SessionRow,
+    mode: StartMode,
 ) -> Result<OwnedChild> {
     let dir = if task.in_main {
         let project = config
@@ -167,7 +202,7 @@ fn start(
         std::path::PathBuf::from(worktree.path)
     };
     let exe = std::env::current_exe().context("finding the headwork program")?;
-    let mut command = claude_command(home, config, task, session, &dir, &exe)?;
+    let mut command = claude_command(home, config, task, session, &dir, &exe, mode)?;
     let child = OwnedChild::spawn(&mut command)?;
     let tree = match child.ownership() {
         Ownership::Job => "job".to_owned(),

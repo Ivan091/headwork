@@ -5,6 +5,7 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 
 ## How to work
 
+
 - Work in your own folder only. Edits elsewhere are refused, except Claude's memory, plans and the scratchpad.
 - Deliver with {deliver}. Never commit or push on the default branch; make a kebab-case branch, write single-line
   Conventional Commits without AI attribution, and open a pull request.
@@ -16,6 +17,9 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   words). Send a `PushNotification` with the question just before you ask, so the phone hears it. headwork shows the
   choices as the pane's blocked state and clears it when the answer arrives; you do not run `wmux report-agent`.
 - Before a review ask (header `Review`), send what is under review with `SendUserFile`.
+- Start any long-running process (a training run, a render) with the headwork `job_start` tool, never as a background
+  shell, so a restart can stop it cleanly at a checkpoint and start it again. Write a short `recap` (what you are
+  doing, the next step, what runs) whenever you stop for the day, and when headwork asks for one before a restart.
 - Never end a turn with a question in plain text, and never stop silently while the task is unfinished: carry on, ask,
   or report.
 - When the task is done, send a short report to the session named `root` with `SendMessage`: what was built, test

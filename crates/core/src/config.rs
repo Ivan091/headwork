@@ -147,6 +147,40 @@ pub enum ParkPolicy {
     Finish,
 }
 
+impl ParkPolicy {
+    /// The stored and configured spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Checkpoint => "checkpoint",
+            Self::Rerun => "rerun",
+            Self::Finish => "finish",
+        }
+    }
+}
+
+impl fmt::Display for ParkPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ParkPolicy {
+    type Err = crate::vocabulary::UnknownWord;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            "checkpoint" => Ok(Self::Checkpoint),
+            "rerun" => Ok(Self::Rerun),
+            "finish" => Ok(Self::Finish),
+            other => Err(crate::vocabulary::UnknownWord {
+                kind: "park policy",
+                word: other.to_owned(),
+            }),
+        }
+    }
+}
+
 /// A worktree command: the built-in git worktree handling or a project script.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
