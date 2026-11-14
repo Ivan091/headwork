@@ -296,3 +296,7 @@ and the reason.
   (the old launcher is refused by the schema and hands nothing off), and `finish` records a session end the launcher
   missed. A close from outside already finished by itself once the launcher was gone. A pinned session that exits on
   its own stays `working` until `headwork close` or the tick; nothing is lost.
+- 2026-11-14 Detached processes (finishers, park and resume started from MCP, jobs) start with `CREATE_NO_WINDOW`
+  instead of `DETACHED_PROCESS`. A process without any console makes every console program it runs (`tasklist` in the
+  finisher's 250 ms launcher poll, `taskkill`, `wmux`, `git`) open its own window; with a hidden console of its own the
+  children inherit it and no window appears, and the process still leaves the pane's console and job.

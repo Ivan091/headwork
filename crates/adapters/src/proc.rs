@@ -114,8 +114,10 @@ impl OwnedChild {
     }
 }
 
-/// Starts `command` with no console and outside every job, so it outlives the pane and the tree that started it.
-/// Returns its pid; nothing waits for it.
+/// Starts `command` outside every job, so it outlives the pane and the tree that started it; returns its pid.
+///
+/// Nothing waits for it. On Windows it gets a hidden console of its own (`CREATE_NO_WINDOW`), so the console programs
+/// it runs (`tasklist`, `wmux`, `git`) open no window, which they would without any console (`DETACHED_PROCESS`).
 ///
 /// On Windows it asks to leave the enclosing jobs; when a job forbids that it starts inside them, and the reason is
 /// returned beside the pid.
@@ -222,7 +224,7 @@ mod imp {
         drop(tree);
     }
 
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
@@ -238,12 +240,12 @@ mod imp {
             .stdout(stdout)
             .stderr(stderr);
         command.creation_flags(
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
         );
         match command.spawn() {
             Ok(child) => Ok((child.id(), None)),
             Err(breakaway) => {
-                command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+                command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
                 let child = command
                     .spawn()
                     .map_err(|source| ProcError::Spawn { program, source })?;
