@@ -10,7 +10,7 @@ use std::path::Path;
 use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
 use headwork_core::{
-    Actor, AdmissionRefusal, AskKind, AskState, Config, JobState, MachineMode, Model,
+    Actor, AdmissionRefusal, AskKind, AskState, Config, Effort, JobState, MachineMode, Model,
     PermissionMode, ProjectName, RecapKind, Refusal, Role, SessionState, Slug, TaskRequest,
     TaskState, Trigger,
 };
@@ -38,6 +38,7 @@ fn request(project: &str, slug: &str, kind: &str) -> NewTask {
             slug: Slug::new(slug).unwrap(),
             kind: kind.to_owned(),
             model: None,
+            effort: None,
             in_main: false,
             keep: false,
         },
@@ -798,4 +799,33 @@ fn jobs_keep_their_command_line_and_move_through_states() {
         .set_job_state(id, JobState::Done, None, Actor::User)
         .unwrap();
     assert!(store.open_jobs(None).unwrap().is_empty(), "over");
+}
+
+#[test]
+fn a_task_keeps_its_effort_and_none_means_the_default() {
+    let (mut store, config) = store();
+    let plain = create(&mut store, &config, "me-sim", "plain");
+    assert_eq!(plain.effort, None, "no effort by default");
+    assert_eq!(plain.effort_label(), "default effort", "label");
+    let mut new = request("me-sim", "deep", "scene");
+    new.request.effort = Some(Effort::High);
+    let deep = store.create_task(&config, &new, Actor::Root).unwrap();
+    assert_eq!(deep.effort, Some(Effort::High), "stored");
+    assert_eq!(deep.effort_label(), "high effort", "label");
+    let loaded = store.find_task("me-sim-deep").unwrap().unwrap();
+    assert_eq!(loaded.effort, Some(Effort::High), "reloaded");
+    let events = store
+        .events(EventFilter {
+            task: Some(deep.id),
+            limit: 5,
+        })
+        .unwrap();
+    assert_eq!(
+        events
+            .first()
+            .and_then(|e| e.data.get("effort"))
+            .and_then(|v| v.as_str()),
+        Some("high"),
+        "event"
+    );
 }

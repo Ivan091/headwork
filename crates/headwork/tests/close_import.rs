@@ -100,6 +100,7 @@ fn spawn_task(w: &mut World, slug: &str, in_main: bool, keep: bool) -> (Task, Ve
             slug: Slug::new(slug).unwrap(),
             kind: if in_main { "probe" } else { "task" }.to_owned(),
             model: Some(Model::Haiku),
+            effort: None,
             in_main,
             keep,
         },

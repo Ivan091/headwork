@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::names::{ProjectName, Slug};
-use crate::vocabulary::{MachineMode, Model};
+use crate::vocabulary::{Effort, MachineMode, Model};
 
 /// A request for a new task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +15,8 @@ pub struct TaskRequest {
     pub kind: String,
     /// The model; the machine default when absent.
     pub model: Option<Model>,
+    /// The effort; the machine default when absent.
+    pub effort: Option<Effort>,
     /// The task runs in the project's main checkout instead of a worktree.
     pub in_main: bool,
     /// A standing role that does not close when idle.
@@ -26,6 +28,8 @@ pub struct TaskRequest {
 pub struct Admitted {
     /// The model the task runs.
     pub model: Model,
+    /// The effort the task runs; the machine default when absent.
+    pub effort: Option<Effort>,
     /// The task needs the user's Fable approval before it may start.
     pub needs_fable_approval: bool,
 }
@@ -99,6 +103,7 @@ pub fn admit(
     }
     Ok(Admitted {
         model,
+        effort: request.effort,
         needs_fable_approval: model == Model::Fable && config.models.fable_needs_user,
     })
 }

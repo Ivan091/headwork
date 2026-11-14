@@ -10,8 +10,8 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
-    Actor, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug, TaskRequest,
-    TaskState,
+    Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
+    TaskRequest, TaskState,
 };
 use headwork_store::{NewPr, NewRecap, Store, StoreError, Task};
 use serde_json::{Value, json};
@@ -93,6 +93,7 @@ const TOOLS: &[ToolDef] = &[
                     "slug": { "type": "string", "description": "kebab-case, unique among live tasks" },
                     "brief": { "type": "string", "description": "The brief's text; it must stand alone." },
                     "model": { "type": "string", "enum": ["haiku", "sonnet", "opus", "fable"] },
+                    "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max"] },
                     "kind": { "type": "string" },
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
@@ -614,6 +615,11 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .map(str::parse)
             .transpose()?;
+        let effort: Option<Effort> = args
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::parse)
+            .transpose()?;
         let depends_on = match args.get("depends_on").and_then(Value::as_str) {
             Some(name) => Some(
                 self.store
@@ -633,6 +639,7 @@ impl<'a> Server<'a> {
                 slug,
                 kind,
                 model,
+                effort,
                 in_main,
                 keep: flag(args, "keep"),
             },

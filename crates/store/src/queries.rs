@@ -2,8 +2,9 @@
 
 use headwork_core::lifecycle::{Dependency, FableGate, StartFacts};
 use headwork_core::{
-    Actor, AskKind, AskState, Config, MachineMode, PermissionMode, ProjectConfig, ProjectName,
-    Role, SessionState, Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit, apply,
+    Actor, AskKind, AskState, Config, Effort, MachineMode, PermissionMode, ProjectConfig,
+    ProjectName, Role, SessionState, Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit,
+    apply,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -18,7 +19,7 @@ pub const FABLE_ALLOW: &str = "Allow Fable";
 const FABLE_DECLINE: &str = "Use Opus instead";
 
 const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
-                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode";
+                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort";
 
 /// A task to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +94,7 @@ struct RawTask {
     queued_at: String,
     updated_at: String,
     permission_mode: String,
+    effort: Option<String>,
 }
 
 impl RawTask {
@@ -114,6 +116,7 @@ impl RawTask {
             queued_at: row.get(13)?,
             updated_at: row.get(14)?,
             permission_mode: row.get(15)?,
+            effort: row.get(16)?,
         })
     }
 
@@ -129,6 +132,7 @@ impl RawTask {
                 .transpose()?,
             model: self.model.parse()?,
             permission_mode: self.permission_mode.parse()?,
+            effort: self.effort.map(|effort| effort.parse()).transpose()?,
             keep: self.keep,
             in_main: self.in_main,
             depends_on: self.depends_on.map(TaskId),
@@ -308,8 +312,8 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO tasks (project, slug, kind, state, model, keep, in_main, depends_on, brief_path, queued_at,
-                     updated_at, permission_mode)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9)"
+                     updated_at, permission_mode, effort)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9, ?10)"
             ),
             params![
                 request.project.as_str(),
@@ -321,6 +325,7 @@ impl Store {
                 new.depends_on.map(|id| id.0),
                 new.brief_path,
                 new.permission_mode.as_str(),
+                request.effort.map(Effort::as_str),
             ],
         )?;
         let id = TaskId(tx.last_insert_rowid());
@@ -340,7 +345,7 @@ impl Store {
             )?;
         }
         let data = serde_json::json!({
-            "name": name.to_string(), "kind": request.kind, "model": admitted.model, "in_main": request.in_main,
+            "name": name.to_string(), "kind": request.kind, "model": admitted.model, "effort": admitted.effort, "in_main": request.in_main,
             "keep": request.keep,
         });
         insert_event(&tx, actor, Some(id), None, "task-created", &data)?;

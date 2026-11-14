@@ -107,10 +107,11 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize) {
     let name = t.name.to_string();
     let _ = write!(
         text,
-        "  #{:<3} {name:<width$}  {:<11} {:<6} {}",
+        "  #{:<3} {name:<width$}  {:<11} {:<6} {:<14} {}",
         t.id.0,
         t.state.as_str(),
         t.model,
+        t.effort_label(),
         t.kind
     );
     if t.in_main {
@@ -193,6 +194,18 @@ fn describe(event: &EventRecord) -> String {
             field("trigger"),
             field("state"),
             field("reason")
+        ),
+        "task-created" => format!(
+            "model {}, {}",
+            field("model"),
+            event
+                .data
+                .get("effort")
+                .and_then(serde_json::Value::as_str)
+                .map_or_else(
+                    || "default effort".to_owned(),
+                    |effort| format!("{effort} effort")
+                )
         ),
         _ => event.data.to_string(),
     }
@@ -426,6 +439,7 @@ mod tests {
                 slug: Slug::new(slug).unwrap(),
                 kind: "scene".to_owned(),
                 model: None,
+                effort: None,
                 in_main: false,
                 keep: false,
             },
@@ -434,6 +448,37 @@ mod tests {
             permission_mode: PermissionMode::Auto,
         };
         store.create_task(config, &new, Actor::Root).unwrap()
+    }
+
+    #[test]
+    fn board_and_log_show_the_effort_next_to_the_model() {
+        let (mut store, config) = store();
+        let new = NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("me-sim").unwrap(),
+                slug: Slug::new("deep").unwrap(),
+                kind: "scene".to_owned(),
+                model: Some(headwork_core::Model::Opus),
+                effort: Some(headwork_core::Effort::Xhigh),
+                in_main: false,
+                keep: false,
+            },
+            brief_path: "brief.md".to_owned(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+        };
+        store.create_task(&config, &new, Actor::Root).unwrap();
+        let text = super::board(&store.board(false).unwrap(), 10);
+        assert!(text.contains("opus   xhigh effort"), "{text}");
+        let log = super::events(
+            &store
+                .events(EventFilter {
+                    task: None,
+                    limit: 50,
+                })
+                .unwrap(),
+        );
+        assert!(log.contains("model opus, xhigh effort"), "{log}");
     }
 
     #[test]
@@ -457,7 +502,7 @@ mod tests {
         );
         assert!(text.contains("me-sim (S:/Code/me-sim/me-sim)"), "{text}");
         assert!(
-            text.contains("#1   me-sim-sand-cascade  queued      sonnet scene"),
+            text.contains("#1   me-sim-sand-cascade  queued      sonnet default effort scene"),
             "{text}"
         );
         assert!(

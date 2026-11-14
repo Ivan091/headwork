@@ -8,7 +8,7 @@ use std::process::Command;
 use headwork_adapters::runtime::ClaudeLaunch;
 use headwork_adapters::worktree::{Worktrees, parse_porcelain, same_path};
 use headwork_core::config::{TaskVars, WorktreeCommand};
-use headwork_core::{Model, PermissionMode};
+use headwork_core::{Effort, Model, PermissionMode};
 
 #[test]
 fn argv_for_a_new_child() {
@@ -18,6 +18,7 @@ fn argv_for_a_new_child() {
         name: "me-sim-sand",
         remote_control: true,
         model: Model::Haiku,
+        effort: None,
         permission_mode: PermissionMode::Auto,
         agent: None,
         plugin_dir: None,
@@ -45,6 +46,29 @@ fn argv_for_a_new_child() {
 }
 
 #[test]
+fn effort_becomes_the_effort_flag() {
+    let launch = ClaudeLaunch {
+        session_id: "0f8e",
+        resume: false,
+        name: "x",
+        remote_control: false,
+        model: Model::Sonnet,
+        effort: Some(Effort::Xhigh),
+        permission_mode: PermissionMode::Auto,
+        agent: None,
+        plugin_dir: None,
+        prompt: "p",
+    };
+    assert!(
+        launch
+            .argv()
+            .windows(2)
+            .any(|pair| pair == ["--effort", "xhigh"]),
+        "effort flag"
+    );
+}
+
+#[test]
 fn argv_for_a_resumed_root_without_remote_control() {
     let launch = ClaudeLaunch {
         session_id: "0f8e",
@@ -52,6 +76,7 @@ fn argv_for_a_resumed_root_without_remote_control() {
         name: "root",
         remote_control: false,
         model: Model::Opus,
+        effort: Some(Effort::High),
         permission_mode: PermissionMode::Default,
         agent: Some("root"),
         plugin_dir: Some("S:/x/plugin"),

@@ -232,3 +232,14 @@ fn tick_runs_in_shadow_mode_on_an_empty_store() {
     assert_eq!(json["host_up"], false, "the host is not there");
     assert!(home.path().join("tick.lock").exists(), "the lock file");
 }
+
+#[test]
+fn spawn_rejects_an_unknown_effort() {
+    let home = home_with_fixture();
+    let output = headwork(
+        home.path(),
+        &["spawn", "me-sim", "x", "brief.md", "--effort", "extreme"],
+    );
+    assert!(!output.status.success(), "refused");
+    assert!(stderr(&output).contains("extreme"), "{}", stderr(&output));
+}

@@ -29,7 +29,7 @@ use headwork_adapters::git::Gh;
 use headwork_core::guard::{ToolCall, check_tool};
 use headwork_core::watch::Limits;
 use headwork_core::{
-    Actor, Config, Decision, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest,
+    Actor, Config, Decision, Effort, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest,
 };
 use headwork_store::{EventFilter, Store, TaskId};
 
@@ -184,6 +184,9 @@ enum Command {
         /// The model; the machine default when absent.
         #[arg(long)]
         model: Option<Model>,
+        /// The effort; claude's default when absent.
+        #[arg(long)]
+        effort: Option<Effort>,
         /// The permission mode.
         #[arg(long, default_value = "default")]
         mode: PermissionMode,
@@ -262,6 +265,9 @@ struct SpawnArgs {
     /// The model; the machine default when absent.
     #[arg(long)]
     model: Option<Model>,
+    /// The effort; the machine default when absent.
+    #[arg(long)]
+    effort: Option<Effort>,
     /// The permission mode.
     #[arg(long, default_value = "auto")]
     mode: PermissionMode,
@@ -322,12 +328,14 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
         Command::Root {
             model,
+            effort,
             mode,
             prompt,
         } => {
             return root_command(&RootStart {
                 prompt,
                 model,
+                effort,
                 mode,
             });
         }
@@ -599,6 +607,7 @@ fn spawn_command(
             slug: Slug::new(args.slug)?,
             kind,
             model: args.model,
+            effort: args.effort,
             in_main: args.in_main,
             keep: args.keep,
         },

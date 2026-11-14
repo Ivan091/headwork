@@ -93,6 +93,7 @@ fn request<'a>(brief: &'a Path, slug: &str, in_main: bool) -> SpawnRequest<'a> {
             slug: Slug::new(slug).unwrap(),
             kind: if in_main { "probe" } else { "task" }.to_owned(),
             model: Some(Model::Haiku),
+            effort: None,
             in_main,
             keep: false,
         },

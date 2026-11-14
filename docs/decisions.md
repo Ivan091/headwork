@@ -262,3 +262,9 @@ and the reason.
   table and then the queue and asks from the board. `~/.claude/skills/orchestrate/engine` holds `headwork` or `legacy`.
 - 2026-11-14 The config written on this machine is the import's, with `me-sim` and `me-studio` replaced by the fixture's
   fuller sections (main-only kinds, user-only scripts, heavy slots, long jobs), since the import cannot know those.
+- 2026-11-14 Effort is `--effort low|medium|high|xhigh|max`, passed to the child as `claude --effort` (the installed
+  claude supports it, so no `--settings` workaround). A task stores it in a nullable `tasks.effort` column (migration
+  0006); absent means claude's own default and prints as "default effort". There is no `[effort]` config default and no
+  per-project allowed set. Adopted (imported) tasks have no effort. `headwork root --effort` exists too but is not
+  stored. The board shows it after the model; `log` shows it on `task-created`; `--json` carries `effort` (null when
+  absent) on tasks and in the event data; the MCP `spawn` takes an optional `effort`.
