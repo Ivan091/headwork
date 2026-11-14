@@ -499,7 +499,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         exe: &exe,
     };
     match command {
-        Command::Board { all, json } => board(&store, &ctx, all, json, out),
+        Command::Board { all, json } => board(&mut store, &ctx, all, json, out),
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
@@ -684,12 +684,13 @@ fn json_out(out: &mut impl Write, value: &impl serde::Serialize) -> Result<()> {
 }
 
 fn board(
-    store: &Store,
+    store: &mut Store,
     ctx: &Ctx<'_>,
     all: bool,
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
+    ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
     let mut board = store.board(all)?;
     for entry in &mut board.tasks {
         entry.task.effort = Some(effort::of_task(ctx.home, ctx.config, &entry.task));

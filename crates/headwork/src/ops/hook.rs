@@ -28,8 +28,9 @@ use headwork_store::{
 };
 use serde_json::{Value, json};
 
+use super::lost::{self, LostCause};
 use super::rules::{self, Card};
-use super::slashed;
+use super::{Env, slashed};
 use crate::home::Home;
 
 /// The hook events headwork handles.
@@ -719,15 +720,39 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
     decide(store, call, HookEvent::Stop, "", tail.as_deref(), &decision)
 }
 
+/// The `SessionEnd` reasons after which `claude` keeps running with a new conversation: `/clear` and `/resume`.
+const CONVERSATION_SWITCH: [&str; 2] = ["clear", "resume"];
+
 fn session_end(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
+    let reason = call.text("reason");
     store.append_event(
         Actor::Hook,
         call.session.task_id,
         Some(&call.session.id),
         "session-end",
-        &json!({ "reason": call.text("reason") }),
+        &json!({ "reason": reason }),
     )?;
+    if reason.is_some_and(|reason| CONVERSATION_SWITCH.contains(&reason)) {
+        return Ok(HookReply::default());
+    }
     store.set_session_state(&call.session.id, SessionState::Ended, Actor::Hook)?;
+    let Some(task) = call.task else {
+        return Ok(HookReply::default());
+    };
+    let Some(session) = store.session_of(task.id)? else {
+        return Ok(HookReply::default());
+    };
+    if session.id != call.session.id {
+        return Ok(HookReply::default());
+    }
+    let env = Env {
+        home: call.env.home,
+        config: call.env.config,
+        host: call.env.host,
+        exe: call.env.exe,
+        actor: Actor::Hook,
+    };
+    lost::mark(store, &env, task.id, &session, LostCause::SessionEnded)?;
     Ok(HookReply::default())
 }
 

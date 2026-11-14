@@ -396,3 +396,14 @@ and the reason.
   parked `root` comes back as `root`.
 - 2026-11-14 `docs/research.md`, `docs/trials/` and `docs/sub-roots.md` keep "root" and "child": they record research
   and a proposal as written. `docs/design.md` gets a note at the top instead of a rewrite of every section.
+- 2026-11-14 A session that ends moves its task to `interrupted` at once, not only at the next tick (`ops/lost.rs`).
+  Before, the `SessionEnd` hook only marked the session `ended`, and the launcher's own exit record never ran when the
+  pane was closed under it (`reason: other`), so with no tick scheduled in the shadow week a `--keep` worker showed
+  `working` for hours. `interrupted` is the design's state for a live session gone without `done` or a park (section
+  2.3), and `headwork resume` brings it back, so keep and normal workers alike take it; `failed` and `closing` would
+  lose the conversation or the worktree. Three places now apply it: the `SessionEnd` hook (except the reasons `clear`
+  and `resume`, after which `claude` runs on), `headwork board` and the MCP `board` tool, which first reconcile every
+  running task whose session ended or whose launcher pid is gone (no host call, so the board stays fast with wmux
+  down), and the tick, which also catches a vanished pane. A parking machine and tasks already closing are left alone.
+  This is bookkeeping, so it runs in shadow mode too; the tick still records the `pane-lost` finding only for what it
+  found itself.

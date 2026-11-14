@@ -585,8 +585,9 @@ impl<'a> Server<'a> {
         Ok(self.store.task(row)?)
     }
 
-    fn board(&self, args: &Value) -> Result<String> {
+    fn board(&mut self, args: &Value) -> Result<String> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+        super::lost::reconcile(self.store, &self.env)?;
         to_text(&self.store.board(all)?)
     }
 

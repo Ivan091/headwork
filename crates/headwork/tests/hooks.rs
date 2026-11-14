@@ -455,6 +455,104 @@ fn session_end_is_recorded() {
 }
 
 #[test]
+fn a_keep_worker_whose_session_ends_is_interrupted_not_left_working() {
+    let mut w = world("", true);
+    w.start();
+    assert_eq!(w.state(), TaskState::Working, "started");
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "<cross-session-message from-name=\"root\">go on</cross-session-message>" }),
+    );
+    w.hook(HookEvent::SessionEnd, &json!({ "reason": "other" }));
+    assert_eq!(
+        w.state(),
+        TaskState::Interrupted,
+        "the ended session is not working"
+    );
+    let task = w.store.task(w.task.id).unwrap();
+    assert_eq!(
+        task.state_before_park,
+        Some(TaskState::Working),
+        "resume returns to working"
+    );
+    let session = w.store.hook_session(&w.session).unwrap().unwrap();
+    assert_eq!(
+        session.state,
+        SessionState::Ended,
+        "the session stays ended"
+    );
+    assert!(
+        w.events().iter().any(|event| event.kind == "transition"
+            && event.data["trigger"] == "process-lost"
+            && event.data["to"] == "interrupted"),
+        "the transition is logged: {:?}",
+        w.events()
+    );
+    assert!(
+        w.store.latest_recap(w.task.id).unwrap().is_some(),
+        "a recap for the resume"
+    );
+}
+
+#[test]
+fn a_normal_worker_that_exits_without_closing_is_interrupted() {
+    let mut w = world("", false);
+    w.start();
+    w.hook(
+        HookEvent::SessionEnd,
+        &json!({ "reason": "prompt_input_exit" }),
+    );
+    assert_eq!(w.state(), TaskState::Interrupted, "interrupted");
+}
+
+#[test]
+fn clear_and_resume_keep_the_session_and_the_task_running() {
+    let mut w = world("", false);
+    w.start();
+    for reason in ["clear", "resume"] {
+        w.hook(HookEvent::SessionEnd, &json!({ "reason": reason }));
+        assert_eq!(w.state(), TaskState::Working, "{reason}: still working");
+        let session = w.store.hook_session(&w.session).unwrap().unwrap();
+        assert_eq!(session.state, SessionState::Live, "{reason}: still live");
+    }
+}
+
+#[test]
+fn a_session_end_during_close_leaves_the_task_closing() {
+    let mut w = world("", true);
+    w.start();
+    w.store
+        .transition(
+            w.task.id,
+            &headwork_core::Trigger::ForceClose,
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    w.hook(HookEvent::SessionEnd, &json!({ "reason": "other" }));
+    assert_eq!(w.state(), TaskState::Closing, "close owns the task");
+    assert!(
+        !w.events().iter().any(|event| event.kind == "refused"),
+        "nothing to refuse: {:?}",
+        w.events()
+    );
+}
+
+#[test]
+fn the_mcp_board_never_shows_a_task_whose_session_ended_as_working() {
+    let mut w = world("", true);
+    w.start();
+    let session = w.session.clone();
+    w.store
+        .set_session_state(&session, SessionState::Ended, Actor::Hook)
+        .unwrap();
+    let (is_error, text) = w.tool(orchestrator_identity(), "board", &json!({}));
+    assert!(!is_error, "{text}");
+    let board: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(board["tasks"][0]["state"], "interrupted", "{text}");
+    assert_eq!(w.state(), TaskState::Interrupted, "recorded");
+}
+
+#[test]
 fn unknown_sessions_are_left_alone() {
     let mut w = world("enforce = true", false);
     w.session = "not-managed".to_owned();

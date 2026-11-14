@@ -8,6 +8,7 @@ pub mod import;
 pub mod install;
 pub mod jobs;
 pub mod launch;
+pub mod lost;
 pub mod mcp;
 pub mod park;
 pub mod place;

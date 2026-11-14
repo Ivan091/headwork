@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use headwork::home::Home;
 use headwork::ops::Env;
+use headwork::ops::lost::{self, Lost, LostCause};
 use headwork::ops::rules::RuleFiles;
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::tick::{DELETE_WORKTREE, KEEP_WORKTREE, Status, TickEnv, TickReport, tick};
@@ -22,8 +23,8 @@ use headwork_adapters::proc::is_alive;
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::watch::Limits;
 use headwork_core::{
-    Actor, Config, FindingId, MachineMode, Model, PermissionMode, ProjectName, Slug, TaskRequest,
-    TaskState, Trigger,
+    Actor, Config, FindingId, MachineMode, Model, PermissionMode, ProjectName, SessionState, Slug,
+    TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{EventFilter, Store, Task};
 
@@ -34,6 +35,7 @@ struct World {
     dir: tempfile::TempDir,
     home: Home,
     config: Config,
+    config_text: String,
     store: Store,
     host: FakeHost,
     git: FakeGit,
@@ -89,6 +91,7 @@ fn world_with(enforce: bool, max_workers: u32) -> World {
          allowed_repos = [\"acme/demo\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
+    let config_text = text;
     let home = Home::at(Some(dir.path().join("home"))).unwrap();
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
@@ -106,6 +109,7 @@ fn world_with(enforce: bool, max_workers: u32) -> World {
         dir,
         home,
         config,
+        config_text,
         store,
         host: FakeHost::new(),
         git: FakeGit::new(),
@@ -341,6 +345,91 @@ fn a_dead_launcher_interrupts_the_task() {
     start(&mut w, &task, FAKE_PID_BASE, FAKE_PID_BASE);
     run_tick(&mut w);
     assert_eq!(state(&w, &task), TaskState::Interrupted, "interrupted");
+}
+
+fn reconcile(w: &mut World) -> Vec<Lost> {
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new("S:/bin/headwork.exe"),
+        actor: Actor::User,
+    };
+    lost::reconcile(&mut w.store, &env).unwrap()
+}
+
+#[test]
+fn reconcile_interrupts_a_task_whose_launcher_is_gone_and_leaves_live_ones() {
+    let mut w = world();
+    let gone = spawn_task(&mut w, "gone");
+    start(&mut w, &gone, FAKE_PID_BASE, FAKE_PID_BASE);
+    let (live, _) = working(&mut w, "live");
+    let moved = reconcile(&mut w);
+    assert_eq!(
+        moved,
+        [Lost {
+            task: gone.id,
+            from: TaskState::Working,
+            cause: LostCause::Launcher
+        }],
+        "only the dead one"
+    );
+    assert_eq!(state(&w, &gone), TaskState::Interrupted, "interrupted");
+    assert_eq!(state(&w, &live), TaskState::Working, "the live one runs on");
+    let session = w.store.session_of(gone.id).unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Gone, "the session is gone");
+    assert!(reconcile(&mut w).is_empty(), "a second run changes nothing");
+}
+
+#[test]
+fn reconcile_interrupts_a_task_whose_session_ended_while_its_launcher_lingers() {
+    let mut w = world();
+    let (task, session) = working(&mut w, "sand");
+    w.store
+        .set_session_state(&session, SessionState::Ended, Actor::Hook)
+        .unwrap();
+    let moved = reconcile(&mut w);
+    assert_eq!(moved.len(), 1, "moved");
+    assert_eq!(moved[0].cause, LostCause::SessionEnded, "cause");
+    assert_eq!(state(&w, &task), TaskState::Interrupted, "interrupted");
+}
+
+#[test]
+fn reconcile_waits_while_the_machine_parks() {
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    start(&mut w, &task, FAKE_PID_BASE, FAKE_PID_BASE);
+    w.store
+        .set_machine_mode(MachineMode::Parking, Actor::User)
+        .unwrap();
+    assert!(reconcile(&mut w).is_empty(), "parking owns the task");
+    assert_eq!(state(&w, &task), TaskState::Working, "unchanged");
+}
+
+#[test]
+fn the_board_command_shows_a_task_whose_process_is_gone_as_interrupted() {
+    let mut w = world();
+    std::fs::write(w.home.root().join("config.toml"), &w.config_text).unwrap();
+    let task = spawn_task(&mut w, "sand");
+    start(&mut w, &task, FAKE_PID_BASE, FAKE_PID_BASE);
+    let output = Command::new(env!("CARGO_BIN_EXE_headwork"))
+        .args(["board", "--json"])
+        .env("HEADWORK_HOME", w.home.root())
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let board: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(board["tasks"][0]["state"], "interrupted", "{text}");
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Interrupted,
+        "recorded in the store"
+    );
 }
 
 #[test]
@@ -848,7 +937,7 @@ fn a_session_with_an_unchanging_screen_is_stuck_on_the_second_look() {
     run_tick(&mut w);
     assert_eq!(count(&w, "finding"), 1, "reported once");
     w.store
-        .set_session_state(&session, headwork_core::SessionState::Gone, Actor::Tick)
+        .set_session_state(&session, SessionState::Gone, Actor::Tick)
         .unwrap();
     run_tick(&mut w);
     assert_eq!(
