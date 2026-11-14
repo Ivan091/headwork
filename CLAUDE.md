@@ -111,6 +111,11 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 
 `--logon` leaves sessions a crash interrupted to `machine.resume_after_crash`; by hand they are resumed too.
 
+The root (started with `headwork root`) is parked and resumed too: park asks it for a recap and leaves it running (the
+restart ends it), and resume reopens it in a `root` workspace in the folder it ran in, with the same conversation, at
+logon too and after a crash. A root that still runs is left alone. See `docs/decisions.md` (2026-11-14, the root parks
+and resumes).
+
 ### Migration on this machine (steps 0 and 1)
 
 Milestone 7 installed headwork for real, with `hooks.enforce = false` (shadow mode). `headwork doctor` checks all of it
@@ -152,8 +157,8 @@ record its exit once a newer migration ran; `headwork close <name>` finishes suc
 The binary, `~/.headwork` and the PATH copy can stay; remove them with `rm -r ~/.headwork ~/.local/bin/headwork.exe`.
 
 **The root as a store session:** `headwork root` starts `claude --agent root --remote-control root -n root` here, records
-it as the store's root session and gives it its identity. `root.sh` still starts the root unmanaged; switching it is
-step 3.
+it as the store's root session and gives it its identity. `root.sh` starts the root this way (step 3); the `engine`
+switch (`legacy`) brings back the old unmanaged start.
 
 **The shadow week** runs from 2026-11-14 to 2026-11-21. Managed sessions (children spawned through the wrappers, and the
 root once it starts with `headwork root`) log every would-deny in the store. On 2026-11-21 read

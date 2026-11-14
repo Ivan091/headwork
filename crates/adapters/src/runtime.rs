@@ -28,8 +28,8 @@ pub struct ClaudeLaunch<'a> {
     pub name: &'a str,
     /// Start with Remote Control.
     pub remote_control: bool,
-    /// The model.
-    pub model: Model,
+    /// The model; claude's own default (the user's settings) when absent.
+    pub model: Option<Model>,
     /// The effort; claude's own default when absent.
     pub effort: Option<Effort>,
     /// The permission mode.
@@ -59,11 +59,11 @@ impl ClaudeLaunch<'_> {
         if self.remote_control {
             argv.extend(["--remote-control".to_owned(), self.name.to_owned()]);
         }
+        argv.extend(["-n".to_owned(), self.name.to_owned()]);
+        if let Some(model) = self.model {
+            argv.extend(["--model".to_owned(), model.as_str().to_owned()]);
+        }
         argv.extend([
-            "-n".to_owned(),
-            self.name.to_owned(),
-            "--model".to_owned(),
-            self.model.as_str().to_owned(),
             "--permission-mode".to_owned(),
             self.permission_mode.as_str().to_owned(),
         ]);

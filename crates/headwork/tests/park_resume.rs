@@ -24,9 +24,9 @@ use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::{
     Actor, AskKind, Config, JobState, MachineMode, Model, PermissionMode, ProjectName, RecapKind,
-    Slug, TaskRequest, TaskState, Trigger,
+    Role, Slug, TaskRequest, TaskState, Trigger,
 };
-use headwork_store::{NewAsk, NewRecap, Store, Task};
+use headwork_store::{NewAsk, NewRecap, NewSession, Store, Task};
 
 const EXE: &str = "S:/bin/headwork.exe";
 const SLEEPER_ROLE: &str = "HEADWORK_PARK_ROLE";
@@ -657,4 +657,162 @@ fn resume_refuses_while_a_park_runs() {
         resume(&mut w.store, &env, &opts).is_err(),
         "a park is running"
     );
+}
+
+impl World {
+    /// A running root session in the user's own pane, as `headwork root` records it.
+    fn root(&mut self) -> (String, u32, PathBuf) {
+        let id = format!("root-{}", self.children.len());
+        self.store
+            .record_session(
+                &NewSession {
+                    id: id.clone(),
+                    task_id: None,
+                    role: Role::Root,
+                    rc_name: "root".to_owned(),
+                    host: "wmux".to_owned(),
+                    host_workspace: None,
+                    host_surface: None,
+                },
+                Actor::User,
+            )
+            .unwrap();
+        let pid = self.sleeper();
+        self.store.session_launched(&id, pid, pid, "job").unwrap();
+        let dir = self.dir.path().join("code");
+        std::fs::create_dir_all(&dir).unwrap();
+        self.store
+            .set_session_dir(&id, &dir.display().to_string().replace('\\', "/"))
+            .unwrap();
+        (id, pid, dir)
+    }
+
+    fn seen_in(&self, workspace: &str, session: &str) -> String {
+        let surface = self.host.add_restored_surface(workspace);
+        self.host.add_state(SurfaceState {
+            surface: surface.clone(),
+            state: "idle".to_owned(),
+            session_id: Some(session.to_owned()),
+            blocked_reason: None,
+        });
+        surface.to_string()
+    }
+}
+
+#[test]
+fn park_asks_the_root_for_a_recap_and_leaves_it_running_and_resume_brings_it_back() {
+    let mut w = world("ask");
+    let (sand, sand_session, _) = w.working("sand");
+    let (root, root_pid, root_dir) = w.root();
+    let surface = w.seen_in("Workspace 1", &root);
+    let record = w.store.begin_park(60, Actor::User).unwrap();
+    w.store
+        .add_recap(
+            &NewRecap {
+                task_id: None,
+                session_id: Some(&root),
+                kind: RecapKind::Session,
+                body: "coordinating sand; the user waits on nothing",
+            },
+            Actor::Root,
+        )
+        .unwrap();
+    let env = env!(w);
+    let report = park(&mut w.store, &env, quick(400)).unwrap();
+    assert_eq!(report.park, record.id, "the park carries on");
+    let parked_root = report.root.clone().unwrap();
+    assert_eq!(parked_root.session, root, "the root is recorded");
+    assert_eq!(parked_root.recap, RecapSource::Session, "{report:?}");
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c.starts_with(&format!("send {surface} ")) && c.contains("recap")),
+        "the root is asked for a recap: {:?}",
+        w.host.calls()
+    );
+    assert!(is_alive(root_pid).unwrap(), "the root keeps running");
+    assert_eq!(w.state(&sand), TaskState::Parked, "the child is parked");
+    assert!(report.safe_to_restart, "{report:?}");
+
+    assert!(headwork_adapters::proc::kill_tree(root_pid).unwrap());
+    assert!(dead(root_pid), "the restart ends the root");
+    let restored = w.seen_in("Workspace 1", &root);
+    let claude_dir = claude_dir_with(&w, &[&sand_session, &root]);
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.root, Some(TaskOutcome::Resumed { .. })),
+        "{report:?}"
+    );
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" root "))
+        .unwrap();
+    assert!(
+        line.contains(&format!("--session {root} --resume --summary")),
+        "{line}"
+    );
+    assert!(
+        w.host
+            .calls()
+            .contains(&format!("close-surface {restored}")),
+        "the pane the host restored for the root is closed: {:?}",
+        w.host.calls()
+    );
+    let placed = w.store.session(&root).unwrap().unwrap().0;
+    assert!(placed.host_surface.is_some(), "the new pane is recorded");
+    assert_eq!(
+        w.store.session_dir(&root).unwrap().unwrap(),
+        root_dir.display().to_string().replace('\\', "/"),
+        "same folder"
+    );
+    let summary = std::fs::read_to_string(&report.summary).unwrap();
+    assert!(summary.contains("## Root"), "{summary}");
+    assert!(summary.contains("coordinating sand"), "{summary}");
+}
+
+#[test]
+fn a_root_whose_transcript_is_gone_starts_fresh_and_a_running_root_is_left_alone() {
+    let mut w = world("never");
+    let (root, root_pid, _) = w.root();
+    let env = env!(w);
+    let report = park(&mut w.store, &env, quick(200)).unwrap();
+    let parked_root = report.root.clone().unwrap();
+    assert_eq!(parked_root.recap, RecapSource::Mechanical, "{report:?}");
+    assert!(parked_root.problem.is_some(), "its pane is unknown");
+
+    let opts = ResumeOptions {
+        logon: false,
+        wait_for_host: Duration::ZERO,
+        claude_dir: claude_dir_with(&w, &[]),
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(&report.root, Some(TaskOutcome::Skipped { reason }) if reason.contains("still runs")),
+        "the root never stopped: {report:?}"
+    );
+
+    assert!(headwork_adapters::proc::kill_tree(root_pid).unwrap());
+    assert!(dead(root_pid), "a crash ends the root");
+    let logon = ResumeOptions {
+        logon: true,
+        ..opts
+    };
+    let report = resume(&mut w.store, &env, &logon).unwrap();
+    assert!(
+        matches!(report.root, Some(TaskOutcome::Fresh { .. })),
+        "a crashed root comes back at logon even with resume_after_crash = never: {report:?}"
+    );
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" root "))
+        .unwrap();
+    assert!(!line.contains("--resume"), "{line}");
+    assert!(!line.contains(&root), "a new session: {line}");
 }

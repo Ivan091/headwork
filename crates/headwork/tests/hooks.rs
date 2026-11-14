@@ -616,6 +616,7 @@ fn mcp_tools_follow_the_role() {
             "rules",
             "rule_add",
             "rule_retire",
+            "recap",
             "job_status",
             "park",
             "resume"
@@ -857,6 +858,33 @@ fn drop_records_the_users_words_and_closes() {
         event.kind == "drop-reason" && event.data["user_words"] == "not needed any more"
     });
     assert!(words, "the user's words are logged");
+}
+
+#[test]
+fn the_root_writes_a_recap_of_its_own_session_and_a_park_keeps_it() {
+    let mut w = world("", false);
+    let (is_error, text) = w.tool(
+        root_identity(),
+        "recap",
+        &json!({ "text": "Watching sand." }),
+    );
+    assert!(!is_error, "{text}");
+    let recap = w
+        .store
+        .latest_session_recap("root-session")
+        .unwrap()
+        .unwrap();
+    assert_eq!(recap.task_id, None, "no task");
+    assert_eq!(recap.park_id, None, "not a park");
+    let park = w.store.begin_park(60, Actor::User).unwrap();
+    let (is_error, text) = w.tool(root_identity(), "recap", &json!({ "text": "Parking." }));
+    assert!(!is_error && text.contains("reopens you"), "{text}");
+    let parked = w
+        .store
+        .root_park_recap(park.id, "root-session")
+        .unwrap()
+        .unwrap();
+    assert_eq!(parked.body, "Parking.", "the park's recap");
 }
 
 #[test]

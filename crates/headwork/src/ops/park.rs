@@ -25,6 +25,11 @@ pub const PARK_PROMPT: &str = "headwork: the machine is about to restart. Reach 
     headwork `recap` tool with what you were doing, your next step and what is running. Register any long process \
     with `job_register`. Do not start new work.";
 
+/// What the root is told when a park begins. It keeps running; the restart ends it and the resume reopens it.
+pub const ROOT_PARK_PROMPT: &str = "headwork: the machine is about to restart. Call the headwork `recap` tool with \
+    what you are coordinating, what waits on the user and your next step. Do not start new work. headwork reopens \
+    you after the restart with this recap.";
+
 /// How a park waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParkOptions {
@@ -83,6 +88,17 @@ pub struct ParkedJob {
     pub left_running: bool,
 }
 
+/// The root session of a park.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ParkedRoot {
+    /// Its Claude session id, which the resume brings back.
+    pub session: String,
+    /// Whose recap it left.
+    pub recap: RecapSource,
+    /// Why it could not be asked for its recap, when it could not.
+    pub problem: Option<String>,
+}
+
 /// What a park did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ParkReport {
@@ -90,6 +106,8 @@ pub struct ParkReport {
     pub park: i64,
     /// The sessions, in the order they were parked.
     pub sessions: Vec<ParkedSession>,
+    /// The root session, when one was running; it is left running.
+    pub root: Option<ParkedRoot>,
     /// The jobs.
     pub jobs: Vec<ParkedJob>,
     /// Everything stopped cleanly: it is safe to restart.
@@ -123,6 +141,7 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
     let began = SystemTime::now();
     let limit = Instant::now() + opts.deadline;
     let targets = begin_sessions(store, env)?;
+    let root = begin_root(store, env, record.id)?;
     let mut parked_jobs = stop_fast_jobs(store, env)?;
 
     loop {
@@ -137,6 +156,15 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
                 waiting = true;
             }
         }
+        if let Some(root) = &root
+            && root.expects_recap
+            && session_alive(&root.session)
+            && store
+                .root_park_recap(record.id, &root.session.id)?
+                .is_none()
+        {
+            waiting = true;
+        }
         if !waiting || Instant::now() >= limit {
             break;
         }
@@ -148,25 +176,32 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
     for target in &targets {
         sessions.push(finish_session(store, env, record.id, target)?);
     }
+    let root = root
+        .map(|root| finish_root(store, env, record.id, root))
+        .transpose()?;
     let safe =
         sessions.iter().all(|s| s.problem.is_none()) && parked_jobs.iter().all(|j| !j.left_running);
     store.finish_park(record.id, env.actor)?;
     Ok(ParkReport {
         park: record.id,
         sessions,
+        root,
         jobs: parked_jobs,
         safe_to_restart: safe,
     })
 }
 
 fn target_alive(target: &Target) -> bool {
-    target.session.as_ref().is_some_and(|session| {
-        matches!(session.state, SessionState::Live | SessionState::Starting)
-            && session
-                .claude_pid
-                .or(session.launcher_pid)
-                .is_some_and(|pid| proc::is_alive(pid).unwrap_or(true))
-    })
+    target.session.as_ref().is_some_and(session_alive)
+}
+
+/// Whether a session has not ended and its `claude` (or launcher) still runs.
+pub(super) fn session_alive(session: &SessionRow) -> bool {
+    matches!(session.state, SessionState::Live | SessionState::Starting)
+        && session
+            .claude_pid
+            .or(session.launcher_pid)
+            .is_some_and(|pid| proc::is_alive(pid).unwrap_or(true))
 }
 
 fn begin_sessions(store: &mut Store, env: &Env<'_>) -> Result<Vec<Target>> {
@@ -426,4 +461,86 @@ fn stop_session(
     }
     store.set_session_state(&session.id, SessionState::Ended, env.actor)?;
     Ok(problem)
+}
+
+struct RootTarget {
+    session: SessionRow,
+    expects_recap: bool,
+    problem: Option<String>,
+}
+
+/// Records the running root session on the park and asks it for its recap. It is not stopped: the root may be the
+/// session that asked for the park, and it tells the user when it is safe to restart.
+fn begin_root(store: &mut Store, env: &Env<'_>, park: i64) -> Result<Option<RootTarget>> {
+    let Some(session) = store.live_root_session()? else {
+        return Ok(None);
+    };
+    if !session_alive(&session) {
+        return Ok(None);
+    }
+    store.set_park_root(park, &session.id, env.actor)?;
+    let problem = root_surface(env, &session).map_or_else(
+        || Some("its pane is unknown, so it was not asked for a recap".to_owned()),
+        |surface| {
+            env.host
+                .send_text(&surface, ROOT_PARK_PROMPT)
+                .and_then(|()| env.host.send_key(&surface, Key::Enter))
+                .err()
+                .map(|error| format!("the park notice did not reach it: {error}"))
+        },
+    );
+    Ok(Some(RootTarget {
+        expects_recap: problem.is_none(),
+        session,
+        problem,
+    }))
+}
+
+/// The surface the root runs in: where headwork placed it, else where the host sees its Claude session.
+pub(super) fn root_surface(env: &Env<'_>, session: &SessionRow) -> Option<SurfaceId> {
+    if let Some(surface) = &session.host_surface {
+        return Some(SurfaceId(surface.clone()));
+    }
+    env.host
+        .surface_states()
+        .ok()?
+        .into_iter()
+        .find(|state| state.session_id.as_deref() == Some(session.id.as_str()))
+        .map(|state| state.surface)
+}
+
+fn finish_root(
+    store: &mut Store,
+    env: &Env<'_>,
+    park: i64,
+    root: RootTarget,
+) -> Result<ParkedRoot> {
+    let recap = if store.root_park_recap(park, &root.session.id)?.is_some() {
+        RecapSource::Session
+    } else {
+        let reason = if root.expects_recap {
+            "the root wrote no recap before the deadline"
+        } else {
+            "the root could not be asked for a recap"
+        };
+        let body = format!(
+            "# Recap (mechanical)\n\n- {reason}\n- read the board and the inbox to see where the tasks stand\n"
+        );
+        store.add_park_recap(
+            park,
+            &NewRecap {
+                task_id: None,
+                session_id: Some(&root.session.id),
+                kind: RecapKind::Mechanical,
+                body: &body,
+            },
+            env.actor,
+        )?;
+        RecapSource::Mechanical
+    };
+    Ok(ParkedRoot {
+        session: root.session.id,
+        recap,
+        problem: root.problem,
+    })
 }

@@ -18,7 +18,7 @@ use headwork::ops::effort;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
-use headwork::ops::launch::{RootStart, StartMode, exited, launch_root};
+use headwork::ops::launch::{RootOrigin, RootStart, StartMode, exited, launch_root};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
 use headwork::ops::relay::Relay;
@@ -224,7 +224,7 @@ enum Command {
     },
     /// Run the root session here, recorded in the store, as `root.sh` starts it.
     Root {
-        /// The model; the machine default when absent.
+        /// The model; claude's own default (the user's settings) when absent.
         #[arg(long)]
         model: Option<Model>,
         /// The effort; claude's default when absent.
@@ -239,6 +239,18 @@ enum Command {
             default_value = "You are the root session. Read HANDOFF.md beside CLAUDE.md and wait for the user."
         )]
         prompt: String,
+        /// Run this recorded root session, as a resume does, instead of recording a new one.
+        #[arg(long)]
+        session: Option<String>,
+        /// Continue that session's conversation; without it the session starts fresh from its recap.
+        #[arg(long, requires = "session")]
+        resume: bool,
+        /// The resume's summary, named in the first prompt of a root that comes back.
+        #[arg(long, requires = "session")]
+        summary: Option<String>,
+        /// The headwork home; panes do not inherit the caller's environment.
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
     /// Check the hard rules by hand.
     Rule {
@@ -398,13 +410,26 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             effort,
             mode,
             prompt,
+            session,
+            resume,
+            summary,
+            home,
         } => {
-            return root_command(&RootStart {
-                prompt,
-                model,
-                effort,
-                mode,
+            let origin = session.map_or(RootOrigin::New, |session| RootOrigin::Back {
+                session,
+                resume,
+                summary,
             });
+            return root_command(
+                &Home::at(home)?,
+                &RootStart {
+                    prompt,
+                    model,
+                    effort,
+                    mode,
+                    origin,
+                },
+            );
         }
         Command::Launch {
             task,
@@ -1223,9 +1248,8 @@ fn shadow_command(
     Ok(ExitCode::SUCCESS)
 }
 
-fn root_command(start: &RootStart) -> Result<ExitCode> {
-    let home = Home::locate()?;
-    let code = launch_root(&home, start)?;
+fn root_command(home: &Home, start: &RootStart) -> Result<ExitCode> {
+    let code = launch_root(home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
 }
