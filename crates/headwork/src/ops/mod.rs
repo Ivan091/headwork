@@ -1,6 +1,7 @@
 //! What the commands do, against a store, a config and a [`TerminalHost`], so it can be tested with the fake host.
 
 pub mod close;
+pub mod doctor;
 pub mod hook;
 pub mod import;
 pub mod jobs;
@@ -10,6 +11,7 @@ pub mod park;
 pub mod recap;
 pub mod resume;
 pub mod rules;
+pub mod shadow;
 pub mod spawn;
 pub mod tick;
 

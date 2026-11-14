@@ -164,6 +164,15 @@ pub fn is_alive(pid: u32) -> Result<bool, ProcError> {
     imp::is_alive(pid)
 }
 
+/// The ids of the processes running a program image, such as `claude.exe` on Windows or `claude` elsewhere.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Tool`] when the system tool cannot run.
+pub fn pids_named(image: &str) -> Result<Vec<u32>, ProcError> {
+    imp::pids_named(image)
+}
+
 /// Makes this process ignore Ctrl+C and Ctrl+Break, so that an interrupt typed into a pane reaches the program in it
 /// and does not end the launcher that owns the program's tree.
 ///
@@ -269,6 +278,21 @@ mod imp {
         let needle = format!("\"{pid}\"");
         Ok(String::from_utf8_lossy(&output.stdout).contains(&needle))
     }
+
+    pub(super) fn pids_named(image: &str) -> Result<Vec<u32>, ProcError> {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH", "/FO", "CSV"])
+            .output()
+            .map_err(|source| ProcError::Tool {
+                tool: "tasklist",
+                source,
+            })?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split(',').nth(1))
+            .filter_map(|field| field.trim_matches('"').parse().ok())
+            .collect())
+    }
 }
 
 #[cfg(unix)]
@@ -324,6 +348,20 @@ mod imp {
 
     pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
         signal_group(pid, "-KILL")
+    }
+
+    pub(super) fn pids_named(image: &str) -> Result<Vec<u32>, ProcError> {
+        let output = Command::new("pgrep")
+            .args(["-x", image])
+            .output()
+            .map_err(|source| ProcError::Tool {
+                tool: "pgrep",
+                source,
+            })?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect())
     }
 
     pub(super) fn is_alive(pid: u32) -> Result<bool, ProcError> {

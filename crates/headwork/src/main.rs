@@ -13,12 +13,14 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
 use headwork::ops::close::{CloseReport, close, finish_after, reap};
+use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
-use headwork::ops::launch::StartMode;
+use headwork::ops::launch::{RootStart, StartMode, launch_root};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
 use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
+use headwork::ops::shadow::shadow_report;
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::tick::{TickEnv, tick};
 use headwork::ops::{Env, host_for};
@@ -162,6 +164,36 @@ enum Command {
     /// Serve the MCP tools of the calling session over stdio: the plugin's `.mcp.json` runs this.
     #[command(hide = true)]
     Mcp,
+    /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
+    Doctor {
+        /// The Claude config folder.
+        #[arg(long)]
+        claude_dir: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The would-deny events the hooks logged in shadow mode, by rule id.
+    ShadowReport {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the root session here, recorded in the store, as `root.sh` starts it.
+    Root {
+        /// The model; the machine default when absent.
+        #[arg(long)]
+        model: Option<Model>,
+        /// The permission mode.
+        #[arg(long, default_value = "default")]
+        mode: PermissionMode,
+        /// The first prompt.
+        #[arg(
+            long,
+            default_value = "You are the root session. Read HANDOFF.md beside CLAUDE.md and wait for the user."
+        )]
+        prompt: String,
+    },
     /// Check the hard rules by hand.
     Rule {
         #[command(subcommand)]
@@ -259,6 +291,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per command that needs no store"
+)]
 fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     let command = match cli.command {
         Command::Hook { event } => return Ok(hook_command(event, out)),
@@ -282,6 +318,18 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
                 background,
             };
             return rule_test(&probe, json, out);
+        }
+        Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
+        Command::Root {
+            model,
+            mode,
+            prompt,
+        } => {
+            return root_command(&RootStart {
+                prompt,
+                model,
+                mode,
+            });
         }
         Command::Launch {
             task,
@@ -319,7 +367,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Close { .. }
         | Command::Tick { .. }
         | Command::Jobs { .. }
-        | Command::Recap { .. }) => other,
+        | Command::Recap { .. }
+        | Command::ShadowReport { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -342,11 +391,14 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
         Command::Recap { name } => recap_command(&store, &name, out),
+        Command::ShadowReport { json } => shadow_command(&store, &ctx, json, out),
         Command::Launch { .. }
         | Command::Park { .. }
         | Command::Resume { .. }
         | Command::Finish { .. }
         | Command::Import { .. }
+        | Command::Doctor { .. }
+        | Command::Root { .. }
         | Command::Hook { .. }
         | Command::Mcp
         | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
@@ -944,6 +996,58 @@ fn launch_command(home: &Home, task: i64, flags: (bool, bool, bool)) -> Result<E
         (false, false) => StartMode::New,
     };
     let code = headwork::ops::launch::launch(home, TaskId(task), mode)?;
+    let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
+    Ok(ExitCode::from(code))
+}
+
+fn doctor_command(
+    claude_dir: Option<PathBuf>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let claude_dir = claude_dir
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| home.expand("~/.claude"));
+    let exe = std::env::current_exe().context("finding the headwork program")?;
+    let report = doctor(&Doctor {
+        home: &home,
+        exe: &exe,
+        claude_dir: &claude_dir,
+        probe: &SystemProbe,
+        disks: &SystemDisks,
+        host: host_for,
+    });
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::doctored(&report).as_bytes())?;
+    }
+    Ok(if report.healthy() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn shadow_command(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let report = shadow_report(store, ctx.config.hooks.enforce)?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::shadowed(&report).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn root_command(start: &RootStart) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let code = launch_root(&home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
 }
