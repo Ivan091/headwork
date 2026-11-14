@@ -156,7 +156,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
         pids.iter().all(|pid| !proc::is_alive(*pid).unwrap_or(true))
     });
     let worktree = if processes_gone {
-        remove_worktree(store, env, id)?
+        remove_worktree(store, env, id, false)?
     } else {
         WorktreeEnd::Present
     };
@@ -197,7 +197,7 @@ fn close_pane(host: &dyn TerminalHost, session: &SessionRow) -> Result<bool> {
     Ok(!surface_present(host, workspace.as_ref(), &surface)?)
 }
 
-fn surface_present(
+pub(super) fn surface_present(
     host: &dyn TerminalHost,
     workspace: Option<&WorkspaceId>,
     surface: &SurfaceId,
@@ -233,7 +233,12 @@ pub fn close_surface_or_workspace(
     Ok(())
 }
 
-fn remove_worktree(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<WorktreeEnd> {
+pub(super) fn remove_worktree(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    force: bool,
+) -> Result<WorktreeEnd> {
     let task = store.task(id)?;
     let Some(worktree) = store.worktree_of(id)? else {
         return Ok(WorktreeEnd::NoWorktree);
@@ -255,7 +260,13 @@ fn remove_worktree(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<Workt
         worktree: &worktree.path,
     };
     let command = &env.project(&task)?.worktree_remove;
-    match env.worktrees(&task)?.remove(command, &vars) {
+    let worktrees = env.worktrees(&task)?;
+    let result = if force {
+        worktrees.remove_forced(command, &vars)
+    } else {
+        worktrees.remove(command, &vars)
+    };
+    match result {
         Ok(()) if !Path::new(&worktree.path).exists() => {
             store.set_worktree_state(id, "removed", env.actor)?;
             Ok(WorktreeEnd::Removed)

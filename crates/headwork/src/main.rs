@@ -17,8 +17,12 @@ use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
+use headwork::ops::tick::{TickEnv, tick};
 use headwork::ops::{Env, host_for};
+use headwork_adapters::disk::SystemDisks;
+use headwork_adapters::git::Gh;
 use headwork_core::guard::{ToolCall, check_tool};
+use headwork_core::watch::Limits;
 use headwork_core::{
     Actor, Config, Decision, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest,
 };
@@ -84,6 +88,13 @@ enum Command {
         /// Show what would be adopted and appended, change nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reconcile the store with reality: panes, processes, pull requests, worktrees, disks, runaway files, stuck
+    /// sessions and asks. Meant to run every minute from a scheduler.
+    Tick {
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -243,7 +254,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Log { .. }
         | Command::Spawn(_)
         | Command::Queue { .. }
-        | Command::Close { .. }) => other,
+        | Command::Close { .. }
+        | Command::Tick { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -263,6 +275,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
+        Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
         Command::Launch { .. }
         | Command::Finish { .. }
         | Command::Import { .. }
@@ -281,13 +294,17 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn with_env<T>(&self, act: impl FnOnce(&Env<'_>) -> Result<T>) -> Result<T> {
+        self.with_actor(Actor::User, act)
+    }
+
+    fn with_actor<T>(&self, actor: Actor, act: impl FnOnce(&Env<'_>) -> Result<T>) -> Result<T> {
         let host = host_for(self.config)?;
         act(&Env {
             home: self.home,
             config: self.config,
             host: host.as_ref(),
             exe: self.exe,
-            actor: Actor::User,
+            actor,
         })
     }
 }
@@ -705,4 +722,51 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
         Decision::Allow => ExitCode::SUCCESS,
         Decision::Deny(_) => ExitCode::FAILURE,
     })
+}
+
+/// Runs one tick under a lock file, so two overlapping scheduler runs never act at once.
+fn tick_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let lock_path = ctx.home.root().join("tick.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            writeln!(out, "another tick is running")?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(std::fs::TryLockError::Error(error)) => {
+            return Err(error).with_context(|| format!("locking {}", lock_path.display()));
+        }
+    }
+    let git = Gh::default();
+    let disks = SystemDisks;
+    let temp = std::env::temp_dir();
+    let report = ctx.with_actor(Actor::Tick, |env| {
+        tick(
+            store,
+            &TickEnv {
+                env,
+                git: &git,
+                disks: &disks,
+                temp: &temp,
+                limits: Limits::from_config(&ctx.config.watch),
+            },
+        )
+    })?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::ticked(&report).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
 }

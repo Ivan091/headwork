@@ -17,9 +17,10 @@ Cargo.toml              workspace: shared package settings, dependencies, lints,
 crates/
   core/                 headwork-core: lifecycle state machine, guards, config model; pure, no I/O
   store/                headwork-store: SQLite (rusqlite, bundled), numbered migrations, queries
-  adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the claude
+  adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the git host (gh,
+                        fake), disks, the claude
                         runtime, worktrees
-  headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch) over a small lib (home, ops)
+  headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick) over a small lib (home, ops)
 plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
 rules/                  built-in root and child rules, injected at SessionStart
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
@@ -27,7 +28,10 @@ scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
 ```
 
+
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules, rule_add, rule_retire) and the child tools (board, inbox, report, done) by the session's identity.
+Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
+`core/src/watch.rs`, its memory in migration 0004).
 
 ## Commands
 
@@ -41,10 +45,22 @@ cargo run -p headwork -- queue [--order a,b]   # order the queue, start every qu
 cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
+cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the
 repository's own `target/` on S:; C: has little free space.
+
+### Scheduling the tick
+
+`headwork tick` is idempotent and takes `tick.lock`, so a scheduler may call it every minute. Nothing installs it. On
+Windows the user would run:
+
+```bash
+schtasks /Create /SC MINUTE /MO 1 /TN "headwork tick" /TR "\"S:\Code\headwork\headwork\target\release\headwork.exe\" tick"
+```
+
+It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
 
 ## Code rules
 

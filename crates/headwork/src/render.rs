@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 use headwork::ops::import::ImportReport;
 use headwork::ops::spawn::{Outcome, Pumped};
+use headwork::ops::tick::TickReport;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord};
 
 /// What an import found and did.
@@ -193,6 +194,38 @@ fn describe(event: &EventRecord) -> String {
     }
 }
 
+/// What a tick found and did.
+#[must_use]
+pub(crate) fn ticked(report: &TickReport) -> String {
+    let mode = if report.enforce {
+        "enforcing"
+    } else {
+        "shadow"
+    };
+    let mut text = format!("tick ({mode})");
+    if !report.host_up {
+        text.push_str(", terminal host not running");
+    }
+    if report.queue_paused {
+        text.push_str(", queue paused: disk nearly full");
+    }
+    text.push('\n');
+    if report.lines.is_empty() && report.started.is_empty() {
+        text.push_str("nothing to report\n");
+    }
+    for line in &report.lines {
+        let task = line.task.as_deref().unwrap_or("-");
+        let _ = writeln!(
+            text,
+            "  {:<9} {} {task}: {}",
+            format!("{:?}", line.status).to_lowercase(),
+            line.rule,
+            line.detail
+        );
+    }
+    text.push_str(&pumped(&report.started));
+    text
+}
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
