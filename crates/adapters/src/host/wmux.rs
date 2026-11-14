@@ -10,18 +10,27 @@ use std::process::Command;
 use serde::Deserialize;
 
 use super::{
-    AgentId, Choice, HostError, Key, Pane, SurfaceId, SurfaceState, TerminalHost, Workspace,
-    WorkspaceId, command_line,
+    AgentId, Choice, HostError, Key, Pane, PaneId, PaneTree, SurfaceId, SurfaceState, Target,
+    TerminalHost, Workspace, WorkspaceId, command_line,
 };
 
 /// Runs one wmux command and returns what it printed.
 pub trait Runner: std::fmt::Debug {
-    /// Runs `wmux <args>`.
+    /// Runs `wmux <args>` as if from the surface `caller` (wmux's `WMUX_SURFACE_ID`), else from wherever headwork runs.
     ///
     /// # Errors
     ///
     /// Returns [`HostError::Run`] when the program cannot start and [`HostError::Failed`] when it exits with a failure.
-    fn run(&self, args: &[&str]) -> Result<String, HostError>;
+    fn run_as(&self, caller: Option<&str>, args: &[&str]) -> Result<String, HostError>;
+
+    /// Runs `wmux <args>`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runner::run_as`].
+    fn run(&self, args: &[&str]) -> Result<String, HostError> {
+        self.run_as(None, args)
+    }
 }
 
 /// The real wmux command line.
@@ -57,12 +66,15 @@ impl Cli {
 }
 
 impl Runner for Cli {
-    fn run(&self, args: &[&str]) -> Result<String, HostError> {
+    fn run_as(&self, caller: Option<&str>, args: &[&str]) -> Result<String, HostError> {
         let mut command = Command::new(&self.node);
         command
             .arg(&self.script)
             .args(args)
             .env("MSYS_NO_PATHCONV", "1");
+        if let Some(caller) = caller {
+            command.env("WMUX_SURFACE_ID", caller);
+        }
         if self.electron {
             command.env("ELECTRON_RUN_AS_NODE", "1");
         }
@@ -95,22 +107,80 @@ impl<R: Runner> Wmux<R> {
         Self { runner }
     }
 
-    fn json<T: for<'de> Deserialize<'de>>(&self, args: &[&str]) -> Result<T, HostError> {
-        let text = self.runner.run(args)?;
-        serde_json::from_str(&text).map_err(|source| HostError::Parse {
-            command: args.join(" "),
-            source,
-        })
-    }
-
     fn quiet(&self, args: &[&str]) -> Result<(), HostError> {
         self.runner.run(args).map(drop)
     }
+}
 
-    fn first_pane(&self, workspace: &WorkspaceId) -> Result<Option<String>, HostError> {
-        let panes: PaneList = self.json(&["list-panes", "--workspace", workspace.as_str()])?;
-        Ok(panes.panes.into_iter().next().map(|pane| pane.pane_id))
+#[derive(Deserialize)]
+struct TreeAnswer {
+    tree: RawNode,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum RawNode {
+    Leaf {
+        #[serde(rename = "paneId")]
+        pane_id: String,
+        #[serde(default)]
+        surfaces: Vec<RawSurface>,
+    },
+    Branch {
+        direction: String,
+        #[serde(default = "half")]
+        ratio: f64,
+        children: Vec<Self>,
+    },
+}
+
+const fn half() -> f64 {
+    0.5
+}
+
+impl From<RawNode> for PaneTree {
+    fn from(raw: RawNode) -> Self {
+        match raw {
+            RawNode::Leaf { pane_id, surfaces } => Self::Leaf {
+                pane: PaneId(pane_id),
+                surfaces: surfaces.into_iter().map(|s| SurfaceId(s.id)).collect(),
+            },
+            RawNode::Branch {
+                direction,
+                ratio,
+                children,
+            } => Self::Split {
+                down: direction == "vertical",
+                ratio,
+                parts: children.into_iter().map(Self::from).collect(),
+            },
+        }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GridAnswer {
+    #[serde(default)]
+    new_pane_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SplitAnswer {
+    pane_id: String,
+    surface_id: String,
+}
+
+/// Parses `wmux tree --workspace`. wmux calls a split whose parts sit side by side `horizontal` and one whose parts
+/// are stacked `vertical`.
+///
+/// # Errors
+///
+/// Returns the parser's error.
+pub fn parse_tree(text: &str) -> Result<PaneTree, serde_json::Error> {
+    let answer: TreeAnswer = serde_json::from_str(text)?;
+    Ok(answer.tree.into())
 }
 
 #[derive(Deserialize)]
@@ -170,7 +240,6 @@ struct PaneList {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawPane {
-    pane_id: String,
     #[serde(default)]
     surfaces: Vec<RawSurface>,
 }
@@ -308,7 +377,7 @@ impl<R: Runner> TerminalHost for Wmux<R> {
         cwd: &Path,
         label: &str,
         argv: &[String],
-        fresh_workspace: bool,
+        target: &Target,
     ) -> Result<Pane, HostError> {
         let before: Vec<AgentId> = self.panes()?.into_iter().map(|pane| pane.agent).collect();
         let cwd = cwd.display().to_string();
@@ -325,13 +394,11 @@ impl<R: Runner> TerminalHost for Wmux<R> {
             "--cmd",
             &cmd,
         ];
-        let pane = if fresh_workspace {
-            self.first_pane(workspace)?
-        } else {
-            None
-        };
-        if let Some(pane) = &pane {
-            command.extend(["--pane", pane.as_str(), "--replace-tab"]);
+        if let Target::Pane { pane, replace_tab } = target {
+            command.extend(["--pane", pane.as_str()]);
+            if *replace_tab {
+                command.push("--replace-tab");
+            }
         }
         self.quiet(&command)?;
         self.panes()?
@@ -339,6 +406,60 @@ impl<R: Runner> TerminalHost for Wmux<R> {
             .filter(|pane| pane.label == label && !before.contains(&pane.agent))
             .max_by_key(|pane| pane.started_ms)
             .ok_or_else(|| HostError::Missing(format!("the pane `{label}` did not appear")))
+    }
+
+    fn layout(&self, workspace: &WorkspaceId) -> Result<PaneTree, HostError> {
+        let args = ["tree", "--workspace", workspace.as_str()];
+        let text = self.runner.run(&args)?;
+        parse_tree(&text).map_err(|source| HostError::Parse {
+            command: args.join(" "),
+            source,
+        })
+    }
+
+    fn split(&self, beside: &SurfaceId, down: bool) -> Result<(PaneId, SurfaceId), HostError> {
+        let args: &[&str] = if down {
+            &["split", "--down"]
+        } else {
+            &["split"]
+        };
+        let text = self.runner.run_as(Some(beside.as_str()), args)?;
+        let answer: SplitAnswer =
+            serde_json::from_str(&text).map_err(|source| HostError::Parse {
+                command: args.join(" "),
+                source,
+            })?;
+        Ok((PaneId(answer.pane_id), SurfaceId(answer.surface_id)))
+    }
+
+    fn grid(
+        &self,
+        workspace: &WorkspaceId,
+        anchor: &PaneId,
+        count: u32,
+    ) -> Result<Vec<PaneId>, HostError> {
+        let count = count.to_string();
+        let args = [
+            "layout",
+            "grid",
+            "--count",
+            &count,
+            "--anchor-pane",
+            anchor.as_str(),
+            "--workspace",
+            workspace.as_str(),
+        ];
+        let text = self.runner.run(&args)?;
+        let answer: GridAnswer =
+            serde_json::from_str(&text).map_err(|source| HostError::Parse {
+                command: args.join(" "),
+                source,
+            })?;
+        Ok(answer.new_pane_ids.into_iter().map(PaneId).collect())
+    }
+
+    fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {
+        self.quiet(&["close-pane", pane.as_str()])
     }
 
     fn panes(&self) -> Result<Vec<Pane>, HostError> {

@@ -300,3 +300,25 @@ and the reason.
   instead of `DETACHED_PROCESS`. A process without any console makes every console program it runs (`tasklist` in the
   finisher's 250 ms launcher poll, `taskkill`, `wmux`, `git`) open its own window; with a hidden console of its own the
   children inherit it and no window appears, and the process still leaves the pane's console and job.
+- 2026-11-14 Children open in split panes: `[layout] mode = "panes" | "tabs"`, `panes = 4`; the code default is panes
+  with 4, so this machine needs no config line, and `tabs` is the old behaviour exactly. Per project workspace, the
+  first child replaces the fresh workspace's shell, the second cuts that lone pane into the whole grid at once
+  (`wmux layout grid --count N --anchor-pane`), later children replace the free panes' shells, and children beyond N
+  stack as tabs on the pane with the fewest sessions (the later pane on a tie). The grid is made at the second child,
+  not the first, so a single child keeps the whole screen; until N children run, the grid shows idle shells.
+- 2026-11-14 What wmux 2.60 allows decided the design (checked on scratch workspaces): `layout grid` with an anchor
+  first gathers every pane's surfaces into the anchor as tabs, so it runs only on a workspace with one pane; `split`
+  (`pane.split`) always splits the first pane of the caller's workspace (`WMUX_SURFACE_ID` picks the workspace, an
+  unknown surface means the workspace on screen); there is no CLI to move a surface or to add a shell tab to a given
+  pane (`surface.create` takes a pane id, but `new-surface` does not pass it). So children already open never move,
+  and a pane must not disappear: a child closing alone in its pane first starts `headwork idle <project>` there as a
+  tab (label `headwork:free`, no `/`, so tick and import ignore it), and the next child replaces it. A pane closed by
+  hand leaves the grid short; the next child then splits the first pane (the only split wmux does), and a split that
+  lands outside the workspace is closed again and the child stacks.
+- 2026-11-14 A pane is free when none of its surfaces holds a session: a live store session, a running host program
+  other than a placeholder, or a surface where the host saw a Claude session. In panes mode a closing child closes the
+  workspace when nothing else there holds a session (placeholders and grid shells do not count); tabs mode keeps the
+  old rule (the workspace closes when the surface is all it holds).
+- 2026-11-14 Migration 0007 adds `sessions.host_pane` and `sessions.host_place` (`pane` or `tab`), as placed; the
+  board prints "in its own pane <id>", "as a tab of <id>" or "as a tab" after the surface. Sub-roots, planned as 0007
+  in `docs/sub-roots.md`, takes the next free number. The split direction uses a window aspect of 16:9.

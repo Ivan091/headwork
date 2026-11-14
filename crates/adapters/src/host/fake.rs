@@ -1,27 +1,108 @@
 //! A terminal host in memory that records every call, for tests of spawn, close and import.
+//!
+//! Each workspace holds a [`PaneTree`]: a new workspace is one empty pane, a split halves a pane and opens a shell in
+//! the new half, and a pane whose last surface closes leaves the tree, its sibling taking its place, as in wmux.
 
 use std::cell::RefCell;
 use std::path::Path;
 
 use super::{
-    AgentId, Choice, HostError, Key, Pane, SurfaceId, SurfaceState, TerminalHost, Workspace,
-    WorkspaceId, command_line,
+    AgentId, Choice, HostError, Key, Pane, PaneId, PaneTree, SurfaceId, SurfaceState, Target,
+    TerminalHost, Workspace, WorkspaceId, command_line,
 };
 
 #[derive(Debug, Default)]
 struct State {
     next: u32,
     workspaces: Vec<Workspace>,
-    surfaces: Vec<(WorkspaceId, SurfaceId)>,
+    trees: Vec<(WorkspaceId, PaneTree)>,
     panes: Vec<Pane>,
     states: Vec<SurfaceState>,
     calls: Vec<String>,
+    stray_splits: bool,
 }
 
 impl State {
     fn id(&mut self, prefix: &str) -> String {
         self.next += 1;
         format!("{prefix}-{}", self.next)
+    }
+
+    fn tree(&mut self, workspace: &WorkspaceId) -> Option<&mut PaneTree> {
+        self.trees
+            .iter_mut()
+            .find(|(ws, _)| ws == workspace)
+            .map(|(_, tree)| tree)
+    }
+
+    fn add_to_first_pane(&mut self, workspace: &WorkspaceId, surface: SurfaceId) {
+        if let Some(surfaces) = self.tree(workspace).and_then(first_leaf) {
+            surfaces.push(surface);
+        }
+    }
+
+    fn remove_surface(&mut self, surface: &SurfaceId) {
+        for (_, tree) in &mut self.trees {
+            remove(tree, surface);
+        }
+    }
+}
+
+fn surfaces_of(tree: &PaneTree) -> Vec<SurfaceId> {
+    tree.cells()
+        .into_iter()
+        .flat_map(|cell| cell.surfaces)
+        .collect()
+}
+
+fn first_leaf(tree: &mut PaneTree) -> Option<&mut Vec<SurfaceId>> {
+    match tree {
+        PaneTree::Leaf { surfaces, .. } => Some(surfaces),
+        PaneTree::Split { parts, .. } => parts.first_mut().and_then(first_leaf),
+    }
+}
+
+fn leaf_mut<'a>(
+    tree: &'a mut PaneTree,
+    wanted: &dyn Fn(&PaneId, &[SurfaceId]) -> bool,
+) -> Option<&'a mut PaneTree> {
+    let hit = match &*tree {
+        PaneTree::Leaf { pane, surfaces } => Some(wanted(pane, surfaces)),
+        PaneTree::Split { .. } => None,
+    };
+    match hit {
+        Some(true) => Some(tree),
+        Some(false) => None,
+        None => match tree {
+            PaneTree::Split { parts, .. } => {
+                parts.iter_mut().find_map(|part| leaf_mut(part, wanted))
+            }
+            PaneTree::Leaf { .. } => None,
+        },
+    }
+}
+
+fn remove(tree: &mut PaneTree, surface: &SurfaceId) {
+    match tree {
+        PaneTree::Leaf { surfaces, .. } => surfaces.retain(|s| s != surface),
+        PaneTree::Split { parts, .. } => {
+            for part in parts.iter_mut() {
+                remove(part, surface);
+            }
+            parts.retain(
+                |part| !matches!(part, PaneTree::Leaf { surfaces, .. } if surfaces.is_empty()),
+            );
+            if parts.len() == 1
+                && let Some(only) = parts.pop()
+            {
+                *tree = only;
+            } else if parts.is_empty() {
+                *tree = PaneTree::Leaf {
+                    pane: PaneId(String::new()),
+                    surfaces: Vec::new(),
+                };
+            }
+        }
     }
 }
 
@@ -42,7 +123,7 @@ impl FakeHost {
         Self::default()
     }
 
-    /// Every call so far, one line each, such as `spawn ws-1 me-sim/sand`.
+    /// Every call so far, one line each, such as `spawn ws-1 me-sim/sand in S:/w tab`.
     #[must_use]
     pub fn calls(&self) -> Vec<String> {
         self.state.borrow().calls.clone()
@@ -65,7 +146,7 @@ impl FakeHost {
             pid: Some(pid),
             started_ms: Some(u64::from(state.next)),
         };
-        state.surfaces.push((ws, surface));
+        state.add_to_first_pane(&ws, surface);
         state.panes.push(pane.clone());
         pane
     }
@@ -77,7 +158,7 @@ impl FakeHost {
             .unwrap_or_else(|_| (WorkspaceId(String::new()), false));
         let mut state = self.state.borrow_mut();
         let surface = SurfaceId(state.id("surf"));
-        state.surfaces.push((ws, surface.clone()));
+        state.add_to_first_pane(&ws, surface.clone());
         surface
     }
 
@@ -94,6 +175,12 @@ impl FakeHost {
             .iter_mut()
             .filter(|pane| &pane.agent == agent)
             .for_each(|pane| pane.running = false);
+    }
+
+    /// Makes every later split land outside the workspace it was meant for, as wmux does when it does not know the
+    /// surface it is run from: the new pane then belongs to a workspace no one listed.
+    pub fn stray_splits(&self) {
+        self.state.borrow_mut().stray_splits = true;
     }
 
     fn record(&self, call: String) {
@@ -117,10 +204,18 @@ impl TerminalHost for FakeHost {
             return Ok((found.id.clone(), false));
         }
         let id = WorkspaceId(state.id("ws"));
+        let pane = PaneId(state.id("pane"));
         state.workspaces.push(Workspace {
             id: id.clone(),
             title: title.to_owned(),
         });
+        state.trees.push((
+            id.clone(),
+            PaneTree::Leaf {
+                pane,
+                surfaces: Vec::new(),
+            },
+        ));
         state.calls.push(format!("new-workspace {title}"));
         Ok((id, true))
     }
@@ -131,7 +226,7 @@ impl TerminalHost for FakeHost {
         cwd: &Path,
         label: &str,
         argv: &[String],
-        fresh_workspace: bool,
+        target: &Target,
     ) -> Result<Pane, HostError> {
         let mut state = self.state.borrow_mut();
         let surface = SurfaceId(state.id("surf"));
@@ -145,13 +240,168 @@ impl TerminalHost for FakeHost {
             pid: Some(FAKE_PID_BASE + state.next * 2),
             started_ms: Some(u64::from(state.next)),
         };
-        state.surfaces.push((workspace.clone(), surface));
+        let place = match target {
+            Target::Tab => {
+                state.add_to_first_pane(workspace, surface);
+                "tab".to_owned()
+            }
+            Target::Pane {
+                pane: id,
+                replace_tab,
+            } => {
+                let tree = state
+                    .tree(workspace)
+                    .ok_or_else(|| HostError::Missing(format!("no workspace {workspace}")))?;
+                let leaf = leaf_mut(tree, &|p, _| p == id)
+                    .ok_or_else(|| HostError::Missing(format!("no pane {id} in {workspace}")))?;
+                if let PaneTree::Leaf { surfaces, .. } = leaf {
+                    if *replace_tab {
+                        surfaces.pop();
+                    }
+                    surfaces.push(surface);
+                }
+                if *replace_tab {
+                    format!("pane {id} replace")
+                } else {
+                    format!("pane {id}")
+                }
+            }
+        };
         state.panes.push(pane.clone());
         state.calls.push(format!(
-            "spawn {workspace} {label} in {} fresh={fresh_workspace}",
+            "spawn {workspace} {label} in {} {place}",
             cwd.display()
         ));
         Ok(pane)
+    }
+
+    fn layout(&self, workspace: &WorkspaceId) -> Result<PaneTree, HostError> {
+        self.state
+            .borrow_mut()
+            .tree(workspace)
+            .cloned()
+            .ok_or_else(|| HostError::Missing(format!("no workspace {workspace}")))
+    }
+
+    fn split(&self, beside: &SurfaceId, down: bool) -> Result<(PaneId, SurfaceId), HostError> {
+        let mut state = self.state.borrow_mut();
+        let pane = PaneId(state.id("pane"));
+        let shell = SurfaceId(state.id("surf"));
+        if state.stray_splits {
+            state.trees.push((
+                WorkspaceId("ws-elsewhere".to_owned()),
+                PaneTree::Leaf {
+                    pane: pane.clone(),
+                    surfaces: vec![shell.clone()],
+                },
+            ));
+            state.calls.push(format!("split {beside} elsewhere"));
+            return Ok((pane, shell));
+        }
+        let tree = state
+            .trees
+            .iter_mut()
+            .map(|(_, tree)| tree)
+            .find(|tree| surfaces_of(tree).contains(beside))
+            .ok_or_else(|| HostError::Missing(format!("no surface {beside}")))?;
+        let found = leaf_mut(tree, &|_, _| true)
+            .ok_or_else(|| HostError::Missing(format!("no pane beside {beside}")))?;
+        let old = std::mem::replace(
+            found,
+            PaneTree::Leaf {
+                pane: PaneId(String::new()),
+                surfaces: Vec::new(),
+            },
+        );
+        *found = PaneTree::Split {
+            down,
+            ratio: 0.5,
+            parts: vec![
+                old,
+                PaneTree::Leaf {
+                    pane: pane.clone(),
+                    surfaces: vec![shell.clone()],
+                },
+            ],
+        };
+        let direction = if down { "down" } else { "right" };
+        state.calls.push(format!("split {beside} {direction}"));
+        Ok((pane, shell))
+    }
+
+    fn grid(
+        &self,
+        workspace: &WorkspaceId,
+        anchor: &PaneId,
+        count: u32,
+    ) -> Result<Vec<PaneId>, HostError> {
+        let mut state = self.state.borrow_mut();
+        let mut fresh = Vec::new();
+        for _ in 1..count {
+            let pane = PaneId(state.id("pane"));
+            let shell = SurfaceId(state.id("surf"));
+            fresh.push((pane, shell));
+        }
+        let tree = state
+            .tree(workspace)
+            .ok_or_else(|| HostError::Missing(format!("no workspace {workspace}")))?;
+        let PaneTree::Leaf { pane, surfaces } = tree else {
+            return Err(HostError::Failed {
+                command: "layout grid".to_owned(),
+                message: "the fake host grids only a lone pane".to_owned(),
+            });
+        };
+        if pane != anchor {
+            return Err(HostError::Missing(format!(
+                "no pane {anchor} in {workspace}"
+            )));
+        }
+        let mut leaves = vec![PaneTree::Leaf {
+            pane: pane.clone(),
+            surfaces: std::mem::take(surfaces),
+        }];
+        leaves.extend(fresh.iter().map(|(pane, shell)| PaneTree::Leaf {
+            pane: pane.clone(),
+            surfaces: vec![shell.clone()],
+        }));
+        let columns = (1..=count).find(|c| c * c >= count).unwrap_or(1);
+        let rows = count.div_ceil(columns);
+        let mut parts = Vec::new();
+        let mut rest = leaves.into_iter();
+        for _ in 0..columns {
+            let column: Vec<PaneTree> = rest
+                .by_ref()
+                .take(usize::try_from(rows).unwrap_or(1))
+                .collect();
+            parts.push(PaneTree::Split {
+                down: true,
+                ratio: 0.5,
+                parts: column,
+            });
+        }
+        *tree = PaneTree::Split {
+            down: false,
+            ratio: 0.5,
+            parts,
+        };
+        state.calls.push(format!("grid {anchor} {count}"));
+        Ok(fresh.into_iter().map(|(pane, _)| pane).collect())
+    }
+
+    fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {
+        let mut state = self.state.borrow_mut();
+        let doomed: Vec<SurfaceId> = state
+            .trees
+            .iter()
+            .flat_map(|(_, tree)| tree.cells())
+            .filter(|cell| &cell.pane == pane)
+            .flat_map(|cell| cell.surfaces)
+            .collect();
+        for surface in &doomed {
+            state.remove_surface(surface);
+        }
+        state.calls.push(format!("close-pane {pane}"));
+        Ok(())
     }
 
     fn panes(&self) -> Result<Vec<Pane>, HostError> {
@@ -162,10 +412,10 @@ impl TerminalHost for FakeHost {
         Ok(self
             .state
             .borrow()
-            .surfaces
+            .trees
             .iter()
             .filter(|(ws, _)| ws == workspace)
-            .map(|(_, surface)| surface.clone())
+            .flat_map(|(_, tree)| surfaces_of(tree))
             .collect())
     }
 
@@ -190,7 +440,7 @@ impl TerminalHost for FakeHost {
 
     fn close_surface(&self, surface: &SurfaceId) -> Result<(), HostError> {
         let mut state = self.state.borrow_mut();
-        state.surfaces.retain(|(_, s)| s != surface);
+        state.remove_surface(surface);
         state
             .panes
             .iter_mut()
@@ -203,7 +453,7 @@ impl TerminalHost for FakeHost {
     fn close_workspace(&self, workspace: &WorkspaceId) -> Result<(), HostError> {
         let mut state = self.state.borrow_mut();
         state.workspaces.retain(|w| &w.id != workspace);
-        state.surfaces.retain(|(ws, _)| ws != workspace);
+        state.trees.retain(|(ws, _)| ws != workspace);
         state
             .panes
             .iter_mut()

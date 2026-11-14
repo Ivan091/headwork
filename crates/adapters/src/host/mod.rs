@@ -84,6 +84,100 @@ host_id!(
     AgentId
 );
 
+host_id!(
+    /// A pane: one region of a workspace's split layout, holding one or more surfaces as tabs, such as wmux's
+    /// `pane-…`.
+    PaneId
+);
+
+/// Where [`TerminalHost::spawn`] puts a program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A new tab wherever the host puts it.
+    Tab,
+    /// A tab of this pane.
+    Pane {
+        /// The pane.
+        pane: PaneId,
+        /// Replace the pane's active tab instead of adding one.
+        replace_tab: bool,
+    },
+}
+
+/// A workspace's split layout: panes, and splits of two or more parts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaneTree {
+    /// A pane and its surfaces, in tab order.
+    Leaf {
+        /// The pane.
+        pane: PaneId,
+        /// Its surfaces.
+        surfaces: Vec<SurfaceId>,
+    },
+    /// A split.
+    Split {
+        /// Its parts are stacked top to bottom rather than side by side.
+        down: bool,
+        /// The first part's share, from 0 to 1, when there are two parts; more parts share equally.
+        ratio: f64,
+        /// The parts, left to right or top to bottom.
+        parts: Vec<Self>,
+    },
+}
+
+/// One pane of a workspace with its size, as fractions of the workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneCell {
+    /// The pane.
+    pub pane: PaneId,
+    /// Its surfaces, in tab order.
+    pub surfaces: Vec<SurfaceId>,
+    /// Its width, from 0 to 1.
+    pub width: f64,
+    /// Its height, from 0 to 1.
+    pub height: f64,
+}
+
+impl PaneTree {
+    /// The panes, in order (left to right, top to bottom), each with its size.
+    #[must_use]
+    pub fn cells(&self) -> Vec<PaneCell> {
+        let mut out = Vec::new();
+        self.collect(1.0, 1.0, &mut out);
+        out
+    }
+
+    fn collect(&self, width: f64, height: f64, out: &mut Vec<PaneCell>) {
+        match self {
+            Self::Leaf { pane, surfaces } => out.push(PaneCell {
+                pane: pane.clone(),
+                surfaces: surfaces.clone(),
+                width,
+                height,
+            }),
+            Self::Split { down, ratio, parts } => {
+                let shares = shares(*ratio, parts.len());
+                for (part, share) in parts.iter().zip(shares) {
+                    if *down {
+                        part.collect(width, height * share, out);
+                    } else {
+                        part.collect(width * share, height, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shares(ratio: f64, parts: usize) -> Vec<f64> {
+    if parts == 2 {
+        let first = ratio.clamp(0.0, 1.0);
+        return vec![first, 1.0 - first];
+    }
+    let each = u32::try_from(parts).map_or(0.0, |n| 1.0 / f64::from(n.max(1)));
+    vec![each; parts]
+}
+
 /// A workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Workspace {
@@ -175,8 +269,8 @@ pub trait TerminalHost: fmt::Debug {
     fn ensure_workspace(&self, title: &str, cwd: &Path) -> Result<(WorkspaceId, bool), HostError>;
 
     /// Starts `argv` in a new surface of the workspace, labelled `label`. The program runs directly, not through a
-    /// shell. In a `fresh_workspace` it replaces the shell the workspace was created with, so the workspace holds only
-    /// the program and closes with it.
+    /// shell. `target` says which pane, and whether it replaces that pane's active tab (the shell of a fresh workspace
+    /// or of a new split, so the pane holds only the program and closes with it).
     ///
     /// # Errors
     ///
@@ -187,8 +281,44 @@ pub trait TerminalHost: fmt::Debug {
         cwd: &Path,
         label: &str,
         argv: &[String],
-        fresh_workspace: bool,
+        target: &Target,
     ) -> Result<Pane, HostError>;
+
+    /// The split layout of a workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn layout(&self, workspace: &WorkspaceId) -> Result<PaneTree, HostError>;
+
+    /// Splits the first pane of the workspace that holds `beside` in two, side by side or `down`, and returns the new
+    /// pane with the shell surface it opened. Other panes keep their surfaces. wmux can split no other pane, and for
+    /// a surface it does not know it splits the workspace the user looks at.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn split(&self, beside: &SurfaceId, down: bool) -> Result<(PaneId, SurfaceId), HostError>;
+
+    /// Cuts `anchor` into a grid of `count` panes and returns the new ones, each holding a shell. Only for a
+    /// workspace whose single pane is `anchor`: wmux first gathers every other pane's surfaces into the anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn grid(
+        &self,
+        workspace: &WorkspaceId,
+        anchor: &PaneId,
+        count: u32,
+    ) -> Result<Vec<PaneId>, HostError>;
+
+    /// Closes a pane with its surfaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn close_pane(&self, pane: &PaneId) -> Result<(), HostError>;
 
     /// Every program the host started, running or exited.
     ///

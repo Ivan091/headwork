@@ -315,11 +315,7 @@ impl<'b> Run<'_, 'b> {
             if self.report.host_up
                 && surface_present(self.env().host, workspace.as_ref(), &surface)?
             {
-                super::close::close_surface_or_workspace(
-                    self.env().host,
-                    workspace.as_ref(),
-                    &surface,
-                )?;
+                super::close::close_surface_or_workspace(self.env(), workspace.as_ref(), &surface)?;
             }
         }
         Ok(())

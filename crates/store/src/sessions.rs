@@ -1,13 +1,27 @@
 //! Sessions as the launcher sees them, and task worktrees.
 
-use headwork_core::Actor;
+use headwork_core::{Actor, PlaceKind};
 use rusqlite::{OptionalExtension, params};
+
+/// Where the host put a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place<'a> {
+    /// The workspace.
+    pub workspace: &'a str,
+    /// The surface.
+    pub surface: &'a str,
+    /// The pane holding the surface, when known.
+    pub pane: Option<&'a str>,
+    /// A pane of its own or a tab, when known.
+    pub kind: Option<PlaceKind>,
+}
 
 use crate::queries::insert_event;
 use crate::records::{SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
 
-const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code";
+const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code, \
+                               host_pane, host_place";
 
 type RawSession = (
     String,
@@ -19,7 +33,10 @@ type RawSession = (
     Option<i64>,
     Option<String>,
     Option<i64>,
+    (Option<String>, Option<String>),
 );
+
+const SESSION_WIDTH: usize = 11;
 
 /// A live session's id, `claude` process and launcher process.
 pub type LivePids = (String, Option<u32>, Option<u32>);
@@ -35,6 +52,7 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
+        (row.get(9)?, row.get(10)?),
     ))
 }
 
@@ -45,14 +63,26 @@ fn pid(value: Option<i64>) -> Result<Option<u32>, StoreError> {
 }
 
 fn into_row(raw: RawSession) -> Result<SessionRow, StoreError> {
-    let (id, state, rc_name, host_workspace, host_surface, launcher, claude, last_event_at, exit) =
-        raw;
+    let (
+        id,
+        state,
+        rc_name,
+        host_workspace,
+        host_surface,
+        launcher,
+        claude,
+        last_event_at,
+        exit,
+        (host_pane, host_place),
+    ) = raw;
     Ok(SessionRow {
         id,
         state: state.parse()?,
         rc_name,
         host_workspace,
         host_surface,
+        host_pane,
+        host_place: host_place.map(|word| word.parse()).transpose()?,
         launcher_pid: pid(launcher)?,
         claude_pid: pid(claude)?,
         last_event_at,
@@ -94,7 +124,7 @@ impl Store {
             .query_row(
                 &format!("SELECT {SESSION_COLUMNS}, task_id FROM sessions WHERE id = ?1"),
                 params![id],
-                |row| Ok((read_session(row)?, row.get(9)?)),
+                |row| Ok((read_session(row)?, row.get(SESSION_WIDTH)?)),
             )
             .optional()?;
         found
@@ -203,8 +233,7 @@ impl Store {
     pub fn set_session_place(
         &mut self,
         id: &str,
-        workspace: &str,
-        surface: &str,
+        place: &Place<'_>,
         actor: Actor,
     ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
@@ -213,11 +242,17 @@ impl Store {
             params![id],
             |row| row.get(0),
         )?;
+        let kind = place.kind.map(PlaceKind::as_str);
         tx.execute(
-            "UPDATE sessions SET host_workspace = ?1, host_surface = ?2 WHERE id = ?3",
-            params![workspace, surface, id],
+            "UPDATE sessions SET host_workspace = ?1, host_surface = ?2, host_pane = ?3, host_place = ?4 WHERE id = ?5",
+            params![place.workspace, place.surface, place.pane, kind, id],
         )?;
-        let data = serde_json::json!({ "workspace": workspace, "surface": surface });
+        let data = serde_json::json!({
+            "workspace": place.workspace,
+            "surface": place.surface,
+            "pane": place.pane,
+            "place": kind,
+        });
         insert_event(
             &tx,
             actor,
@@ -228,6 +263,21 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The host surfaces of every session that has not ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_session_surfaces(&self) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT host_surface FROM sessions WHERE state IN ('starting', 'live') AND host_surface IS NOT NULL",
+        )?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Records that the launcher started `claude`: both process ids, and how the launcher holds the tree.

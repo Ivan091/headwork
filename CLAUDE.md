@@ -38,13 +38,15 @@ reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `d
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
 `core/src/watch.rs`, its memory in migration 0004). Milestone 6 is park and resume (`ops/park.rs`,
 `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
+Children open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
+0007); see "Panes" below.
 
 ## Commands
 
 ```bash
 bash scripts/check.sh                      # the full gate; must pass before every pull request
 cargo test -p headwork-core                # one crate
-cargo run -p headwork -- board             # projects, tasks, sessions, states, asks
+cargo run -p headwork -- board             # projects, tasks, sessions (pane or tab), states, asks
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
@@ -75,6 +77,16 @@ schtasks /Create /SC MINUTE /MO 1 /TN "headwork tick" /TR "\"S:\Code\headwork\he
 ```
 
 It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
+
+### Panes
+
+`[layout]` in `config.toml` decides where a child opens in its project's workspace. The default, `mode = "panes"` with
+`panes = 4`, gives each child its own pane: the second child cuts the workspace into a 2x2 grid, later ones take the
+free panes, a fifth stacks as a tab, and a child that closes leaves a `headwork idle` placeholder so the next one takes
+its pane. The workspace closes with its last child. `mode = "tabs"` keeps every child a tab. Children already open are
+never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that it is a tab. Why it
+works this way is in `docs/decisions.md` (2026-11-14, split panes). Run the real check with
+`cargo test -p headwork --test live -- --ignored`; it opens and closes a `headwork-test` workspace.
 
 ### Restart: park, then resume
 
