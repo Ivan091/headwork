@@ -21,6 +21,7 @@ use headwork_store::{PrSeen, SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
 use super::close::{finish, remove_worktree, surface_present};
+use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
 use super::spawn::{Pumped, pump};
 use super::{Env, slashed};
@@ -140,13 +141,6 @@ struct Run<'a, 'b> {
     stopped: Vec<String>,
     report: TickReport,
 }
-
-const RUNNING: [TaskState; 4] = [
-    TaskState::Working,
-    TaskState::NeedsUser,
-    TaskState::InReview,
-    TaskState::Merged,
-];
 
 impl<'b> Run<'_, 'b> {
     const fn env(&self) -> &'b Env<'b> {
@@ -323,8 +317,7 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn lost_sessions(&mut self) -> Result<()> {
-        let machine = self.store.machine_mode()?;
-        if machine == MachineMode::Parking {
+        if self.store.machine_mode()? == MachineMode::Parking {
             return Ok(());
         }
         for state in RUNNING {
@@ -335,42 +328,22 @@ impl<'b> Run<'_, 'b> {
                 let Some(cause) = self.lost_cause(&session)? else {
                     continue;
                 };
-                let actor = self.actor();
-                if self
-                    .store
-                    .transition(id, &Trigger::ProcessLost { machine }, actor)
-                    .is_err()
-                {
+                if !lost::mark(self.store, self.env(), id, &session, cause)? {
                     continue;
                 }
-                let task = self.store.task(id)?;
-                super::recap::note(
-                    self.store,
-                    self.env(),
-                    &task,
-                    headwork_core::RecapKind::Interrupted,
-                    "the session was found gone",
-                );
-                self.store
-                    .set_session_state(&session.id, SessionState::Gone, actor)?;
                 self.applied(
                     FindingId::PaneLost,
                     Some(id),
-                    serde_json::json!({ "from": state, "lost": cause }),
+                    serde_json::json!({ "from": state, "lost": cause.as_str() }),
                 )?;
             }
         }
         Ok(())
     }
 
-    fn lost_cause(&self, session: &SessionRow) -> Result<Option<&'static str>> {
-        if matches!(session.state, SessionState::Ended | SessionState::Gone) {
-            return Ok(Some("session-ended"));
-        }
-        if let Some(pid) = session.launcher_pid
-            && !proc::is_alive(pid)?
-        {
-            return Ok(Some("launcher"));
+    fn lost_cause(&self, session: &SessionRow) -> Result<Option<LostCause>> {
+        if let Some(cause) = lost::local_cause(session)? {
+            return Ok(Some(cause));
         }
         if self.report.host_up
             && let Some(surface) = session.host_surface.as_deref()
@@ -381,7 +354,7 @@ impl<'b> Run<'_, 'b> {
                 .map(|w| WorkspaceId(w.to_owned()));
             let surface = SurfaceId(surface.to_owned());
             if !surface_present(self.env().host, workspace.as_ref(), &surface)? {
-                return Ok(Some("pane"));
+                return Ok(Some(LostCause::Pane));
             }
         }
         Ok(None)
