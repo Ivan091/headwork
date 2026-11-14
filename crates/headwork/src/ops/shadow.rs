@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
+use headwork_core::RuleId;
 use headwork_store::{EVENT_WOULD_DENY, EventFilter, Store};
 use serde::Serialize;
 use serde_json::Value;
@@ -18,7 +19,7 @@ const SAMPLES: usize = 3;
 pub struct Sample {
     /// When.
     pub at: String,
-    /// The task, none for the root.
+    /// The task, none for the orchestrator.
     pub task: Option<String>,
     /// The tool.
     pub tool: String,
@@ -94,22 +95,27 @@ pub fn shadow_report(store: &Store, enforcing: bool) -> Result<ShadowReport> {
                 .unwrap_or_default()
                 .to_owned()
         };
-        let hits = by_rule
-            .entry(text("rule"))
-            .or_insert_with_key(|rule| RuleHits {
-                rule: rule.clone(),
-                count: 0,
-                reason: text("reason"),
-                tools: Vec::new(),
-                tasks: Vec::new(),
-                samples: Vec::new(),
-            });
+        let rule = text("rule");
+        let rule = rule
+            .parse::<RuleId>()
+            .map_or(rule, |id| id.as_str().to_owned());
+        let hits = by_rule.entry(rule).or_insert_with_key(|rule| RuleHits {
+            rule: rule.clone(),
+            count: 0,
+            reason: text("reason"),
+            tools: Vec::new(),
+            tasks: Vec::new(),
+            samples: Vec::new(),
+        });
         hits.count += 1;
         let tool = text("tool");
         if !hits.tools.contains(&tool) {
             hits.tools.push(tool.clone());
         }
-        let task = event.task.clone().unwrap_or_else(|| "root".to_owned());
+        let task = event
+            .task
+            .clone()
+            .unwrap_or_else(|| "orchestrator".to_owned());
         if !hits.tasks.contains(&task) {
             hits.tasks.push(task);
         }

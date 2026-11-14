@@ -1,6 +1,6 @@
 [machine]
 host = "wmux"
-max_children = 10
+max_workers = 10
 remote_control = true
 push = "claude"
 notify_ntfy = ""
@@ -56,7 +56,7 @@ worktree_remove = "builtin"
 worktree_path = "~/work/service-wt/{slug}"
 deliver = "pr"
 merge = "human"
-max_children = 3
+max_workers = 3
 allowed_repos = ["acme/service"]
 remote_control = false
 push = "none"

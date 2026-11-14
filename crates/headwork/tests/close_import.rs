@@ -12,7 +12,7 @@ use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::close::{close, reap};
 use headwork::ops::import::{
-    Sources, child_name, config_section, import, missing_projects, read_transcript, repo_of_remote,
+    Sources, config_section, import, missing_projects, read_transcript, repo_of_remote, worker_name,
 };
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
@@ -52,7 +52,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-fn world(max_children: u32) -> World {
+fn world(max_workers: u32) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -60,7 +60,7 @@ fn world(max_children: u32) -> World {
     git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
     let main_text = main.display().to_string().replace('\\', "/");
     let text = format!(
-        "[machine]\nhost = \"wmux\"\nmax_children = {max_children}\n\n[project.demo]\nmain = \"{main_text}\"\n\
+        "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
          deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n"
     );
@@ -367,7 +367,7 @@ fn import_world(w: &World) -> Imported {
         serde_json::json!({ "type": "summary", "cwd": cwd }),
         serde_json::json!({
             "type": "user", "cwd": cwd,
-            "message": { "role": "user", "content": "You are the child session demo-probe. Read your brief at x.md." },
+            "message": { "role": "user", "content": "You are the worker session demo-probe. Read your brief at x.md." },
         }),
         serde_json::json!({ "type": "assistant", "message": { "model": "claude-opus-5-5", "content": [] } }),
     ];
@@ -453,11 +453,16 @@ fn import_adopts_labelled_agents_and_restored_panes() {
 #[test]
 fn import_helpers() {
     assert_eq!(
-        child_name("You are the child session me-sim-sand. Read it."),
+        worker_name("You are the worker session me-sim-sand. Read it."),
         Some("me-sim-sand".to_owned()),
         "name"
     );
-    assert_eq!(child_name("Hello"), None, "no name");
+    assert_eq!(
+        worker_name("You are the child session me-sim-sand. Read it."),
+        Some("me-sim-sand".to_owned()),
+        "the orchestrate scripts' wording"
+    );
+    assert_eq!(worker_name("Hello"), None, "no name");
     assert_eq!(
         repo_of_remote("git@github.com:Ivan091/me-sim.git"),
         Some("Ivan091/me-sim".to_owned()),
@@ -521,7 +526,7 @@ fn a_self_close_of_a_session_from_before_hot_reload_starts_a_backup_finisher() {
         if recorded {
             w.store
                 .append_event(
-                    Actor::Child,
+                    Actor::Worker,
                     Some(task.id),
                     Some(&session.id),
                     "build",

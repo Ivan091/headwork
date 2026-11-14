@@ -1,23 +1,27 @@
-//! The soft rules hooks inject: `global.md`, the role's `root.md` or `child.md`, and the project's `<project>.md`.
+//! The soft rules hooks inject: `global.md`, the role's `orchestrator.md` or `worker.md`, and the project's
+//! `<project>.md`.
 //!
-//! Each file comes from the rules folder (`machine.rules_dir`, else `<home>/rules`); `root.md` and `child.md` fall
-//! back to the copies built into the binary from the repository's `rules/`. Placeholders such as `{name}` and
-//! `{close}` are filled per session. A keep task's rules lose their "Closing yourself" section.
+//! Each file comes from the rules folder (`machine.rules_dir`, else `<home>/rules`); `orchestrator.md` and `worker.md`
+//! fall back to `root.md` and `child.md` there, their names before 2026-11-14, then to the copies built into the binary
+//! from the repository's `rules/`. Placeholders such as `{name}` and `{close}` are filled per session, and
+//! `{orchestrator}` with the orchestrator's address, which is part of the hash so a new address reaches every session.
+//! A keep task's rules lose their "Closing yourself" section.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use headwork_adapters::host::TerminalHost;
 use headwork_core::config::Delivery;
 use headwork_core::{Config, Role};
-use headwork_store::{AddedRule, Task};
+use headwork_store::{AddedRule, Store, Task};
 
 use super::slashed;
 use crate::home::Home;
 
-/// The built-in `root.md`.
-pub const ROOT_RULES: &str = include_str!("../../../../rules/root.md");
-/// The built-in `child.md`.
-pub const CHILD_RULES: &str = include_str!("../../../../rules/child.md");
+/// The built-in `orchestrator.md`.
+pub const ORCHESTRATOR_RULES: &str = include_str!("../../../../rules/orchestrator.md");
+/// The built-in `worker.md`.
+pub const WORKER_RULES: &str = include_str!("../../../../rules/worker.md");
 
 /// The heading of the section a keep task's rules leave out.
 pub const CLOSING_HEADING: &str = "## Closing yourself";
@@ -30,14 +34,15 @@ pub const CONTEXT_LIMIT: usize = 10_000;
 pub struct RuleFiles {
     dir: PathBuf,
     global: Option<String>,
-    root: String,
-    child: String,
+    orchestrator: String,
+    worker: String,
+    address: String,
     projects: Vec<(String, String)>,
     added: Vec<AddedRule>,
     hash: String,
 }
 
-/// What a child's rules are filled with.
+/// What a worker's rules are filled with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card<'a> {
     /// The task.
@@ -47,12 +52,13 @@ pub struct Card<'a> {
 }
 
 impl RuleFiles {
-    /// Reads the rules folder; `added` are the rules added with `rule_add`, which join the files.
+    /// Reads the rules folder; `added` are the rules added with `rule_add`, which join the files, and `address` is where
+    /// workers send their messages to the orchestrator (see [`orchestrator_address`]).
     ///
     /// # Errors
     ///
     /// Fails when a file exists and cannot be read.
-    pub fn load(home: &Home, config: &Config, added: &[AddedRule]) -> Result<Self> {
+    pub fn load(home: &Home, config: &Config, added: &[AddedRule], address: &str) -> Result<Self> {
         let dir = config
             .machine
             .rules_dir
@@ -67,8 +73,14 @@ impl RuleFiles {
             }
         };
         let global = read("global.md")?;
-        let root = read("root.md")?.unwrap_or_else(|| ROOT_RULES.to_owned());
-        let child = read("child.md")?.unwrap_or_else(|| CHILD_RULES.to_owned());
+        let orchestrator = match read("orchestrator.md")? {
+            Some(text) => text,
+            None => read("root.md")?.unwrap_or_else(|| ORCHESTRATOR_RULES.to_owned()),
+        };
+        let worker = match read("worker.md")? {
+            Some(text) => text,
+            None => read("child.md")?.unwrap_or_else(|| WORKER_RULES.to_owned()),
+        };
         let mut projects = Vec::new();
         for name in config.projects.keys() {
             if let Some(text) = read(&format!("{name}.md"))? {
@@ -76,7 +88,7 @@ impl RuleFiles {
             }
         }
         let mut all = format!(
-            "{}\u{0}{root}\u{0}{child}",
+            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{address}",
             global.as_deref().unwrap_or_default()
         );
         for (name, text) in &projects {
@@ -88,8 +100,9 @@ impl RuleFiles {
         Ok(Self {
             dir,
             global,
-            root,
-            child,
+            orchestrator,
+            worker,
+            address: address.to_owned(),
             projects,
             added: added.to_vec(),
             hash: format!("{:016x}", fnv1a(all.as_bytes())),
@@ -117,13 +130,13 @@ impl RuleFiles {
             parts.push(global.clone());
         }
         match role {
-            Role::Root => parts.push(self.root.clone()),
-            Role::Child => {
+            Role::Orchestrator => parts.push(self.orchestrator.clone()),
+            Role::Worker => {
                 let keep = card.is_some_and(|card| card.task.keep);
                 parts.push(if keep {
-                    without_closing(&self.child)
+                    without_closing(&self.worker)
                 } else {
-                    self.child.clone()
+                    self.worker.clone()
                 });
                 if let Some(card) = card
                     && let Some((_, text)) = self
@@ -143,11 +156,12 @@ impl RuleFiles {
             .collect();
         if !added.is_empty() {
             parts.push(format!(
-                "## Rules added by the root\n\n{}",
+                "## Rules added by the orchestrator\n\n{}",
                 added.join("\n")
             ));
         }
-        let text = fill(&parts.join("\n\n"), config, exe, card);
+        let text = fill(&parts.join("\n\n"), config, exe, card)
+            .replace(&slot("orchestrator"), &self.address);
         if text.len() <= CONTEXT_LIMIT {
             return text;
         }
@@ -159,6 +173,44 @@ impl RuleFiles {
             role.as_str()
         )
     }
+}
+
+/// Reads the rules as [`RuleFiles::load`] does, with the store's soft rules and the orchestrator's address.
+///
+/// # Errors
+///
+/// Fails when the store fails or a rules file cannot be read.
+pub fn current(
+    store: &Store,
+    home: &Home,
+    config: &Config,
+    host: &dyn TerminalHost,
+) -> Result<RuleFiles> {
+    let address = orchestrator_address(store, host)?;
+    RuleFiles::load(home, config, &store.active_rules()?, &address)
+}
+
+/// Where workers send their messages to the orchestrator.
+///
+/// The name of the live orchestrator session in the store, else the `-n` name of an unmanaged `claude -n orchestrator`
+/// or `claude -n root` the host runs, else `orchestrator`. The host is asked only when the store knows no live
+/// orchestrator; a host that does not answer counts as running none.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn orchestrator_address(store: &Store, host: &dyn TerminalHost) -> Result<String> {
+    if let Some(session) = store.live_orchestrator_session()? {
+        return Ok(session.rc_name);
+    }
+    let panes = host.panes().unwrap_or_default();
+    Ok(headwork_core::orchestrator_address(
+        None,
+        panes
+            .iter()
+            .filter(|pane| pane.running)
+            .map(|pane| pane.command.as_str()),
+    ))
 }
 
 /// Drops the "Closing yourself" section, up to the next heading of the same level or the end.

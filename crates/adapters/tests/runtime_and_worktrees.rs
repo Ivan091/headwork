@@ -11,7 +11,7 @@ use headwork_core::config::{TaskVars, WorktreeCommand};
 use headwork_core::{Effort, Model, PermissionMode};
 
 #[test]
-fn argv_for_a_new_child() {
+fn argv_for_a_new_worker() {
     let launch = ClaudeLaunch {
         session_id: "0f8e",
         resume: false,
@@ -69,16 +69,16 @@ fn effort_becomes_the_effort_flag() {
 }
 
 #[test]
-fn argv_for_a_resumed_root_without_remote_control() {
+fn argv_for_a_resumed_orchestrator_without_remote_control() {
     let launch = ClaudeLaunch {
         session_id: "0f8e",
         resume: true,
-        name: "root",
+        name: "orchestrator",
         remote_control: false,
         model: Some(Model::Opus),
         effort: Some(Effort::High),
         permission_mode: PermissionMode::Default,
-        agent: Some("root"),
+        agent: Some("orchestrator"),
         plugin_dir: Some("S:/x/plugin"),
         prompt: "Resumed.",
     };
@@ -89,7 +89,8 @@ fn argv_for_a_resumed_root_without_remote_control() {
         "no remote control"
     );
     assert!(
-        argv.windows(2).any(|pair| pair == ["--agent", "root"]),
+        argv.windows(2)
+            .any(|pair| pair == ["--agent", "orchestrator"]),
         "agent"
     );
     assert!(
@@ -109,12 +110,12 @@ fn argv_without_a_model_leaves_it_to_claude() {
     let launch = ClaudeLaunch {
         session_id: "0f8e",
         resume: false,
-        name: "root",
+        name: "orchestrator",
         remote_control: true,
         model: None,
         effort: None,
         permission_mode: PermissionMode::Default,
-        agent: Some("root"),
+        agent: Some("orchestrator"),
         plugin_dir: None,
         prompt: "Hi.",
     };

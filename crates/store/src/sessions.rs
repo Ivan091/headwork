@@ -205,16 +205,16 @@ impl Store {
         Ok(data.map(|data| serde_json::from_str(&data)).transpose()?)
     }
 
-    /// The root's newest session that has not ended.
+    /// The orchestrator's newest session that has not ended.
     ///
     /// # Errors
     ///
     /// Returns a read error.
-    pub fn live_root_session(&self) -> Result<Option<SessionRow>, StoreError> {
+    pub fn live_orchestrator_session(&self) -> Result<Option<SessionRow>, StoreError> {
         self.conn
             .query_row(
                 &format!(
-                    "SELECT {SESSION_COLUMNS} FROM sessions WHERE role = 'root' AND state IN ('starting', 'live')
+                    "SELECT {SESSION_COLUMNS} FROM sessions WHERE role = 'orchestrator' AND state IN ('starting', 'live')
                      ORDER BY started_at DESC, rowid DESC LIMIT 1"
                 ),
                 [],
@@ -332,7 +332,7 @@ impl Store {
         });
         insert_event(
             &tx,
-            Actor::Child,
+            Actor::Worker,
             task.map(TaskId),
             Some(id),
             "launched",
@@ -364,7 +364,7 @@ impl Store {
         let data = serde_json::json!({ "exit_code": exit_code });
         insert_event(
             &tx,
-            Actor::Child,
+            Actor::Worker,
             task.map(TaskId),
             Some(id),
             "exited",

@@ -126,7 +126,7 @@ pub enum PushMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CrashResume {
-    /// The root asks the user.
+    /// The orchestrator asks the user.
     #[default]
     Ask,
     /// Resume at logon.
@@ -279,7 +279,7 @@ pub struct Config {
     /// The Claude Code hooks.
     #[serde(default)]
     pub hooks: HooksConfig,
-    /// Where new children appear in their project's workspace.
+    /// Where new workers appear in their project's workspace.
     #[serde(default)]
     pub layout: LayoutConfig,
     /// Projects by name.
@@ -293,9 +293,9 @@ pub struct Config {
 pub struct MachineConfig {
     /// The terminal host.
     pub host: HostKind,
-    /// At most this many child sessions at once.
-    #[serde(default = "default_max_children")]
-    pub max_children: NonZeroU32,
+    /// At most this many worker sessions at once. `max_children` is its deprecated spelling.
+    #[serde(default = "default_max_workers", alias = "max_children")]
+    pub max_workers: NonZeroU32,
     /// Sessions start with Remote Control.
     #[serde(default = "yes")]
     pub remote_control: bool,
@@ -396,8 +396,10 @@ pub struct HooksConfig {
     pub plugin_dir: Option<String>,
     /// Folders every managed session may write besides its own (Claude's memory and plans).
     pub writable: Vec<String>,
-    /// Folders the root may also write, such as the orchestrate skill's brief cache.
-    pub root_writable: Vec<String>,
+    /// Folders the orchestrator may also write, such as the orchestrate skill's brief cache. `root_writable` is its
+    /// deprecated spelling.
+    #[serde(alias = "root_writable")]
+    pub orchestrator_writable: Vec<String>,
     /// A push notification counts for an ask within this many seconds.
     pub push_window_secs: u32,
     /// A sent file counts for a review ask within this many seconds.
@@ -413,21 +415,21 @@ impl Default for HooksConfig {
                 "~/.claude/projects".to_owned(),
                 "~/.claude/plans".to_owned(),
             ],
-            root_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
+            orchestrator_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
             push_window_secs: 120,
             file_window_secs: 300,
         }
     }
 }
 
-/// How a project's workspace shows its children.
+/// How a project's workspace shows its workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayoutMode {
-    /// Each child gets a pane of its own, up to `layout.panes`; later ones stack as tabs.
+    /// Each worker gets a pane of its own, up to `layout.panes`; later ones stack as tabs.
     #[default]
     Panes,
-    /// Every child is a tab, as the host places it.
+    /// Every worker is a tab, as the host places it.
     Tabs,
 }
 
@@ -437,9 +439,9 @@ pub enum LayoutMode {
 pub struct LayoutConfig {
     /// Panes or tabs.
     pub mode: LayoutMode,
-    /// The most panes headwork splits a workspace into before children stack as tabs.
+    /// The most panes headwork splits a workspace into before workers stack as tabs.
     pub panes: NonZeroU32,
-    /// The title of a child's pane or tab. `{name}` is `<project>-<slug>`, `{model}` the model, `{effort}` the effort
+    /// The title of a worker's pane or tab. `{name}` is `<project>-<slug>`, `{model}` the model, `{effort}` the effort
     /// word, or `?` when it is unknown.
     pub title: String,
 }
@@ -458,7 +460,7 @@ impl Default for LayoutConfig {
 }
 
 impl LayoutConfig {
-    /// The title of a child's pane or tab: the template with `{name}`, `{model}` and `{effort}` filled in.
+    /// The title of a worker's pane or tab: the template with `{name}`, `{model}` and `{effort}` filled in.
     #[must_use]
     #[expect(
         clippy::literal_string_with_formatting_args,
@@ -491,16 +493,16 @@ pub struct ProjectConfig {
     pub deliver: Delivery,
     /// Who merges.
     pub merge: MergePolicy,
-    /// At most this many live tasks of the project.
-    #[serde(default)]
-    pub max_children: Option<NonZeroU32>,
+    /// At most this many live tasks of the project. `max_children` is its deprecated spelling.
+    #[serde(default, alias = "max_children")]
+    pub max_workers: Option<NonZeroU32>,
     /// Task kinds that run in the main checkout, one at a time.
     #[serde(default)]
     pub main_only: Vec<String>,
     /// Commands only the user runs.
     #[serde(default)]
     pub user_only: Vec<String>,
-    /// Repositories a child may push to.
+    /// Repositories a worker may push to.
     #[serde(default)]
     pub allowed_repos: Vec<Repo>,
     /// Heavy job slots.
@@ -509,7 +511,7 @@ pub struct ProjectConfig {
     /// The project's own heavy slot owner.
     #[serde(default)]
     pub heavy_gate: Option<String>,
-    /// Paths a child may read and never write.
+    /// Paths a worker may read and never write.
     #[serde(default)]
     pub read_only_paths: Vec<String>,
     /// Review requirements.
@@ -577,7 +579,7 @@ pub struct ProjectOverlay {
     pub user_only: Vec<String>,
 }
 
-const fn default_max_children() -> NonZeroU32 {
+const fn default_max_workers() -> NonZeroU32 {
     match NonZeroU32::new(10) {
         Some(ten) => ten,
         None => NonZeroU32::MIN,
@@ -625,6 +627,48 @@ impl Config {
         self.projects
             .iter()
             .try_for_each(|(name, project)| project.validate(name, &self.models))
+    }
+
+    /// The deprecated keys a machine configuration still uses, each with the key that replaces it, such as
+    /// `machine.max_children` and `machine.max_workers`. They load as their new spelling; text that does not parse has
+    /// none.
+    #[must_use]
+    pub fn deprecated_keys(text: &str) -> Vec<(String, String)> {
+        const RENAMED: &[(&str, &str, &str)] = &[
+            ("machine", "max_children", "max_workers"),
+            ("hooks", "root_writable", "orchestrator_writable"),
+        ];
+        let Ok(table) = toml::from_str::<toml::Table>(text) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(String, String)> = RENAMED
+            .iter()
+            .filter(|(section, old, _)| {
+                table
+                    .get(*section)
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|keys| keys.contains_key(*old))
+            })
+            .map(|(section, old, new)| (format!("{section}.{old}"), format!("{section}.{new}")))
+            .collect();
+        if let Some(projects) = table.get("project").and_then(toml::Value::as_table) {
+            found.extend(
+                projects
+                    .iter()
+                    .filter(|(_, project)| {
+                        project
+                            .as_table()
+                            .is_some_and(|keys| keys.contains_key("max_children"))
+                    })
+                    .map(|(name, _)| {
+                        (
+                            format!("project.{name}.max_children"),
+                            format!("project.{name}.max_workers"),
+                        )
+                    }),
+            );
+        }
+        found
     }
 
     /// The project with this name.

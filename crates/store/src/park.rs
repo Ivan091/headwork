@@ -828,12 +828,12 @@ impl Store {
             .flatten())
     }
 
-    /// Records the root session a park found running; the resume after it brings that session back.
+    /// Records the orchestrator session a park found running; the resume after it brings that session back.
     ///
     /// # Errors
     ///
     /// Returns the SQLite error.
-    pub fn set_park_root(
+    pub fn set_park_orchestrator(
         &mut self,
         park: i64,
         session: &str,
@@ -841,7 +841,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE parks SET root_session = ?1 WHERE id = ?2",
+            "UPDATE parks SET orchestrator_session = ?1 WHERE id = ?2",
             params![session, park],
         )?;
         insert_event(
@@ -849,23 +849,23 @@ impl Store {
             actor,
             None,
             Some(session),
-            "park-root",
+            "park-orchestrator",
             &serde_json::json!({ "park": park }),
         )?;
         tx.commit()?;
         Ok(())
     }
 
-    /// The root session a park found running.
+    /// The orchestrator session a park found running.
     ///
     /// # Errors
     ///
     /// Returns a read error.
-    pub fn park_root(&self, park: i64) -> Result<Option<String>, StoreError> {
+    pub fn park_orchestrator(&self, park: i64) -> Result<Option<String>, StoreError> {
         Ok(self
             .conn
             .query_row(
-                "SELECT root_session FROM parks WHERE id = ?1",
+                "SELECT orchestrator_session FROM parks WHERE id = ?1",
                 params![park],
                 |row| row.get::<_, Option<String>>(0),
             )
@@ -873,12 +873,12 @@ impl Store {
             .flatten())
     }
 
-    /// The newest recap a session without a task (the root) left for a park, of any kind.
+    /// The newest recap a session without a task (the orchestrator) left for a park, of any kind.
     ///
     /// # Errors
     ///
     /// Returns a read error.
-    pub fn root_park_recap(
+    pub fn orchestrator_park_recap(
         &self,
         park: i64,
         session: &str,

@@ -15,8 +15,8 @@ use proptest::prelude::*;
 use TaskState as S;
 
 const FREE: StartFacts = StartFacts {
-    live_children: 2,
-    max_children: 10,
+    live_workers: 2,
+    max_workers: 10,
     project_live: 1,
     project_cap: Some(3),
     main_only_kind_busy: false,
@@ -183,7 +183,7 @@ fn refused_start(facts: StartFacts) -> Refusal {
 fn start_guards() {
     assert_eq!(
         refused_start(StartFacts {
-            live_children: 10,
+            live_workers: 10,
             ..FREE
         }),
         Refusal::NoFreeSlot { max: 10 },
@@ -282,7 +282,7 @@ fn review_and_merge_guards() {
     );
     assert_eq!(refused, Err(Refusal::RepoNotAllowed), "foreign repo");
     let child_human = Trigger::Merged {
-        source: MergeSource::Child,
+        source: MergeSource::Worker,
         policy: MergePolicy::Human,
     };
     assert_eq!(
@@ -291,12 +291,12 @@ fn review_and_merge_guards() {
         "human merge"
     );
     let child_deliver = Trigger::Merged {
-        source: MergeSource::Child,
+        source: MergeSource::Worker,
         policy: MergePolicy::Deliver,
     };
     assert!(
         apply(&task(S::InReview), &child_deliver).is_ok(),
-        "the child may report a delivered merge"
+        "the worker may report a delivered merge"
     );
 }
 
@@ -544,7 +544,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
     )
         .prop_map(
             |(
-                live_children,
+                live_workers,
                 project_live,
                 project_cap,
                 main_only_kind_busy,
@@ -552,8 +552,8 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
                 fable,
                 machine,
             )| StartFacts {
-                live_children,
-                max_children: 10,
+                live_workers,
+                max_workers: 10,
                 project_live,
                 project_cap,
                 main_only_kind_busy,
@@ -574,7 +574,7 @@ fn worktree_end() -> impl Strategy<Value = WorktreeEnd> {
 }
 
 fn trigger() -> impl Strategy<Value = Trigger> {
-    let merge_source = prop_oneof![Just(MergeSource::GitHost), Just(MergeSource::Child)];
+    let merge_source = prop_oneof![Just(MergeSource::GitHost), Just(MergeSource::Worker)];
     let merge_policy = prop_oneof![Just(MergePolicy::Deliver), Just(MergePolicy::Human)];
     let cause = prop_oneof![Just(CloseCause::Done), Just(CloseCause::GraceElapsed)];
     prop_oneof![
@@ -632,7 +632,7 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
     match *trigger {
         Trigger::Start(f) => {
             matches!(f.machine, MachineMode::Normal | MachineMode::Resuming)
-                && f.live_children < f.max_children
+                && f.live_workers < f.max_workers
                 && f.project_cap.is_none_or(|cap| f.project_live < cap)
                 && !f.main_only_kind_busy
                 && f.dependency != Dependency::Waiting
@@ -641,7 +641,7 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
         Trigger::SessionStarted(f) => f.session_matches && f.launcher_alive,
         Trigger::ReviewOpened { repo_allowed } => repo_allowed,
         Trigger::Merged { source, policy } => {
-            !(source == MergeSource::Child && policy == MergePolicy::Human)
+            !(source == MergeSource::Worker && policy == MergePolicy::Human)
         }
         Trigger::Close(f) => !task.keep && !f.open_ask && !f.running_job && f.report_sent,
         Trigger::Cleaned(f) => {

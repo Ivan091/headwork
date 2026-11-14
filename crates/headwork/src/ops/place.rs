@@ -1,11 +1,11 @@
-//! Where a child's pane opens in its project's workspace, and what a closing child leaves behind (`[layout]`).
+//! Where a worker's pane opens in its project's workspace, and what a closing worker leaves behind (`[layout]`).
 //!
-//! In `panes` mode each child gets a pane of its own, up to `layout.panes`; later children stack as tabs. The second
-//! child cuts the workspace's lone pane into the whole grid at once, and later ones take the free panes. A child that
+//! In `panes` mode each worker gets a pane of its own, up to `layout.panes`; later workers stack as tabs. The second
+//! worker cuts the workspace's lone pane into the whole grid at once, and later ones take the free panes. A worker that
 //! closes while it is alone in its pane first starts `headwork idle` there as a placeholder, so the pane stays for the
-//! next child, and the workspace closes once nothing in it holds a session. The choice is
+//! next worker, and the workspace closes once nothing in it holds a session. The choice is
 //! [`headwork_core::layout::place`]; this module reads the workspace from the host as it is now, so panes the user
-//! closed or rearranged by hand count as they stand. Children already open are never moved. `tabs` mode adds tabs.
+//! closed or rearranged by hand count as they stand. Workers already open are never moved. `tabs` mode adds tabs.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -19,10 +19,10 @@ use headwork_store::{Place, Store, Task};
 use super::{Env, label, title};
 
 /// The host label of a free pane's placeholder. It has no `/`, so the tick and import, which read `<project>/<slug>`
-/// labels, never take it for a child.
+/// labels, never take it for a worker.
 pub const IDLE_LABEL: &str = "headwork:free";
 
-/// A child's pane to open.
+/// A worker's pane to open.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Opening<'a> {
     /// The task.
@@ -81,7 +81,7 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
 ///
 /// In `tabs` mode the workspace closes when it holds nothing else.
 /// In `panes` mode a surface alone in its pane first gets a placeholder beside it, so
-/// the pane stays for the next child.
+/// the pane stays for the next worker.
 ///
 /// # Errors
 ///

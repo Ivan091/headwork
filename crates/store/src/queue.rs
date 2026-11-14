@@ -158,7 +158,7 @@ impl Store {
             params![
                 adopt.session_id,
                 id.0,
-                Role::Child.as_str(),
+                Role::Worker.as_str(),
                 name.to_string(),
                 adopt.host,
                 adopt.host_workspace,

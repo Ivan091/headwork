@@ -10,7 +10,7 @@ Goal: after `headwork install`, the machine uses the new build without restartin
 | CLI (`board`, `spawn`, `close`, `tick`, `park`, `resume`, ...) | per call | whatever path is called | yes |
 | Finisher (`headwork finish`), detached `park`/`resume` from MCP | per close / per call | the caller's `current_exe()` path | yes, when started after the install |
 | Tick | per scheduler call (nothing schedules it yet) | the path in the schedule | yes |
-| Launcher (`headwork launch`, `headwork root`) | the whole session, days | its own image | **no**: the image is loaded once |
+| Launcher (`headwork launch`, `headwork orchestrator`) | the whole session, days | its own image | **no**: the image is loaded once |
 | MCP server (`headwork mcp`, plugin `.mcp.json`) | the whole session, one per session | `${HEADWORK_EXE:-headwork}` | before this change **no**; now a relay, see below |
 | Tool schemas Claude loaded | the whole session | Claude's memory | only when Claude lists tools again |
 | Plugin files (`hooks.json`, `.mcp.json`) | read by Claude Code at session start | Claude Code | **no**: a new session is needed |
@@ -62,7 +62,7 @@ session's end is never recorded (the tick only cleans it up later).
 | A running launcher's start-up logic (how it started `claude`) | already done | nothing; its exit is handed to the installed build |
 | Plugin files (`hooks.json`, `.mcp.json`, `plugin.json`) | Claude Code reads them at session start | a new session (park and resume restarts every session) |
 | Tool descriptions and schemas | Claude caches them | the relay's `list_changed` makes Claude list them again; if a client ignored it, `/mcp` Reconnect |
-| A store migration (0006, task effort, arrived with this install) | a pinned launcher reopens the store with old code when `claude` exits, is refused, and records nothing | a close from outside (root, `headwork close`) waits for the launcher, then finishes the close itself; a self-close of a pinned session also starts a backup finisher from the new build, and every finisher records the session end its launcher missed. A session that simply exits stays `working` until `headwork close <name>` or the tick |
+| A store migration (0006, task effort, arrived with this install) | a pinned launcher reopens the store with old code when `claude` exits, is refused, and records nothing | a close from outside (orchestrator, `headwork close`) waits for the launcher, then finishes the close itself; a self-close of a pinned session also starts a backup finisher from the new build, and every finisher records the session end its launcher missed. A session that simply exits stays `working` until `headwork close <name>` or the tick |
 
 ## Using it
 

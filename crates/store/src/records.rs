@@ -187,13 +187,13 @@ pub struct BoardTask {
 pub struct Board {
     /// The machine mode.
     pub machine: MachineMode,
-    /// Tasks that take a child slot.
-    pub live_children: u32,
+    /// Tasks that take a worker slot.
+    pub live_workers: u32,
     /// Known projects.
     pub projects: Vec<ProjectRow>,
     /// Tasks, by project and queue order.
     pub tasks: Vec<BoardTask>,
-    /// Asks without a task, such as the root's.
+    /// Asks without a task, such as the orchestrator's.
     pub other_asks: Vec<AskRow>,
 }
 

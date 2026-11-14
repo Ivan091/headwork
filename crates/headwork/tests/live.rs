@@ -224,7 +224,7 @@ fn children_fill_a_grid_of_panes_in_the_real_host() {
     tabs.sort_unstable();
     assert_eq!(tabs, [1, 1, 1, 2], "the fifth child a tab: {grid:?}");
     assert_eq!(stacked, Some(Some(PlaceKind::Tab)), "the fifth is a tab");
-    assert_eq!(kept.len(), 4, "the closed child's pane stays: {kept:?}");
+    assert_eq!(kept.len(), 4, "the closed worker's pane stays: {kept:?}");
     assert_eq!(
         refill_row.host_place,
         Some(PlaceKind::Pane),

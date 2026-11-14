@@ -3,7 +3,7 @@
 //! Each parked (and, by hand, interrupted) task gets its pane again in its project's workspace, running
 //! `headwork launch --resume`, which continues the same Claude session under the same name and hands it its recap. A
 //! session whose conversation is gone starts fresh from its brief and recap. Jobs that asked to be restarted run
-//! again, and a summary for the root is written to `recaps/<park-id>.md`.
+//! again, and a summary for the orchestrator is written to `recaps/<park-id>.md`.
 //!
 //! Resume is run by hand, or by whatever the user schedules at logon (`--logon`, which honours
 //! `machine.resume_after_crash`); headwork installs nothing itself.
@@ -92,9 +92,9 @@ pub struct ResumeReport {
     pub tasks: Vec<ResumedTask>,
     /// The jobs.
     pub jobs: Vec<RestartedJob>,
-    /// The root session, when there was one to bring back or one still runs.
-    pub root: Option<TaskOutcome>,
-    /// The summary file for the root.
+    /// The orchestrator session, when there was one to bring back or one still runs.
+    pub orchestrator: Option<TaskOutcome>,
+    /// The summary file for the orchestrator.
     pub summary: String,
     /// Tasks started from the queue afterwards.
     pub queue_started: usize,
@@ -141,8 +141,12 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
     let park = store.current_park()?;
     let was_parked = store.machine_mode()? == MachineMode::Parked;
     store.set_machine_mode(MachineMode::Resuming, env.actor)?;
-    let root = root_to_resume(store, park.as_ref().map(|p| p.id), was_parked)?;
-    close_restored_panes(store, env, root.as_ref().and_then(RootPlan::session))?;
+    let orchestrator = orchestrator_to_resume(store, park.as_ref().map(|p| p.id), was_parked)?;
+    close_restored_panes(
+        store,
+        env,
+        orchestrator.as_ref().and_then(OrchestratorPlan::session),
+    )?;
 
     let mut tasks = Vec::new();
     let mut ids: Vec<(headwork_store::TaskId, bool)> = store
@@ -164,7 +168,8 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
                 outcome: TaskOutcome::Skipped {
                     reason: match env.config.machine.resume_after_crash {
                         CrashResume::Ask => {
-                            "interrupted by a crash; the root asks whether to resume it".to_owned()
+                            "interrupted by a crash; the orchestrator asks whether to resume it"
+                                .to_owned()
                         }
                         CrashResume::Never | CrashResume::Always => {
                             "interrupted by a crash; resume_after_crash is never".to_owned()
@@ -186,9 +191,10 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
         was_parked,
         &tasks,
         &jobs,
-        root.as_ref(),
+        orchestrator.as_ref(),
     )?;
-    let root = root.map(|plan| resume_root(store, env, opts, plan, &summary));
+    let orchestrator =
+        orchestrator.map(|plan| resume_orchestrator(store, env, opts, plan, &summary));
     store.finish_resume(
         park.as_ref().map(|p| p.id),
         &super::slashed(&summary),
@@ -210,7 +216,7 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
         park: park.map(|p| p.id),
         tasks,
         jobs,
-        root,
+        orchestrator,
         summary: super::slashed(&summary),
         queue_started: pumped
             .iter()
@@ -366,7 +372,7 @@ fn write_summary(
     was_parked: bool,
     tasks: &[ResumedTask],
     jobs: &[RestartedJob],
-    root: Option<&RootPlan>,
+    orchestrator: Option<&OrchestratorPlan>,
 ) -> Result<PathBuf> {
     let dir = env.home.recaps_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -419,8 +425,8 @@ fn write_summary(
             let _ = writeln!(text, "{line}");
         }
     }
-    if let Some(RootPlan::Back { session, .. }) = root {
-        let _ = writeln!(text, "\n## Root\n");
+    if let Some(OrchestratorPlan::Back { session, .. }) = orchestrator {
+        let _ = writeln!(text, "\n## Orchestrator\n");
         match store.latest_session_recap(&session.id)? {
             Some(recap) => {
                 let _ = writeln!(text, "Your recap ({}, {}):\n", recap.kind, recap.created_at);
@@ -433,10 +439,10 @@ fn write_summary(
     Ok(path)
 }
 
-/// What becomes of the root session.
+/// What becomes of the orchestrator session.
 #[derive(Debug)]
-enum RootPlan {
-    /// Another root session still runs; it is left alone.
+enum OrchestratorPlan {
+    /// Another orchestrator session still runs; it is left alone.
     StillRuns,
     /// This session comes back: the one the park found running, or one a crash cut off.
     Back {
@@ -447,7 +453,7 @@ enum RootPlan {
     },
 }
 
-impl RootPlan {
+impl OrchestratorPlan {
     const fn session(&self) -> Option<&str> {
         match self {
             Self::StillRuns => None,
@@ -456,43 +462,49 @@ impl RootPlan {
     }
 }
 
-/// The root session to bring back. After a park it is the one the park recorded; otherwise a root the store still
-/// counts as running whose processes are gone. The root comes back at logon too, whatever `resume_after_crash` says:
+/// The orchestrator session to bring back. After a park it is the one the park recorded; otherwise an orchestrator the store still
+/// counts as running whose processes are gone. The orchestrator comes back at logon too, whatever `resume_after_crash` says:
 /// it is the session that asks about the rest.
-fn root_to_resume(store: &Store, park: Option<i64>, was_parked: bool) -> Result<Option<RootPlan>> {
-    let live = store.live_root_session()?;
+fn orchestrator_to_resume(
+    store: &Store,
+    park: Option<i64>,
+    was_parked: bool,
+) -> Result<Option<OrchestratorPlan>> {
+    let live = store.live_orchestrator_session()?;
     if live.as_ref().is_some_and(park::session_alive) {
-        return Ok(Some(RootPlan::StillRuns));
+        return Ok(Some(OrchestratorPlan::StillRuns));
     }
     let parked = match park.filter(|_| was_parked) {
-        Some(id) => store.park_root(id)?,
+        Some(id) => store.park_orchestrator(id)?,
         None => None,
     };
     if let Some(id) = parked {
-        return Ok(store.session(&id)?.map(|(session, _)| RootPlan::Back {
-            session,
-            crash: false,
-        }));
+        return Ok(store
+            .session(&id)?
+            .map(|(session, _)| OrchestratorPlan::Back {
+                session,
+                crash: false,
+            }));
     }
-    Ok(live.map(|session| RootPlan::Back {
+    Ok(live.map(|session| OrchestratorPlan::Back {
         session,
         crash: true,
     }))
 }
 
-fn resume_root(
+fn resume_orchestrator(
     store: &mut Store,
     env: &Env<'_>,
     opts: &ResumeOptions,
-    plan: RootPlan,
+    plan: OrchestratorPlan,
     summary: &Path,
 ) -> TaskOutcome {
-    let RootPlan::Back { session, crash } = plan else {
+    let OrchestratorPlan::Back { session, crash } = plan else {
         return TaskOutcome::Skipped {
-            reason: "a root session still runs".to_owned(),
+            reason: "an orchestrator session still runs".to_owned(),
         };
     };
-    match open_root(store, env, opts, &session, summary) {
+    match open_orchestrator(store, env, opts, &session, summary) {
         Ok(outcome) => outcome,
         Err(error) => {
             let error = format!("{error:#}");
@@ -500,7 +512,7 @@ fn resume_root(
                 env.actor,
                 None,
                 Some(&session.id),
-                "root-resume-failed",
+                "orchestrator-resume-failed",
                 &serde_json::json!({ "error": error, "crash": crash }),
             ));
             TaskOutcome::Failed { error }
@@ -508,9 +520,9 @@ fn resume_root(
     }
 }
 
-/// Opens the root's pane in the `root` workspace, in the folder it ran in: the same conversation when Claude still
-/// has it, else a new root session that starts from the recap in the summary.
-fn open_root(
+/// Opens the orchestrator's pane in the `orchestrator` workspace, in the folder it ran in: the same conversation when Claude still
+/// has it, else a new orchestrator session that starts from the recap in the summary.
+fn open_orchestrator(
     store: &mut Store,
     env: &Env<'_>,
     opts: &ResumeOptions,
@@ -519,8 +531,8 @@ fn open_root(
 ) -> Result<TaskOutcome> {
     let dir = store.session_dir(&old.id)?.with_context(|| {
         format!(
-            "the folder root session {} ran in is unknown (it was started before headwork recorded it); start the \
-             root with `headwork root`",
+            "the folder orchestrator session {} ran in is unknown (it was started before headwork recorded it); start the \
+             orchestrator with `headwork orchestrator`",
             old.id
         )
     })?;
@@ -539,7 +551,7 @@ fn open_root(
             &NewSession {
                 id: id.clone(),
                 task_id: None,
-                role: Role::Root,
+                role: Role::Orchestrator,
                 rc_name: old.rc_name.clone(),
                 host: env.config.machine.host.as_str().to_owned(),
                 host_workspace: None,
@@ -552,7 +564,7 @@ fn open_root(
     };
     let mut argv = vec![
         env.exe.display().to_string(),
-        "root".to_owned(),
+        "orchestrator".to_owned(),
         "--session".to_owned(),
         session.clone(),
     ];
@@ -565,11 +577,11 @@ fn open_root(
         "--home".to_owned(),
         env.home.root().display().to_string(),
     ]);
-    let (workspace, fresh) = env.host.ensure_workspace(ROOT_WORKSPACE, &dir)?;
+    let (workspace, fresh) = env.host.ensure_workspace(ORCHESTRATOR_WORKSPACE, &dir)?;
     let target = place::tab(env.host, &workspace, fresh)?;
     let pane = env
         .host
-        .spawn(&workspace, &dir, ROOT_WORKSPACE, &argv, &target)?;
+        .spawn(&workspace, &dir, ORCHESTRATOR_WORKSPACE, &argv, &target)?;
     let pane_id = match &target {
         Target::Pane { pane, .. } => Some(pane.as_str()),
         Target::Tab => None,
@@ -595,8 +607,8 @@ fn open_root(
     })
 }
 
-/// The workspace, and the pane label, a resumed root opens in.
-pub const ROOT_WORKSPACE: &str = "root";
+/// The workspace, and the pane label, a resumed orchestrator opens in.
+pub const ORCHESTRATOR_WORKSPACE: &str = "orchestrator";
 
 fn chrono_free_stamp() -> u64 {
     std::time::SystemTime::now()
@@ -626,7 +638,7 @@ fn session_for(
                 &NewSession {
                     id: id.clone(),
                     task_id: Some(task.id),
-                    role: Role::Child,
+                    role: Role::Worker,
                     rc_name: task.name.to_string(),
                     host: env.config.machine.host.as_str().to_owned(),
                     host_workspace: None,
@@ -641,8 +653,8 @@ fn session_for(
 
 /// Closes the panes the host restored by itself for sessions that are about to be resumed here, so no conversation
 /// runs twice. After a reboot wmux reopens each Claude pane with a plain `claude --resume <id>`.
-fn close_restored_panes(store: &Store, env: &Env<'_>, root: Option<&str>) -> Result<()> {
-    let mut ids: Vec<String> = root.map(str::to_owned).into_iter().collect();
+fn close_restored_panes(store: &Store, env: &Env<'_>, orchestrator: Option<&str>) -> Result<()> {
+    let mut ids: Vec<String> = orchestrator.map(str::to_owned).into_iter().collect();
     for state in [TaskState::Parked, TaskState::Interrupted] {
         for id in store.tasks_in(state)? {
             ids.extend(store.session_of(id)?.map(|session| session.id));

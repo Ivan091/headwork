@@ -1,4 +1,4 @@
-//! Validated names: project names, task slugs and the task names built from them.
+//! Validated names: project names, task slugs and the task names built from them, and the orchestrator's address.
 
 use std::fmt;
 use std::str::FromStr;
@@ -170,6 +170,65 @@ impl fmt::Display for TaskName {
     }
 }
 
+/// The address the orchestrator session answers to: its session and Remote Control name.
+pub const ORCHESTRATOR_ADDRESS: &str = "orchestrator";
+
+/// The orchestrator's address until 2026-11-14, when it was called the orchestrator; still an alias of the orchestrator.
+pub const LEGACY_ORCHESTRATOR_ADDRESS: &str = "root";
+
+/// Whether a session message to `name` means the orchestrator.
+#[must_use]
+pub fn is_orchestrator_address(name: &str) -> bool {
+    name == ORCHESTRATOR_ADDRESS || name == LEGACY_ORCHESTRATOR_ADDRESS
+}
+
+/// The session name a `claude` command line sets with `-n` or `--name`, before any `--`.
+#[must_use]
+pub fn session_name_in(command: &str) -> Option<&str> {
+    let mut words = command.split_whitespace();
+    let program = words.next()?.trim_matches('"');
+    let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    if !(base == "claude" || base.eq_ignore_ascii_case("claude.exe")) {
+        return None;
+    }
+    while let Some(word) = words.next() {
+        match word {
+            "--" => return None,
+            "-n" | "--name" => return words.next().map(|name| name.trim_matches('"')),
+            other => {
+                if let Some(name) = other.strip_prefix("--name=") {
+                    return Some(name.trim_matches('"'));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Where messages to the orchestrator go.
+///
+/// The managed orchestrator's name when the store has one running, else the name of an unmanaged one found among the
+/// running command lines (`-n orchestrator` before `-n root`), else [`ORCHESTRATOR_ADDRESS`].
+#[must_use]
+pub fn orchestrator_address<'a>(
+    managed: Option<&str>,
+    running: impl IntoIterator<Item = &'a str>,
+) -> String {
+    if let Some(name) = managed {
+        return name.to_owned();
+    }
+    let names: Vec<&str> = running
+        .into_iter()
+        .filter_map(session_name_in)
+        .filter(|name| is_orchestrator_address(name))
+        .collect();
+    if names.contains(&LEGACY_ORCHESTRATOR_ADDRESS) && !names.contains(&ORCHESTRATOR_ADDRESS) {
+        LEGACY_ORCHESTRATOR_ADDRESS.to_owned()
+    } else {
+        ORCHESTRATOR_ADDRESS.to_owned()
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests fail loudly on a bad fixture")]
 mod tests {
@@ -232,5 +291,42 @@ mod tests {
             TaskName::resolve("other-x", &projects).is_none(),
             "unknown project"
         );
+    }
+
+    #[test]
+    fn finds_the_orchestrator_address() {
+        let root = "claude --agent root --remote-control root -n root";
+        let worker = "claude --remote-control me-sim-x -n me-sim-x -- \"tell -n root\"";
+        assert_eq!(
+            orchestrator_address(Some("boss"), [root]),
+            "boss",
+            "the store wins"
+        );
+        assert_eq!(
+            orchestrator_address(None, [worker, root]),
+            "root",
+            "an unmanaged root"
+        );
+        assert_eq!(
+            orchestrator_address(None, [root, "claude -n orchestrator"]),
+            "orchestrator",
+            "the new name before the old one"
+        );
+        assert_eq!(
+            orchestrator_address(None, [worker]),
+            "orchestrator",
+            "the default"
+        );
+        assert_eq!(session_name_in("wmux -n root"), None, "only claude");
+        assert_eq!(
+            session_name_in("C:/bin/claude.exe --name=\"root\""),
+            Some("root"),
+            "long form"
+        );
+        assert!(
+            is_orchestrator_address("root") && is_orchestrator_address("orchestrator"),
+            "both addresses"
+        );
+        assert!(!is_orchestrator_address("me-sim-x"), "a worker");
     }
 }

@@ -24,7 +24,7 @@ pub(crate) fn imported(added: &[String], report: &ImportReport, dry_run: bool) -
         let what = if dry_run { "would add" } else { "added" };
         let _ = writeln!(text, "{what} to config.toml: {}", added.join(", "));
     }
-    let _ = writeln!(text, "{verb} {} running children", report.adopted.len());
+    let _ = writeln!(text, "{verb} {} running workers", report.adopted.len());
     for name in &report.adopted {
         let _ = writeln!(text, "  {name}");
     }
@@ -32,7 +32,7 @@ pub(crate) fn imported(added: &[String], report: &ImportReport, dry_run: bool) -
         let _ = writeln!(text, "  skipped {line}");
     }
     if !report.stray_worktrees.is_empty() {
-        text.push_str("worktrees without a running child\n");
+        text.push_str("worktrees without a running worker\n");
         for path in &report.stray_worktrees {
             let _ = writeln!(text, "  {path}");
         }
@@ -56,7 +56,7 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
 
 /// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
 #[must_use]
-pub(crate) fn board(board: &Board, max_children: u32) -> String {
+pub(crate) fn board(board: &Board, max_workers: u32) -> String {
     let asks = board
         .tasks
         .iter()
@@ -64,9 +64,9 @@ pub(crate) fn board(board: &Board, max_children: u32) -> String {
         .sum::<usize>()
         + board.other_asks.len();
     let mut text = format!(
-        "machine {} · {} of {max_children} slots · {asks} {} waiting\n",
+        "machine {} · {} of {max_workers} slots · {asks} {} waiting\n",
         board.machine,
-        board.live_children,
+        board.live_workers,
         if asks == 1 { "ask" } else { "asks" },
     );
     let width = board
@@ -182,7 +182,7 @@ pub(crate) fn events(events: &[EventRecord]) -> String {
         let task = event.task.as_deref().unwrap_or("-");
         let _ = writeln!(
             text,
-            "{}  {:<5} {task:<width$}  {:<16} {}",
+            "{}  {:<12} {task:<width$}  {:<16} {}",
             event.at,
             event.actor,
             event.kind,
@@ -275,24 +275,24 @@ pub(crate) fn parked(report: &ParkReport) -> String {
             let _ = writeln!(text, "    problem: {problem}");
         }
     }
-    if let Some(root) = &report.root {
-        let recap = match root.recap {
+    if let Some(orchestrator) = &report.orchestrator {
+        let recap = match orchestrator.recap {
             RecapSource::Session => "own recap",
             RecapSource::Mechanical => "mechanical recap",
         };
         let _ = writeln!(
             text,
-            "  root {} left running ({recap}); the resume brings it back",
-            root.session
+            "  orchestrator {} left running ({recap}); the resume brings it back",
+            orchestrator.session
         );
-        if let Some(problem) = &root.problem {
+        if let Some(problem) = &orchestrator.problem {
             let _ = writeln!(text, "    note: {problem}");
         }
     }
     for job in &report.jobs {
         let _ = writeln!(text, "  job {}: {}", job.label, job.outcome);
     }
-    if report.sessions.is_empty() && report.jobs.is_empty() && report.root.is_none() {
+    if report.sessions.is_empty() && report.jobs.is_empty() && report.orchestrator.is_none() {
         text.push_str("  nothing was running\n");
     }
     text.push_str(if report.safe_to_restart {
@@ -311,8 +311,8 @@ pub(crate) fn resumed(report: &ResumeReport) -> String {
         .park
         .map_or_else(|| "none (crash)".to_owned(), |id| id.to_string());
     let _ = writeln!(text, "resume of park {park}");
-    if let Some(root) = &report.root {
-        let _ = writeln!(text, "  root: {}", outcome_line(root));
+    if let Some(orchestrator) = &report.orchestrator {
+        let _ = writeln!(text, "  orchestrator: {}", outcome_line(orchestrator));
     }
     for task in &report.tasks {
         let line = outcome_line(&task.outcome);
@@ -327,7 +327,7 @@ pub(crate) fn resumed(report: &ResumeReport) -> String {
     if report.queue_started > 0 {
         let _ = writeln!(text, "  {} queued task(s) started", report.queue_started);
     }
-    let _ = writeln!(text, "summary for the root: {}", report.summary);
+    let _ = writeln!(text, "summary for the orchestrator: {}", report.summary);
     text
 }
 
@@ -505,7 +505,9 @@ mod tests {
             depends_on: None,
             permission_mode: PermissionMode::Auto,
         };
-        store.create_task(config, &new, Actor::Root).unwrap()
+        store
+            .create_task(config, &new, Actor::Orchestrator)
+            .unwrap()
     }
 
     #[test]
@@ -525,7 +527,9 @@ mod tests {
             depends_on: None,
             permission_mode: PermissionMode::Auto,
         };
-        store.create_task(&config, &new, Actor::Root).unwrap();
+        store
+            .create_task(&config, &new, Actor::Orchestrator)
+            .unwrap();
         let text = super::board(&store.board(false).unwrap(), 10);
         assert!(text.contains("opus   xhigh  "), "{text}");
         let log = super::events(
@@ -550,7 +554,7 @@ mod tests {
                     &NewSession {
                         id: id.clone(),
                         task_id: Some(made.id),
-                        role: Role::Child,
+                        role: Role::Worker,
                         rc_name: made.name.to_string(),
                         host: "wmux".to_owned(),
                         host_workspace: None,
@@ -622,7 +626,7 @@ mod tests {
         let sand = task(&mut store, &config, "me-sim", "sand");
         assert!(
             store
-                .transition(sand.id, &Trigger::Park, Actor::Root)
+                .transition(sand.id, &Trigger::Park, Actor::Orchestrator)
                 .is_err(),
             "queued cannot park"
         );
@@ -636,11 +640,11 @@ mod tests {
                 .unwrap(),
         );
         assert!(
-            text.contains("root  me-sim-sand  refused          park refused in queued:"),
+            text.contains("orchestrator me-sim-sand  refused          park refused in queued:"),
             "{text}"
         );
         assert!(
-            text.contains("tick  me-sim-sand  transition       start: queued -> spawning"),
+            text.contains("tick         me-sim-sand  transition       start: queued -> spawning"),
             "{text}"
         );
         assert_eq!(super::events(&[]), "no events\n", "empty log");

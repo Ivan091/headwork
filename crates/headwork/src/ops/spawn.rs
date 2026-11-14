@@ -1,7 +1,7 @@
 //! `spawn`: create a task in `queued`, then start queued tasks, oldest first, while the start guard lets them.
 //!
-//! The brief holds the task only; the child rules reach the session through the plugin's hooks. Without the plugin
-//! configured, the rendered child rules are appended to the brief instead.
+//! The brief holds the task only; the worker rules reach the session through the plugin's hooks. Without the plugin
+//! configured, the rendered worker rules are appended to the brief instead.
 
 use std::path::Path;
 
@@ -13,7 +13,7 @@ use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
 use super::place::{self, Opening};
-use super::rules::{Card, RuleFiles};
+use super::rules::{self, Card};
 use super::{Env, launch, slashed};
 
 /// A task to create.
@@ -101,8 +101,8 @@ pub fn spawn(
         brief
     } else {
         let dir = env.task_dir(&task)?;
-        let rules = RuleFiles::load(env.home, env.config, &store.active_rules()?)?.render(
-            Role::Child,
+        let rules = rules::current(store, env.home, env.config, env.host)?.render(
+            Role::Worker,
             env.config,
             env.exe,
             Some(&Card {
@@ -186,7 +186,7 @@ fn open_pane(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<String> {
         &NewSession {
             id: session_id.clone(),
             task_id: Some(task.id),
-            role: Role::Child,
+            role: Role::Worker,
             rc_name: task.name.to_string(),
             host: env.config.machine.host.as_str().to_owned(),
             host_workspace: Some(workspace.to_string()),

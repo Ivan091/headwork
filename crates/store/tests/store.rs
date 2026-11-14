@@ -50,7 +50,11 @@ fn request(project: &str, slug: &str, kind: &str) -> NewTask {
 
 fn create(store: &mut Store, config: &Config, project: &str, slug: &str) -> Task {
     store
-        .create_task(config, &request(project, slug, "scene"), Actor::Root)
+        .create_task(
+            config,
+            &request(project, slug, "scene"),
+            Actor::Orchestrator,
+        )
         .unwrap()
 }
 
@@ -98,6 +102,88 @@ fn reopening_keeps_data_and_newer_schemas_are_refused() {
 }
 
 #[test]
+fn migration_9_renames_root_and_child_in_a_store_that_holds_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (name, main_path, config_hash) VALUES ('me-sim', 'S:/m', 'h');
+             INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+                 VALUES (1, 'me-sim', 'sand', 'scene', 'working', 'opus', 'b.md', 't', 't');
+             INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, state, started_at, host_pane, dir)
+                 VALUES ('r', NULL, 'root', 'root', 'pane', 'wmux', 'live', 't', NULL, 'S:/Code'),
+                        ('c', 1, 'child', 'me-sim-sand', 'pane', 'wmux', 'live', 't', 'p1', NULL);
+             INSERT INTO asks (task_id, session_id, kind, question, options, state, created_at)
+                 VALUES (1, 'c', 'question', 'q', '[]', 'open', 't');
+             INSERT INTO screen_samples (session_id, hash, at) VALUES ('c', 'x', 't');
+             INSERT INTO parks (id, started_at, deadline, root_session) VALUES (1, 't', 't', 'r');
+             INSERT INTO rules (scope, body, version, source) VALUES ('child', 'be kind', 1, 'root');
+             INSERT INTO events (at, actor, task_id, session_id, type, data) VALUES
+                 ('t', 'root', NULL, 'r', 'park-root', '{\"session\": \"r\"}'),
+                 ('t', 'hook', 1, 'c', 'would-deny', '{\"rule\": \"child-edit-outside\"}'),
+                 ('t', 'user', NULL, NULL, 'rule-test', '{\"role\": \"root\", \"result\": {\"rule\": \"root-git\"}}'),
+                 ('t', 'child', 1, 'c', 'note', 'not json');",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let latest = i64::try_from(MIGRATIONS.len()).unwrap();
+    assert_eq!(store.schema_version().unwrap(), latest, "migrated");
+    let orchestrator = store.live_orchestrator_session().unwrap().unwrap();
+    assert_eq!(
+        orchestrator.rc_name, "root",
+        "the old orchestrator keeps its name"
+    );
+    assert_eq!(
+        store.park_orchestrator(1).unwrap().as_deref(),
+        Some("r"),
+        "parks"
+    );
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let strings = |sql: &str| -> Vec<String> {
+        let mut statement = conn.prepare(sql).unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        strings(
+            "SELECT role || ' ' || coalesce(host_pane, '-') || ' ' || coalesce(dir, '-') FROM sessions ORDER BY id"
+        ),
+        ["worker p1 -", "orchestrator - S:/Code"],
+        "roles renamed, other columns kept"
+    );
+    assert_eq!(
+        strings("SELECT actor || ' ' || type || ' ' || data FROM events ORDER BY id"),
+        [
+            "orchestrator park-orchestrator {\"session\": \"r\"}",
+            "hook would-deny {\"rule\":\"worker-edit-outside\"}",
+            "user rule-test {\"role\":\"orchestrator\",\"result\":{\"rule\":\"orchestrator-git\"}}",
+            "worker note not json",
+        ],
+        "events renamed"
+    );
+    assert_eq!(
+        strings("SELECT scope || ' ' || source FROM rules"),
+        ["worker orchestrator"],
+        "rules renamed"
+    );
+    assert!(
+        strings("SELECT \"table\" FROM pragma_foreign_key_check").is_empty(),
+        "asks and screen samples still point at their sessions"
+    );
+}
+
+#[test]
 fn projects_sync_and_disable_when_removed() {
     let (mut store, mut config) = store();
     let names: Vec<_> = store
@@ -131,7 +217,7 @@ fn creating_tasks_checks_admission() {
     let again = store.create_task(
         &config,
         &request("me-sim", "sand-cascade", "scene"),
-        Actor::Root,
+        Actor::Orchestrator,
     );
     assert!(
         matches!(
@@ -144,7 +230,7 @@ fn creating_tasks_checks_admission() {
     let training = store.create_task(
         &config,
         &request("me-sim", "train", "car-training"),
-        Actor::Root,
+        Actor::Orchestrator,
     );
     assert!(
         matches!(
@@ -156,7 +242,7 @@ fn creating_tasks_checks_admission() {
 
     let mut fable = request("work-service", "x", "fix");
     fable.request.model = Some(Model::Fable);
-    let refused = store.create_task(&config, &fable, Actor::Root);
+    let refused = store.create_task(&config, &fable, Actor::Orchestrator);
     assert!(
         matches!(
             refused,
@@ -167,7 +253,7 @@ fn creating_tasks_checks_admission() {
         "no Fable at work"
     );
 
-    let unknown = store.create_task(&config, &request("nope", "x", "fix"), Actor::Root);
+    let unknown = store.create_task(&config, &request("nope", "x", "fix"), Actor::Orchestrator);
     assert!(
         matches!(
             unknown,
@@ -187,10 +273,15 @@ fn a_closed_task_frees_its_name() {
         worktree: WorktreeEnd::Removed,
     };
     for trigger in [Trigger::Drop, Trigger::BeginClosing] {
-        store.transition(task.id, &trigger, Actor::Root).unwrap();
+        store
+            .transition(task.id, &trigger, Actor::Orchestrator)
+            .unwrap();
     }
-    let while_closing =
-        store.create_task(&config, &request("me-sim", "sand", "scene"), Actor::Root);
+    let while_closing = store.create_task(
+        &config,
+        &request("me-sim", "sand", "scene"),
+        Actor::Orchestrator,
+    );
     assert!(
         while_closing.is_err(),
         "a closing task still holds its name"
@@ -242,9 +333,13 @@ fn main_only_kinds_run_one_at_a_time() {
     let (mut store, config) = store();
     let mut training = request("me-sim", "train-a", "car-training");
     training.request.in_main = true;
-    let first = store.create_task(&config, &training, Actor::Root).unwrap();
+    let first = store
+        .create_task(&config, &training, Actor::Orchestrator)
+        .unwrap();
     training.request.slug = Slug::new("train-b").unwrap();
-    let second = store.create_task(&config, &training, Actor::Root).unwrap();
+    let second = store
+        .create_task(&config, &training, Actor::Orchestrator)
+        .unwrap();
     store.start_task(&config, first.id, Actor::Tick).unwrap();
     let refused = store
         .start_task(&config, second.id, Actor::Tick)
@@ -267,7 +362,9 @@ fn dependencies_wait_for_the_merge() {
     let engine = create(&mut store, &config, "me-sim", "engine");
     let mut scene = request("me-sim", "scene", "scene");
     scene.depends_on = Some(engine.id);
-    let scene = store.create_task(&config, &scene, Actor::Root).unwrap();
+    let scene = store
+        .create_task(&config, &scene, Actor::Orchestrator)
+        .unwrap();
     let refused = store
         .start_task(&config, scene.id, Actor::Tick)
         .unwrap_err();
@@ -305,7 +402,9 @@ fn fable_waits_for_the_users_approval() {
     let (mut store, config) = store();
     let mut fable = request("me-sim", "deep", "scene");
     fable.request.model = Some(Model::Fable);
-    let task = store.create_task(&config, &fable, Actor::Root).unwrap();
+    let task = store
+        .create_task(&config, &fable, Actor::Orchestrator)
+        .unwrap();
     let ask = task.fable_ask.unwrap();
     let board = store.board(false).unwrap();
     let pending = &board.tasks.first().unwrap().asks;
@@ -388,7 +487,7 @@ fn board_shows_sessions_asks_and_states() {
     let session = NewSession {
         id: "0b6c1d2e-0000-4000-8000-000000000001".to_owned(),
         task_id: Some(task.id),
-        role: Role::Child,
+        role: Role::Worker,
         rc_name: "me-sim-sand".to_owned(),
         host: "wmux".to_owned(),
         host_workspace: Some("ws-1".to_owned()),
@@ -415,7 +514,7 @@ fn board_shows_sessions_asks_and_states() {
 
     let board = store.board(false).unwrap();
     assert_eq!(board.machine, MachineMode::Normal, "mode");
-    assert_eq!(board.live_children, 1, "one session takes a slot");
+    assert_eq!(board.live_workers, 1, "one session takes a slot");
     assert_eq!(board.tasks.len(), 2, "both tasks");
     let sand = board
         .tasks
@@ -440,9 +539,13 @@ fn board_shows_sessions_asks_and_states() {
 fn parking_blocks_new_tasks() {
     let (mut store, config) = store();
     store
-        .set_machine_mode(MachineMode::Parking, Actor::Root)
+        .set_machine_mode(MachineMode::Parking, Actor::Orchestrator)
         .unwrap();
-    let refused = store.create_task(&config, &request("me-sim", "late", "scene"), Actor::Root);
+    let refused = store.create_task(
+        &config,
+        &request("me-sim", "late", "scene"),
+        Actor::Orchestrator,
+    );
     assert!(
         matches!(
             refused,
@@ -463,7 +566,7 @@ fn launcher_records_place_pids_exit_and_worktree() {
     let session = NewSession {
         id: id.to_owned(),
         task_id: Some(task.id),
-        role: Role::Child,
+        role: Role::Worker,
         rc_name: "me-sim-sand".to_owned(),
         host: "wmux".to_owned(),
         host_workspace: None,
@@ -500,7 +603,7 @@ fn launcher_records_place_pids_exit_and_worktree() {
     for stamp in ["1:1", "2:2"] {
         store
             .append_event(
-                Actor::Child,
+                Actor::Worker,
                 Some(task.id),
                 Some(id),
                 "build",
@@ -564,7 +667,7 @@ fn hook_world() -> (Store, Task, String) {
     let session = NewSession {
         id: "0b6c1d2e-0000-4000-8000-0000000000aa".to_owned(),
         task_id: Some(task.id),
-        role: Role::Child,
+        role: Role::Worker,
         rc_name: "me-sim-sand".to_owned(),
         host: "wmux".to_owned(),
         host_workspace: None,
@@ -579,7 +682,7 @@ fn hooks_see_their_session() {
     let (store, task, id) = hook_world();
     let session = store.hook_session(&id).unwrap().unwrap();
     assert_eq!(session.task_id, Some(task.id), "task");
-    assert_eq!(session.role, Role::Child, "role");
+    assert_eq!(session.role, Role::Worker, "role");
     assert_eq!(session.rules_seen, 0, "no rules yet");
     assert_eq!(session.host_surface.as_deref(), Some("surf-1"), "surface");
     assert!(
@@ -730,7 +833,7 @@ fn a_park_collects_the_recap_a_session_writes_during_it() {
         kind: RecapKind::Session,
         body: "day to day",
     };
-    store.add_recap(&before, Actor::Child).unwrap();
+    store.add_recap(&before, Actor::Worker).unwrap();
     let park = store.begin_park(300, Actor::User).unwrap();
     assert_eq!(
         store.machine_mode().unwrap(),
@@ -754,7 +857,7 @@ fn a_park_collects_the_recap_a_session_writes_during_it() {
                 body: "at the park",
                 ..before
             },
-            Actor::Child,
+            Actor::Worker,
         )
         .unwrap();
     let found = store.session_park_recap(park.id, task.id).unwrap().unwrap();
@@ -806,7 +909,7 @@ fn jobs_keep_their_command_line_and_move_through_states() {
                 restart: true,
                 log_path: "jobs/car.log",
             },
-            Actor::Child,
+            Actor::Worker,
         )
         .unwrap();
     let job = store.job(id).unwrap().unwrap();
@@ -846,7 +949,9 @@ fn a_task_keeps_its_effort_and_none_shows_a_question_mark() {
     assert_eq!(plain.effort_label(), "?", "label");
     let mut new = request("me-sim", "deep", "scene");
     new.request.effort = Some(Effort::High);
-    let deep = store.create_task(&config, &new, Actor::Root).unwrap();
+    let deep = store
+        .create_task(&config, &new, Actor::Orchestrator)
+        .unwrap();
     assert_eq!(deep.effort, Some(Effort::High), "stored");
     assert_eq!(deep.effort_label(), "high", "label");
     let loaded = store.find_task("me-sim-deep").unwrap().unwrap();
@@ -876,7 +981,7 @@ fn a_placed_session_records_its_pane_and_holds_its_surface_while_live() {
     let session = NewSession {
         id: id.to_owned(),
         task_id: Some(task.id),
-        role: Role::Child,
+        role: Role::Worker,
         rc_name: "me-sim-sand".to_owned(),
         host: "wmux".to_owned(),
         host_workspace: None,

@@ -1,4 +1,4 @@
-//! The `Stop` gate: a child does not end its turn silently while its task is unfinished, and no session ends a turn
+//! The `Stop` gate: a worker does not end its turn silently while its task is unfinished, and no session ends a turn
 //! with a plain-text question.
 
 use super::Decision;
@@ -17,7 +17,7 @@ pub const MAX_BLOCKS: u32 = 3;
 pub struct StopFacts<'a> {
     /// The role.
     pub role: Role,
-    /// The task's state; `None` for the root.
+    /// The task's state; `None` for the orchestrator.
     pub task: Option<TaskState>,
     /// Stops already blocked in a row since the last prompt.
     pub blocked_in_row: u32,
@@ -52,7 +52,7 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
              (concrete numbered options, recommendation first)",
         );
     }
-    let unfinished = facts.role == Role::Child
+    let unfinished = facts.role == Role::Worker
         && !facts.keep
         && facts.task == Some(TaskState::Working)
         && !facts.asked

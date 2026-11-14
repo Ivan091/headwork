@@ -5,7 +5,7 @@
 //! With the plugin configured (`hooks.plugin_dir`), its `SessionStart` hook reports the session as started; without
 //! it, the launcher does so itself once `claude` runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -45,7 +45,7 @@ pub fn first_prompt(home: &Home, task: &Task, mode: StartMode) -> String {
     let cause = |crash: bool| if crash { "crash" } else { "restart" };
     match mode {
         StartMode::New => format!(
-            "You are the child session {}. Read your brief at {} and carry it out.",
+            "You are the worker session {}. Read your brief at {} and carry it out.",
             task.name, task.brief_path
         ),
         StartMode::Resumed { crash } => format!(
@@ -54,7 +54,7 @@ pub fn first_prompt(home: &Home, task: &Task, mode: StartMode) -> String {
             cause(crash)
         ),
         StartMode::Fresh { crash } => format!(
-            "You are the child session {}. Your earlier conversation could not be restored after a {}. \
+            "You are the worker session {}. Your earlier conversation could not be restored after a {}. \
              Read your brief at {} and your recap at {handoff}, then continue where the recap says.",
             task.name,
             cause(crash),
@@ -105,7 +105,7 @@ pub fn claude_command(
         .args(rest)
         .current_dir(dir)
         .env(ENV_SESSION, &session.id)
-        .env(ENV_ROLE, Role::Child.as_str())
+        .env(ENV_ROLE, Role::Worker.as_str())
         .env(ENV_TASK, task.id.to_string())
         .env(ENV_HOME, home.root())
         .env(ENV_EXE, exe);
@@ -146,14 +146,14 @@ pub fn launch(home: &Home, id: TaskId, mode: StartMode) -> Result<Option<i32>> {
         Err(error) => {
             let reason = format!("{error:#}");
             store.append_event(
-                Actor::Child,
+                Actor::Worker,
                 Some(id),
                 Some(&session.id),
                 "launch-error",
                 &serde_json::json!({ "error": reason }),
             )?;
             if task.state == TaskState::Spawning {
-                store.transition(id, &Trigger::LaunchFailed, Actor::Child)?;
+                store.transition(id, &Trigger::LaunchFailed, Actor::Worker)?;
             }
             return Err(error);
         }
@@ -230,7 +230,7 @@ pub fn exited(
         config: &config,
         host: host.as_ref(),
         exe: &exe,
-        actor: Actor::Child,
+        actor: Actor::Worker,
     };
     let placed = match store.session_of(id)? {
         Some(row) => row,
@@ -259,7 +259,7 @@ fn start(
         let worktree = store
             .worktree_of(task.id)?
             .with_context(|| format!("task {} has no worktree", task.name))?;
-        std::path::PathBuf::from(worktree.path)
+        PathBuf::from(worktree.path)
     };
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let mut command = claude_command(home, config, task, session, &dir, &exe, mode)?;
@@ -278,9 +278,9 @@ fn start(
         session_matches: true,
         launcher_alive: true,
     };
-    if let Err(error) = store.transition(task.id, &Trigger::SessionStarted(facts), Actor::Child) {
+    if let Err(error) = store.transition(task.id, &Trigger::SessionStarted(facts), Actor::Worker) {
         store.append_event(
-            Actor::Child,
+            Actor::Worker,
             Some(task.id),
             Some(&session.id),
             "note",
@@ -293,7 +293,7 @@ fn start(
 /// Records which build this launcher runs and which program its hooks and MCP server call ([`super::reload`]).
 fn record_build(store: &Store, task: Option<TaskId>, session: &str, exe: &Path) -> Result<()> {
     store.append_event(
-        Actor::Child,
+        Actor::Worker,
         task,
         Some(session),
         EVENT_BUILD,
@@ -322,15 +322,15 @@ fn after_exit(store: &mut Store, id: TaskId) -> Result<()> {
         | TaskState::Parking
         | TaskState::Parked => return Ok(()),
     };
-    match store.transition(id, &trigger, Actor::Child) {
+    match store.transition(id, &trigger, Actor::Worker) {
         Ok(_) | Err(headwork_store::StoreError::Refused { .. }) => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
 
-/// Where the root session comes from.
+/// Where the orchestrator session comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RootOrigin {
+pub enum OrchestratorOrigin {
     /// A new session, recorded now.
     New,
     /// A session a resume recorded or brought back.
@@ -339,15 +339,19 @@ pub enum RootOrigin {
         session: String,
         /// Continue its conversation; otherwise it is a new conversation that starts from the recap.
         resume: bool,
-        /// The resume's summary, which holds the root's recap.
+        /// The resume's summary, which holds the orchestrator's recap.
         summary: Option<String>,
     },
 }
 
-/// How the root session starts.
+/// How the orchestrator session starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RootStart {
-    /// The first prompt of a new root.
+pub struct OrchestratorStart {
+    /// The session and Remote Control name of a new orchestrator; one brought back keeps its recorded name.
+    pub name: String,
+    /// The agent definition; none picks it with [`orchestrator_agent`].
+    pub agent: Option<String>,
+    /// The first prompt of a new orchestrator.
     pub prompt: String,
     /// The model; claude's own default (the user's settings) when absent.
     pub model: Option<headwork_core::Model>,
@@ -356,13 +360,13 @@ pub struct RootStart {
     /// The permission mode.
     pub mode: headwork_core::PermissionMode,
     /// A new session, or one a resume brings back.
-    pub origin: RootOrigin,
+    pub origin: OrchestratorOrigin,
 }
 
-/// The first prompt of the root session.
+/// The first prompt of the orchestrator session.
 #[must_use]
-pub fn root_prompt(start: &RootStart) -> String {
-    let RootOrigin::Back {
+pub fn orchestrator_prompt(start: &OrchestratorStart) -> String {
+    let OrchestratorOrigin::Back {
         resume, summary, ..
     } = &start.origin
     else {
@@ -378,64 +382,70 @@ pub fn root_prompt(start: &RootStart) -> String {
         )
     } else {
         format!(
-            "You are the root session. Your earlier conversation could not be restored after a restart. Read \
+            "You are the orchestrator session. Your earlier conversation could not be restored after a restart. Read \
              HANDOFF.md beside CLAUDE.md.{summary} Then continue where the recap says."
         )
     }
 }
 
-/// Runs the root session in the current folder as a store session.
+/// Runs the orchestrator session in the current folder as a store session.
 ///
-/// It gets its identity in the environment and returns the exit code of `claude`. The agent is `root` and the
-/// Remote Control name `root`, as `root.sh` starts it. The folder is recorded so a resume can start it there again.
+/// It gets its identity in the environment and returns the exit code of `claude`. The Remote Control name is
+/// `start.name` (`orchestrator` by default) for a new session and the recorded one for a session brought back; the
+/// agent is `start.agent`, else [`orchestrator_agent`]. The folder is recorded so a resume can start it there again.
 ///
 /// # Errors
 ///
 /// Fails when the store or config cannot be read, a session to bring back is unknown, or `claude` does not start.
-pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
+pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Option<i32>> {
     let config = home.load_config()?;
     let mut store = home.open_store()?;
-    let (id, resume) = match &start.origin {
-        RootOrigin::New => {
+    let (id, resume, name) = match &start.origin {
+        OrchestratorOrigin::New => {
             let id = uuid::Uuid::new_v4().to_string();
             store.record_session(
                 &headwork_store::NewSession {
                     id: id.clone(),
                     task_id: None,
-                    role: Role::Root,
-                    rc_name: "root".to_owned(),
+                    role: Role::Orchestrator,
+                    rc_name: start.name.clone(),
                     host: config.machine.host.as_str().to_owned(),
                     host_workspace: None,
                     host_surface: None,
                 },
                 Actor::User,
             )?;
-            (id, false)
+            (id, false, start.name.clone())
         }
-        RootOrigin::Back {
+        OrchestratorOrigin::Back {
             session, resume, ..
         } => {
-            store
+            let row = store
                 .session(session)?
-                .with_context(|| format!("root session {session} is not in the store"))?;
-            (session.clone(), *resume)
+                .with_context(|| format!("orchestrator session {session} is not in the store"))?;
+            (session.clone(), *resume, row.0.rc_name)
         }
     };
     let dir = std::env::current_dir().context("finding the current folder")?;
     store.set_session_dir(&id, &super::slashed(&dir))?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let plugin_dir = plugin_dir(home, &config);
-    let prompt = root_prompt(start);
+    let prompt = orchestrator_prompt(start);
+    let agent = start.agent.clone().unwrap_or_else(|| {
+        let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map_or_else(|| home.expand("~/.claude"), PathBuf::from);
+        orchestrator_agent(&claude_dir).to_owned()
+    });
     let argv = ClaudeLaunch {
         plugin_dir: plugin_dir.as_deref(),
         session_id: &id,
         resume,
-        name: "root",
+        name: &name,
         remote_control: config.machine.remote_control,
         model: start.model,
         effort: start.effort,
         permission_mode: start.mode,
-        agent: Some("root"),
+        agent: Some(&agent),
         prompt: &prompt,
     }
     .argv();
@@ -444,7 +454,7 @@ pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
     command
         .args(rest)
         .env(ENV_SESSION, &id)
-        .env(ENV_ROLE, Role::Root.as_str())
+        .env(ENV_ROLE, Role::Orchestrator.as_str())
         .env(ENV_HOME, home.root())
         .env(ENV_EXE, &exe);
     proc::ignore_interrupts()?;
@@ -465,4 +475,15 @@ pub fn launch_root(home: &Home, start: &RootStart) -> Result<Option<i32>> {
     hand_exit(home, &id, None, code)?;
     status?;
     Ok(code)
+}
+
+/// The agent definition the orchestrator runs: `orchestrator` once `<claude_dir>/agents/orchestrator.md` exists, else
+/// `root`, its name before 2026-11-14.
+#[must_use]
+pub fn orchestrator_agent(claude_dir: &Path) -> &'static str {
+    if claude_dir.join("agents/orchestrator.md").is_file() {
+        "orchestrator"
+    } else {
+        "root"
+    }
 }

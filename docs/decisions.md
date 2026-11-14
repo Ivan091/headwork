@@ -358,3 +358,41 @@ and the reason.
 - 2026-11-14 Closing checks `git worktree prune` and `git worktree list --porcelain` before the remove command. A task
   folder git does not list is deleted when empty and recorded `removed`; with files it is left, and the close is refused
   with a `worktree-refused` event naming it, so the user decides. The check applies to custom remove commands too.
+- 2026-11-14 Orchestrator and workers. The user renamed the root to the **orchestrator** and its children to
+  **workers**, not "master" (the default branch, and master/slave). Entries above keep the old words; they record what
+  was decided then. What was renamed: the CLI command (`headwork orchestrator`, `headwork root` a hidden clap alias);
+  the default session name (`orchestrator`); `Role` and `Actor` (`orchestrator`, `worker`); the rule ids
+  (`orchestrator-edit`, `-git`, `-build`, `-delivery`; `worker-edit-outside`, `-read-only`, `-default-branch`,
+  `-push-repo`, `-global-skill`, `-fable`, `-long-job`); `MergeSource::Worker`; the config keys (`max_workers`,
+  `orchestrator_writable`); the rules files (`rules/orchestrator.md`, `rules/worker.md`) and their text; the rule scopes;
+  the park and resume reports (`orchestrator` instead of `root` in their JSON), the resume summary heading
+  (`## Orchestrator`) and the resumed orchestrator's workspace (`orchestrator`); doctor's check (`orchestrator`); the
+  event types `park-orchestrator` and `orchestrator-resume-failed`; the column `parks.orchestrator_session`; the first
+  prompt of a worker ("You are the worker session …"). The event log's actor column is 12 wide to fit `orchestrator`.
+- 2026-11-14 Old spellings keep working, written never. `text_enum!` takes aliases after `|`, so `root`, `child` and
+  the old rule ids parse from the store, the event log, an old session's `HEADWORK_ROLE` and serde; `as_str` writes the
+  new word. Migration 0009 rewrites the store anyway, so queries by text (`role = 'orchestrator'`, shadow-report by rule
+  id) see one spelling: it rebuilds `sessions` for its `CHECK (role IN ...)` (SQLite cannot alter a check; foreign keys
+  are deferred for the copy), renames the column, and rewrites actors, event types, `$.role`, `$.rule` and
+  `$.result.rule` in event data (skipping data that is not JSON), and rule scopes and sources. The shadow report also
+  normalizes rule ids, so the shadow week's events count under one id. Config keys use serde aliases, which
+  `deny_unknown_fields` accepts; `Config::deprecated_keys` names them for doctor's `config-keys` warning instead of a
+  warning on every load, since commands print through owned handles and hooks print nothing. User rules files
+  `root.md` and `child.md` are read when `orchestrator.md` and `worker.md` are missing. `import` matches both "worker
+  session" and "child session" prompts, since the orchestrate scripts still write the latter.
+- 2026-11-14 The orchestrator's address follows the live session instead of a fixed name. headwork routes no messages;
+  Claude Code delivers `SendMessage` by the session's `-n` name, and one session has one name. So: the worker rules say
+  `{orchestrator}`, filled with the live orchestrator's `rc_name` from the store, else the `-n` name of a running
+  unmanaged `claude -n orchestrator` or `-n root` in wmux's panes (only asked when the store has none), else
+  `orchestrator`. The address is hashed with the rules, so a restart under another name re-tells every running worker
+  at its next prompt. A `PreToolUse` hook (now matching `SendMessage`) rewrites a message to `root` or `orchestrator`
+  to the live address with `updatedInput` and `permissionDecision: allow`, logged as a `readdressed` event; it applies in
+  shadow mode too, since it denies nothing. Sessions started before this build lack the matcher (plugin files are read
+  at session start) and rely on the re-told rules. `claude agents --json` was not used to find an unmanaged
+  orchestrator: it is a research preview and too slow for a hook.
+- 2026-11-14 The orchestrator's agent is `orchestrator` when `~/.claude/agents/orchestrator.md` (or under
+  `CLAUDE_CONFIG_DIR`) exists, else `root`, so `headwork orchestrator` works before and after the config task renames
+  the agent file; `--agent` and `--name` override. A session brought back by resume keeps its recorded name, so a
+  parked `root` comes back as `root`.
+- 2026-11-14 `docs/research.md`, `docs/trials/` and `docs/sub-roots.md` keep "root" and "child": they record research
+  and a proposal as written. `docs/design.md` gets a note at the top instead of a rewrite of every section.

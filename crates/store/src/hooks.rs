@@ -17,6 +17,8 @@ pub const EVENT_TOOL: &str = "tool-used";
 pub const EVENT_DENY: &str = "deny";
 /// The event of a deny that shadow mode only logged.
 pub const EVENT_WOULD_DENY: &str = "would-deny";
+/// The event of a session message to an orchestrator address that a `PreToolUse` hook sent on to the live address.
+pub const EVENT_READDRESSED: &str = "readdressed";
 
 type RawHookSession = (String, Option<i64>, String, String, i64, Option<String>);
 
@@ -25,7 +27,7 @@ type RawHookSession = (String, Option<i64>, String, String, i64, Option<String>)
 pub struct HookSession {
     /// The Claude session id.
     pub id: String,
-    /// The task, none for the root.
+    /// The task, none for the orchestrator.
     pub task_id: Option<TaskId>,
     /// The role.
     pub role: Role,

@@ -190,18 +190,18 @@ fn a_broken_hook_input_never_blocks() {
 }
 
 #[test]
-fn rule_test_decides_a_command_as_the_root() {
+fn rule_test_decides_a_command_as_the_orchestrator() {
     let home = home_with_fixture();
     let output = headwork(home.path(), &["rule", "test", "git push origin master"]);
     assert_eq!(output.status.code(), Some(1), "denied");
     assert!(
-        stdout(&output).starts_with("deny root-git (root, shadow): "),
+        stdout(&output).starts_with("deny orchestrator-git (orchestrator, shadow): "),
         "{}",
         stdout(&output)
     );
     let output = headwork(home.path(), &["rule", "test", "git status && gh pr list"]);
     assert!(output.status.success(), "{}", stdout(&output));
-    assert_eq!(stdout(&output), "allow (root, shadow)\n", "allowed");
+    assert_eq!(stdout(&output), "allow (orchestrator, shadow)\n", "allowed");
     let output = headwork(
         home.path(),
         &["rule", "test", "scripts/publish-now.sh", "--json"],
@@ -242,4 +242,22 @@ fn spawn_rejects_an_unknown_effort() {
     );
     assert!(!output.status.success(), "refused");
     assert!(stderr(&output).contains("extreme"), "{}", stderr(&output));
+}
+
+#[test]
+fn root_is_a_hidden_alias_of_orchestrator() {
+    let home = tempfile::tempdir().unwrap();
+    let help = stdout(&headwork(home.path(), &["--help"]));
+    assert!(help.contains("orchestrator"), "{help}");
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("root ")),
+        "{help}"
+    );
+    let new = headwork(home.path(), &["orchestrator", "--help"]);
+    let old = headwork(home.path(), &["root", "--help"]);
+    assert!(old.status.success(), "{}", stderr(&old));
+    assert!(stdout(&old).contains("--name <NAME>"), "{}", stdout(&old));
+    assert_eq!(stdout(&old), stdout(&new), "the same command");
 }

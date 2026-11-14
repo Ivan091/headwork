@@ -67,7 +67,7 @@ impl Store {
         });
         insert_event(
             &tx,
-            Actor::Child,
+            Actor::Worker,
             Some(task),
             Some(session),
             EVENT_REPORT,

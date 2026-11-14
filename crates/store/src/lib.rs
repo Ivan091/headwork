@@ -21,7 +21,8 @@ use rusqlite::{Connection, params};
 
 pub use error::StoreError;
 pub use hooks::{
-    EVENT_DENY, EVENT_PROMPT, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
+    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession,
+    RulesVersion, TurnSoFar,
 };
 pub use migrate::{MIGRATIONS, migrate};
 pub use park::{JobRow, NewJob, NewRecap, ParkRow, RecapRow};

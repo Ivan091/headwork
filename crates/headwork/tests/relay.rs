@@ -115,7 +115,7 @@ fn the_relay_switches_to_a_new_build_between_calls() {
     let before = tool_names(&session.read());
     assert!(
         before.contains(&"spawn".to_owned()),
-        "the root's tools: {before:?}"
+        "the orchestrator's tools: {before:?}"
     );
 
     let second = build_dated(&root.path().join("build-2"), 2_000_000);

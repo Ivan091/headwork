@@ -15,7 +15,10 @@ pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{Config, ConfigError, LayoutConfig, LayoutMode, ProjectConfig, ProjectOverlay};
 pub use guard::{Decision, Verdict};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
-pub use names::{NameError, ProjectName, Slug, TaskName};
+pub use names::{
+    LEGACY_ORCHESTRATOR_ADDRESS, NameError, ORCHESTRATOR_ADDRESS, ProjectName, Slug, TaskName,
+    is_orchestrator_address, orchestrator_address,
+};
 pub use vocabulary::{
     Actor, AskKind, AskState, Effort, FindingId, JobState, MachineMode, Model, PermissionMode,
     PlaceKind, RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
