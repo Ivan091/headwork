@@ -23,22 +23,22 @@ crates/
   headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick, install) over a small
                         lib (home, ops)
 plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
-rules/                  built-in root and child rules, injected at SessionStart
+rules/                  built-in orchestrator and worker rules, injected at SessionStart
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules,
-rule_add, rule_retire, job_status, park, resume) and the child tools (board, inbox, report, done, recap, job_start,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, rules,
+rule_add, rule_retire, job_status, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
 `core/src/watch.rs`, its memory in migration 0004). Milestone 6 is park and resume (`ops/park.rs`,
 `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
-Children open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
+Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
 
 ## Commands
@@ -52,7 +52,7 @@ cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   #
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
 cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, effort) of live sessions
-cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
+cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children (workers), projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
@@ -62,7 +62,7 @@ cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- shadow-report     # would-deny events by rule id
-cargo run -p headwork -- root              # run the root session, recorded in the store
+cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the
@@ -81,28 +81,28 @@ It only reports until `[hooks] enforce = true`. A windowless build (no console f
 
 ### Panes
 
-`[layout]` in `config.toml` decides where a child opens in its project's workspace. The default, `mode = "panes"` with
-`panes = 4`, gives each child its own pane: the second child cuts the workspace into a 2x2 grid, later ones take the
-free panes, a fifth stacks as a tab, and a child that closes leaves a `headwork idle` placeholder so the next one takes
-its pane. The workspace closes with its last child. `mode = "tabs"` keeps every child a tab. Children already open are
+`[layout]` in `config.toml` decides where a worker opens in its project's workspace. The default, `mode = "panes"` with
+`panes = 4`, gives each worker its own pane: the second worker cuts the workspace into a 2x2 grid, later ones take the
+free panes, a fifth stacks as a tab, and a worker that closes leaves a `headwork idle` placeholder so the next one takes
+its pane. The workspace closes with its last worker. `mode = "tabs"` keeps every worker a tab. Workers already open are
 never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that it is a tab. Why it
 works this way is in `docs/decisions.md` (2026-11-14, split panes). Run the real check with
 `cargo test -p headwork --test live -- --ignored`; it opens and closes a `headwork-test` workspace.
 
 ### Pane titles
 
-Each child's pane or tab is titled `<task name> - <model> <effort>`, from `[layout] title` (`{name}`, `{model}`, `{effort}`), set
+Each worker's pane or tab is titled `<task name> - <model> <effort>`, from `[layout] title` (`{name}`, `{model}`, `{effort}`), set
 when the pane opens, re-asserted by every tick, and by `headwork retitle [<name>]` on demand. The effort is the stored
 one, else the level Claude's settings give the model (`ops/effort.rs`), else `medium`; spawn stores it. `?` shows only when
 it cannot be told. See `docs/decisions.md` (2026-11-14, pane titles).
 
 ### Restart: park, then resume
 
-Before restarting the computer, tell the root "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
+Before restarting the computer, tell the orchestrator "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
 up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, then
 closes the panes and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
 back with the same Claude sessions (names, Remote Control, recaps), registered jobs restart, and
-`<home>/recaps/park-<id>.md` is the summary for the root. Nothing installs a logon task. To resume at logon the user
+`<home>/recaps/park-<id>.md` is the summary for the orchestrator. Nothing installs a logon task. To resume at logon the user
 would run:
 
 ```bash
@@ -111,16 +111,16 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 
 `--logon` leaves sessions a crash interrupted to `machine.resume_after_crash`; by hand they are resumed too.
 
-The root (started with `headwork root`) is parked and resumed too: park asks it for a recap and leaves it running (the
-restart ends it), and resume reopens it in a `root` workspace in the folder it ran in, with the same conversation, at
-logon too and after a crash. A root that still runs is left alone. See `docs/decisions.md` (2026-11-14, the root parks
-and resumes).
+The orchestrator (started with `headwork orchestrator`) is parked and resumed too: park asks it for a recap and leaves
+it running (the restart ends it), and resume reopens it in an `orchestrator` workspace in the folder it ran in, with
+the same conversation and its recorded name, at logon too and after a crash. An orchestrator that still runs is left
+alone. See `docs/decisions.md` (2026-11-14, the root parks and resumes).
 
 ### Migration on this machine (steps 0 and 1)
 
 Milestone 7 installed headwork for real, with `hooks.enforce = false` (shadow mode). `headwork doctor` checks all of it
-(binary, PATH, config, store, wmux, gh, claude, plugin entry, hooks file, enforce switch, disk, root session, claude
-processes) and exits 1 on a problem; `headwork shadow-report` lists the would-deny events by rule id.
+(binary, PATH, config, store, wmux, gh, claude, plugin entry, hooks file, enforce switch, disk, deprecated config keys,
+orchestrator session, claude processes) and exits 1 on a problem; `headwork shadow-report` lists the would-deny events by rule id.
 
 What changed in the live setup:
 
@@ -149,19 +149,54 @@ session, or park and resume. Plugin files (`hooks.json`, `.mcp.json`) need a new
 record its exit once a newer migration ran; `headwork close <name>` finishes such a session (docs/hot-reload.md).
 
 **Undo, step 1 (spawn wrappers):** `echo legacy > ~/.claude/skills/orchestrate/engine`. Every script then runs its
-`*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Children already in the store keep closing through
-`headwork close`; the close wrapper falls back to the legacy script for a child the store does not know.
+`*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Workers already in the store keep closing through
+`headwork close`; the close wrapper falls back to the legacy script for a worker the store does not know.
 
 **Undo, step 0 (plugin and hooks):** delete the keys `extraKnownMarketplaces.headwork` and
 `enabledPlugins."headwork@headwork"` from `~/.claude/settings.json` (then `sync-config`). New sessions load no plugin.
 The binary, `~/.headwork` and the PATH copy can stay; remove them with `rm -r ~/.headwork ~/.local/bin/headwork.exe`.
 
-**The root as a store session:** `headwork root` starts `claude --agent root --remote-control root -n root` here, records
-it as the store's root session and gives it its identity. `root.sh` starts the root this way (step 3); the `engine`
-switch (`legacy`) brings back the old unmanaged start.
+**The orchestrator as a store session:** `headwork orchestrator` starts `claude --agent <agent> --remote-control
+orchestrator -n orchestrator` here, records it as the store's orchestrator session and gives it its identity. `--name`
+changes the name; the agent is `orchestrator` once `~/.claude/agents/orchestrator.md` exists, else `root`, and
+`--agent` overrides both. `root.sh` starts the orchestrator this way (step 3); the `engine` switch (`legacy`) brings
+back the old unmanaged start.
 
-**The shadow week** runs from 2026-11-14 to 2026-11-21. Managed sessions (children spawned through the wrappers, and the
-root once it starts with `headwork root`) log every would-deny in the store. On 2026-11-21 read
+**Root and children became orchestrator and workers (2026-11-14).** The coordinating session was called the root and the
+sessions it spawns children; `docs/decisions.md` (2026-11-14, orchestrator and workers) lists every renamed name. What
+still takes the old names:
+
+| Old | New | The old one |
+|---|---|---|
+| `headwork root` | `headwork orchestrator` | a hidden alias |
+| session name `root` | `orchestrator` | an address: a worker's `SendMessage` to `root` or `orchestrator` goes to the live orchestrator's name (`PreToolUse` hook) |
+| `HEADWORK_ROLE=root`, `child` | `orchestrator`, `worker` | still parses: running sessions keep their environment |
+| roles, actors, rule ids (`root-git`, `child-edit-outside`, ...) in the store | `orchestrator-git`, `worker-edit-outside`, ... | migration 0009 rewrites them; the old spellings still parse |
+| `machine.max_children`, `project.<name>.max_children`, `hooks.root_writable` | `max_workers`, `orchestrator_writable` | still read; `headwork doctor` warns (check `config-keys`) |
+| rules files `root.md`, `child.md` in the rules folder | `orchestrator.md`, `worker.md` | read when the new file is missing |
+| rule scopes `root`, `child` (`rule_add`) | `orchestrator`, `worker` | accepted and stored as the new word |
+
+The rules a worker gets name the orchestrator's live address: the store's live orchestrator session (`rc_name`), else
+the `-n` name of an unmanaged `claude -n orchestrator` or `-n root` that wmux runs, else `orchestrator`. The address is
+part of the rules hash, so when it changes every running worker is told the new one at its next prompt.
+
+Moving the running root (a store session named `root`, launched by a hot-reload build) to the new name:
+
+1. Install this build (`target/release/headwork.exe install`). Migration 0009 runs at the first store open. Nothing
+   changes for the running sessions: the root stays `root`, the rules keep naming `root`, and `headwork doctor` shows
+   check `orchestrator` as ok.
+2. When the root is idle, end it and start it again under the new name from `S:/Code`: `headwork orchestrator` (or
+   `root.sh` once the config task points it there). Until the config task adds `~/.claude/agents/orchestrator.md`
+   it runs the `root` agent, and with that file the `orchestrator` agent, with no change here. Its earlier
+   conversation does not come along; give it a recap first or let it read `HANDOFF.md`.
+3. From then on the rules name `orchestrator`; every running worker gets them at its next prompt. A worker started
+   with this build (plugin `hooks.json` with `SendMessage` in the `PreToolUse` matcher) that still writes to `root`
+   is sent on to `orchestrator` by its hook. A worker started before this build has no such hook: a `SendMessage` to
+   `root` it sends before its next prompt fails, and it reaches `orchestrator` after that prompt. Restart the root when
+   few workers run, or tell those workers the new name.
+
+**The shadow week** runs from 2026-11-14 to 2026-11-21. Managed sessions (workers spawned through the wrappers, and
+the orchestrator once it starts with `headwork orchestrator`) log every would-deny in the store. On 2026-11-21 read
 `headwork shadow-report`; step 2 (`[hooks] enforce = true`, tick scheduled) waits for the user to review it. Do not
 turn enforcement on before that.
 

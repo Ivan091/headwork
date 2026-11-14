@@ -1,6 +1,6 @@
 # agentctl: design
 
-Design of 2026-11-13, built on `research.md` and the four trials in `trials/`. **Approved by the user on 2026-11-13; the tool is named `headwork`** (section 9). The text below still says `agentctl`; read it as `headwork`. Marks: **[V]** verified in a trial or in source, **[U]** not verified yet.
+Design of 2026-11-13, built on `research.md` and the four trials in `trials/`. **Approved by the user on 2026-11-13; the tool is named `headwork`** (section 9). The text below still says `agentctl`; read it as `headwork`. Since 2026-11-14 the root is called the **orchestrator** and its children **workers** (`decisions.md`); the text below keeps the old words. Marks: **[V]** verified in a trial or in source, **[U]** not verified yet.
 
 ## 1. Goals, non-goals, glossary
 
