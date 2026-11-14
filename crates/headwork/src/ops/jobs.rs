@@ -62,7 +62,8 @@ pub fn register(
     });
     ensure!(
         policy != ParkPolicy::Checkpoint || checkpoint.is_some(),
-        "a `checkpoint` job needs the checkpoint file a park waits for; pass `checkpoint_path` (a configured path with a `{{placeholder}}` cannot be used as it is)"
+        "a `checkpoint` job needs the checkpoint file a park waits for; pass `checkpoint_path` (a configured path \
+         with a `{{placeholder}}` cannot be used as it is)"
     );
     let cwd = match &job.cwd {
         Some(cwd) => cwd.clone(),
