@@ -4,9 +4,12 @@ use std::fmt::Write;
 
 use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::import::ImportReport;
+use headwork::ops::install::InstallReport;
 use headwork::ops::park::{ParkReport, RecapSource};
+use headwork::ops::reload::{self, Freshness, SessionBuild};
 use headwork::ops::resume::{ResumeReport, TaskOutcome};
 use headwork::ops::shadow::ShadowReport;
+use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::tick::TickReport;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
@@ -367,6 +370,39 @@ pub(crate) fn doctored(report: &DoctorReport) -> String {
         report.count(Status::Warn),
         report.count(Status::Fail)
     );
+    text
+}
+
+/// What an install did and how the running sessions pick it up.
+#[must_use]
+pub(crate) fn installed(report: &InstallReport, sessions: &[SessionBuild]) -> String {
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "installed {} ({})",
+        slashed(&report.target),
+        report.stamp
+    );
+    for path in &report.removed {
+        let _ = writeln!(text, "  deleted {}", slashed(path));
+    }
+    for path in &report.kept {
+        let _ = writeln!(
+            text,
+            "  kept {} (still running; the next install deletes it)",
+            slashed(path)
+        );
+    }
+    let _ = writeln!(
+        text,
+        "hooks, the CLI, finishers, park and resume use the new build from their next call"
+    );
+    if !sessions.is_empty() {
+        let _ = writeln!(text, "{}", reload::summary(sessions));
+        if !reload::named(sessions, Freshness::Pinned).is_empty() {
+            let _ = writeln!(text, "  fix: {}", reload::PINNED_FIX);
+        }
+    }
     text
 }
 

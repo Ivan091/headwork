@@ -539,7 +539,7 @@ fn mcp_initialize_is_golden() {
             "jsonrpc": "2.0", "id": 0,
             "result": {
                 "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
+                "capabilities": { "tools": { "listChanged": true } },
                 "serverInfo": { "name": "headwork", "version": "0.1.0" },
             },
         }),

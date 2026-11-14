@@ -125,6 +125,56 @@ impl Store {
             .collect()
     }
 
+    /// Every session that has not ended, by Remote Control name, with the data of its newest event of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or a JSON error for an event whose data is not JSON.
+    pub fn live_sessions_with_event(
+        &self,
+        kind: &str,
+    ) -> Result<Vec<(String, Option<serde_json::Value>)>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT s.rc_name,
+                 (SELECT e.data FROM events e WHERE e.session_id = s.id AND e.type = ?1 ORDER BY e.id DESC LIMIT 1)
+             FROM sessions s WHERE s.state IN ('starting', 'live') ORDER BY s.started_at",
+        )?;
+        let rows = statement
+            .query_map(params![kind], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(name, data)| {
+                Ok((
+                    name,
+                    data.map(|data| serde_json::from_str(&data)).transpose()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// The data of a session's newest event of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or a JSON error for an event whose data is not JSON.
+    pub fn session_event(
+        &self,
+        session: &str,
+        kind: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        let data: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM events WHERE session_id = ?1 AND type = ?2 ORDER BY id DESC LIMIT 1",
+                params![session, kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(data.map(|data| serde_json::from_str(&data)).transpose()?)
+    }
+
     /// The root's newest session that has not ended.
     ///
     /// # Errors

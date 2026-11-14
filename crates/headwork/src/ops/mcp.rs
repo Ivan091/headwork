@@ -381,7 +381,7 @@ impl<'a> Server<'a> {
             .unwrap_or(PROTOCOL_VERSION);
         json!({
             "protocolVersion": version,
-            "capabilities": { "tools": {} },
+            "capabilities": { "tools": { "listChanged": true } },
             "serverInfo": { "name": "headwork", "version": env!("CARGO_PKG_VERSION") },
         })
     }

@@ -272,3 +272,31 @@ and the reason.
   proposed to the root, which spawns them with `--after`). Open for the user: whether to build sub-roots later (the
   change set and triggers are in `docs/sub-roots.md`), and whether to add a shadow guard rule (`child-admin`) against
   children running `headwork spawn`/`queue`/`drop`/`park`/`resume`/`import` or closing other tasks through the CLI.
+- 2026-11-14 Hot reload (docs/hot-reload.md): no shim or versioned binaries beside `headwork.exe`. Windows lets a
+  running program be renamed and the process keeps its original path, so `headwork install` renames the installed
+  copy aside (`headwork.old-<millis>.exe`) and renames the new build into place; old copies are deleted once no process
+  runs them, at the same install or a later one. A shim would itself be a long-lived file that could never be replaced.
+- 2026-11-14 A build is identified by its file's length and modification time (a copy keeps both), not by
+  `CARGO_PKG_VERSION`, which stays 0.1.0 across builds, and not by a hash, which costs a full read per check.
+- 2026-11-14 The MCP server became a relay over an inner `mcp --serve` that is replaced before the next request when
+  the program file changed, instead of a server that restarts itself: Windows has no `exec`, and the process Claude
+  started must keep its pipes. The handshake is replayed to the new server and `tools/list_changed` is sent after
+  every swap, even if the list is the same; a swap only happens after an install.
+- 2026-11-14 The launcher hands its exit work to `headwork exited` from its own path instead of doing it itself, and
+  falls back to its own code only when that program cannot run the command (start failure or exit 2). A failure
+  inside `exited` is not retried by the launcher, so a close is never handed off twice.
+- 2026-11-14 The build record is an event (`build`, with the program path and stamp), not a column: a migration would
+  make every launcher running the previous build fail to record its exit, which is the very thing to avoid while
+  me-sim-car-training runs.
+- 2026-11-14 `headwork install` defaults to `~/.local/bin` and refuses to install the installed copy over itself. It
+  opens the store only to report the sessions, so it also runs the new build's migrations, like any other command.
+- 2026-11-14 Migration 0006 (task effort) merged before hot reload shipped, so the first install of a hot-reload build
+  also moves the store to schema 6 while every running launcher is pinned. Rather than holding the install back, a
+  self-close of a session without a build record starts a backup `finish` from the new build before it ends `claude`
+  (the old launcher is refused by the schema and hands nothing off), and `finish` records a session end the launcher
+  missed. A close from outside already finished by itself once the launcher was gone. A pinned session that exits on
+  its own stays `working` until `headwork close` or the tick; nothing is lost.
+- 2026-11-14 Detached processes (finishers, park and resume started from MCP, jobs) start with `CREATE_NO_WINDOW`
+  instead of `DETACHED_PROCESS`. A process without any console makes every console program it runs (`tasklist` in the
+  finisher's 250 ms launcher poll, `taskkill`, `wmux`, `git`) open its own window; with a hidden console of its own the
+  children inherit it and no window appears, and the process still leaves the pane's console and job.

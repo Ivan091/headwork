@@ -17,7 +17,7 @@ use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_core::config::TaskVars;
 use headwork_core::lifecycle::{CleanupFacts, Trigger, WorktreeEnd};
-use headwork_core::{Actor, TaskState};
+use headwork_core::{Actor, SessionState, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, TaskId};
 use serde::Serialize;
 
@@ -79,6 +79,10 @@ pub fn close(
                 "self-close",
                 &serde_json::json!({}),
             )?;
+            if pinned(store, &session.id)? {
+                let _logged: Result<()> =
+                    start_finisher(store, env, id, &session.id, launcher, "backup-finisher");
+            }
             proc::kill_tree(target)?;
             return report(
                 store,
@@ -327,31 +331,20 @@ pub fn reap(store: &mut Store, env: &Env<'_>) -> Result<Vec<CloseReport>> {
 
 /// The launcher's part of a close, once `claude` has exited and the task is `closing`.
 ///
-/// It starts a detached `headwork finish` that waits for this launcher to be gone, then closes this pane, or the
-/// workspace it leaves empty, as the very last act.
+/// It starts a detached `headwork finish` that waits for the launcher (`launcher_pid`) to be gone, then closes this
+/// pane, or the workspace it leaves empty, as the very last act.
 ///
 /// # Errors
 ///
 /// Fails when the finisher cannot start; the pane is closed anyway.
-pub fn hand_off(store: &mut Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> Result<()> {
-    let mut finisher = Command::new(env.exe);
-    finisher
-        .args([
-            "finish",
-            "--task",
-            &id.to_string(),
-            "--wait-pid",
-            &std::process::id().to_string(),
-            "--home",
-        ])
-        .arg(env.home.root())
-        .current_dir(env.home.root());
-    let started = proc::spawn_detached(&mut finisher);
-    let data = match &started {
-        Ok((pid, note)) => serde_json::json!({ "finisher": pid, "note": note }),
-        Err(error) => serde_json::json!({ "error": error.to_string() }),
-    };
-    store.append_event(Actor::Child, Some(id), Some(&session.id), "hand-off", &data)?;
+pub fn hand_off(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    session: &SessionRow,
+    launcher_pid: u32,
+) -> Result<()> {
+    let started = start_finisher(store, env, id, &session.id, launcher_pid, "hand-off");
     if let Some(surface) = session.host_surface.as_deref() {
         let workspace = session
             .host_workspace
@@ -363,13 +356,58 @@ pub fn hand_off(store: &mut Store, env: &Env<'_>, id: TaskId, session: &SessionR
     Ok(())
 }
 
-/// The detached finisher: waits for `pid` to be gone, then finishes the close and runs the queue.
+/// Starts a detached `headwork finish` that waits for `launcher_pid` to be gone, and logs it as `kind`.
+fn start_finisher(
+    store: &Store,
+    env: &Env<'_>,
+    id: TaskId,
+    session: &str,
+    launcher_pid: u32,
+    kind: &str,
+) -> Result<()> {
+    let mut finisher = Command::new(env.exe);
+    finisher
+        .args([
+            "finish",
+            "--task",
+            &id.to_string(),
+            "--wait-pid",
+            &launcher_pid.to_string(),
+            "--home",
+        ])
+        .arg(env.home.root())
+        .current_dir(env.home.root());
+    let started = proc::spawn_detached(&mut finisher);
+    let data = match &started {
+        Ok((pid, note)) => serde_json::json!({ "finisher": pid, "note": note }),
+        Err(error) => serde_json::json!({ "error": error.to_string() }),
+    };
+    store.append_event(Actor::Child, Some(id), Some(session), kind, &data)?;
+    started?;
+    Ok(())
+}
+
+/// Whether a session's launcher predates hot reload: it recorded no build, so it may not know the store's schema and
+/// fail before it hands its close off.
+fn pinned(store: &Store, session: &str) -> Result<bool> {
+    Ok(store
+        .session_event(session, super::reload::EVENT_BUILD)?
+        .is_none())
+}
+
+/// The detached finisher: waits for `pid` to be gone, records the end of a session its launcher could not record,
+/// then finishes the close and runs the queue.
 ///
 /// # Errors
 ///
 /// Fails when the store fails.
 pub fn finish_after(store: &mut Store, env: &Env<'_>, id: TaskId, pid: u32) -> Result<CloseReport> {
     wait_until(LAUNCHER_GRACE, || !proc::is_alive(pid).unwrap_or(false));
+    if let Some(session) = store.session_of(id)?
+        && matches!(session.state, SessionState::Starting | SessionState::Live)
+    {
+        store.session_ended(&session.id, None)?;
+    }
     let report = finish(store, env, id)?;
     super::spawn::pump(store, env)?;
     Ok(report)

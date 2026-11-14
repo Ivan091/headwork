@@ -16,9 +16,12 @@ use headwork::ops::close::{CloseReport, close, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
-use headwork::ops::launch::{RootStart, StartMode, launch_root};
+use headwork::ops::install::{Stamp, install};
+use headwork::ops::launch::{RootStart, StartMode, exited, launch_root};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
+use headwork::ops::relay::Relay;
+use headwork::ops::reload;
 use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
 use headwork::ops::shadow::shadow_report;
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
@@ -161,9 +164,43 @@ enum Command {
         /// The event: session-start, user-prompt-submit, pre-tool-use, post-tool-use, stop or session-end.
         event: HookEvent,
     },
-    /// Serve the MCP tools of the calling session over stdio: the plugin's `.mcp.json` runs this.
+    /// Serve the MCP tools of the calling session over stdio: the plugin's `.mcp.json` runs this. It relays to an
+    /// inner server and restarts that one when a new build is installed.
     #[command(hide = true)]
-    Mcp,
+    Mcp {
+        /// Be the server itself, not the relay; every later build must keep this flag.
+        #[arg(long)]
+        serve: bool,
+    },
+    /// Record that a session's `claude` exited: what a launcher has the installed build do.
+    #[command(hide = true)]
+    Exited {
+        /// The Claude session id.
+        #[arg(long)]
+        session: String,
+        /// The session's task, absent for the root.
+        #[arg(long)]
+        task: Option<i64>,
+        /// The exit code of `claude`.
+        #[arg(long, allow_negative_numbers = true)]
+        code: Option<i32>,
+        /// The launcher, which a closing task's finisher waits for.
+        #[arg(long)]
+        launcher_pid: u32,
+        /// The headwork home.
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
+    /// Install this build as `headwork` in a folder on PATH, safely while the old one runs, and say which running
+    /// sessions pick it up by themselves.
+    Install {
+        /// The folder.
+        #[arg(long, default_value = "~/.local/bin")]
+        dir: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
     Doctor {
         /// The Claude config folder.
@@ -304,7 +341,25 @@ fn main() -> ExitCode {
 fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     let command = match cli.command {
         Command::Hook { event } => return Ok(hook_command(event, out)),
-        Command::Mcp => return mcp_command(),
+        Command::Mcp { serve: true } => return mcp_command(),
+        Command::Mcp { serve: false } => return relay_command(),
+        Command::Exited {
+            session,
+            task,
+            code,
+            launcher_pid,
+            home,
+        } => {
+            exited(
+                &Home::at(home)?,
+                &session,
+                task.map(TaskId),
+                code,
+                launcher_pid,
+            )?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Command::Install { dir, json } => return install_command(&dir, json, out),
         Command::Rule {
             action:
                 RuleAction::Test {
@@ -408,7 +463,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Doctor { .. }
         | Command::Root { .. }
         | Command::Hook { .. }
-        | Command::Mcp
+        | Command::Mcp { .. }
+        | Command::Exited { .. }
+        | Command::Install { .. }
         | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
     }
 }
@@ -807,6 +864,54 @@ fn mcp_command() -> Result<ExitCode> {
     let mut server = Server::new(&mut store, env, Identity::from_env());
     server.serve(io::stdin().lock(), io::stdout().lock())?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The relay Claude starts: it serves through an inner `mcp --serve` started from the program the session's hooks
+/// call (`HEADWORK_EXE`), else from this program.
+fn relay_command() -> Result<ExitCode> {
+    let exe = match std::env::var_os(headwork_adapters::runtime::ENV_EXE) {
+        Some(exe) if !exe.is_empty() => PathBuf::from(exe),
+        _ => std::env::current_exe().context("finding the headwork program")?,
+    };
+    Relay::new(exe).serve(io::stdin().lock(), io::stdout().lock())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn install_command(dir: &str, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let source = std::env::current_exe().context("finding the headwork program")?;
+    let report = install(&source, &home.expand(dir), verify_installed)?;
+    let sessions = if home.root().join("state.db").exists() {
+        let store = home.open_store()?;
+        reload::classify(
+            &store.live_sessions_with_event(reload::EVENT_BUILD)?,
+            |exe| Stamp::of(exe).ok(),
+        )
+    } else {
+        Vec::new()
+    };
+    if json {
+        json_out(
+            out,
+            &serde_json::json!({ "install": report, "sessions": sessions }),
+        )?;
+    } else {
+        out.write_all(render::installed(&report, &sessions).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn verify_installed(target: &Path) -> Result<()> {
+    let output = std::process::Command::new(target)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running {} --version", target.display()))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && text.starts_with("headwork ") {
+        Ok(())
+    } else {
+        bail!("{} --version printed {text:?}", target.display())
+    }
 }
 
 /// Runs one hook. A session without `HEADWORK_SESSION` is unmanaged and allowed at once. A failure inside the hook
