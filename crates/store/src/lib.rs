@@ -4,6 +4,7 @@
 //! its event in one transaction. Refusals are logged as events too, so a wrong deny can be debugged from the log.
 
 mod error;
+mod hooks;
 mod migrate;
 mod queries;
 mod queue;
@@ -16,6 +17,9 @@ use headwork_core::{Actor, MachineMode};
 use rusqlite::{Connection, params};
 
 pub use error::StoreError;
+pub use hooks::{
+    EVENT_DENY, EVENT_PROMPT, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
+};
 pub use migrate::{MIGRATIONS, migrate};
 pub use queries::{EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
 pub use queue::AdoptTask;

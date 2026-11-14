@@ -20,12 +20,14 @@ crates/
   adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the claude
                         runtime, worktrees
   headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch) over a small lib (home, ops)
+plugin/                 the Claude Code plugin: hooks.json, each hook calling `headwork hook <event>`
+rules/                  built-in root and child rules, injected at SessionStart
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
 ```
 
-Later milestones add `plugin/` (hooks, MCP registration).
+Milestone 4 adds the MCP registration to `plugin/`.
 
 ## Commands
 
@@ -38,6 +40,7 @@ cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   #
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children, projects, worktrees
+cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 ```
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the

@@ -1,4 +1,7 @@
 //! `spawn`: create a task in `queued`, then start queued tasks, oldest first, while the start guard lets them.
+//!
+//! The brief holds the task only; the child rules reach the session through the plugin's hooks. Without the plugin
+//! configured, the rendered child rules are appended to the brief instead.
 
 use std::path::Path;
 
@@ -9,7 +12,8 @@ use headwork_core::{PermissionMode, Role, TaskName, TaskRequest};
 use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
-use super::{Env, label, slashed};
+use super::rules::{Card, RuleFiles};
+use super::{Env, label, launch, slashed};
 
 /// A task to create.
 #[derive(Debug, Clone)]
@@ -82,27 +86,25 @@ pub fn spawn(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let brief = if new.request.keep {
+    let brief = if launch::plugin_dir(env.home, env.config).is_some() {
         brief
     } else {
-        format!("{}{}", brief.trim_end(), closing_section(env, &name))
+        let dir = env.task_dir(&task)?;
+        let rules = RuleFiles::load(env.home, env.config)?.render(
+            Role::Child,
+            env.config,
+            env.exe,
+            Some(&Card {
+                task: &task,
+                dir: &dir,
+            }),
+        );
+        format!("{}\n\n{rules}", brief.trim_end())
     };
     std::fs::write(&brief_path, brief)
         .with_context(|| format!("writing {}", brief_path.display()))?;
     let pumped = pump(store, env)?;
     Ok((store.task(task.id)?, pumped))
-}
-
-/// The paragraph every brief but a keep task's ends with: how the child closes itself.
-#[must_use]
-pub fn closing_section(env: &Env<'_>, name: &TaskName) -> String {
-    format!(
-        "\n\n## Closing yourself\n\nWhen your task is completely finished (its pull requests merged or the task dropped by the \
-         user, your report sent to\n`root`, no question or review waiting on the user, and nothing of yours still running \
-         in the background), close your\nown session as your very last action: `\"{}\" close {name}`. It ends this pane, \
-         so run nothing after it.\nWhile anything is still pending, stay open.\n",
-        slashed(env.exe)
-    )
 }
 
 /// Starts every queued task the start guard lets through, in queue order, and opens its pane. A task whose pane

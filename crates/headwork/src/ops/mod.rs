@@ -1,8 +1,10 @@
 //! What the commands do, against a store, a config and a [`TerminalHost`], so it can be tested with the fake host.
 
 pub mod close;
+pub mod hook;
 pub mod import;
 pub mod launch;
+pub mod rules;
 pub mod spawn;
 
 use std::path::{Path, PathBuf};

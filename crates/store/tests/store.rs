@@ -516,3 +516,165 @@ fn launcher_records_place_pids_exit_and_worktree() {
         assert!(kinds.iter().any(|k| k == kind), "{kind} logged");
     }
 }
+
+fn hook_world() -> (Store, Task, String) {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    let session = NewSession {
+        id: "0b6c1d2e-0000-4000-8000-0000000000aa".to_owned(),
+        task_id: Some(task.id),
+        role: Role::Child,
+        rc_name: "me-sim-sand".to_owned(),
+        host: "wmux".to_owned(),
+        host_workspace: None,
+        host_surface: Some("surf-1".to_owned()),
+    };
+    store.record_session(&session, Actor::User).unwrap();
+    (store, task, session.id)
+}
+
+#[test]
+fn hooks_see_their_session() {
+    let (store, task, id) = hook_world();
+    let session = store.hook_session(&id).unwrap().unwrap();
+    assert_eq!(session.task_id, Some(task.id), "task");
+    assert_eq!(session.role, Role::Child, "role");
+    assert_eq!(session.rules_seen, 0, "no rules yet");
+    assert_eq!(session.host_surface.as_deref(), Some("surf-1"), "surface");
+    assert!(
+        store.hook_session("unknown").unwrap().is_none(),
+        "unmanaged"
+    );
+}
+
+#[test]
+fn a_changed_rules_hash_bumps_the_version_once() {
+    let (mut store, task, id) = hook_world();
+    assert_eq!(
+        store.observe_rules("aaa", Actor::Hook).unwrap(),
+        1,
+        "first hash"
+    );
+    assert_eq!(
+        store.observe_rules("aaa", Actor::Hook).unwrap(),
+        1,
+        "same hash"
+    );
+    assert_eq!(
+        store.observe_rules("bbb", Actor::Hook).unwrap(),
+        2,
+        "changed"
+    );
+    let version = store.rules_version().unwrap();
+    assert_eq!(version.hash.as_deref(), Some("bbb"), "{version:?}");
+    store.set_rules_seen(&id, Some(task.id), 2, 1234).unwrap();
+    assert_eq!(
+        store.hook_session(&id).unwrap().unwrap().rules_seen,
+        2,
+        "seen"
+    );
+    let kinds: Vec<String> = store
+        .events(EventFilter {
+            task: None,
+            limit: 100,
+        })
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == "rules-changed").count(),
+        2,
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|kind| kind == "rules-injected"),
+        "{kinds:?}"
+    );
+}
+
+#[test]
+fn the_turn_counts_from_the_last_prompt() {
+    let (store, task, id) = hook_world();
+    let event = |kind: &str, data: serde_json::Value| {
+        store
+            .append_event(Actor::Hook, Some(task.id), Some(&id), kind, &data)
+            .unwrap();
+    };
+    event(
+        "tool-used",
+        serde_json::json!({ "tool": "AskUserQuestion" }),
+    );
+    event(
+        "would-deny",
+        serde_json::json!({ "hook": "Stop", "rule": "stop-unfinished" }),
+    );
+    let before = store.turn_so_far(&id).unwrap();
+    assert!(before.asked, "asked before any prompt");
+    assert_eq!(before.stops_denied, 1, "one stop");
+    event("prompt", serde_json::json!({ "cross_session": false }));
+    assert_eq!(
+        store.turn_so_far(&id).unwrap(),
+        headwork_store::TurnSoFar::default(),
+        "a new turn"
+    );
+    event("tool-used", serde_json::json!({ "tool": "SendMessage" }));
+    event(
+        "deny",
+        serde_json::json!({ "hook": "Stop", "rule": "stop-unfinished" }),
+    );
+    event(
+        "deny",
+        serde_json::json!({ "hook": "PreToolUse", "rule": "root-git" }),
+    );
+    let turn = store.turn_so_far(&id).unwrap();
+    assert!(turn.messaged && !turn.asked, "{turn:?}");
+    assert_eq!(turn.stops_denied, 1, "only Stop denies count");
+}
+
+#[test]
+fn recent_tool_calls_and_open_asks() {
+    let (mut store, task, id) = hook_world();
+    assert!(
+        !store
+            .used_tool_within(&id, "PushNotification", 120)
+            .unwrap(),
+        "none yet"
+    );
+    store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            Some(&id),
+            "tool-used",
+            &serde_json::json!({ "tool": "PushNotification" }),
+        )
+        .unwrap();
+    assert!(
+        store
+            .used_tool_within(&id, "PushNotification", 120)
+            .unwrap(),
+        "recent push"
+    );
+    assert!(
+        !store.used_tool_within(&id, "SendUserFile", 120).unwrap(),
+        "other tool"
+    );
+    assert!(store.open_ask_of(&id).unwrap().is_none(), "no ask");
+    let ask = store
+        .open_ask(
+            &NewAsk {
+                task_id: Some(task.id),
+                session_id: Some(id.clone()),
+                kind: AskKind::Question,
+                question: "Ship?".to_owned(),
+                options: vec!["Ship it".to_owned(), "Drop it".to_owned()],
+            },
+            Actor::Hook,
+        )
+        .unwrap();
+    assert_eq!(store.open_ask_of(&id).unwrap(), Some(ask), "open ask");
+    store.answer_ask(ask, "Ship it", Actor::Hook).unwrap();
+    assert!(store.open_ask_of(&id).unwrap().is_none(), "answered");
+    assert!(!store.fable_allowed(task.id).unwrap(), "no fable ask");
+}
