@@ -289,6 +289,44 @@ text_enum!(
     }
 );
 
+text_enum!(
+    /// A reconciliation the tick makes or a condition it reports; every tick finding in the event log names one.
+    FindingId, "finding" {
+        /// A spawning task's session never reported `SessionStart` in time.
+        SpawnTimeout => "spawn-timeout",
+        /// A running task's pane or launcher is gone.
+        PaneLost => "pane-lost",
+        /// A running pane carries a task label no task owns.
+        OrphanPane => "orphan-pane",
+        /// A working task has an open pull request.
+        PrOpened => "pr-opened",
+        /// A task's pull request was merged.
+        PrMerged => "pr-merged",
+        /// A task's pull request was closed without a merge.
+        PrClosed => "pr-closed",
+        /// A merged task's grace period ended and it started closing.
+        MergedGrace => "merged-grace",
+        /// A closing task still had processes, which the tick ended.
+        LeftoverProcess => "leftover-process",
+        /// A worktree could not be removed and the user is asked to keep or delete it.
+        WorktreeRefused => "worktree-refused",
+        /// Free disk space fell below the warning level.
+        DiskWarn => "disk-warn",
+        /// Free disk space fell below the stop level.
+        DiskStop => "disk-stop",
+        /// A file grew too fast or is too large.
+        Runaway => "runaway",
+        /// A working session made no move for too long.
+        Stuck => "stuck",
+        /// A session runs an older rules version than the machine holds.
+        RulesStale => "rules-stale",
+        /// An ask waits on the user for too long.
+        AskStale => "ask-stale",
+        /// The tick could not look at something it checks, such as the git host or a volume.
+        TickError => "tick-error",
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

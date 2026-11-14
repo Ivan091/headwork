@@ -147,3 +147,56 @@ and the reason.
 - 2026-11-14 `spawn` through MCP takes the brief as text, writes it to `<home>/incoming/` for the spawn operation and
   removes it afterwards; MCP spawns run in `auto` permission mode. `drop` records the user's words as a `drop-reason`
   event, then closes.
+- 2026-11-14 The tick splits bookkeeping from enforcement. Recording what already happened always runs: spawn
+  timeout, lost panes and launchers, pull request states, answers to its own asks, the queue. Ending things runs only
+  with `hooks.enforce`: killing leftover processes, killing a runaway writer, closing a merged task past its grace,
+  starting `dropped` tasks closing, closing a timed-out spawn's pane. In shadow mode each of those is a `shadow`
+  finding (`headwork tick` prints it) and nothing is touched, as design 7.3 step 0 says ("the tick only reports").
+- 2026-11-14 A finding that stands (orphan pane, disk, runaway, stuck, stale rules, would-close) is a row in the new
+  `findings` table (migration 0004): it is logged once as `finding`, and as `finding-cleared` when the next tick no
+  longer sees it, so a condition that lasts for hours does not write an event a minute. One-shot actions (a
+  transition, an ended process, a reminder) are written as `finding` events directly.
+- 2026-11-14 A session counts as lost when its launcher pid is dead or its pane is gone from the host; a session
+  without a launcher pid (adopted) is judged by its pane alone. Lost panes are not judged when the host does not
+  answer `ping`, so a restarting wmux never turns every task `interrupted`; they are not judged while the machine is
+  `parking`, as the lifecycle guard says.
+- 2026-11-14 Spawn timeout backstop: a `spawning` task whose session was recorded more than `watch.spawn_timeout_s`
+  (120) ago goes `failed`, its session `gone`; with enforcement its processes end and its pane closes. The clock is
+  SQLite's, like every timestamp.
+- 2026-11-14 Stuck check, two looks: a `working` session quiet for `stuck_after_min` with no tool in flight has its
+  screen hashed (FNV-1a, the rules hash's function) and remembered; only an unchanged hash on a later tick makes it
+  `stuck`. The first look never reports. A moving session drops its remembered screen.
+- 2026-11-14 Stale asks: an `open` ask older than `watch.ask_remind_min` (120) gets a host notification, then another
+  every interval until answered (design says one reminder; repeating is cheap and the user is the bottleneck).
+- 2026-11-14 Rules: every tick hashes the rules files through the same loader the hooks use and bumps the version on a
+  change; live sessions whose `rules_seen` is behind are reported (`rules-stale`, standing) until their next prompt
+  delivers the rules. Nothing acts on it.
+- 2026-11-14 Merged tasks close after `watch.merged_grace_min` (10) with the lifecycle's own guard (not `keep`, no
+  waiting ask, report sent). "Report sent" is a recorded `SendMessage` of any session of the task; the job guard is
+  false until jobs exist (milestone 6).
+- 2026-11-14 Pull requests are found with `gh pr view <branch> --json number,state,url` run in the task's folder
+  (the main checkout when the worktree is gone), recorded in `prs`. An open one moves `working` to `in_review`, a
+  merged one on to `merged` (`working` goes through `in_review` in one tick), a closed one sends `in_review` back to
+  `working`. A repository outside `allowed_repos` never opens a review. Tasks in the main checkout have no branch and
+  are skipped. A `gh` failure is a standing `tick-error`, not a failed tick.
+- 2026-11-14 A worktree the project's remove command refuses becomes one `tool` ask (topic `worktree`, options
+  "Keep the worktree (Recommended)" and "Delete it"), left `pending` for whoever talks to the user (the root, with
+  milestone 4's `inbox`). The tick carries out the answer on a later run: keep marks the worktree `kept`, delete
+  runs `git worktree remove --force` for `builtin` projects (a project's own script decides for itself), then the
+  close finishes.
+- 2026-11-14 Disks are checked per volume, once, at the first existing path of the home, temp, `~/.claude`, project
+  mains and live task folders. Free space comes from `fs4` (a safe wrapper; the workspace forbids `unsafe`). Below
+  `disk_warn_gb` is a notification; below `disk_stop_gb` the queue is not run that tick.
+- 2026-11-14 Runaway output scans the configured roots (`{temp}` expands) and every live task's folder for files of
+  at least a quarter of the growth limit, remembers their sizes (`file_samples`), and flags a file over `file_limit`
+  or one that grew by `growth_limit` since the last tick (an unsampled file counts from zero). The scan visits at
+  most a million entries. The writer is found by path, not by handle: the task whose folder holds the file. A live
+  task is only alerted (and ended only where its volume is below `disk_stop` and enforcement is on); a closing,
+  failed or interrupted task's processes are ended with enforcement; a file under no task is alerted.
+- 2026-11-14 Not built: the design's scan for `claude`/`node` processes that descend from no launcher. Windows has no
+  safe, cheap process list without `unsafe` or a PowerShell call, and the Job Object already ends each launcher's
+  tree; the orphan check covers panes instead. Also not built: log rotation (headwork writes no log file yet; the
+  event log is the record) and the windowless `headworkw.exe` target.
+- 2026-11-14 `headwork tick` takes `tick.lock` in the home (`File::try_lock`), so overlapping scheduler runs exit at
+  once with "another tick is running". Its thresholds are a `Limits` value in bytes and seconds that tests build
+  directly, so no test needs a gigabyte.

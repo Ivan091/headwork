@@ -11,6 +11,7 @@ mod queue;
 mod records;
 mod reports;
 mod sessions;
+mod tick;
 
 use std::path::Path;
 
@@ -29,6 +30,7 @@ pub use records::{
     WorktreeRow,
 };
 pub use reports::{AddedRule, EVENT_REPORT, NewPr};
+pub use tick::{PrSeen, SessionClock, TopicAsk, WaitingAsk};
 
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";

@@ -297,7 +297,15 @@ pub struct WatchConfig {
     pub file_limit_gb: u32,
     /// Minutes without a hook event before a session counts as stuck.
     pub stuck_after_min: u32,
-    /// Folders the runaway check watches.
+    /// Seconds a spawning task may take to report `SessionStart` before it counts as failed.
+    pub spawn_timeout_s: u32,
+    /// Minutes an ask may wait on the user before the next reminder.
+    pub ask_remind_min: u32,
+    /// Minutes a merged task lingers before it starts closing.
+    pub merged_grace_min: u32,
+    /// Seconds a closing task may keep processes alive before the tick ends them.
+    pub closing_grace_s: u32,
+    /// Folders the runaway check watches; `{temp}` stands for the temp folder, and folders of live tasks are always watched.
     pub roots: Vec<String>,
 }
 
@@ -309,6 +317,10 @@ impl Default for WatchConfig {
             growth_limit_gb_per_min: 1,
             file_limit_gb: 20,
             stuck_after_min: 30,
+            spawn_timeout_s: 120,
+            ask_remind_min: 120,
+            merged_grace_min: 10,
+            closing_grace_s: 60,
             roots: Vec::new(),
         }
     }

@@ -7,6 +7,7 @@ pub mod launch;
 pub mod mcp;
 pub mod rules;
 pub mod spawn;
+pub mod tick;
 
 use std::path::{Path, PathBuf};
 

@@ -209,3 +209,26 @@ fn rule_test_decides_a_command_as_the_root() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["result"]["rule"], "user-only", "{json}");
 }
+
+#[test]
+fn tick_runs_in_shadow_mode_on_an_empty_store() {
+    let home = tempfile::tempdir().unwrap();
+    let config = fixture("config.toml")
+        .replace(
+            "[machine]",
+            "[machine]\nhost_bin = \"S:/no-such-host/wmux.js\"",
+        )
+        .replace("disk_warn_gb = 15", "disk_warn_gb = 2")
+        .replace("disk_stop_gb = 5", "disk_stop_gb = 1")
+        .replace(
+            "roots = [\"~/.claude/projects\", \"{temp}\", \"S:/Code\"]",
+            "roots = []",
+        );
+    std::fs::write(home.path().join("config.toml"), config).unwrap();
+    let output = headwork(home.path(), &["tick", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(json["enforce"], false, "shadow by default");
+    assert_eq!(json["host_up"], false, "the host is not there");
+    assert!(home.path().join("tick.lock").exists(), "the lock file");
+}

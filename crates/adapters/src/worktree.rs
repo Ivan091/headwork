@@ -82,6 +82,23 @@ impl Worktrees {
         }
     }
 
+    /// Removes the task's worktree even when it holds changes: `git worktree remove --force` for `builtin`, else the
+    /// template, which decides for itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when the template is bad or the command fails.
+    pub fn remove_forced(
+        &self,
+        command: &WorktreeCommand,
+        vars: &TaskVars<'_>,
+    ) -> Result<(), WorktreeError> {
+        match command {
+            WorktreeCommand::Builtin => self.git(&["worktree", "remove", "--force", vars.worktree]),
+            WorktreeCommand::Command(template) => self.script(&vars.expand(template)?),
+        }
+    }
+
     /// The worktrees git knows for the main checkout, with their branches.
     ///
     /// # Errors
