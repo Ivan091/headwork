@@ -190,9 +190,11 @@ pub fn current(
     RuleFiles::load(home, config, &store.active_rules()?, &address)
 }
 
-/// Where workers send their messages to the orchestrator: the name of the live orchestrator session in the store, else
-/// the `-n` name of an unmanaged `claude -n orchestrator` or `claude -n root` the host runs, else `orchestrator`. The
-/// host is asked only when the store knows no live orchestrator; a host that does not answer counts as running none.
+/// Where workers send their messages to the orchestrator.
+///
+/// The name of the live orchestrator session in the store, else the `-n` name of an unmanaged `claude -n orchestrator`
+/// or `claude -n root` the host runs, else `orchestrator`. The host is asked only when the store knows no live
+/// orchestrator; a host that does not answer counts as running none.
 ///
 /// # Errors
 ///

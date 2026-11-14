@@ -205,9 +205,10 @@ pub fn session_name_in(command: &str) -> Option<&str> {
     None
 }
 
-/// Where messages to the orchestrator go: the managed orchestrator's name when the store has one running, else the
-/// name of an unmanaged one found among the running command lines (`-n orchestrator` before `-n root`), else
-/// [`ORCHESTRATOR_ADDRESS`].
+/// Where messages to the orchestrator go.
+///
+/// The managed orchestrator's name when the store has one running, else the name of an unmanaged one found among the
+/// running command lines (`-n orchestrator` before `-n root`), else [`ORCHESTRATOR_ADDRESS`].
 #[must_use]
 pub fn orchestrator_address<'a>(
     managed: Option<&str>,
