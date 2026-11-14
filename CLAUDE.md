@@ -20,7 +20,8 @@ crates/
   adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the git host (gh,
                         fake), disks, the claude
                         runtime, worktrees
-  headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick) over a small lib (home, ops)
+  headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick, install) over a small
+                        lib (home, ops)
 plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
 rules/                  built-in root and child rules, injected at SessionStart
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
@@ -31,7 +32,9 @@ docs/                   design, research, trials, decisions
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the root tools (board, inbox, spawn, drop, close, queue, rules,
 rule_add, rule_retire, job_status, park, resume) and the child tools (board, inbox, report, done, recap, job_start,
-job_register, job_status, job_stop) by the session's identity.
+job_register, job_status, job_stop) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
+`headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
+reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
 `core/src/watch.rs`, its memory in migration 0004). Milestone 6 is park and resume (`ops/park.rs`,
 `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
@@ -54,6 +57,7 @@ cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: pane
 cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
+target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- shadow-report     # would-deny events by rule id
 cargo run -p headwork -- root              # run the root session, recorded in the store
 ```
@@ -106,8 +110,18 @@ The plugin does nothing in a session headwork did not start: its hooks run `${HE
 launcher sets `HEADWORK_EXE`. Its MCP server connects with no tools in such a session. A hook that fails (missing
 binary: exit 127, broken config: exit 1) never blocks a call, and a hook takes about 30 ms.
 
-Update the installed binary after a merge: `cargo build --release -p headwork`, then copy it over
-`~/.local/bin/headwork.exe` (nothing may be running it; `headwork doctor` shows the version).
+Update the installed binary after a merge, safely while sessions run it (docs/hot-reload.md):
+
+```bash
+cargo build --release -p headwork
+target/release/headwork.exe install    # renames the running copy aside, puts the build in ~/.local/bin, cleans old copies
+```
+
+Hooks, the CLI and finishers use the new build from their next call. Sessions launched by a hot-reload build switch
+their MCP server at the next tool call and hand their exit to the new build. Sessions launched before hot reload
+(`headwork doctor`, check `builds`, "pinned") keep their old MCP server until `/mcp` → headwork → Reconnect in that
+session, or park and resume. Plugin files (`hooks.json`, `.mcp.json`) need a new session. Do not ship a store
+migration while doctor lists pinned sessions.
 
 **Undo, step 1 (spawn wrappers):** `echo legacy > ~/.claude/skills/orchestrate/engine`. Every script then runs its
 `*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Children already in the store keep closing through
