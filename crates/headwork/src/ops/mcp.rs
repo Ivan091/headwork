@@ -10,12 +10,14 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
-    Actor, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskState,
+    Actor, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug, TaskRequest,
+    TaskState,
 };
-use headwork_store::{NewPr, Store, StoreError, Task};
+use headwork_store::{NewPr, NewRecap, Store, StoreError, Task};
 use serde_json::{Value, json};
 
 use super::close::close;
+use super::jobs::{self, Registration};
 use super::rules::RuleFiles;
 use super::spawn::{SpawnRequest, pump, spawn};
 use super::{Env, close::reap};
@@ -179,6 +181,98 @@ const TOOLS: &[ToolDef] = &[
                 &[],
             )
         },
+    },
+    ToolDef {
+        name: "recap",
+        description: "Write down what you were doing, your next step and what is running. A park asks for it before a \
+                      restart; also write one when you stop for the day. It is handed back to you when you resume.",
+        roles: CHILD,
+        schema: || {
+            object(
+                json!({ "text": { "type": "string", "description": "What you were doing, the next step, what runs." } }),
+                &["text"],
+            )
+        },
+    },
+    ToolDef {
+        name: "job_register",
+        description: "Register a long-running process you started (a training run, a render) so a park can stop it \
+                      cleanly and a resume can start it again. Policy `checkpoint` waits for a fresh checkpoint file \
+                      before stopping, `rerun` stops it at once and runs it again, `finish` is left to run.",
+        roles: CHILD,
+        schema: || {
+            object(
+                json!({
+                    "label": { "type": "string", "description": "A few words naming the job." },
+                    "argv": { "type": "array", "items": { "type": "string" }, "description": "The command line that starts it again." },
+                    "pid": { "type": "integer", "description": "The process id it runs as now." },
+                    "cwd": { "type": "string", "description": "The folder it runs in; your folder when absent." },
+                    "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
+                    "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
+                    "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
+                    "heavy": { "type": "boolean" },
+                }),
+                &["label", "argv"],
+            )
+        },
+    },
+    ToolDef {
+        name: "job_start",
+        description: "Start a long-running process (a training run, a render) detached from this session and register \
+                      it, so it survives your turn and a park can stop it cleanly and a resume can start it again. \
+                      Use this instead of a background shell. Policies as for job_register.",
+        roles: CHILD,
+        schema: || {
+            object(
+                json!({
+                    "label": { "type": "string", "description": "A few words naming the job." },
+                    "argv": { "type": "array", "items": { "type": "string" }, "description": "The command line, program first." },
+                    "cwd": { "type": "string", "description": "The folder to run in; your folder when absent." },
+                    "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
+                    "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
+                    "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
+                    "heavy": { "type": "boolean" },
+                }),
+                &["label", "argv"],
+            )
+        },
+    },
+    ToolDef {
+        name: "job_status",
+        description: "The registered jobs that are not over: your own for a child, all for the root.",
+        roles: BOTH,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
+        name: "job_stop",
+        description: "Stop one of your registered jobs now and record it as stopped.",
+        roles: CHILD,
+        schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
+    },
+    ToolDef {
+        name: "park",
+        description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
+                      panes close. It runs in the background; read `board` for the machine mode, and write your own \
+                      recap first.",
+        roles: ROOT,
+        schema: || {
+            object(
+                json!({
+                    "deadline_s": {
+                        "type": "integer",
+                        "description": "Seconds to wait for recaps and checkpoints; 300 when absent.",
+                    },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
+        name: "resume",
+        description: "Bring parked sessions back after a restart and restart jobs. It runs in the background and \
+                      writes a summary file.",
+        roles: ROOT,
+        schema: || object(json!({}), &[]),
     },
 ];
 
@@ -358,8 +452,116 @@ impl<'a> Server<'a> {
                 let task = self.own_task(&session)?;
                 self.done(&session, task, args)
             }
+            "recap" => {
+                let task = self.own_task(&session)?;
+                self.recap(&session, &task, args)
+            }
+            "job_register" => {
+                let task = self.own_task(&session)?;
+                self.job_register(&session, &task, args)
+            }
+            "job_start" => {
+                let task = self.own_task(&session)?;
+                let registration = registration(args)?;
+                to_text(&jobs::start(
+                    self.store,
+                    &self.env,
+                    &task,
+                    &session,
+                    &registration,
+                )?)
+            }
+            "job_status" => self.job_status(&session, role),
+            "job_stop" => {
+                let task = self.own_task(&session)?;
+                self.job_stop(&task, args)
+            }
+            "park" => self.start_detached("park", args),
+            "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
         }
+    }
+
+    fn recap(&mut self, session: &str, task: &Task, args: &Value) -> Result<String> {
+        let body = text(args, "text")?;
+        if body.trim().is_empty() {
+            bail!("`text` is empty: write what you were doing, the next step and what runs");
+        }
+        let id = self.store.add_recap(
+            &NewRecap {
+                task_id: Some(task.id),
+                session_id: Some(session),
+                kind: RecapKind::Session,
+                body: &body,
+            },
+            self.env.actor,
+        )?;
+        let parking = self.store.machine_mode()? == MachineMode::Parking;
+        to_text(&json!({
+            "recap": id,
+            "parking": parking,
+            "next": if parking { "stop now: end your turn, headwork closes this pane" } else { "recorded" },
+        }))
+    }
+
+    fn job_register(&mut self, session: &str, task: &Task, args: &Value) -> Result<String> {
+        let registration = registration(args)?;
+        to_text(&jobs::register(
+            self.store,
+            &self.env,
+            task,
+            session,
+            &registration,
+        )?)
+    }
+
+    fn job_status(&mut self, session: &str, role: Role) -> Result<String> {
+        jobs::refresh(self.store, self.env.actor)?;
+        let task = if role == Role::Child {
+            Some(self.own_task(session)?.id)
+        } else {
+            None
+        };
+        to_text(&self.store.open_jobs(task)?)
+    }
+
+    fn job_stop(&mut self, task: &Task, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("`id` is required and must be an integer"))?;
+        let job = self
+            .store
+            .job(id)?
+            .filter(|job| job.task_id == Some(task.id))
+            .ok_or_else(|| anyhow!("no job {id} of yours"))?;
+        jobs::stop(self.store, &job, "stopped by its session", self.env.actor)?;
+        to_text(&self.store.job(id)?)
+    }
+
+    fn start_detached(&self, command: &'static str, args: &Value) -> Result<String> {
+        let mut process = std::process::Command::new(self.env.exe);
+        process.arg(command);
+        if command == "park"
+            && let Some(seconds) = args.get("deadline_s").and_then(Value::as_u64)
+        {
+            process.args(["--deadline", &seconds.to_string()]);
+        }
+        process
+            .arg("--home")
+            .arg(self.env.home.root())
+            .current_dir(self.env.home.root());
+        let (pid, _) = headwork_adapters::proc::spawn_detached(&mut process)?;
+        self.store.append_event(
+            self.env.actor,
+            None,
+            None,
+            "detached",
+            &json!({ "command": command, "pid": pid }),
+        )?;
+        to_text(
+            &json!({ "started": command, "pid": pid, "read": "`board` shows the machine mode" }),
+        )
     }
 
     fn own_task(&self, session: &str) -> Result<Task> {
@@ -606,6 +808,17 @@ impl<'a> Server<'a> {
         if self.store.open_ask_of(session)?.is_some() {
             bail!("a question to the user is still open: wait for the answer before `done`");
         }
+        if let Some(job) = self
+            .store
+            .open_jobs(Some(task.id))?
+            .into_iter()
+            .find(|job| job.state == headwork_core::JobState::Running)
+        {
+            bail!(
+                "job `{}` of this task still runs: stop it with `job_stop` or wait for it before `done`",
+                job.label
+            );
+        }
         if matches!(
             task.state,
             TaskState::Closing | TaskState::Closed | TaskState::Dropped
@@ -669,4 +882,40 @@ fn success(id: &Value, result: &Value) -> Value {
 
 fn failure(id: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+fn registration(args: &Value) -> Result<Registration> {
+    let command_line = args
+        .get("argv")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .ok_or_else(|| anyhow!("`argv` is required and must be an array of strings"))?;
+    Ok(Registration {
+        label: text(args, "label")?,
+        argv: command_line,
+        cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
+        pid: args
+            .get("pid")
+            .and_then(Value::as_u64)
+            .map(u32::try_from)
+            .transpose()
+            .context("`pid` does not fit a process id")?,
+        park_policy: args
+            .get("park_policy")
+            .and_then(Value::as_str)
+            .map(str::parse)
+            .transpose()?,
+        checkpoint_path: args
+            .get("checkpoint_path")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        restart: args.get("restart").and_then(Value::as_bool),
+        heavy: flag(args, "heavy"),
+    })
 }

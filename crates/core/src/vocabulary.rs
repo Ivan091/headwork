@@ -222,6 +222,36 @@ text_enum!(
 );
 
 text_enum!(
+    /// Where a registered long-running job is.
+    JobState, "job state" {
+        /// The process runs.
+        Running => "running",
+        /// A park asked it to stop and waits.
+        Stopping => "stopping",
+        /// Stopped for a restart; `resume` runs it again when it asked to be restarted.
+        Parked => "parked",
+        /// Finished.
+        Done => "done",
+        /// Could not be restarted.
+        Failed => "failed",
+    }
+);
+
+text_enum!(
+    /// Why a recap was written.
+    RecapKind, "recap kind" {
+        /// The session wrote it itself.
+        Session => "session",
+        /// The tool wrote it from the store because the session could not.
+        Mechanical => "mechanical",
+        /// Written as a task closed.
+        Close => "close",
+        /// Written when the tick found the session gone.
+        Interrupted => "interrupted",
+    }
+);
+
+text_enum!(
     /// The permission mode a session starts in, as `claude --permission-mode` spells it.
     PermissionMode, "permission mode" {
         /// Auto mode: a classifier reviews risky actions.

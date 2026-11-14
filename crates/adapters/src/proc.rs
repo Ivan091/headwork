@@ -124,7 +124,24 @@ impl OwnedChild {
 ///
 /// Returns [`ProcError::Spawn`] when the program does not start.
 pub fn spawn_detached(command: &mut Command) -> Result<(u32, Option<String>), ProcError> {
-    imp::spawn_detached(command)
+    imp::spawn_detached(
+        command,
+        std::process::Stdio::null(),
+        std::process::Stdio::null(),
+    )
+}
+
+/// Like [`spawn_detached`], with the program's output going to `stdout` and `stderr`, such as a log file.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Spawn`] when the program does not start.
+pub fn spawn_detached_to(
+    command: &mut Command,
+    stdout: std::process::Stdio,
+    stderr: std::process::Stdio,
+) -> Result<(u32, Option<String>), ProcError> {
+    imp::spawn_detached(command, stdout, stderr)
 }
 
 /// Ends the process `pid` and all its descendants.
@@ -202,13 +219,15 @@ mod imp {
 
     pub(super) fn spawn_detached(
         command: &mut Command,
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
     ) -> Result<(u32, Option<String>), ProcError> {
         use std::os::windows::process::CommandExt;
         let program = command.get_program().to_string_lossy().into_owned();
         command
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(stdout)
+            .stderr(stderr);
         command.creation_flags(
             DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
         );
@@ -272,12 +291,14 @@ mod imp {
 
     pub(super) fn spawn_detached(
         command: &mut Command,
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
     ) -> Result<(u32, Option<String>), ProcError> {
         let program = command.get_program().to_string_lossy().into_owned();
         command
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .process_group(0);
         let child = command
             .spawn()

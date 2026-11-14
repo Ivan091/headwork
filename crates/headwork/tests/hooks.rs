@@ -587,7 +587,21 @@ fn mcp_tools_follow_the_role() {
     let mut w = world("", false);
     let identity = child_identity(&w);
     let child = w.tool_names(identity);
-    assert_eq!(child, ["board", "inbox", "report", "done"], "child");
+    assert_eq!(
+        child,
+        [
+            "board",
+            "inbox",
+            "report",
+            "done",
+            "recap",
+            "job_register",
+            "job_start",
+            "job_status",
+            "job_stop"
+        ],
+        "child"
+    );
     let root = w.tool_names(root_identity());
     assert_eq!(
         root,
@@ -600,7 +614,10 @@ fn mcp_tools_follow_the_role() {
             "queue",
             "rules",
             "rule_add",
-            "rule_retire"
+            "rule_retire",
+            "job_status",
+            "park",
+            "resume"
         ],
         "root"
     );
@@ -839,4 +856,80 @@ fn drop_records_the_users_words_and_closes() {
         event.kind == "drop-reason" && event.data["user_words"] == "not needed any more"
     });
     assert!(words, "the user's words are logged");
+}
+
+#[test]
+fn a_child_writes_a_recap_and_registers_a_job_that_blocks_done() {
+    let mut w = world("", false);
+    w.start();
+    let identity = child_identity(&w);
+    let (is_error, text) = w.tool(identity.clone(), "recap", &json!({ "text": "  " }));
+    assert!(is_error && text.contains("empty"), "{text}");
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "recap",
+        &json!({ "text": "Halfway through the render." }),
+    );
+    assert!(!is_error, "{text}");
+    let recap = w.store.latest_recap(w.task.id).unwrap().unwrap();
+    assert_eq!(recap.body, "Halfway through the render.", "stored");
+    assert_eq!(recap.park_id, None, "not a park");
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "job_register",
+        &json!({ "label": "train", "argv": ["node", "-e", "0"], "park_policy": "checkpoint" }),
+    );
+    assert!(is_error && text.contains("checkpoint file"), "{text}");
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "job_register",
+        &json!({
+            "label": "train", "argv": ["node", "-e", "0"], "park_policy": "checkpoint",
+            "checkpoint_path": "C:/out/checkpoint.json", "pid": std::process::id(),
+        }),
+    );
+    assert!(!is_error, "{text}");
+    let job: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(job["state"], "running", "{job}");
+    let (_, status) = w.tool(identity.clone(), "job_status", &json!({}));
+    assert!(status.contains("train"), "{status}");
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "x" }));
+    assert!(is_error && text.contains("still runs"), "{text}");
+    let (_, root_status) = w.tool(root_identity(), "job_status", &json!({}));
+    assert!(
+        root_status.contains("train"),
+        "the root sees every job: {root_status}"
+    );
+    let (is_error, text) = w.tool(identity, "park", &json!({}));
+    assert!(is_error && text.contains("root role"), "{text}");
+}
+
+#[test]
+fn job_start_runs_the_command_detached_and_logs_to_the_job_log() {
+    let mut w = world("", false);
+    w.start();
+    let identity = child_identity(&w);
+    let cwd = w.dir.path().display().to_string();
+    let (is_error, text) = w.tool(
+        identity,
+        "job_start",
+        &json!({ "label": "version check", "argv": ["git", "--version"], "cwd": cwd }),
+    );
+    assert!(!is_error, "{text}");
+    let job: Value = serde_json::from_str(&text).unwrap();
+    assert!(job["pid"].as_u64().is_some(), "started: {job}");
+    assert_eq!(job["park_policy"], "rerun", "default policy: {job}");
+    let log = job["log_path"].as_str().unwrap().to_owned();
+    let start = std::time::Instant::now();
+    while std::fs::read_to_string(&log).unwrap_or_default().is_empty()
+        && start.elapsed().as_secs() < 10
+    {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("git version"),
+        "output in the log"
+    );
 }

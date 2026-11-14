@@ -62,6 +62,24 @@ impl Home {
         self.root.join("briefs").join(format!("{name}.md"))
     }
 
+    /// Where a task's handoff is kept: the recap its next session reads.
+    #[must_use]
+    pub fn handoff_path(&self, name: &TaskName) -> PathBuf {
+        self.root.join("handoffs").join(format!("{name}.md"))
+    }
+
+    /// Where the summary of a resume is written.
+    #[must_use]
+    pub fn recaps_dir(&self) -> PathBuf {
+        self.root.join("recaps")
+    }
+
+    /// Where registered jobs write their output.
+    #[must_use]
+    pub fn jobs_dir(&self) -> PathBuf {
+        self.root.join("jobs")
+    }
+
     fn config_path(&self) -> PathBuf {
         self.root.join("config.toml")
     }

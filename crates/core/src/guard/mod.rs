@@ -250,7 +250,8 @@ fn check_child_command(scope: &Scope, command: &SimpleCommand, background: bool)
         return Decision::deny(
             RuleId::ChildLongJob,
             format!(
-                "`{pattern}` is a long job: start it with `headwork job start` so a park can manage it"
+                "`{pattern}` is a long job: start it with the headwork `job_start` tool (or register a running one with \
+                 `job_register`) so a park can manage it"
             ),
         );
     }
