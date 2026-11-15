@@ -167,6 +167,25 @@ impl Worktrees {
         }
     }
 
+    /// Removes the task's worktree with `git worktree remove`, without force, when it holds no work: its branch has no
+    /// commits beyond the main checkout's `HEAD`, and git refuses a worktree with changes or untracked files. Returns
+    /// whether it was removed. This is the fallback for a remove script that keeps worktrees it cannot see merged,
+    /// which a task that never started also is.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot run or times out.
+    pub fn remove_if_pristine(&self, vars: &TaskVars<'_>) -> Result<bool, WorktreeError> {
+        if !self.branch_exists(vars.branch)? || !self.branch_is_empty(vars.branch)? {
+            return Ok(false);
+        }
+        match self.git(&["worktree", "remove", vars.worktree]) {
+            Ok(()) => Ok(true),
+            Err(WorktreeError::Failed { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Removes the task's worktree even when it holds changes: `git worktree remove --force` for `builtin`, else the
     /// template, which decides for itself.
     ///
