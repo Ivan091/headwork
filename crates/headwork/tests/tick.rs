@@ -20,13 +20,14 @@ use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
 use headwork_adapters::host::{SurfaceId, TerminalHost};
 use headwork_adapters::proc::is_alive;
+use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::watch::Limits;
 use headwork_core::{
     Actor, Config, FindingId, MachineMode, Model, PermissionMode, ProjectName, SessionState, Slug,
     TaskRequest, TaskState, Trigger,
 };
-use headwork_store::{EventFilter, Store, Task};
+use headwork_store::{EventFilter, NewJob, Store, Task};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const SLEEPER_ROLE: &str = "HEADWORK_TICK_ROLE";
@@ -605,6 +606,42 @@ fn enforcing_starts_closing_a_merged_task_that_reported() {
 }
 
 #[test]
+fn a_merged_grace_waits_for_a_running_job() {
+    let mut w = world_with(true, 10);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    reported(&w, &task, &session.id);
+    w.limits.merged_grace = 0;
+    let mut child = sleeper();
+    let argv = vec!["train".to_owned()];
+    w.store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: Some(&session.id),
+                project: "demo",
+                label: "training",
+                park_policy: ParkPolicy::Finish,
+                argv: &argv,
+                cwd: ".",
+                pid: Some(child.id()),
+                checkpoint_path: None,
+                heavy: false,
+                restart: false,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Merged, "the job still runs");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    run_tick(&mut w);
+    assert_ne!(state(&w, &task), TaskState::Merged, "closing once it ended");
+}
+
+#[test]
 fn a_merged_grace_waits_for_its_time() {
     let mut w = world_with(true, 10);
     let task = merged(&mut w, "sand");
@@ -883,6 +920,17 @@ fn growth_between_ticks_counts_as_runaway() {
     write_file(&dir.join("log.txt"), 960);
     run_tick(&mut w);
     assert_eq!(count(&w, "finding-cleared"), 1, "growth stopped");
+}
+
+#[test]
+fn a_file_seen_for_the_first_time_gets_no_growth_verdict() {
+    let mut w = world();
+    w.limits = runaway_limits();
+    let (task, _) = working(&mut w, "sand");
+    let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
+    write_file(&dir.join("old.log"), 950);
+    assert!(run_tick(&mut w).lines.is_empty(), "no earlier sample");
+    assert!(run_tick(&mut w).lines.is_empty(), "no growth since");
 }
 
 #[test]
