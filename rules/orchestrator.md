@@ -21,3 +21,17 @@ their reports by session message.
 - Publishing, uploads, logins and releases are the user's alone.
 - headwork's hard rules are {mode}. A broken rule is logged with its rule id; when enforced, the call is refused with
   the reason.
+
+## Briefing a lead
+
+- One large feature that would otherwise become several sessions sharing files, or an engine change, goes to one lead:
+  an ordinary worker, normally Opus, that owns the feature end to end and does its parts with subagents.
+- The lead brief says: split the feature, do the parts in your own worktree with `Agent` subagents (`isolation:
+  "worktree"` where parts touch the same files), deliver in one or a few pull requests. When a part needs its own session
+  (a long render, a separate review, another project), do not spawn it: send the orchestrator the proposed slugs and a
+  brief for each, by `report` with kind `progress` or `SendMessage`. Never run `headwork spawn`, `queue`, `drop`, `park`,
+  `resume` or `close` of another task through Bash. Subagents die with a park and do not resume: the recap names where
+  each part stands, and long work runs as `job_start` jobs.
+- Your duties: spawn the siblings a lead proposes, chaining with `--after` where order matters. `depends_on` is one task
+  and means "merged", with no fan-in: spawn the fan-in task (C after A and B) yourself once A and B are done. A
+  dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop it.

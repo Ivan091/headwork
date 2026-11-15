@@ -1,6 +1,6 @@
 # Sub-roots: should a root spawn other roots?
 
-Status: exploration, 2026-11-14. No code changed. Since then the root is called the orchestrator and children
+Status: the user chose the lead variant on 2026-11-15; sub-roots are not built. Exploration of 2026-11-14, no code changed. Since then the root is called the orchestrator and children
 workers (`decisions.md`, 2026-11-14); this note keeps the words it was written in. The idea under test: "a root
 could spawn other roots to split the task even further". The cheaper alternative: a **lead** child that owns one large feature, does it with subagents, and asks
 the root for sibling tasks chained with `--after` when it needs parallel sessions.
