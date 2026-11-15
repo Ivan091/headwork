@@ -407,3 +407,4 @@ and the reason.
   down), and the tick, which also catches a vanished pane. A parking machine and tasks already closing are left alone.
   This is bookkeeping, so it runs in shadow mode too; the tick still records the `pane-lost` finding only for what it
   found itself.
+- 2026-11-15 Lead worker adopted (rules/orchestrator.md, rules/worker.md, docs/sub-roots.md); sub-roots not built. The `child-admin` shadow rule stays a separate task after the shadow week.

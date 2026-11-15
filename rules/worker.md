@@ -33,3 +33,13 @@ When your task is completely finished (its pull requests merged or the task drop
 `{orchestrator}`, no question or review waiting on the user, and nothing of yours still running in the background),
 close your own session as your very last action: `{close}`. It ends this pane, so run nothing after it. While anything
 is still pending, stay open.
+
+## When your brief makes you a lead
+
+- You own one large feature end to end. Split it, do the parts in your own worktree with `Agent` subagents (`isolation:
+  "worktree"` where parts touch the same files), and deliver in one or a few pull requests.
+- When a part truly needs its own session (a long render, a separate review, another project), do not spawn it and never
+  run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` of another task through Bash. Send the orchestrator
+  the proposed slugs and a brief for each, by `report` with kind `progress` or `SendMessage`; say which must follow which.
+- Your subagents live in your process tree: a park ends them and they do not resume. Your `recap` names where each part
+  stands, and long work runs as `job_start` jobs, which do resume.
