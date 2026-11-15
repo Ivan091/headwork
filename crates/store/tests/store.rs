@@ -184,6 +184,49 @@ fn migration_9_renames_root_and_child_in_a_store_that_holds_them() {
 }
 
 #[test]
+fn migration_10_ends_the_sessions_and_jobs_of_closed_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..9] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (name, main_path, config_hash) VALUES ('me-sim', 'S:/m', 'h');
+             INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+                 VALUES (1, 'me-sim', 'old', 'scene', 'closed', 'opus', 'b.md', 't', 't'),
+                        (2, 'me-sim', 'new', 'scene', 'working', 'opus', 'b.md', 't', 't');
+             INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, state, started_at)
+                 VALUES ('a', 1, 'worker', 'me-sim-old', 'pane', 'wmux', 'live', 't'),
+                        ('b', 2, 'worker', 'me-sim-new', 'pane', 'wmux', 'live', 't');
+             INSERT INTO jobs (id, task_id, project, label, park_policy, argv, cwd, state, log_path, started_at)
+                 VALUES (1, 1, 'me-sim', 'old run', 'rerun', '[]', '.', 'parked', 'l', 't'),
+                        (2, 2, 'me-sim', 'new run', 'rerun', '[]', '.', 'running', 'l', 't');",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let latest = i64::try_from(MIGRATIONS.len()).unwrap();
+    assert_eq!(store.schema_version().unwrap(), latest, "migrated");
+    let state = |id: &str| store.session(id).unwrap().unwrap().0.state;
+    assert_eq!(state("a"), SessionState::Ended, "the closed task's session");
+    assert_eq!(state("b"), SessionState::Live, "a working task's session");
+    assert_eq!(
+        store.job(1).unwrap().unwrap().state,
+        JobState::Done,
+        "the closed task's job"
+    );
+    assert_eq!(
+        store.job(2).unwrap().unwrap().state,
+        JobState::Running,
+        "a working task's job"
+    );
+}
+
+#[test]
 fn projects_sync_and_disable_when_removed() {
     let (mut store, mut config) = store();
     let names: Vec<_> = store

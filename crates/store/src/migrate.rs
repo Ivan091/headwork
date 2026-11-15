@@ -15,6 +15,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_session_pane.sql"),
     include_str!("../migrations/0008_root_resume.sql"),
     include_str!("../migrations/0009_orchestrator.sql"),
+    include_str!("../migrations/0010_closed_task_rows.sql"),
 ];
 
 /// Applies the migrations the database lacks, each in its own immediate transaction.

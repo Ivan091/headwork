@@ -436,3 +436,10 @@ and the reason.
   inflate the rate. A file that crosses the sample floor is therefore judged on growth one tick later. `headwork
   doctor` has a `tick` check: a tick older than 5 minutes, or none, warns only with `[hooks] enforce = true`; in shadow
   mode it is reported as ok, since nothing schedules the tick until enforcement is turned on.
+- 2026-11-15 Closing a task ends what it owned in the store. `finish` records every open job of the task `done`
+  ("the task closed"), ending a process that still runs, and once the task's processes are gone sets its `starting`
+  or `live` sessions `ended`, so `doctor` and the board no longer count a closed worker's session as live. The rows
+  left stale by earlier closes are cleaned once by migration 0010 (sessions and open jobs of `closed` tasks), chosen
+  over a `doctor --fix` because it runs by itself at the next store open and is idempotent; it changes no schema. Like
+  every migration it stops a pinned launcher (docs/hot-reload.md) from recording its exit; `headwork close` finishes
+  such a session.

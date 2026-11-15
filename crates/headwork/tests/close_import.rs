@@ -17,10 +17,12 @@ use headwork::ops::import::{
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
 use headwork_adapters::host::{SurfaceId, SurfaceState};
+use headwork_core::config::ParkPolicy;
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest, TaskState, Trigger,
+    Actor, Config, JobState, Model, PermissionMode, ProjectName, SessionState, Slug, TaskRequest,
+    TaskState, Trigger,
 };
-use headwork_store::{EventFilter, Store, Task};
+use headwork_store::{EventFilter, NewJob, Store, Task};
 
 const EXE: &str = "S:/bin/headwork.exe";
 
@@ -160,6 +162,48 @@ fn close_removes_brief_pane_and_worktree_then_marks_closed() {
     for kind in ["worktree-state", "transition"] {
         assert!(kinds.iter().any(|k| k == kind), "{kind} in {kinds:?}");
     }
+}
+
+#[test]
+fn close_ends_the_sessions_and_jobs_of_the_task() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    w.store
+        .set_session_state(&session.id, SessionState::Live, Actor::Hook)
+        .unwrap();
+    let argv = vec!["train".to_owned()];
+    let job = w
+        .store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: Some(&session.id),
+                project: "demo",
+                label: "training",
+                park_policy: ParkPolicy::Rerun,
+                argv: &argv,
+                cwd: ".",
+                pid: None,
+                checkpoint_path: None,
+                heavy: false,
+                restart: true,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Ended, "the session ended");
+    let job = w.store.job(job).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Done, "the job is over");
+    assert!(
+        w.store.open_jobs(Some(task.id)).unwrap().is_empty(),
+        "no open jobs"
+    );
 }
 
 fn branch_exists(main: &Path, branch: &str) -> bool {

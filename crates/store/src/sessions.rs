@@ -374,6 +374,42 @@ impl Store {
         Ok(())
     }
 
+    /// Ends every session of a task that is still `starting` or `live`, as a close does once its processes are gone;
+    /// returns how many it ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn end_task_sessions(&mut self, task: TaskId, actor: Actor) -> Result<usize, StoreError> {
+        let tx = self.conn.transaction()?;
+        let ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM sessions WHERE task_id = ?1 AND state IN ('starting', 'live')",
+            )?;
+            let rows = stmt.query_map(params![task.0], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for id in &ids {
+            tx.execute(
+                &format!(
+                    "UPDATE sessions SET state = 'ended', ended_at = COALESCE(ended_at, {NOW}), last_event_at = {NOW}
+                     WHERE id = ?1"
+                ),
+                params![id],
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                Some(task),
+                Some(id),
+                "session-state",
+                &serde_json::json!({ "state": "ended", "why": "the task closed" }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(ids.len())
+    }
+
     /// Records a task's worktree as present.
     ///
     /// # Errors
