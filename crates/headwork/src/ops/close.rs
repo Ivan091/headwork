@@ -18,7 +18,7 @@ use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::TaskVars;
 use headwork_core::lifecycle::{CleanupFacts, Trigger, WorktreeEnd};
-use headwork_core::{Actor, SessionState, TaskState};
+use headwork_core::{Actor, JobState, SessionState, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
@@ -170,7 +170,9 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
     let processes_gone = wait_until(PROCESS_GRACE, || {
         pids.iter().all(|pid| !proc::is_alive(*pid).unwrap_or(true))
     });
+    finalize_jobs(store, env, id)?;
     let worktree = if processes_gone {
+        store.end_task_sessions(id, env.actor)?;
         remove_worktree(store, env, id, false)?
     } else {
         WorktreeEnd::Present
@@ -185,6 +187,20 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Ends the task's open jobs: a closed task owns nothing, so a job still running is stopped and every open job is
+/// recorded `done`.
+fn finalize_jobs(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
+    for job in store.open_jobs(Some(id))? {
+        if let Some(pid) = job.pid
+            && proc::is_alive(pid)?
+        {
+            proc::kill_tree(pid)?;
+        }
+        store.set_job_state(job.id, JobState::Done, Some("the task closed"), env.actor)?;
+    }
+    Ok(())
 }
 
 /// Closes the session's pane, or its workspace when the pane is the last thing in it, then ends the host's program.
