@@ -17,7 +17,7 @@ mod tick;
 use std::path::Path;
 
 use headwork_core::{Actor, MachineMode};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 
 pub use error::StoreError;
 pub use hooks::{
@@ -39,6 +39,28 @@ pub use tick::{PrSeen, SessionClock, TopicAsk, WaitingAsk};
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+/// How long a connection waits for another writer before giving up with `database is locked`.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Switches the connection's database to WAL, retrying while another connection holds the lock.
+///
+/// SQLite does not call the busy handler for this switch: when several processes create a new store at once, all but
+/// one get `SQLITE_BUSY` immediately. Once the file is in WAL mode the switch is a no-op that takes no lock.
+fn enter_wal(conn: &Connection) -> Result<(), StoreError> {
+    let deadline = std::time::Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Err(rusqlite::Error::SqliteFailure(failure, _))
+                if failure.code == rusqlite::ErrorCode::DatabaseBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            outcome => return Ok(outcome?),
+        }
+    }
+}
+
 /// An open store.
 #[derive(Debug)]
 pub struct Store {
@@ -48,13 +70,19 @@ pub struct Store {
 impl Store {
     /// Opens or creates the store at `path`, in WAL mode, and migrates it.
     ///
+    /// Many processes share one file (the CLI, launchers, hooks, MCP servers, the tick), so a writer waits up to
+    /// [`BUSY_TIMEOUT`] for another instead of failing, and every transaction starts `IMMEDIATE`: it takes the write
+    /// lock up front, so a transaction that reads and then writes never has to upgrade a read snapshot, which SQLite
+    /// refuses at once with `SQLITE_BUSY` whatever the timeout.
+    ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] when the file cannot be opened, a migration fails, or the schema is newer than this
     /// build knows.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        enter_wal(&conn)?;
         Self::prepare(conn)
     }
 
@@ -69,7 +97,8 @@ impl Store {
 
     fn prepare(mut conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", true)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
         migrate(&mut conn)?;
         Ok(Self { conn })
     }

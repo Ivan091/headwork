@@ -1016,3 +1016,46 @@ fn a_placed_session_records_its_pane_and_holds_its_surface_while_live() {
         "an ended session frees its surface"
     );
 }
+
+#[test]
+fn concurrent_writers_wait_for_each_other_instead_of_failing() {
+    const WRITERS: usize = 8;
+    const ROUNDS: usize = 40;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let path = path.clone();
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || -> Result<(), StoreError> {
+                start.wait();
+                let mut store = Store::open(&path)?;
+                for round in 0..ROUNDS {
+                    let mode = if (writer + round) % 2 == 0 {
+                        MachineMode::Parking
+                    } else {
+                        MachineMode::Normal
+                    };
+                    store.set_machine_mode(mode, Actor::Root)?;
+                }
+                Ok(())
+            })
+        })
+        .collect();
+    for writer in writers {
+        let outcome = writer.join().unwrap();
+        assert!(outcome.is_ok(), "a writer failed: {outcome:?}");
+    }
+    let store = Store::open(&path).unwrap();
+    let changes = store
+        .events(EventFilter {
+            task: None,
+            limit: 10_000,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "machine-mode")
+        .count();
+    assert_eq!(changes, WRITERS * ROUNDS, "every write landed");
+}
