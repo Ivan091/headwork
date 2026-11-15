@@ -246,20 +246,9 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     commands.push(std::mem::take(&mut words));
                     skip_heredocs(&mut chars, &mut heredocs);
                 }
-                '<' if chars.peek() == Some(&'<') => {
-                    chars.next();
+                '<' if chars.next_if_eq(&'<').is_some() => {
                     end_word(&mut words, &mut word, &mut in_word);
-                    if chars.peek() == Some(&'<') {
-                        chars.next();
-                    } else {
-                        let strip_tabs = chars.next_if_eq(&'-').is_some();
-                        if let Some(terminator) = heredoc_terminator(&mut chars) {
-                            heredocs.push(Heredoc {
-                                terminator,
-                                strip_tabs,
-                            });
-                        }
-                    }
+                    heredocs.extend(heredoc_start(&mut chars));
                 }
                 '\n' => {
                     end_word(&mut words, &mut word, &mut in_word);
@@ -297,6 +286,18 @@ fn split(line: &str) -> Vec<Vec<String>> {
 struct Heredoc {
     terminator: String,
     strip_tabs: bool,
+}
+
+/// Reads what follows `<<`: a here-document's `-` and terminator, or nothing for a here-string `<<<`.
+fn heredoc_start(chars: &mut Peekable<Chars<'_>>) -> Option<Heredoc> {
+    if chars.next_if_eq(&'<').is_some() {
+        return None;
+    }
+    let strip_tabs = chars.next_if_eq(&'-').is_some();
+    heredoc_terminator(chars).map(|terminator| Heredoc {
+        terminator,
+        strip_tabs,
+    })
 }
 
 /// Reads the word after `<<` or `<<-`, quotes removed.
