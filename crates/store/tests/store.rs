@@ -1037,7 +1037,7 @@ fn concurrent_writers_wait_for_each_other_instead_of_failing() {
                     } else {
                         MachineMode::Normal
                     };
-                    store.set_machine_mode(mode, Actor::Root)?;
+                    store.set_machine_mode(mode, Actor::Orchestrator)?;
                 }
                 Ok(())
             })
