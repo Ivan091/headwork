@@ -2,8 +2,12 @@
 //!
 //! The parser splits a command line into simple commands at `;`, `&`, `|`, newlines, parentheses and backticks outside
 //! quotes, and each simple command into words with quotes and backslashes removed. It strips leading assignments and
-//! wrappers such as `env`, `sudo` and `rtk`, and descends into `bash -c "<script>"`. It is a pattern matcher for
+//! wrappers such as `env`, `sudo` and `rtk`, and descends into `bash -c "<script>"`. Here-document bodies are data,
+//! not commands, and are skipped up to their terminator. It is a pattern matcher for
 //! hooks, not a shell: anything it cannot see stays allowed.
+
+use std::iter::Peekable;
+use std::str::Chars;
 
 /// Programs that only run the rest of their words.
 const WRAPPERS: &[&str] = &["env", "sudo", "command", "exec", "nohup", "time", "rtk"];
@@ -63,24 +67,26 @@ impl SimpleCommand {
     }
 
     /// Whether the command runs a configured pattern such as `scripts/ship.sh` or `cargo run --release -p render`:
-    /// its words, normalized as in [`SimpleCommand::text`], contain the pattern's words in order and whole. The
-    /// pattern's first word also matches a longer path ending in it, so an absolute script path counts.
+    /// its words, normalized as in [`SimpleCommand::text`], start with the pattern's words, whole. The pattern's first
+    /// word also matches a longer path ending in it, so an absolute script path counts. Only the program position
+    /// counts, so `cat scripts/publish-now.sh` does not run it; [`commands`] already makes the script argument of
+    /// `bash script.sh` the program.
     #[must_use]
     pub fn runs(&self, pattern: &str) -> bool {
         let wanted: Vec<String> = pattern.split_whitespace().map(normalize_word).collect();
-        let words: Vec<String> = self.words.iter().map(|word| normalize_word(word)).collect();
         if wanted.is_empty() {
             return false;
         }
-        (0..words.len()).any(|start| {
-            wanted.iter().enumerate().all(|(offset, want)| {
-                words.get(start + offset).is_some_and(|word| {
-                    word == want
+        wanted.iter().enumerate().all(|(offset, want)| {
+            self.words
+                .get(offset)
+                .map(|word| normalize_word(word))
+                .is_some_and(|word| {
+                    word == *want
                         || (offset == 0
                             && want.contains('/')
                             && word.ends_with(&format!("/{want}")))
                 })
-            })
         })
     }
 }
@@ -185,6 +191,7 @@ fn split(line: &str) -> Vec<Vec<String>> {
     let mut word = String::new();
     let mut in_word = false;
     let mut quote = Quote::None;
+    let mut heredocs: Vec<Heredoc> = Vec::new();
     let mut chars = line.chars().peekable();
     let end_word = |words: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
         if *in_word {
@@ -237,8 +244,29 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     }
                     end_word(&mut words, &mut word, &mut in_word);
                     commands.push(std::mem::take(&mut words));
+                    skip_heredocs(&mut chars, &mut heredocs);
                 }
-                ';' | '&' | '|' | '\n' | '(' | ')' | '`' | '{' | '}' => {
+                '<' if chars.peek() == Some(&'<') => {
+                    chars.next();
+                    end_word(&mut words, &mut word, &mut in_word);
+                    if chars.peek() == Some(&'<') {
+                        chars.next();
+                    } else {
+                        let strip_tabs = chars.next_if_eq(&'-').is_some();
+                        if let Some(terminator) = heredoc_terminator(&mut chars) {
+                            heredocs.push(Heredoc {
+                                terminator,
+                                strip_tabs,
+                            });
+                        }
+                    }
+                }
+                '\n' => {
+                    end_word(&mut words, &mut word, &mut in_word);
+                    commands.push(std::mem::take(&mut words));
+                    skip_heredocs(&mut chars, &mut heredocs);
+                }
+                ';' | '&' | '|' | '(' | ')' | '`' | '{' | '}' => {
                     end_word(&mut words, &mut word, &mut in_word);
                     commands.push(std::mem::take(&mut words));
                 }
@@ -262,6 +290,66 @@ fn split(line: &str) -> Vec<Vec<String>> {
         })
         .filter(|words| !words.is_empty())
         .collect()
+}
+
+/// A here-document whose body starts at the next line.
+#[derive(Debug)]
+struct Heredoc {
+    terminator: String,
+    strip_tabs: bool,
+}
+
+/// Reads the word after `<<` or `<<-`, quotes removed.
+fn heredoc_terminator(chars: &mut Peekable<Chars<'_>>) -> Option<String> {
+    while chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+    let mut word = String::new();
+    let mut quote = Quote::None;
+    while let Some(&c) = chars.peek() {
+        match (quote, c) {
+            (Quote::None, '\'') => quote = Quote::Single,
+            (Quote::None, '"') => quote = Quote::Double,
+            (Quote::Single, '\'') | (Quote::Double, '"') => quote = Quote::None,
+            (Quote::None, '\\') => {
+                chars.next();
+                if let Some(next) = chars.peek() {
+                    word.push(*next);
+                }
+            }
+            (Quote::None, c) if c.is_whitespace() || ";&|()<>`".contains(c) => break,
+            (_, c) => word.push(c),
+        }
+        chars.next();
+    }
+    (!word.is_empty()).then_some(word)
+}
+
+/// Skips the bodies of the pending here-documents, each up to its terminator line.
+fn skip_heredocs(chars: &mut Peekable<Chars<'_>>, heredocs: &mut Vec<Heredoc>) {
+    for heredoc in heredocs.drain(..) {
+        loop {
+            let mut line = String::new();
+            let mut ended = true;
+            for c in chars.by_ref() {
+                if c == '\n' {
+                    ended = false;
+                    break;
+                }
+                line.push(c);
+            }
+            let line = line.trim_end_matches('\r');
+            let line = if heredoc.strip_tabs {
+                line.trim_start_matches('\t')
+            } else {
+                line
+            };
+            if line == heredoc.terminator {
+                break;
+            }
+            if ended {
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -338,5 +426,56 @@ mod tests {
     fn program_names_drop_extensions() {
         let command = commands("'C:\\tools\\Cargo.EXE' build").remove(0);
         assert_eq!(command.program_name(), "cargo", "base name");
+    }
+
+    #[test]
+    fn heredoc_bodies_are_not_commands() {
+        assert_eq!(
+            programs("cat <<'EOF' > notes.md\ncargo build --release\ngit push\nEOF\nls"),
+            ["cat > notes.md", "ls"],
+            "the body is data"
+        );
+        assert_eq!(
+            programs("cat <<-END\n\tnpm install\n\tEND\ncargo test"),
+            ["cat", "cargo test"],
+            "a tab-stripped terminator ends it"
+        );
+        assert_eq!(
+            programs("python - <<PY && echo done\nimport os\nPY\nwc -l x"),
+            ["python -", "echo done", "wc -l x"],
+            "commands after the operator on the first line stay"
+        );
+        assert_eq!(
+            programs("cat <<<\"cargo build\""),
+            ["cat cargo build"],
+            "a here-string is not a here-document"
+        );
+    }
+
+    #[test]
+    fn patterns_match_at_the_program_position_only() {
+        for line in [
+            "cat scripts/publish-now.sh",
+            "wc -l ./scripts/publish-now.sh",
+            "grep -n publish scripts/publish-now.sh",
+        ] {
+            assert!(
+                commands(line)
+                    .iter()
+                    .all(|command| !command.runs("scripts/publish-now.sh")),
+                "{line} only reads the script"
+            );
+        }
+        for line in [
+            "bash scripts/publish-now.sh",
+            "sh -x ./scripts/publish-now.sh --all",
+        ] {
+            assert!(
+                commands(line)
+                    .iter()
+                    .any(|command| command.runs("scripts/publish-now.sh")),
+                "{line} runs the script"
+            );
+        }
     }
 }

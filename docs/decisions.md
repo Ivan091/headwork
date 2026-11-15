@@ -421,3 +421,10 @@ and the reason.
   A `builtin` spawn whose branch already exists reuses it with `git worktree add -B` when it is empty in the same
   sense, resetting it to `HEAD`; a branch with commits is never reset, and the spawn fails as before. The exit code 2
   reported with a "closed" close came from the `ls` that followed it in the same shell line, not from `headwork`.
+- 2026-11-15 Guard false positives from the 2026-11-15 audit. A configured command pattern (`user_only`, `scripts`,
+  `long_jobs`) now matches only at the program position: `cat`, `wc` or `grep` of `scripts/publish-now.sh` no
+  longer counts as running it, while `bash script.sh` still does because the parser already makes the script argument
+  the program. Here-document bodies (`<<EOF`, `<<'EOF'`, `<<-EOF`) are skipped up to their terminator line instead of
+  being parsed as commands; a here-string (`<<<`) is not a here-document. The `Stop` gate takes a `running_job` fact,
+  true when the worker's task has a `running` job whose process is alive (or has no pid to check); such a worker may
+  end its turn without asking or reporting, but a plain-text question is still denied.

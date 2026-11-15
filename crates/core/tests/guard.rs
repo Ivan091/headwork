@@ -96,6 +96,15 @@ fn orchestrator_bash_table() {
             Some(RuleId::OrchestratorDelivery),
         ),
         ("./scripts/publish-now.sh", Some(RuleId::UserOnly)),
+        ("cat scripts/publish-now.sh", None),
+        ("wc -l scripts/publish-now.sh", None),
+        ("grep -n upload ./scripts/publish-now.sh", None),
+        (
+            "cat <<'EOF' > plan.md
+cargo build --release
+EOF",
+            None,
+        ),
         ("echo 'git commit' > notes.txt", None),
     ];
     let scope = orchestrator();
@@ -174,6 +183,19 @@ fn worker_bash_table() {
         ("cargo test", "sand", true, None),
         ("scripts/ship.sh -m 'feat: x'", "sand", false, None),
         ("cargo build", "master", false, None),
+        ("cat scripts/publish-now.sh", "sand", false, None),
+        (
+            "rtk grep -c publish scripts/publish-now.sh",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "bash scripts/publish-now.sh --all",
+            "sand",
+            false,
+            Some(RuleId::UserOnly),
+        ),
     ];
     for (command, branch, background, expected) in table {
         let call = ToolCall::Bash {
@@ -420,6 +442,7 @@ fn stop_table() {
         messaged: false,
         reported: false,
         keep: false,
+        running_job: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -462,6 +485,23 @@ fn stop_table() {
             "reported done or blocked",
         ),
         (StopFacts { keep: true, ..base }, None, "a keep task"),
+        (
+            StopFacts {
+                running_job: true,
+                ..base
+            },
+            None,
+            "waiting on its own running job",
+        ),
+        (
+            StopFacts {
+                running_job: true,
+                last_message: Some("Training runs; check back later?"),
+                ..base
+            },
+            Some(RuleId::StopPlainQuestion),
+            "a running job does not excuse a plain question",
+        ),
         (
             StopFacts {
                 task: Some(TaskState::InReview),
