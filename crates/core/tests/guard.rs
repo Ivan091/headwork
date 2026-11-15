@@ -189,6 +189,56 @@ fn worker_bash_table() {
 }
 
 #[test]
+fn reading_a_script_is_not_running_it() {
+    let table: &[(Role, &str, Option<RuleId>)] = &[
+        (Role::Orchestrator, "cat scripts/publish-now.sh", None),
+        (Role::Orchestrator, "wc -l scripts/publish-now.sh", None),
+        (
+            Role::Orchestrator,
+            "grep -n upload ./scripts/publish-now.sh",
+            None,
+        ),
+        (
+            Role::Orchestrator,
+            "sed -n 1,60p S:/Code/me-sim/me-sim/scripts/worktree.sh | grep new",
+            None,
+        ),
+        (
+            Role::Orchestrator,
+            "grep -n branch scripts/worktree.sh",
+            None,
+        ),
+        (
+            Role::Orchestrator,
+            "cat <<'EOF' > plan.md\ncargo build --release\nEOF",
+            None,
+        ),
+        (Role::Worker, "cat scripts/publish-now.sh", None),
+        (
+            Role::Worker,
+            "rtk grep -c publish scripts/publish-now.sh",
+            None,
+        ),
+        (
+            Role::Worker,
+            "bash scripts/publish-now.sh --all",
+            Some(RuleId::UserOnly),
+        ),
+    ];
+    for (role, command, expected) in table {
+        let scope = match role {
+            Role::Orchestrator => orchestrator(),
+            Role::Worker => worker("sand"),
+        };
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}"
+        );
+    }
+}
+
+#[test]
 fn write_table() {
     let table: &[(Role, &str, Option<RuleId>)] = &[
         (
@@ -420,6 +470,7 @@ fn stop_table() {
         messaged: false,
         reported: false,
         keep: false,
+        running_job: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -510,4 +561,28 @@ fn stop_table() {
     for (facts, expected, what) in table {
         assert_eq!(stop(*facts), *expected, "{what}");
     }
+}
+
+#[test]
+fn stop_while_a_job_runs() {
+    let waiting = StopFacts {
+        role: Role::Worker,
+        task: Some(TaskState::Working),
+        blocked_in_row: 0,
+        asked: false,
+        messaged: false,
+        reported: false,
+        keep: false,
+        running_job: true,
+        last_message: Some("Training runs; I will look at the next checkpoint."),
+    };
+    assert_eq!(stop(waiting), None, "waiting on its own running job");
+    assert_eq!(
+        stop(StopFacts {
+            last_message: Some("Training runs; check back later?"),
+            ..waiting
+        }),
+        Some(RuleId::StopPlainQuestion),
+        "a running job does not excuse a plain question"
+    );
 }

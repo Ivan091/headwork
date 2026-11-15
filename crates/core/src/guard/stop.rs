@@ -29,6 +29,8 @@ pub struct StopFacts<'a> {
     pub reported: bool,
     /// The task is a standing role that does not close when idle.
     pub keep: bool,
+    /// The task has a registered job whose process still runs: the worker is waiting on it, not stopping silently.
+    pub running_job: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -57,7 +59,8 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         && facts.task == Some(TaskState::Working)
         && !facts.asked
         && !facts.messaged
-        && !facts.reported;
+        && !facts.reported
+        && !facts.running_job;
     if unfinished {
         return Decision::deny(
             RuleId::StopUnfinished,

@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use headwork_adapters::proc;
 use headwork_core::config::ParkPolicy;
 use headwork_core::{Actor, JobState};
-use headwork_store::{JobRow, NewJob, Store, Task};
+use headwork_store::{JobRow, NewJob, Store, Task, TaskId};
 
 use super::Env;
 
@@ -138,6 +138,21 @@ pub fn start(
             Err(error)
         }
     }
+}
+
+/// Whether a task has a `running` job whose process is still alive (or has no process id to check).
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn has_running_job(store: &Store, task: TaskId) -> Result<bool> {
+    Ok(store
+        .jobs_in(JobState::Running, Some(task))?
+        .iter()
+        .any(|job| {
+            job.pid
+                .is_none_or(|pid| proc::is_alive(pid).unwrap_or(true))
+        }))
 }
 
 /// Marks every running job whose process is gone as done.

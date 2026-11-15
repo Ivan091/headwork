@@ -713,6 +713,10 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
         messaged: turn.messaged,
         reported: turn.reported,
         keep: call.task.is_some_and(|task| task.keep),
+        running_job: match call.task {
+            Some(task) => super::jobs::has_running_job(store, task.id)?,
+            None => false,
+        },
         last_message,
     };
     let decision = check_stop(&facts);
