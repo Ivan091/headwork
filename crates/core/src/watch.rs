@@ -12,7 +12,7 @@ pub struct Limits {
     pub disk_warn: u64,
     /// Free bytes below which the queue pauses.
     pub disk_stop: u64,
-    /// Bytes of growth between two ticks that count as runaway output.
+    /// Bytes of growth per minute that count as runaway output.
     pub growth: u64,
     /// A single file of this many bytes counts as runaway output.
     pub file: u64,
@@ -47,8 +47,8 @@ impl Limits {
         }
     }
 
-    /// Files smaller than this are not sampled between ticks: a file that was below it last time and grew past the
-    /// growth limit since is measured against zero, which is never less than its true growth.
+    /// Files smaller than this are not sampled between ticks. A file seen for the first time gets no growth verdict
+    /// (only the size limit applies to it), so a file that crosses this floor is judged on growth from the next tick.
     #[must_use]
     pub const fn sample_floor(&self) -> u64 {
         self.growth / 4
@@ -81,20 +81,34 @@ pub const fn disk_level(free: u64, limits: &Limits) -> DiskLevel {
 /// Why a file counts as runaway output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Runaway {
-    /// It grew by this many bytes since the last tick.
+    /// It grows by this many bytes per minute since the last tick.
     Growth(u64),
     /// It is this many bytes large.
     Size(u64),
 }
 
-/// Whether a file of `size` bytes, `previous` bytes at the last tick (none when it was not sampled), is runaway.
+/// The shortest interval growth is spread over: ticks closer together than this are judged as if a minute passed, so a
+/// manual tick seconds after the last does not turn a little growth into a huge rate.
+pub const MIN_INTERVAL_S: u64 = 60;
+
+/// Whether a file of `size` bytes is runaway.
+///
+/// `previous` is its size at the last tick, `None` when it was not sampled then, and `elapsed_s` the seconds since
+/// that tick. Growth is judged as a rate per minute, and only against a
+/// previous sample: a file first seen is judged on its size alone.
 #[must_use]
-pub fn runaway(size: u64, previous: Option<u64>, limits: &Limits) -> Option<Runaway> {
+pub fn runaway(
+    size: u64,
+    previous: Option<u64>,
+    elapsed_s: u64,
+    limits: &Limits,
+) -> Option<Runaway> {
     if size >= limits.file {
         return Some(Runaway::Size(size));
     }
-    let grown = size.saturating_sub(previous.unwrap_or(0));
-    (grown >= limits.growth).then_some(Runaway::Growth(grown))
+    let grown = size.saturating_sub(previous?);
+    let per_minute = grown.saturating_mul(60) / elapsed_s.max(MIN_INTERVAL_S);
+    (per_minute >= limits.growth).then_some(Runaway::Growth(per_minute))
 }
 
 /// Whether a spawning task has waited for `SessionStart` for too long.
@@ -186,19 +200,25 @@ mod tests {
 
     #[test]
     fn runaway_is_size_or_growth() {
-        for (size, previous, expected) in [
-            (50, None, None),
-            (99, Some(0), None),
-            (100, None, Some(Runaway::Growth(100))),
-            (500, Some(350), Some(Runaway::Growth(150))),
-            (500, Some(450), None),
-            (1000, Some(1000), Some(Runaway::Size(1000))),
-            (900, Some(950), None),
+        for (size, previous, elapsed, expected) in [
+            (50, None, 60, None),
+            (99, Some(0), 60, None),
+            (900, None, 60, None),
+            (1000, None, 60, Some(Runaway::Size(1000))),
+            (500, Some(350), 60, Some(Runaway::Growth(150))),
+            (500, Some(450), 60, None),
+            (1000, Some(1000), 60, Some(Runaway::Size(1000))),
+            (900, Some(950), 60, None),
+            (500, Some(350), 5, Some(Runaway::Growth(150))),
+            (500, Some(350), 0, Some(Runaway::Growth(150))),
+            (500, Some(200), 120, Some(Runaway::Growth(150))),
+            (500, Some(350), 120, None),
+            (900, Some(0), 3600, None),
         ] {
             assert_eq!(
-                runaway(size, previous, &LIMITS),
+                runaway(size, previous, elapsed, &LIMITS),
                 expected,
-                "size {size}, before {previous:?}"
+                "size {size}, before {previous:?}, {elapsed} s"
             );
         }
     }

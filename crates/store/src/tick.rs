@@ -470,6 +470,20 @@ impl Store {
         Ok(())
     }
 
+    /// Seconds since the last finished tick, `None` when no tick ever ran.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn last_tick_age_s(&self) -> Result<Option<u64>, StoreError> {
+        let sql = format!(
+            "SELECT {} FROM machine WHERE id = 1",
+            age_of("last_tick_at")
+        );
+        let age: Option<i64> = self.conn.query_row(&sql, [], |row| row.get(0))?;
+        Ok(age.map(seconds))
+    }
+
     /// Records a finished tick; returns whether a tick ran before.
     ///
     /// # Errors

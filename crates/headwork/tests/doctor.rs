@@ -216,6 +216,21 @@ fn little_free_disk_warns_and_almost_none_fails() {
 }
 
 #[test]
+fn a_missing_tick_warns_only_when_enforcing() {
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "tick"), Status::Ok, "shadow mode");
+    let config = install.home.root().join("config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    write(&config, &format!("{text}\n[hooks]\nenforce = true\n"));
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "tick"), Status::Warn, "enforcing, no tick");
+    install.home.open_store().unwrap().record_tick().unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "tick"), Status::Ok, "a tick just ran");
+}
+
+#[test]
 fn an_orchestrator_session_in_the_store_satisfies_the_orchestrator_check() {
     let install = install();
     let mut store = install.home.open_store().unwrap();

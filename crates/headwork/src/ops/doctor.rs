@@ -211,6 +211,8 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     }
     if let Some(store) = &store {
         checks.extend(store_checks(d, store));
+        let enforce = config.as_ref().is_ok_and(|config| config.hooks.enforce);
+        checks.push(tick_check(store, enforce));
     }
     DoctorReport { checks }
 }
@@ -613,6 +615,36 @@ fn store_checks(d: &Doctor<'_>, store: &Store) -> Vec<Check> {
     checks.push(builds(store));
     checks.push(shadow_count(store));
     checks
+}
+
+/// A tick older than this counts as not running; the tick is meant to run every minute.
+const TICK_STALE_S: u64 = 300;
+
+fn tick_check(store: &Store, enforce: bool) -> Check {
+    let age = match store.last_tick_age_s() {
+        Ok(age) => age,
+        Err(error) => return Check::warn("tick", format!("{error}"), "check the store"),
+    };
+    let when = age.map_or_else(
+        || "no tick has run".to_owned(),
+        |age| format!("the last tick ran {} min ago", age / 60),
+    );
+    match age {
+        Some(age) if age <= TICK_STALE_S => Check::ok("tick", when),
+        _ if enforce => Check::warn(
+            "tick",
+            format!(
+                "{when}: with enforcement on, nothing moves merged tasks, interrupted sessions or the queue"
+            ),
+            "schedule `headwork tick` every minute (CLAUDE.md, Scheduling the tick)",
+        ),
+        _ => Check::ok(
+            "tick",
+            format!(
+                "{when}; nothing schedules it in shadow mode, which is expected until enforcement is turned on"
+            ),
+        ),
+    }
 }
 
 fn builds(store: &Store) -> Check {

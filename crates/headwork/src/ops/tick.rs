@@ -503,7 +503,7 @@ impl<'b> Run<'_, 'b> {
             let facts = CloseFacts {
                 cause: CloseCause::GraceElapsed,
                 open_ask: self.store.has_waiting_ask(id)?,
-                running_job: false,
+                running_job: super::jobs::has_running_job(self.store, id)?,
                 report_sent: self.store.report_sent(id)?,
             };
             let key = format!("merged-grace:{}", task.name);
@@ -750,6 +750,10 @@ impl<'b> Run<'_, 'b> {
         roots.sort();
         roots.dedup();
         let before = self.store.file_samples()?;
+        let elapsed = self
+            .store
+            .last_tick_age_s()?
+            .unwrap_or(watch::MIN_INTERVAL_S);
         let mut after = BTreeMap::new();
         for root in &roots {
             for (path, size) in large_files(root, self.limits.sample_floor()) {
@@ -757,7 +761,8 @@ impl<'b> Run<'_, 'b> {
             }
         }
         for (path, size) in &after {
-            let Some(why) = watch::runaway(*size, before.get(path).copied(), &self.limits) else {
+            let Some(why) = watch::runaway(*size, before.get(path).copied(), elapsed, &self.limits)
+            else {
                 continue;
             };
             self.runaway_file(path, why, &dirs)?;

@@ -428,3 +428,11 @@ and the reason.
   being parsed as commands; a here-string (`<<<`) is not a here-document. The `Stop` gate takes a `running_job` fact,
   true when the worker's task has a `running` job whose process is alive (or has no pid to check); such a worker may
   end its turn without asking or reporting, but a plain-text question is still denied.
+- 2026-11-15 Tick fixes from the 2026-11-15 audit. The merged grace reads `running_job` from the store: a `running`
+  job of the task whose process is alive (or has no pid) holds the close, through the same `jobs::has_running_job`
+  the `Stop` gate uses. The runaway rule gives no growth verdict to a file without a previous sample (only the size
+  limit applies to it; its one run had judged every first-seen file from zero), and judges growth per minute since the
+  last tick, spreading it over at least `MIN_INTERVAL_S` (60 s) so a manual tick seconds after the last does not
+  inflate the rate. A file that crosses the sample floor is therefore judged on growth one tick later. `headwork
+  doctor` has a `tick` check: a tick older than 5 minutes, or none, warns only with `[hooks] enforce = true`; in shadow
+  mode it is reported as ok, since nothing schedules the tick until enforcement is turned on.
