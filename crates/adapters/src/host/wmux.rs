@@ -33,6 +33,13 @@ pub trait Runner: std::fmt::Debug {
     }
 }
 
+/// The variable the wmux CLI reads as a floor under its reply deadline (5 s by default).
+const RPC_TIMEOUT_VAR: &str = "WMUX_RPC_TIMEOUT_MS";
+
+/// The reply deadline headwork gives wmux: a busy wmux with many panes takes longer than 5 s to list its workspaces,
+/// and a spawn that fails on that after making the worktree leaves it behind. A value the caller sets wins.
+const RPC_TIMEOUT_MS: &str = "30000";
+
 /// The real wmux command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
@@ -72,6 +79,9 @@ impl Runner for Cli {
             .arg(&self.script)
             .args(args)
             .env("MSYS_NO_PATHCONV", "1");
+        if std::env::var_os(RPC_TIMEOUT_VAR).is_none() {
+            command.env(RPC_TIMEOUT_VAR, RPC_TIMEOUT_MS);
+        }
         if let Some(caller) = caller {
             command.env("WMUX_SURFACE_ID", caller);
         }

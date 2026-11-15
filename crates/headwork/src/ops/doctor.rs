@@ -11,7 +11,7 @@ use std::process::Command;
 use anyhow::Result;
 use headwork_adapters::disk::Disks;
 use headwork_adapters::host::TerminalHost;
-use headwork_adapters::proc;
+use headwork_adapters::{proc, shell};
 use headwork_core::Config;
 use headwork_store::{EVENT_WOULD_DENY, EventFilter, MIGRATIONS, Store};
 use serde::Serialize;
@@ -201,6 +201,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     let store = store_check(d, &mut checks);
     if let Ok(config) = &config {
         checks.push(host_check(d, config));
+        checks.push(shell_check(config));
     }
     checks.push(gh_check(d));
     checks.push(claude_check(d));
@@ -311,6 +312,46 @@ fn store_check(d: &Doctor<'_>, checks: &mut Vec<Check>) -> Option<Store> {
             None
         }
     }
+}
+
+const SHELL_FIX: &str =
+    "set `shell = \"C:/Program Files/Git/bin/bash.exe\"` under [machine] in config.toml";
+
+fn shell_check(config: &Config) -> Check {
+    let configured = config.machine.shell.as_deref();
+    let shell = shell::resolve(configured);
+    let shown = slashed(&shell);
+    let source = if configured.is_some() {
+        "configured"
+    } else {
+        "default"
+    };
+    if shell::is_wsl_bash(&shell) {
+        return Check::fail(
+            "shell",
+            format!(
+                "the {source} shell {shown} is WSL's bash: its git has no SSH keys, so worktree scripts hang"
+            ),
+            SHELL_FIX,
+        );
+    }
+    if cfg!(windows) && shell::is_bare(&shell) {
+        return Check::warn(
+            "shell",
+            format!(
+                "the {source} shell is a bare `{shown}`, which Windows may resolve to WSL's System32/bash.exe"
+            ),
+            SHELL_FIX,
+        );
+    }
+    if !shell::is_bare(&shell) && !shell.is_file() {
+        return Check::fail(
+            "shell",
+            format!("the {source} shell {shown} does not exist"),
+            SHELL_FIX,
+        );
+    }
+    Check::ok("shell", format!("{source} shell {shown}"))
 }
 
 fn host_check(d: &Doctor<'_>, config: &Config) -> Check {

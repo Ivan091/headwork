@@ -16,7 +16,7 @@ use anyhow::{Result, bail};
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
-use headwork_core::config::TaskVars;
+use headwork_core::config::{TaskVars, WorktreeCommand};
 use headwork_core::lifecycle::{CleanupFacts, Trigger, WorktreeEnd};
 use headwork_core::{Actor, JobState, SessionState, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId};
@@ -299,35 +299,37 @@ pub(super) fn remove_worktree(
     } else {
         worktrees.remove(command, &vars)
     };
-    match result {
-        Ok(()) if !Path::new(&worktree.path).exists() => {
-            store.set_worktree_state(id, "removed", env.actor)?;
-            delete_empty_branch(store, env, &task, &worktree.branch)?;
-            Ok(WorktreeEnd::Removed)
-        }
-        Ok(()) => {
-            let error = "the remove command left the folder in place".to_owned();
-            store.append_event(
-                env.actor,
-                Some(id),
-                None,
-                "worktree-refused",
-                &serde_json::json!({ "error": error }),
-            )?;
-            Ok(WorktreeEnd::Present)
-        }
-        Err(error) => {
-            let error = error.to_string();
-            store.append_event(
-                env.actor,
-                Some(id),
-                None,
-                "worktree-refused",
-                &serde_json::json!({ "error": error }),
-            )?;
-            Ok(WorktreeEnd::Present)
-        }
+    let refusal = match result {
+        Ok(()) if !Path::new(&worktree.path).exists() => None,
+        Ok(()) => Some("the remove command left the folder in place".to_owned()),
+        Err(error) => Some(error.to_string()),
+    };
+    let Some(error) = refusal else {
+        store.set_worktree_state(id, "removed", env.actor)?;
+        delete_empty_branch(store, env, &task, &worktree.branch)?;
+        return Ok(WorktreeEnd::Removed);
+    };
+    let script = matches!(command, WorktreeCommand::Command(_));
+    if script && worktrees.remove_if_pristine(&vars)? && !Path::new(&worktree.path).exists() {
+        store.append_event(
+            env.actor,
+            Some(id),
+            None,
+            "worktree-removed-pristine",
+            &serde_json::json!({ "script_error": error }),
+        )?;
+        store.set_worktree_state(id, "removed", env.actor)?;
+        delete_empty_branch(store, env, &task, &worktree.branch)?;
+        return Ok(WorktreeEnd::Removed);
     }
+    store.append_event(
+        env.actor,
+        Some(id),
+        None,
+        "worktree-refused",
+        &serde_json::json!({ "error": error }),
+    )?;
+    Ok(WorktreeEnd::Present)
 }
 
 /// Ends a task's folder that git no longer counts as a worktree: an empty one is deleted and recorded `removed`, one

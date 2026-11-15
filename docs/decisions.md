@@ -443,3 +443,21 @@ and the reason.
   over a `doctor --fix` because it runs by itself at the next store open and is idempotent; it changes no schema. Like
   every migration it stops a pinned launcher (docs/hot-reload.md) from recording its exit; `headwork close` finishes
   such a session.
+- 2026-11-16 Spawns of me-sim and me-studio hung because the default shell was a bare `bash`, which Windows resolved to
+  WSL's `System32\bash.exe`; WSL's git has no SSH keys, so the `git fetch` in `scripts/worktree.sh new` waited on a
+  prompt forever. The default (`[machine] shell` absent) is now Git Bash on Windows, looked up as `bin/bash.exe` in an
+  ancestor of `git --exec-path`, then in Git's install folders (`ProgramW6432`, `ProgramFiles`,
+  `ProgramFiles(x86)`, `LOCALAPPDATA/Programs`), then on `PATH`, never WSL's `bash` (`System32`, `Sysnative`,
+  `WindowsApps`); plain `bash` only when none is found, and elsewhere. `headwork import` uses the same default.
+  `headwork doctor` has a `shell` check: WSL's bash or a missing file fails, a bare name warns on Windows. Every
+  worktree command (scripts and git) now runs with stdin closed and at most `COMMAND_TIMEOUT` (300 s, long enough for
+  a fetch and a large checkout); a command past it has its tree ended and fails with what it printed so far, so a
+  prompt fails loudly instead of hanging the spawn.
+- 2026-11-16 Two spawn and close failures seen on a busy night. The wmux CLI gives up after 5 s without a reply, and a
+  wmux with about ten panes took longer to list its workspaces, failing a spawn after its worktree was made; headwork
+  now runs the CLI with `WMUX_RPC_TIMEOUT_MS=30000` (wmux's own floor variable, so it only lengthens the deadline)
+  unless the caller set it. A close whose project remove script refuses a worktree (me-sim's `worktree.sh remove`
+  keeps one whose work it cannot see merged, which a task that never started also is) falls back to `git worktree
+  remove` without force when the worktree holds no work: its branch has no commits beyond the main checkout's `HEAD`
+  and git itself refuses changes or untracked files. It logs `worktree-removed-pristine` with the script's error and
+  deletes the empty branch as before. A worktree with commits or changes still stays and keeps the task `closing`.

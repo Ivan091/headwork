@@ -1,7 +1,10 @@
 //! Task worktrees, made and removed by the project's configured command or by git itself (`builtin`).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use headwork_core::config::{TaskVars, TemplateProblem, WorktreeCommand};
 
@@ -19,6 +22,18 @@ pub enum WorktreeError {
         /// The OS error.
         #[source]
         source: std::io::Error,
+    },
+    /// The command ran longer than its timeout and was ended, with whatever it printed by then.
+    #[error(
+        "`{command}` timed out after {seconds} s and was ended (waiting on a prompt?): {output}"
+    )]
+    TimedOut {
+        /// The command.
+        command: String,
+        /// The timeout.
+        seconds: u64,
+        /// What it printed.
+        output: String,
     },
     /// The command exited with a failure.
     #[error("`{command}` failed: {output}")]
@@ -41,21 +56,33 @@ pub enum BranchEnd {
     Kept,
 }
 
+/// How long one worktree command may run before it is ended: a script waiting on a prompt fails instead of hanging.
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Runs worktree commands for one project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktrees {
     shell: PathBuf,
     main: PathBuf,
+    timeout: Duration,
 }
 
 impl Worktrees {
-    /// Commands run in `main`; templates run through `shell -c`.
+    /// Commands run in `main` with no input and at most [`COMMAND_TIMEOUT`] each; templates run through `shell -c`.
     #[must_use]
     pub fn new(shell: impl Into<PathBuf>, main: impl Into<PathBuf>) -> Self {
         Self {
             shell: shell.into(),
             main: main.into(),
+            timeout: COMMAND_TIMEOUT,
         }
+    }
+
+    /// The same, with another timeout per command.
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Makes the task's worktree: `git worktree add -b <branch> <worktree>` for `builtin`, else the template.
@@ -115,15 +142,12 @@ impl Worktrees {
     }
 
     fn succeeds(&self, args: &[&str]) -> Result<bool, WorktreeError> {
-        Command::new("git")
-            .args(args)
-            .current_dir(&self.main)
-            .output()
-            .map(|output| output.status.success())
-            .map_err(|source| WorktreeError::Run {
-                program: "git".to_owned(),
-                source,
-            })
+        let shown = format!("git {}", args.join(" "));
+        match self.output(Command::new("git").args(args), &shown) {
+            Ok(_) => Ok(true),
+            Err(WorktreeError::Failed { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Removes the task's worktree: `git worktree remove <worktree>` for `builtin`, which refuses a dirty one, else
@@ -140,6 +164,25 @@ impl Worktrees {
         match command {
             WorktreeCommand::Builtin => self.git(&["worktree", "remove", vars.worktree]),
             WorktreeCommand::Command(template) => self.script(&vars.expand(template)?),
+        }
+    }
+
+    /// Removes the task's worktree with `git worktree remove`, without force, when it holds no work: its branch has no
+    /// commits beyond the main checkout's `HEAD`, and git refuses a worktree with changes or untracked files. Returns
+    /// whether it was removed. This is the fallback for a remove script that keeps worktrees it cannot see merged,
+    /// which a task that never started also is.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot run or times out.
+    pub fn remove_if_pristine(&self, vars: &TaskVars<'_>) -> Result<bool, WorktreeError> {
+        if !self.branch_exists(vars.branch)? || !self.branch_is_empty(vars.branch)? {
+            return Ok(false);
+        }
+        match self.git(&["worktree", "remove", vars.worktree]) {
+            Ok(()) => Ok(true),
+            Err(WorktreeError::Failed { .. }) => Ok(false),
+            Err(error) => Err(error),
         }
     }
 
@@ -198,28 +241,64 @@ impl Worktrees {
     }
 
     fn output(&self, command: &mut Command, shown: &str) -> Result<String, WorktreeError> {
-        let output =
-            command
-                .current_dir(&self.main)
-                .output()
-                .map_err(|source| WorktreeError::Run {
-                    program: command.get_program().to_string_lossy().into_owned(),
-                    source,
-                })?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        if output.status.success() {
-            Ok(stdout)
-        } else {
-            Err(WorktreeError::Failed {
+        let program = command.get_program().to_string_lossy().into_owned();
+        let run_error = |source| WorktreeError::Run {
+            program: program.clone(),
+            source,
+        };
+        let mut child = command
+            .current_dir(&self.main)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(run_error)?;
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(run_error)? {
+                break Some(status);
+            }
+            if started.elapsed() >= self.timeout {
+                drop(crate::proc::kill_tree(child.id()));
+                drop(child.kill());
+                drop(child.wait());
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let grace = Duration::from_secs(2);
+        let stdout = stdout.recv_timeout(grace).unwrap_or_default();
+        let stderr = stderr.recv_timeout(grace).unwrap_or_default();
+        let printed = format!("{}{}", stderr.trim(), stdout.trim());
+        match status {
+            Some(status) if status.success() => Ok(stdout),
+            Some(_) => Err(WorktreeError::Failed {
                 command: shown.to_owned(),
-                output: format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&output.stderr).trim(),
-                    stdout.trim()
-                ),
-            })
+                output: printed,
+            }),
+            None => Err(WorktreeError::TimedOut {
+                command: shown.to_owned(),
+                seconds: self.timeout.as_secs(),
+                output: printed,
+            }),
         }
     }
+}
+
+/// Reads a child's pipe to its end on a thread of its own, so a full pipe never blocks the child, and hands the text
+/// over when the pipe closes.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let (send, receive) = mpsc::channel();
+    if let Some(mut pipe) = pipe {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            drop(pipe.read_to_end(&mut bytes));
+            drop(send.send(String::from_utf8_lossy(&bytes).into_owned()));
+        });
+    }
+    receive
 }
 
 /// Parses `git worktree list --porcelain` into paths and branch names.

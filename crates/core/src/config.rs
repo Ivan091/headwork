@@ -311,8 +311,9 @@ pub struct MachineConfig {
     /// What resume does after a crash.
     #[serde(default)]
     pub resume_after_crash: CrashResume,
-    /// The shell that runs project command templates, such as a worktree script; `bash` from `PATH` when absent. On
-    /// Windows this should name Git Bash, because `PATH` may also hold WSL's `bash`.
+    /// The shell that runs project command templates, such as a worktree script. When absent it is Git Bash on
+    /// Windows (beside the `git` on `PATH`, in Git's install folders, or on `PATH`, never WSL's `System32/bash.exe`)
+    /// and `bash` elsewhere.
     #[serde(default)]
     pub shell: Option<String>,
     /// The terminal host's command line program; found on `PATH` or in its default install folder when absent.

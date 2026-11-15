@@ -216,6 +216,24 @@ fn little_free_disk_warns_and_almost_none_fails() {
 }
 
 #[test]
+fn a_wsl_shell_fails_and_the_default_does_not() {
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_ne!(status(&report, "shell"), Status::Fail, "the default shell");
+    let config = install.home.root().join("config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let wsl = text.replacen(
+        "[machine]\n",
+        "[machine]\nshell = \"C:/Windows/System32/bash.exe\"\n",
+        1,
+    );
+    assert_ne!(wsl, text, "the fixture has a [machine] table");
+    write(&config, &wsl);
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "shell"), Status::Fail, "WSL's bash");
+}
+
+#[test]
 fn a_missing_tick_warns_only_when_enforcing() {
     let install = install();
     let report = run(&install, &FakeProbe::default());

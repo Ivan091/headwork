@@ -55,6 +55,10 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn world(max_workers: u32) -> World {
+    world_removing(max_workers, "builtin")
+}
+
+fn world_removing(max_workers: u32, remove: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -63,7 +67,7 @@ fn world(max_workers: u32) -> World {
     let main_text = main.display().to_string().replace('\\', "/");
     let text = format!(
         "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[project.demo]\nmain = \"{main_text}\"\n\
-         worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
+         worktree_new = \"builtin\"\nworktree_remove = \"{remove}\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
          deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
@@ -162,6 +166,35 @@ fn close_removes_brief_pane_and_worktree_then_marks_closed() {
     for kind in ["worktree-state", "transition"] {
         assert!(kinds.iter().any(|k| k == kind), "{kind} in {kinds:?}");
     }
+}
+
+#[test]
+fn a_remove_script_that_keeps_a_fresh_worktree_is_overruled_only_when_it_holds_no_work() {
+    let mut w = world_removing(10, "echo not merged into master >&2; exit 1");
+    let (fresh, _) = spawn_task(&mut w, "fresh", false, false);
+    let (worked, _) = spawn_task(&mut w, "worked", false, false);
+    let worked_dir = w.dir.path().join("demo-worked");
+    git(
+        &worked_dir,
+        &["commit", "-q", "--allow-empty", "-m", "work"],
+    );
+    let env = env!(w);
+    let report = close(&mut w.store, &env, fresh.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(
+        !w.dir.path().join("demo-fresh").exists(),
+        "fresh worktree removed"
+    );
+    assert!(!branch_exists(&w.main, "fresh"), "its empty branch deleted");
+    assert!(
+        event_kinds(&w.store, &fresh)
+            .iter()
+            .any(|k| k == "worktree-removed-pristine"),
+        "logged"
+    );
+    let report = close(&mut w.store, &env, worked.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "{report:?}");
+    assert!(worked_dir.exists(), "a worktree with work stays");
 }
 
 #[test]
