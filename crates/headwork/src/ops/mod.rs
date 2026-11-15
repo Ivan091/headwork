@@ -97,7 +97,7 @@ impl Env<'_> {
     ///
     /// Fails when the project left the config.
     pub fn worktrees(&self, task: &Task) -> Result<Worktrees> {
-        let shell = self.config.machine.shell.as_deref().unwrap_or("bash");
+        let shell = headwork_adapters::shell::resolve(self.config.machine.shell.as_deref());
         Ok(Worktrees::new(shell, self.main_path(task)?))
     }
 }

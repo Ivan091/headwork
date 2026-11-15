@@ -364,7 +364,7 @@ fn plan(env: &Env<'_>, sources: Sources<'_>, child: &Found) -> Result<AdoptTask,
         None
     } else {
         let path = child.cwd.clone().unwrap_or(expected);
-        let branch = Worktrees::new("bash", &main)
+        let branch = Worktrees::new(headwork_adapters::shell::default_shell(), &main)
             .list()
             .ok()
             .and_then(|list| {
@@ -409,7 +409,8 @@ fn stray_worktrees(env: &Env<'_>, used: &BTreeSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     for project in env.config.projects.values() {
         let main = env.home.expand(&project.main);
-        let Ok(list) = Worktrees::new("bash", &main).list() else {
+        let Ok(list) = Worktrees::new(headwork_adapters::shell::default_shell(), &main).list()
+        else {
             continue;
         };
         for (path, _) in list {

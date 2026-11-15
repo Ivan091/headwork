@@ -6,7 +6,8 @@ use std::path::Path;
 use std::process::Command;
 
 use headwork_adapters::runtime::ClaudeLaunch;
-use headwork_adapters::worktree::{Worktrees, parse_porcelain, same_path};
+use headwork_adapters::shell::default_shell;
+use headwork_adapters::worktree::{WorktreeError, Worktrees, parse_porcelain, same_path};
 use headwork_core::config::{TaskVars, WorktreeCommand};
 use headwork_core::{Effort, Model, PermissionMode};
 
@@ -196,6 +197,56 @@ fn a_failing_script_is_reported() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("no sand"), "{error}");
+}
+
+const fn script_vars() -> TaskVars<'static> {
+    TaskVars {
+        slug: "sand",
+        branch: "sand",
+        main: "",
+        worktree: "",
+    }
+}
+
+#[test]
+fn a_script_waiting_on_input_reads_nothing_and_fails_at_once() {
+    let dir = repo();
+    let started = std::time::Instant::now();
+    let error = Worktrees::new(default_shell(), dir.path().join("main"))
+        .create(
+            &WorktreeCommand::Command(
+                "read -r answer || { echo no input >&2; exit 4; }".to_owned(),
+            ),
+            &script_vars(),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("no input"), "{error}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "no wait"
+    );
+}
+
+#[test]
+fn a_script_that_hangs_is_ended_at_its_timeout() {
+    let dir = repo();
+    let started = std::time::Instant::now();
+    let error = Worktrees::new(default_shell(), dir.path().join("main"))
+        .with_timeout(std::time::Duration::from_secs(1))
+        .create(
+            &WorktreeCommand::Command("echo asking >&2; sleep 60".to_owned()),
+            &script_vars(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, WorktreeError::TimedOut { seconds: 1, .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("asking"), "{error}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "ended"
+    );
 }
 
 #[test]

@@ -443,3 +443,13 @@ and the reason.
   over a `doctor --fix` because it runs by itself at the next store open and is idempotent; it changes no schema. Like
   every migration it stops a pinned launcher (docs/hot-reload.md) from recording its exit; `headwork close` finishes
   such a session.
+- 2026-11-16 Spawns of me-sim and me-studio hung because the default shell was a bare `bash`, which Windows resolved to
+  WSL's `System32\bash.exe`; WSL's git has no SSH keys, so the `git fetch` in `scripts/worktree.sh new` waited on a
+  prompt forever. The default (`[machine] shell` absent) is now Git Bash on Windows, looked up as `bin/bash.exe` in an
+  ancestor of `git --exec-path`, then in Git's install folders (`ProgramW6432`, `ProgramFiles`,
+  `ProgramFiles(x86)`, `LOCALAPPDATA/Programs`), then on `PATH`, never WSL's `bash` (`System32`, `Sysnative`,
+  `WindowsApps`); plain `bash` only when none is found, and elsewhere. `headwork import` uses the same default.
+  `headwork doctor` has a `shell` check: WSL's bash or a missing file fails, a bare name warns on Windows. Every
+  worktree command (scripts and git) now runs with stdin closed and at most `COMMAND_TIMEOUT` (300 s, long enough for
+  a fetch and a large checkout); a command past it has its tree ended and fails with what it printed so far, so a
+  prompt fails loudly instead of hanging the spawn.

@@ -8,4 +8,5 @@ pub mod git;
 pub mod host;
 pub mod proc;
 pub mod runtime;
+pub mod shell;
 pub mod worktree;
