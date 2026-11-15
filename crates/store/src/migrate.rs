@@ -1,6 +1,6 @@
 //! Numbered schema migrations, tracked in SQLite's `user_version`.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::error::StoreError;
 
@@ -17,27 +17,31 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_orchestrator.sql"),
 ];
 
-/// Applies the migrations the database lacks, each in its own transaction.
+/// Applies the migrations the database lacks, each in its own immediate transaction.
+///
+/// The version is read again inside each transaction, so two processes opening a new store at once never apply the
+/// same migration twice: the second waits for the first and then finds the migration done.
 ///
 /// # Errors
 ///
 /// Returns [`StoreError::SchemaTooNew`] when the database is newer than [`MIGRATIONS`], or the SQLite error of a
 /// failing migration, which is rolled back.
 pub fn migrate(conn: &mut Connection) -> Result<i64, StoreError> {
-    let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    let applied = usize::try_from(found).map_err(|_| StoreError::OutOfRange(found))?;
-    if applied > MIGRATIONS.len() {
-        return Err(StoreError::SchemaTooNew {
-            found,
-            known: MIGRATIONS.len(),
-        });
-    }
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
-        let version = i64::try_from(index + 1).map_err(|_| StoreError::OutOfRange(found))?;
-        let tx = conn.transaction()?;
+    loop {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let found: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let applied = usize::try_from(found).map_err(|_| StoreError::OutOfRange(found))?;
+        let Some(sql) = MIGRATIONS.get(applied) else {
+            if applied > MIGRATIONS.len() {
+                return Err(StoreError::SchemaTooNew {
+                    found,
+                    known: MIGRATIONS.len(),
+                });
+            }
+            return Ok(found);
+        };
         tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", version)?;
+        tx.pragma_update(None, "user_version", found + 1)?;
         tx.commit()?;
     }
-    Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
 }

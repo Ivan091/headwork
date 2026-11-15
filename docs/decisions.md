@@ -408,3 +408,16 @@ and the reason.
   This is bookkeeping, so it runs in shadow mode too; the tick still records the `pane-lost` finding only for what it
   found itself.
 - 2026-11-15 Lead worker adopted (rules/orchestrator.md, rules/worker.md, docs/sub-roots.md); sub-roots not built. The `child-admin` shadow rule stays a separate task after the shadow week.
+- 2026-11-15 Concurrent writers to `state.db` wait instead of failing with `database is locked`. Every store
+  connection sets a 30-second busy timeout before anything else, and starts every transaction `IMMEDIATE`: a deferred
+  transaction that read first could not upgrade to a write while another process wrote, and SQLite returns
+  `SQLITE_BUSY` at once there whatever the timeout. Switching a new file to WAL ignores the busy handler too, so
+  `Store::open` retries that one pragma until the timeout. Migrations read `user_version` inside their immediate
+  transaction, so two processes creating the store at once never apply one twice. This was the cause of two spawns
+  back to back failing and of the `park_resume` flake (its recap writer raced `park`).
+- 2026-11-15 Closing a task deletes its branch once the worktree is removed, but only when the branch holds no
+  commits beyond the main checkout's `HEAD` (`git merge-base --is-ancestor`); a branch with work of its own is kept,
+  and the outcome is logged (`branch-deleted`, `branch-kept`, `branch-refused`; a git failure never fails the close).
+  A `builtin` spawn whose branch already exists reuses it with `git worktree add -B` when it is empty in the same
+  sense, resetting it to `HEAD`; a branch with commits is never reset, and the spawn fails as before. The exit code 2
+  reported with a "closed" close came from the `ls` that followed it in the same shell line, not from `headwork`.

@@ -162,6 +162,107 @@ fn close_removes_brief_pane_and_worktree_then_marks_closed() {
     }
 }
 
+fn branch_exists(main: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(main)
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn close_deletes_an_empty_branch_so_the_slug_can_be_spawned_again() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    assert!(branch_exists(&w.main, "sand"), "spawn made the branch");
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(!branch_exists(&w.main, "sand"), "the empty branch is gone");
+    assert!(
+        event_kinds(&w.store, &task)
+            .iter()
+            .any(|k| k == "branch-deleted"),
+        "logged"
+    );
+    let (again, _) = spawn_task(&mut w, "sand", false, false);
+    assert_eq!(
+        w.store.task(again.id).unwrap().state,
+        TaskState::Spawning,
+        "the slug spawns again"
+    );
+    assert!(w.dir.path().join("demo-sand").is_dir(), "a new worktree");
+}
+
+#[test]
+fn close_keeps_a_branch_with_commits_of_its_own() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let worktree = w.dir.path().join("demo-sand");
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(!worktree.exists(), "worktree removed");
+    assert!(branch_exists(&w.main, "sand"), "the branch with work stays");
+    assert!(
+        event_kinds(&w.store, &task)
+            .iter()
+            .any(|k| k == "branch-kept"),
+        "logged"
+    );
+}
+
+#[test]
+fn spawn_reuses_a_leftover_empty_branch_but_not_one_with_work() {
+    let mut w = world(10);
+    git(&w.main, &["branch", "sand"]);
+    git(&w.main, &["commit", "-q", "--allow-empty", "-m", "later"]);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    assert_eq!(
+        w.store.task(task.id).unwrap().state,
+        TaskState::Spawning,
+        "the empty branch is reused"
+    );
+    let worktree = w.dir.path().join("demo-sand");
+    let head = |dir: &Path| {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(
+        head(&worktree),
+        head(&w.main),
+        "reset to the main checkout's HEAD"
+    );
+
+    git(&w.main, &["branch", "rock"]);
+    git(&w.main, &["checkout", "-q", "rock"]);
+    git(
+        &w.main,
+        &["commit", "-q", "--allow-empty", "-m", "rock work"],
+    );
+    git(&w.main, &["checkout", "-q", "master"]);
+    let (rock, _) = spawn_task(&mut w, "rock", false, false);
+    assert_eq!(
+        w.store.task(rock.id).unwrap().state,
+        TaskState::Failed,
+        "a branch with work is never reset"
+    );
+    assert!(!w.dir.path().join("demo-rock").exists(), "no worktree");
+    assert!(branch_exists(&w.main, "rock"), "and stays");
+}
+
 #[test]
 fn closing_one_of_two_panes_keeps_the_workspace() {
     let mut w = world(10);

@@ -30,6 +30,17 @@ pub enum WorktreeError {
     },
 }
 
+/// What became of a task's branch once its worktree was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchEnd {
+    /// It held no commits beyond the main checkout's `HEAD` and was deleted.
+    Deleted,
+    /// There was no such branch, for instance because the remove command deleted it.
+    Absent,
+    /// It holds commits the main checkout's `HEAD` lacks, so it stays.
+    Kept,
+}
+
 /// Runs worktree commands for one project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktrees {
@@ -49,6 +60,10 @@ impl Worktrees {
 
     /// Makes the task's worktree: `git worktree add -b <branch> <worktree>` for `builtin`, else the template.
     ///
+    /// A `builtin` worktree reuses a branch of that name left by an earlier task when it is empty (no commits beyond
+    /// the main checkout's `HEAD`): it is reset to `HEAD` with `-B`. A branch with commits of its own is never reset;
+    /// git refuses to make the worktree then.
+    ///
     /// # Errors
     ///
     /// Returns a [`WorktreeError`] when the template is bad or the command fails.
@@ -59,10 +74,56 @@ impl Worktrees {
     ) -> Result<(), WorktreeError> {
         match command {
             WorktreeCommand::Builtin => {
-                self.git(&["worktree", "add", "-b", vars.branch, vars.worktree])
+                let flag =
+                    if self.branch_exists(vars.branch)? && self.branch_is_empty(vars.branch)? {
+                        self.git(&["worktree", "prune"])?;
+                        "-B"
+                    } else {
+                        "-b"
+                    };
+                self.git(&["worktree", "add", flag, vars.branch, vars.worktree])
             }
             WorktreeCommand::Command(template) => self.script(&vars.expand(template)?),
         }
+    }
+
+    /// Deletes `branch` when it holds no commits beyond the main checkout's `HEAD`, so its slug can be used again;
+    /// a branch with work of its own is kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails, for instance because the branch is still checked out somewhere.
+    pub fn delete_empty_branch(&self, branch: &str) -> Result<BranchEnd, WorktreeError> {
+        if !self.branch_exists(branch)? {
+            return Ok(BranchEnd::Absent);
+        }
+        if !self.branch_is_empty(branch)? {
+            return Ok(BranchEnd::Kept);
+        }
+        self.git(&["worktree", "prune"])?;
+        self.git(&["branch", "-D", branch])?;
+        Ok(BranchEnd::Deleted)
+    }
+
+    fn branch_exists(&self, branch: &str) -> Result<bool, WorktreeError> {
+        let reference = format!("refs/heads/{branch}");
+        self.succeeds(&["rev-parse", "--verify", "--quiet", &reference])
+    }
+
+    fn branch_is_empty(&self, branch: &str) -> Result<bool, WorktreeError> {
+        self.succeeds(&["merge-base", "--is-ancestor", branch, "HEAD"])
+    }
+
+    fn succeeds(&self, args: &[&str]) -> Result<bool, WorktreeError> {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.main)
+            .output()
+            .map(|output| output.status.success())
+            .map_err(|source| WorktreeError::Run {
+                program: "git".to_owned(),
+                source,
+            })
     }
 
     /// Removes the task's worktree: `git worktree remove <worktree>` for `builtin`, which refuses a dirty one, else

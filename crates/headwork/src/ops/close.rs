@@ -15,10 +15,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
+use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::TaskVars;
 use headwork_core::lifecycle::{CleanupFacts, Trigger, WorktreeEnd};
 use headwork_core::{Actor, SessionState, TaskState};
-use headwork_store::{SessionRow, Store, StoreError, TaskId};
+use headwork_store::{SessionRow, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
 use super::{Env, slashed};
@@ -258,6 +259,7 @@ pub(super) fn remove_worktree(
     }
     if !Path::new(&worktree.path).exists() {
         store.set_worktree_state(id, "removed", env.actor)?;
+        delete_empty_branch(store, env, &task, &worktree.branch)?;
         return Ok(WorktreeEnd::Removed);
     }
     let main = slashed(&env.main_path(&task)?);
@@ -270,7 +272,11 @@ pub(super) fn remove_worktree(
     let command = &env.project(&task)?.worktree_remove;
     let worktrees = env.worktrees(&task)?;
     if !worktrees.is_registered(Path::new(&worktree.path))? {
-        return remove_stray_folder(store, env, id, &worktree.path);
+        let end = remove_stray_folder(store, env, id, &worktree.path)?;
+        if matches!(end, WorktreeEnd::Removed) {
+            delete_empty_branch(store, env, &task, &worktree.branch)?;
+        }
+        return Ok(end);
     }
     let result = if force {
         worktrees.remove_forced(command, &vars)
@@ -280,6 +286,7 @@ pub(super) fn remove_worktree(
     match result {
         Ok(()) if !Path::new(&worktree.path).exists() => {
             store.set_worktree_state(id, "removed", env.actor)?;
+            delete_empty_branch(store, env, &task, &worktree.branch)?;
             Ok(WorktreeEnd::Removed)
         }
         Ok(()) => {
@@ -333,6 +340,25 @@ fn remove_stray_folder(
         &serde_json::json!({ "error": error }),
     )?;
     Ok(WorktreeEnd::Present)
+}
+
+/// Deletes a closed task's branch when it holds no commits beyond the main checkout's `HEAD`, so the slug can be
+/// spawned again, and logs what became of it. A git failure is logged, never fatal: the close is already verified.
+fn delete_empty_branch(store: &Store, env: &Env<'_>, task: &Task, branch: &str) -> Result<()> {
+    let (kind, data) = match env.worktrees(task)?.delete_empty_branch(branch) {
+        Ok(BranchEnd::Absent) => return Ok(()),
+        Ok(BranchEnd::Deleted) => ("branch-deleted", serde_json::json!({ "branch": branch })),
+        Ok(BranchEnd::Kept) => (
+            "branch-kept",
+            serde_json::json!({ "branch": branch, "reason": "it has commits the main checkout lacks" }),
+        ),
+        Err(error) => (
+            "branch-refused",
+            serde_json::json!({ "branch": branch, "error": error.to_string() }),
+        ),
+    };
+    store.append_event(env.actor, Some(task.id), None, kind, &data)?;
+    Ok(())
 }
 
 /// Finishes every `closing` task whose launcher is gone, such as one that closed itself.
