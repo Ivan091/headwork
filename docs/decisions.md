@@ -495,3 +495,11 @@ and the reason.
   commands of one line (`cd X && git commit`, `cd X; git push`), in order, ignoring subshell boundaries; `cd` alone
   goes to `~`, and `cd -` or `popd` make it unknown, which allows. It is checked before the default-branch and
   push-repo checks, which still read the branch and remotes of the session's own folder.
+- 2026-11-16 Planned versus implemented. `heavy_slots` stays informational: a job's `heavy` flag is recorded and the
+  config key is read, but nothing waits for a slot, because the one real heavy-slot owner is the project's own
+  `heavy_gate` (me-sim's `scripts/heavy.sh`) and a second, separate counter would only disagree with it.
+  `notify_ntfy` stays unimplemented (no notifier exists; Claude's own push covers it). `headwork doctor` check
+  `unenforced-keys` warns while either is set. Job logs rotate when a job starts or restarts: over 10 MB the log moves
+  to `<log>.1`, older copies shift up, five are kept (`jobs::rotate_log`); headwork writes no other log file of its
+  own (the design's `logs/agentctl.log` does not exist: the event log lives in the store). `design.md` carries a
+  rename note at its top instead of a rewrite.

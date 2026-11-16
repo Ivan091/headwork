@@ -197,6 +197,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     }
     if config.is_ok() {
         checks.push(deprecated_keys_check(d));
+        if let Ok(config) = &config {
+            checks.push(unenforced_keys_check(config));
+        }
     }
     let store = store_check(d, &mut checks);
     if let Ok(config) = &config {
@@ -216,6 +219,31 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(tick_check(store, enforce));
     }
     DoctorReport { checks }
+}
+
+fn unenforced_keys_check(config: &Config) -> Check {
+    let mut keys = Vec::new();
+    if !config.machine.notify_ntfy.is_empty() {
+        keys.push("machine.notify_ntfy".to_owned());
+    }
+    keys.extend(
+        config
+            .projects
+            .iter()
+            .filter(|(_, project)| project.heavy_slots.is_some())
+            .map(|(name, _)| format!("project.{}.heavy_slots", name.as_str())),
+    );
+    if keys.is_empty() {
+        return Check::ok("unenforced-keys", "no configured key is ignored");
+    }
+    Check::warn(
+        "unenforced-keys",
+        format!(
+            "set but not enforced yet (recorded and informational only): {}",
+            keys.join(", ")
+        ),
+        "nothing to do; remove them or leave them as documentation (docs/decisions.md, 2026-11-16)",
+    )
 }
 
 fn deprecated_keys_check(d: &Doctor<'_>) -> Check {

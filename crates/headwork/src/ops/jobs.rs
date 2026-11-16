@@ -99,6 +99,35 @@ pub fn register(
         .with_context(|| format!("job {id} vanished after it was registered"))
 }
 
+/// A job log larger than this is rotated when its job starts.
+pub const LOG_LIMIT_BYTES: u64 = 10 * 1024 * 1024;
+
+/// How many rotated copies (`<log>.1` newest) of a job log are kept.
+pub const LOG_KEEP: u32 = 5;
+
+/// Rotates a log larger than `limit` bytes.
+///
+/// The log becomes `<log>.1`, older copies shift up and the one past `keep` is dropped.
+/// Best effort: a file another process holds open stays where it is and the job appends to it.
+pub fn rotate_log(log: &Path, limit: u64, keep: u32) {
+    let large = std::fs::metadata(log).is_ok_and(|meta| meta.len() > limit);
+    if !large || keep == 0 {
+        return;
+    }
+    let numbered = |n: u32| {
+        let mut name = log.as_os_str().to_owned();
+        name.push(format!(".{n}"));
+        std::path::PathBuf::from(name)
+    };
+    std::fs::remove_file(numbered(keep)).ok();
+    for n in (1..keep).rev() {
+        if numbered(n).exists() {
+            std::fs::rename(numbered(n), numbered(n + 1)).ok();
+        }
+    }
+    std::fs::rename(log, numbered(1)).ok();
+}
+
 fn sanitize(label: &str) -> String {
     label
         .chars()
@@ -215,6 +244,7 @@ pub fn restart(store: &mut Store, job: &JobRow, actor: Actor) -> Result<u32> {
         job.cwd,
         job.label
     );
+    rotate_log(Path::new(&job.log_path), LOG_LIMIT_BYTES, LOG_KEEP);
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -231,4 +261,34 @@ pub fn restart(store: &mut Store, job: &JobRow, actor: Actor) -> Result<u32> {
     let (pid, _) = proc::spawn_detached_to(&mut command, log.into(), err.into())?;
     store.set_job_pid(job.id, pid, actor)?;
     Ok(pid)
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::rotate_log;
+
+    #[test]
+    fn a_large_log_rotates_and_the_oldest_copy_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("job.log");
+        std::fs::write(&log, "newest-content").unwrap();
+        std::fs::write(dir.path().join("job.log.1"), "one").unwrap();
+        std::fs::write(dir.path().join("job.log.2"), "two").unwrap();
+        rotate_log(&log, 3, 2);
+        assert!(!log.exists(), "the log moved aside");
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(read("job.log.1"), "newest-content", "newest copy");
+        assert_eq!(read("job.log.2"), "one", "shifted copy");
+        assert!(!dir.path().join("job.log.3").exists(), "none past keep");
+    }
+
+    #[test]
+    fn a_small_log_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("job.log");
+        std::fs::write(&log, "x").unwrap();
+        rotate_log(&log, 10, 2);
+        assert!(log.exists(), "under the limit");
+    }
 }

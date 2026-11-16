@@ -315,3 +315,21 @@ fn the_shadow_report_groups_would_denies_by_rule() {
     assert_eq!(report.rules[1].rule, "long_jobs", "second rule");
     assert_eq!(report.sessions, 1, "sessions");
 }
+
+#[test]
+fn an_ignored_config_key_is_flagged() {
+    let install = install();
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen(
+            "notify_ntfy = \"\"",
+            "notify_ntfy = \"https://ntfy.sh/x\"",
+            1,
+        ),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "unenforced-keys"), Status::Warn, "ntfy set");
+}

@@ -1,4 +1,6 @@
-# agentctl: design
+# headwork (formerly agentctl): design
+
+> **Renamed.** The tool was designed as `agentctl` and is built as `headwork` (`~/.headwork`, `HEADWORK_HOME`, `headwork.exe`; see `decisions.md`, 2026-11-13). Every `agentctl` below means `headwork`, and root and child mean orchestrator and worker. The text keeps the old words so it stays the approved design.
 
 Design of 2026-11-13, built on `research.md` and the four trials in `trials/`. **Approved by the user on 2026-11-13; the tool is named `headwork`** (section 9). The text below still says `agentctl`; read it as `headwork`. Since 2026-11-14 the root is called the **orchestrator** and its children **workers** (`decisions.md`); the text below keeps the old words. Marks: **[V]** verified in a trial or in source, **[U]** not verified yet.
 
