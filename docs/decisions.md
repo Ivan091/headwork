@@ -508,3 +508,6 @@ and the reason.
   `[machine] shell` (Git Bash by default), as spawn does. Job logs are opened write-and-seek-to-end instead of
   append-only, because Git Bash (MSYS) processes lose their output on an append-only handle. No new doctor check: the
   `shell` check already covers the configured shell.
+- 2026-11-16 The legacy orchestrate scripts (`spawn-child.sh`, `close-child.sh`, `children.sh`, `root.sh`, their
+  `*.legacy.sh` twins and the `engine` switch) are retired at the user's decision. `CLAUDE.md` no longer documents an undo
+  path to them; the entries above that mention them stay as history. `headwork import` still reads `projects.conf`.
