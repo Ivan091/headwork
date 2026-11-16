@@ -349,7 +349,7 @@ fn restart_jobs(store: &mut Store, env: &Env<'_>) -> Result<Vec<RestartedJob>> {
         if !job.restart {
             continue;
         }
-        let outcome = match jobs::restart(store, &job, env.actor) {
+        let outcome = match jobs::restart(store, &job, &env.shell(), env.actor) {
             Ok(pid) => format!("started again as process {pid}"),
             Err(error) => {
                 let error = format!("{error:#}");

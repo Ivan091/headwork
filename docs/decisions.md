@@ -503,3 +503,8 @@ and the reason.
   to `<log>.1`, older copies shift up, five are kept (`jobs::rotate_log`); headwork writes no other log file of its
   own (the design's `logs/agentctl.log` does not exist: the event log lives in the store). `design.md` carries a
   rename note at its top instead of a rewrite.
+
+- 2026-11-16, job shell: a job whose program is a bare `bash`/`sh` (or WSL's `bash.exe`) runs with the configured
+  `[machine] shell` (Git Bash by default), as spawn does. Job logs are opened write-and-seek-to-end instead of
+  append-only, because Git Bash (MSYS) processes lose their output on an append-only handle. No new doctor check: the
+  `shell` check already covers the configured shell.
