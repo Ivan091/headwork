@@ -473,8 +473,8 @@ pub(super) fn surface_present(
     Ok(exists && host.surfaces(workspace)?.contains(surface))
 }
 
-/// Closes a session's surface, or its workspace when nothing else there holds a session, keeping its pane in `panes`
-/// mode (see [`super::place::release`]).
+/// Closes a session's surface, or its workspace when nothing else there holds a session; a pane left empty goes with
+/// it (see [`super::place::release`]).
 ///
 /// # Errors
 ///

@@ -170,13 +170,6 @@ impl From<RawNode> for PaneTree {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GridAnswer {
-    #[serde(default)]
-    new_pane_ids: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct SplitAnswer {
     pane_id: String,
     surface_id: String,
@@ -440,32 +433,6 @@ impl<R: Runner> TerminalHost for Wmux<R> {
                 source,
             })?;
         Ok((PaneId(answer.pane_id), SurfaceId(answer.surface_id)))
-    }
-
-    fn grid(
-        &self,
-        workspace: &WorkspaceId,
-        anchor: &PaneId,
-        count: u32,
-    ) -> Result<Vec<PaneId>, HostError> {
-        let count = count.to_string();
-        let args = [
-            "layout",
-            "grid",
-            "--count",
-            &count,
-            "--anchor-pane",
-            anchor.as_str(),
-            "--workspace",
-            workspace.as_str(),
-        ];
-        let text = self.runner.run(&args)?;
-        let answer: GridAnswer =
-            serde_json::from_str(&text).map_err(|source| HostError::Parse {
-                command: args.join(" "),
-                source,
-            })?;
-        Ok(answer.new_pane_ids.into_iter().map(PaneId).collect())
     }
 
     fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {

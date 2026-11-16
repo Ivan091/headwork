@@ -43,7 +43,9 @@ fn the_tick_sees_a_pane_no_task_owns_in_the_real_host() {
     let home = Home::at(Some(dir.path().join("home"))).unwrap();
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
-    let (workspace, _) = host.ensure_workspace("headwork-test", dir.path()).unwrap();
+    let (workspace, _) = host
+        .ensure_workspace("headwork-test-tick", dir.path())
+        .unwrap();
     let argv = ["node", "-e", "setTimeout(() => {}, 60000)"].map(str::to_owned);
     let pane = host
         .spawn(
@@ -107,16 +109,16 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// Spawns six tasks into a workspace named `headwork-test` with bash as the launcher: each pane runs bash on the
-/// `launch` script the repository holds, and placeholders on the `idle` script in the home, both of which sleep. Four
-/// fill a two by two grid, the fifth stacks as a tab, a closing child leaves its pane, and the sixth takes it. The
-/// workspace is closed afterwards.
+/// `launch` script the repository holds, which sleeps. Four split the workspace into four panes, the fifth stacks as a
+/// tab, a closing worker's pane goes, and the sixth splits a new one. Then every worker closes, one by one, and the
+/// workspace goes with the last.
 #[test]
 #[ignore = "drives the real wmux"]
 #[expect(
     clippy::too_many_lines,
     reason = "one scenario against the real host, set up and checked in order"
 )]
-fn children_fill_a_grid_of_panes_in_the_real_host() {
+fn workers_split_panes_and_take_them_away_in_the_real_host() {
     let host = Wmux::new(Cli::locate(None));
     host.ping().unwrap();
     assert!(
@@ -189,18 +191,22 @@ fn children_fill_a_grid_of_panes_in_the_real_host() {
             .map(|cell| (cell.surfaces.len(), cell.width, cell.height))
             .collect()
     };
-    let grid = shape(&host);
+    let split = shape(&host);
     let stacked = tasks
         .last()
         .map(|task| store.session_of(task.id).unwrap().unwrap().host_place);
-    let gone = store.session_of(tasks.get(1).unwrap().id).unwrap().unwrap();
-    close_surface_or_workspace(
-        &env,
-        Some(&workspace),
-        &SurfaceId(gone.host_surface.clone().unwrap()),
-    )
-    .unwrap();
-    store.session_ended(&gone.id, Some(0)).unwrap();
+    let close = |store: &mut headwork_store::Store, task: &headwork_store::Task| {
+        let row = store.session_of(task.id).unwrap().unwrap();
+        close_surface_or_workspace(
+            &env,
+            Some(&workspace),
+            &SurfaceId(row.host_surface.clone().unwrap()),
+        )
+        .unwrap();
+        store.session_ended(&row.id, Some(0)).unwrap();
+        row
+    };
+    let gone = close(&mut store, tasks.first().unwrap());
     let kept = shape(&host);
     let refill = start(&mut store, "f");
     let refilled = shape(&host);
@@ -208,31 +214,39 @@ fn children_fill_a_grid_of_panes_in_the_real_host() {
     let tree = Cli::locate(None)
         .run(&["tree", "--workspace", workspace.as_str()])
         .unwrap();
-    host.close_workspace(&workspace).unwrap();
-    let quarters = |cells: &[(usize, f64, f64)]| {
-        cells
-            .iter()
-            .all(|(_, w, h)| (w - 0.5).abs() < 1e-9 && (h - 0.5).abs() < 1e-9)
-    };
+    let mut left = Vec::new();
+    for task in [1, 2, 3, 4]
+        .iter()
+        .filter_map(|i| tasks.get(*i))
+        .chain([&refill])
+    {
+        close(&mut store, task);
+        let open = host.workspaces().unwrap().iter().any(|w| w.id == workspace);
+        left.push(if open { shape(&host).len() } else { 0 });
+    }
+    if host.workspaces().unwrap().iter().any(|w| w.id == workspace) {
+        host.close_workspace(&workspace).unwrap();
+    }
     assert!(
         tree.contains("headwork-test-c - haiku medium"),
         "the pane carries its name, model and effort: {tree}"
     );
-    assert_eq!(grid.len(), 4, "four panes: {grid:?}");
-    assert!(quarters(&grid), "a two by two grid: {grid:?}");
-    let mut tabs: Vec<usize> = grid.iter().map(|(n, _, _)| *n).collect();
+    assert_eq!(split.len(), 4, "four panes: {split:?}");
+    let mut tabs: Vec<usize> = split.iter().map(|(n, _, _)| *n).collect();
     tabs.sort_unstable();
-    assert_eq!(tabs, [1, 1, 1, 2], "the fifth child a tab: {grid:?}");
+    assert_eq!(tabs, [1, 1, 1, 2], "the fifth child a tab: {split:?}");
     assert_eq!(stacked, Some(Some(PlaceKind::Tab)), "the fifth is a tab");
-    assert_eq!(kept.len(), 4, "the closed worker's pane stays: {kept:?}");
+    assert_eq!(kept.len(), 3, "the closed worker's pane is gone: {kept:?}");
     assert_eq!(
         refill_row.host_place,
         Some(PlaceKind::Pane),
         "the sixth gets a pane"
     );
+    assert_ne!(refill_row.host_pane, gone.host_pane, "a new pane");
+    assert_eq!(refilled.len(), 4, "split again: {refilled:?}");
     assert_eq!(
-        refill_row.host_pane, gone.host_pane,
-        "the pane the closed child left"
+        left,
+        [4, 3, 2, 1, 0],
+        "the second's pane stays for the fifth, its tab; each other close takes a pane away"
     );
-    assert!(quarters(&refilled), "still the grid: {refilled:?}");
 }

@@ -1,11 +1,13 @@
-//! Where a worker's pane opens in its project's workspace, and what a closing worker leaves behind (`[layout]`).
+//! Where a worker's pane opens in its project's workspace, and how it goes when the worker closes (`[layout]`).
 //!
-//! In `panes` mode each worker gets a pane of its own, up to `layout.panes`; later workers stack as tabs. The second
-//! worker cuts the workspace's lone pane into the whole grid at once, and later ones take the free panes. A worker that
-//! closes while it is alone in its pane first starts `headwork idle` there as a placeholder, so the pane stays for the
-//! next worker, and the workspace closes once nothing in it holds a session. The choice is
-//! [`headwork_core::layout::place`]; this module reads the workspace from the host as it is now, so panes the user
-//! closed or rearranged by hand count as they stand. Workers already open are never moved. `tabs` mode adds tabs.
+//! In `panes` mode each worker gets a pane of its own, up to `layout.panes`; later workers stack as tabs. A worker
+//! takes a free pane when there is one (a fresh workspace's shell, a pane the user left), else splits the workspace's
+//! first pane, the only split wmux does; no empty pane is cut ahead of time. A closing worker's surface closes, and
+//! when it was its pane's last the pane leaves the layout and its neighbours take the space; the workspace closes once
+//! nothing in it holds a session. The choice is [`headwork_core::layout::place`]; this module reads the workspace from
+//! the host as it is now, so panes the user closed or rearranged by hand count as they stand. Workers already open
+//! are never moved, and a pane that still holds a session (another worker's tab, the orchestrator) never closes.
+//! `tabs` mode adds tabs.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,8 +20,10 @@ use headwork_store::{Place, Store, Task};
 
 use super::{Env, label, title};
 
-/// The host label of a free pane's placeholder. It has no `/`, so the tick and import, which read `<project>/<slug>`
-/// labels, never take it for a worker.
+/// The host label of the placeholders older builds left in a free pane.
+///
+/// Builds before 2026-11-16 started `headwork idle` there; the label lets [`release`] and spawns find and close them.
+/// It has no `/`, so the tick and import, which read `<project>/<slug>` labels, never take it for a worker.
 pub const IDLE_LABEL: &str = "headwork:free";
 
 /// A worker's pane to open.
@@ -79,9 +83,9 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
 
 /// Closes a session's surface, or its workspace when nothing else there holds a session.
 ///
-/// In `tabs` mode the workspace closes when it holds nothing else.
-/// In `panes` mode a surface alone in its pane first gets a placeholder beside it, so
-/// the pane stays for the next worker.
+/// In `tabs` mode the workspace closes when it holds nothing else; in `panes` mode when no other surface holds a
+/// session. Otherwise only the surface closes: a pane whose last surface it was leaves the layout and the host gives
+/// its space to the panes beside it. Placeholders that builds before this one left in the workspace close first.
 ///
 /// # Errors
 ///
@@ -89,6 +93,7 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
 pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &SurfaceId) -> Result<()> {
     let host = env.host;
     if let Some(workspace) = workspace {
+        sweep(host, workspace)?;
         let surfaces = host.surfaces(workspace)?;
         let last = match env.config.layout.mode {
             LayoutMode::Tabs => surfaces.iter().all(|s| s == surface),
@@ -101,39 +106,20 @@ pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &Surface
             host.close_workspace(workspace)?;
             return Ok(());
         }
-        if env.config.layout.mode == LayoutMode::Panes {
-            keep_pane(env, workspace, surface)?;
-        }
     }
     host.close_surface(surface)?;
     Ok(())
 }
 
-fn keep_pane(env: &Env<'_>, workspace: &WorkspaceId, surface: &SurfaceId) -> Result<()> {
-    let cells = env.host.layout(workspace)?.cells();
-    let Some(alone) = cells
-        .iter()
-        .find(|cell| cell.surfaces.len() == 1 && cell.surfaces.contains(surface))
-    else {
-        return Ok(());
-    };
-    let title = env
-        .host
-        .workspaces()?
-        .into_iter()
-        .find(|w| &w.id == workspace)
-        .map_or_else(String::new, |w| w.title);
-    let argv = [env.exe.display().to_string(), "idle".to_owned(), title];
-    env.host.spawn(
-        workspace,
-        env.home.root(),
-        IDLE_LABEL,
-        &argv,
-        &Target::Pane {
-            pane: alone.pane.clone(),
-            replace_tab: false,
-        },
-    )?;
+/// Closes the `headwork idle` placeholders still open in `workspace`. Builds before 2026-11-16 left
+/// one in a pane its worker closed, to hold the pane for the next worker; panes now close with their worker instead.
+fn sweep(host: &dyn TerminalHost, workspace: &WorkspaceId) -> Result<()> {
+    let open: HashSet<SurfaceId> = host.surfaces(workspace)?.into_iter().collect();
+    for program in host.panes()? {
+        if program.label == IDLE_LABEL && open.contains(&program.surface) {
+            host.close_surface(&program.surface)?;
+        }
+    }
     Ok(())
 }
 
@@ -154,6 +140,7 @@ pub(super) fn tab(host: &dyn TerminalHost, workspace: &WorkspaceId, fresh: bool)
 }
 
 fn pane(store: &Store, env: &Env<'_>, workspace: &WorkspaceId) -> Result<(Target, PlaceKind)> {
+    sweep(env.host, workspace)?;
     let cells = env.host.layout(workspace)?.cells();
     let mut busy = busy_on_host(env.host)?;
     busy.extend(store.live_session_surfaces()?.into_iter().map(SurfaceId));
@@ -190,15 +177,6 @@ fn pane(store: &Store, env: &Env<'_>, workspace: &WorkspaceId) -> Result<(Target
             || stacked(None),
             |free| (into(free, replace_tab), PlaceKind::Pane),
         ),
-        Some(Placement::Grid { cell, count }) => match cells.get(cell) {
-            Some(lone) => env
-                .host
-                .grid(workspace, &lone.pane, count.get())?
-                .into_iter()
-                .next()
-                .map_or_else(|| stacked(Some(lone)), own),
-            None => stacked(None),
-        },
         Some(Placement::Split { down }) => {
             let first = cells.first();
             let anchor = first.and_then(|cell| cell.surfaces.first());
