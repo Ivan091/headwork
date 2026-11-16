@@ -477,3 +477,21 @@ and the reason.
   `user`. A worker's `headwork close` of another task is refused outright, not shadowed: the close is a lifecycle
   guard like `done`'s, not a hook rule. A worker the checked path refuses and that cannot fix it tells the
   orchestrator, whose `close` force-closes.
+- 2026-11-16 Two shadow guard rules for workers. `worker-admin` (also parsed as `child-admin`): a worker running the
+  headwork CLI (`headwork`, `headwork.exe`, any path to it, quoted or not, and `cargo run -p|--package|--bin headwork
+  -- ...`) with a state-changing subcommand: `spawn`, `queue`, `drop`, `close`, `park`, `resume`, `import`, `tick`,
+  `retitle`, `orchestrator`, `root`, `launch`, `finish`, `exited`, `install` (`ADMIN_COMMANDS`). Read-only ones
+  (`board`, `log`, `doctor`, `jobs`, `recap`, `shadow-report`, `rule test`), the hidden plumbing a session's own
+  plugin runs (`hook`, `mcp`), `idle`, and any call with `-h`, `--help`, `-V` or `--version` stay allowed. `close`
+  of the worker's own task (`<project>-<slug>` or `<project>/<slug>`) is allowed; `Scope.task_name` carries the name,
+  filled by `scope_for`, so hooks and `rule test --task` agree. `worker-git-outside`: a git write whose target folder
+  is not within `Scope.writable`. Writes are `GIT_WRITES` (`commit`, `push`, `pull`, `reset`, `checkout`, `switch`,
+  `restore`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `clean`, `add`, `rm`, `mv`, `init`), `branch` and
+  `tag` with a delete, move, copy, force or annotate flag or with a name and no listing flag, `worktree`
+  `add`/`remove`/`prune`/`move`/`lock`/`unlock`/`repair`, and `stash` except `list` and `show`; everything else
+  (`status`, `log`, `diff`, `show`, `fetch`, listings, `rev-parse`, `remote`) is a read. The target is the effective
+  folder with each `-C` applied in turn, as git stacks them; `--git-dir` or `--work-tree` makes it unknown and
+  allowed. The effective folder starts at the session's folder and follows `cd` and `pushd` across the simple
+  commands of one line (`cd X && git commit`, `cd X; git push`), in order, ignoring subshell boundaries; `cd` alone
+  goes to `~`, and `cd -` or `popd` make it unknown, which allows. It is checked before the default-branch and
+  push-repo checks, which still read the branch and remotes of the session's own folder.

@@ -291,6 +291,35 @@ fn shadow_mode_logs_what_it_would_deny_and_allows() {
 }
 
 #[test]
+fn a_worker_closes_only_itself_and_writes_git_only_in_its_folders() {
+    let mut w = world("", false);
+    w.start();
+    let main = w.dir.path().join("demo").display().to_string();
+    for command in [
+        format!("\"{EXE}\" close demo-sand"),
+        "headwork board".to_owned(),
+        format!("git -C {main} status"),
+        "git commit -m x".to_owned(),
+        "headwork close demo-other".to_owned(),
+        format!("{EXE} spawn demo x brief.md"),
+        format!("git -C {main} commit -m x"),
+        format!("cd {main} && git push"),
+    ] {
+        w.pre("Bash", &json!({ "command": command }));
+    }
+    let rules: Vec<(String, String)> = [
+        "worker-admin",
+        "worker-admin",
+        "worker-git-outside",
+        "worker-git-outside",
+    ]
+    .iter()
+    .map(|rule| ("would-deny".to_owned(), (*rule).to_owned()))
+    .collect();
+    assert_eq!(w.denies(), rules, "own close and reads pass");
+}
+
+#[test]
 fn enforced_denies_exit_2_with_the_reason() {
     let mut w = world("enforce = true", false);
     w.start();

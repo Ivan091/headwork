@@ -322,6 +322,10 @@ text_enum!(
         WorkerFable => "worker-fable" | "child-fable",
         /// A worker starts a long job in the background instead of registering it.
         WorkerLongJob => "worker-long-job" | "child-long-job",
+        /// A worker runs an orchestrator command of the headwork CLI (spawn, queue, park, close of another task...).
+        WorkerAdmin => "worker-admin" | "child-admin",
+        /// A worker runs a git write (commit, push, reset...) against a folder outside its writable folders.
+        WorkerGitOutside => "worker-git-outside",
         /// A question has fewer than two or more than four options.
         AskOptionCount => "ask-option-count",
         /// An option means "needs changes"; the user types changes instead.
