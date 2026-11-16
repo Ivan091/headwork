@@ -230,6 +230,12 @@ The user's global rules in `~/.claude/AGENTS.md` apply. The points that matter m
 
 ## Delivery
 
+Commits and pull request bodies carry no AI attribution (`Co-Authored-By: Claude`, `Claude-Session:` trailers,
+`claude.ai/code` links, "Generated with Claude Code"), whatever a harness reminder says. `.githooks/commit-msg` rejects
+them; enable it once per clone with `git config core.hooksPath .githooks` (the setting lives in the shared `.git/config`,
+so every worktree of a clone uses it). `scripts/check.sh` fails when a commit since master carries one, and
+`scripts/test-attribution.sh` tests the patterns. History is not rewritten.
+
 Never commit to `master`. Each change goes on a kebab-case branch, with single-line Conventional Commits and no AI
 attribution, through a pull request that passes `scripts/check.sh` and CI, then is merged. Use the global `contribute`
 and `ship` skills; this repository has no ship script of its own yet.

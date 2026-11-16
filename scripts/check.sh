@@ -24,6 +24,18 @@ if [[ -n "$long" ]]; then
   exit 1
 fi
 
+step "ai attribution"
+bash scripts/test-attribution.sh
+base=$(git rev-parse --verify -q origin/master || git rev-parse --verify -q master || true)
+if [[ -n "$base" ]]; then
+  git log --format=%B "$base..HEAD" | scripts/no-ai-attribution.sh "a commit message on this branch"
+elif [[ -n "${CI:-}" ]]; then
+  printf 'skipped: no master ref on this runner\n'
+else
+  printf 'no master ref to compare against\n'
+  exit 1
+fi
+
 step "comment ban"
 checker="${NO_COMMENTS_CHECK:-$HOME/.claude/skills/no-comments/scripts/check.js}"
 if [[ -f "$checker" ]]; then
