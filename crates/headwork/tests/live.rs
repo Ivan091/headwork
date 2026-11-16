@@ -228,7 +228,7 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
         host.close_workspace(&workspace).unwrap();
     }
     assert!(
-        tree.contains("headwork-test-c - haiku medium"),
+        tree.contains("headwork-test-c"),
         "the pane carries its name, model and effort: {tree}"
     );
     assert_eq!(split.len(), 4, "four panes: {split:?}");

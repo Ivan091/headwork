@@ -1,4 +1,4 @@
-//! The title of a worker's pane or tab: `<task name> - <model> <effort>` by default, from `[layout] title`.
+//! The title of a worker's pane or tab: the task name by default, from `[layout] title`.
 //!
 //! wmux keeps a title set with `rename-surface` apart from the one a program sets by escape sequence, so Claude's own
 //! title never replaces it. It is set when a pane opens (spawn and resume), re-asserted on every tick in case the
