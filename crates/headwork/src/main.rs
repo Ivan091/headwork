@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
-use headwork::ops::close::{CloseReport, close, finish_after, reap};
+use headwork::ops::close::{CloseReport, close, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
@@ -80,7 +80,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Close a task: its session, pane, process tree and worktree, verified before it is marked closed.
+    /// Close a task: its session, pane, process tree and worktree, verified before it is marked closed. From a worker's
+    /// own session it takes the checked path (merged or no pull request, report sent, nothing waiting on the user).
     Close {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`.
         name: String,
@@ -844,9 +845,24 @@ fn close_command(
     let task = store
         .find_task(name)?
         .with_context(|| format!("no task named `{name}`"))?;
-    let own_session = std::env::var(headwork_adapters::runtime::ENV_SESSION).ok();
-    let report: CloseReport = ctx.with_env(|env| {
-        let report = close(store, env, task.id, own_session.as_deref())?;
+    let identity = Identity::from_env();
+    let actor = identity.actor();
+    let own_task = match identity.session.as_deref() {
+        Some(own) => store.session_of(task.id)?.is_some_and(|s| s.id == own),
+        None => false,
+    };
+    let report: CloseReport = ctx.with_actor(actor, |env| {
+        let report = if actor == Actor::Worker && own_task {
+            close_own(
+                store,
+                env,
+                &Gh::default(),
+                task.id,
+                identity.session.as_deref(),
+            )?
+        } else {
+            close(store, env, task.id, identity.session.as_deref())?
+        };
         pump(store, env)?;
         Ok(report)
     })?;
@@ -966,7 +982,8 @@ fn mcp_command() -> Result<ExitCode> {
         exe: &exe,
         actor: Actor::User,
     };
-    let mut server = Server::new(&mut store, env, Identity::from_env());
+    let git = Gh::default();
+    let mut server = Server::new(&mut store, env, &git, Identity::from_env());
     server.serve(io::stdin().lock(), io::stdout().lock())?;
     Ok(ExitCode::SUCCESS)
 }

@@ -15,6 +15,7 @@ use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{CLOSING_HEADING, RuleFiles};
 use headwork::ops::spawn::{SpawnRequest, spawn};
+use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Role, SessionState, Slug, TaskRequest,
@@ -45,6 +46,7 @@ struct World {
     store: Store,
     host: FakeHost,
     git: FixedGit,
+    prs: FakeGit,
     task: Task,
     session: String,
 }
@@ -110,6 +112,7 @@ fn world(hooks: &str, keep: bool) -> World {
         store,
         host,
         git: FixedGit("sand"),
+        prs: FakeGit::new(),
         task,
         session,
     }
@@ -593,7 +596,7 @@ impl World {
             exe: Path::new(EXE),
             actor: Actor::User,
         };
-        Server::new(&mut self.store, env, identity)
+        Server::new(&mut self.store, env, &self.prs, identity)
     }
 
     fn rpc(&mut self, identity: Identity, message: &Value) -> Value {
@@ -923,6 +926,7 @@ fn done_refuses_an_open_ask_then_closes_after_the_response() {
     let (is_error, text) = w.tool(identity.clone(), "done", &json!({}));
     assert!(is_error && text.contains("still open"), "{text}");
     w.post("AskUserQuestion", &json!({ "answers": "Ship" }));
+    w.post("SendMessage", &json!({}));
     let mut server = w.server(identity);
     let message = json!({
         "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -938,6 +942,159 @@ fn done_refuses_an_open_ask_then_closes_after_the_response() {
     );
     let last = w.store.task(w.task.id).unwrap().last_report;
     assert_eq!(last.as_deref(), Some("built it"), "report");
+    let moves = w.transitions();
+    assert!(
+        moves.contains(&("finish".to_owned(), Actor::Worker)),
+        "a task without a pull request finishes through the checked path, by the worker: {moves:?}"
+    );
+    assert!(
+        !moves.iter().any(|(trigger, _)| trigger == "force-close"),
+        "no force-close: {moves:?}"
+    );
+}
+
+const PR_URL: &str = "https://github.com/Ivan091/demo/pull/5";
+
+fn pr(state: PrState) -> PrInfo {
+    PrInfo {
+        repo: "Ivan091/demo".to_owned(),
+        number: 5,
+        url: PR_URL.to_owned(),
+        state,
+    }
+}
+
+impl World {
+    fn transitions(&self) -> Vec<(String, Actor)> {
+        let mut out: Vec<(String, Actor)> = self
+            .events()
+            .into_iter()
+            .filter(|event| event.kind == "transition")
+            .map(|event| {
+                (
+                    event.data["trigger"].as_str().unwrap().to_owned(),
+                    event.actor,
+                )
+            })
+            .collect();
+        out.retain(|(trigger, _)| trigger != "start");
+        out
+    }
+}
+
+#[test]
+fn done_closes_a_merged_task_through_in_review_and_merged() {
+    let mut w = world("", false);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    w.prs.set("sand", pr(PrState::Merged));
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "merged" }));
+    assert!(!is_error, "{text}");
+    assert_eq!(w.state(), TaskState::Closing, "closing");
+    let moves: Vec<String> = w.transitions().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        moves,
+        ["session-started", "review-opened", "merged", "close"],
+        "in_review and merged are reached"
+    );
+    assert!(
+        w.transitions()
+            .iter()
+            .skip(1)
+            .all(|(_, actor)| *actor == Actor::Worker),
+        "every step after the session start is the worker's: {:?}",
+        w.transitions()
+    );
+    let recorded = w.events().into_iter().any(|event| {
+        event.kind == "pr-state" && event.data["to"] == "merged" && event.data["url"] == PR_URL
+    });
+    assert!(recorded, "the pull request is recorded");
+}
+
+#[test]
+fn done_refuses_a_missing_report_or_an_open_pull_request_and_leaves_the_task() {
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({}));
+    assert!(is_error && text.contains("report"), "{text}");
+    assert_eq!(w.state(), TaskState::Working, "still working");
+    w.post("SendMessage", &json!({}));
+    w.prs.set("sand", pr(PrState::Open));
+    let (is_error, text) = w.tool(identity, "done", &json!({}));
+    assert!(is_error && text.contains("still open"), "{text}");
+    assert_eq!(w.state(), TaskState::Working, "still working");
+    let refusals = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "close-refused" && event.actor == Actor::Worker)
+        .count();
+    assert_eq!(refusals, 2, "each refusal is logged");
+    assert_eq!(
+        w.store.task(w.task.id).unwrap().last_report,
+        None,
+        "a refused done records no report"
+    );
+}
+
+#[test]
+fn done_after_a_pull_request_closed_unmerged_returns_to_working_and_finishes() {
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "report",
+        &json!({ "status": "review", "summary": "please review", "pr": PR_URL }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(w.state(), TaskState::InReview, "in review");
+    w.post("SendMessage", &json!({}));
+    w.prs.set("other-branch", pr(PrState::Closed));
+    let (is_error, text) = w.tool(identity, "done", &json!({}));
+    assert!(!is_error, "{text}");
+    let moves: Vec<String> = w.transitions().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        moves,
+        [
+            "session-started",
+            "review-opened",
+            "changes-requested",
+            "finish"
+        ],
+        "the recorded pull request is checked by its URL"
+    );
+}
+
+#[test]
+fn only_the_user_and_the_orchestrator_force_close() {
+    let mut w = world("", false);
+    w.start();
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::Worker,
+    };
+    let refused = headwork::ops::close::close(&mut w.store, &env, w.task.id, None);
+    assert!(
+        refused.is_err_and(|error| error.to_string().contains("does not force-close")),
+        "a worker never force-closes"
+    );
+    assert_eq!(w.state(), TaskState::Working, "untouched");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "close",
+        &json!({ "name": "demo-sand" }),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        w.transitions()
+            .contains(&("force-close".to_owned(), Actor::Orchestrator)),
+        "the orchestrator's force-close is recorded as its own: {:?}",
+        w.transitions()
+    );
 }
 
 #[test]

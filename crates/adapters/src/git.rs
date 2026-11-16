@@ -78,6 +78,13 @@ pub trait GitHost: fmt::Debug {
     ///
     /// Returns [`GitHostError`] when the host cannot answer; a branch without a pull request is `Ok(None)`.
     fn pr_for_branch(&self, dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError>;
+
+    /// The pull request at `url`, as it stands now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitHostError`] when the host cannot answer; an unknown pull request is `Ok(None)`.
+    fn pr_by_url(&self, url: &str) -> Result<Option<PrInfo>, GitHostError>;
 }
 
 /// The `gh` CLI.
@@ -109,18 +116,19 @@ struct RawPr {
     url: String,
 }
 
-impl GitHost for Gh {
-    fn pr_for_branch(&self, dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError> {
-        let args = ["pr", "view", branch, "--json", "number,state,url"];
+impl Gh {
+    fn view(&self, dir: Option<&Path>, target: &str) -> Result<Option<PrInfo>, GitHostError> {
+        let args = ["pr", "view", target, "--json", "number,state,url"];
         let shown = args.join(" ");
-        let output = Command::new(&self.program)
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .map_err(GitHostError::Run)?;
+        let mut command = Command::new(&self.program);
+        command.args(args);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let output = command.output().map_err(GitHostError::Run)?;
         if !output.status.success() {
             let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            if message.contains("no pull requests found") {
+            if message.contains("no pull requests found") || message.contains("Could not resolve") {
                 return Ok(None);
             }
             return Err(GitHostError::Failed {
@@ -137,6 +145,16 @@ impl GitHost for Gh {
             },
             |pr| Ok(Some(pr)),
         )
+    }
+}
+
+impl GitHost for Gh {
+    fn pr_for_branch(&self, dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError> {
+        self.view(Some(dir), branch)
+    }
+
+    fn pr_by_url(&self, url: &str) -> Result<Option<PrInfo>, GitHostError> {
+        self.view(None, url)
     }
 }
 
@@ -193,5 +211,9 @@ impl FakeGit {
 impl GitHost for FakeGit {
     fn pr_for_branch(&self, _dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError> {
         Ok(self.prs.borrow().get(branch).cloned())
+    }
+
+    fn pr_by_url(&self, url: &str) -> Result<Option<PrInfo>, GitHostError> {
+        Ok(self.prs.borrow().values().find(|pr| pr.url == url).cloned())
     }
 }

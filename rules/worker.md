@@ -29,10 +29,17 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 
 ## Closing yourself
 
-When your task is completely finished (its pull requests merged or the task dropped by the user, your report sent to
-`{orchestrator}`, no question or review waiting on the user, and nothing of yours still running in the background),
-close your own session as your very last action: `{close}`. It ends this pane, so run nothing after it. While anything
-is still pending, stay open.
+When your task is completely finished, close your own session as your very last action: call the headwork `done` tool,
+or run `{close}`. Both take the checked path and close the task only when:
+
+- every pull request of the task is merged, or was closed unmerged by the user, or the task has none. Report each pull
+  request with `report` (status `review`, its `pr` URL) as you open it, so headwork finds it on any branch;
+- your report reached `{orchestrator}` by `SendMessage`;
+- no question or review waits on the user, and no job of yours still runs.
+
+Otherwise the close is refused with the reason and the task stays as it was: finish what is missing, or, when you are
+stuck, tell `{orchestrator}`. A task the user dropped closes too. The close ends this pane, so run nothing after it.
+Never close another task: force-closing is for the user and the orchestrator.
 
 ## When your brief makes you a lead
 

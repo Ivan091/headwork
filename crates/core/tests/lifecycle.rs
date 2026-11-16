@@ -6,8 +6,8 @@
 )]
 
 use headwork_core::lifecycle::{
-    CleanupFacts, CloseCause, CloseFacts, Dependency, FableGate, MergePolicy, MergeSource,
-    ParkedFacts, SessionFacts, StartFacts, WorktreeEnd,
+    CleanupFacts, CloseCause, CloseFacts, Dependency, FableGate, FinishFacts, MergePolicy,
+    MergeSource, ParkedFacts, PrEnd, SessionFacts, StartFacts, WorktreeEnd,
 };
 use headwork_core::{MachineMode, Refusal, TaskSnapshot, TaskState, Trigger, apply};
 use proptest::prelude::*;
@@ -35,6 +35,13 @@ const READY: CloseFacts = CloseFacts {
     open_ask: false,
     running_job: false,
     report_sent: true,
+};
+
+const FINISHED: FinishFacts = FinishFacts {
+    open_ask: false,
+    running_job: false,
+    report_sent: true,
+    pr: PrEnd::None,
 };
 
 const CLEAN: CleanupFacts = CleanupFacts {
@@ -72,6 +79,7 @@ fn passing_triggers() -> Vec<Trigger> {
             policy: MergePolicy::Human,
         },
         Trigger::Close(READY),
+        Trigger::Finish(FINISHED),
         Trigger::Drop,
         Trigger::BeginClosing,
         Trigger::ForceClose,
@@ -99,6 +107,7 @@ const TABLE: &[(&str, TaskState, TaskState)] = &[
     ("changes-requested", S::InReview, S::Working),
     ("merged", S::InReview, S::Merged),
     ("close", S::Merged, S::Closing),
+    ("finish", S::Working, S::Closing),
     ("drop", S::Queued, S::Dropped),
     ("drop", S::Spawning, S::Dropped),
     ("drop", S::Working, S::Dropped),
@@ -353,6 +362,81 @@ fn close_guards() {
 }
 
 #[test]
+fn finish_guards() {
+    let working = task(S::Working);
+    let keep = TaskSnapshot {
+        keep: true,
+        ..working
+    };
+    assert_eq!(
+        apply(&keep, &Trigger::Finish(FINISHED)),
+        Err(Refusal::KeepTask),
+        "keep"
+    );
+    let cases = [
+        (
+            FinishFacts {
+                open_ask: true,
+                ..FINISHED
+            },
+            Refusal::OpenAsk,
+        ),
+        (
+            FinishFacts {
+                running_job: true,
+                ..FINISHED
+            },
+            Refusal::RunningJob,
+        ),
+        (
+            FinishFacts {
+                report_sent: false,
+                ..FINISHED
+            },
+            Refusal::ReportMissing,
+        ),
+        (
+            FinishFacts {
+                pr: PrEnd::Open,
+                ..FINISHED
+            },
+            Refusal::PrOpen,
+        ),
+        (
+            FinishFacts {
+                pr: PrEnd::Merged,
+                ..FINISHED
+            },
+            Refusal::PrMerged,
+        ),
+    ];
+    for (facts, refusal) in cases {
+        assert_eq!(
+            apply(&working, &Trigger::Finish(facts)),
+            Err(refusal.clone()),
+            "{refusal}"
+        );
+    }
+    let abandoned = FinishFacts {
+        pr: PrEnd::Closed,
+        ..FINISHED
+    };
+    assert!(
+        apply(&working, &Trigger::Finish(abandoned)).is_ok(),
+        "a pull request closed unmerged finishes"
+    );
+    for state in [S::NeedsUser, S::InReview, S::Merged, S::Parked] {
+        assert!(
+            matches!(
+                apply(&task(state), &Trigger::Finish(FINISHED)),
+                Err(Refusal::WrongState { .. })
+            ),
+            "finish applies only to working, not {state}"
+        );
+    }
+}
+
+#[test]
 fn cleanup_guards() {
     let closing = task(S::Closing);
     let cases = [
@@ -516,6 +600,17 @@ fn happy_path_reaches_closed() {
         S::Closed,
         "drop to close"
     );
+    let finished = [
+        Trigger::Start(FREE),
+        Trigger::SessionStarted(LIVE),
+        Trigger::Finish(FINISHED),
+        Trigger::Cleaned(CLEAN),
+    ];
+    assert_eq!(
+        run(task(S::Queued), &finished).state,
+        S::Closed,
+        "a task without a pull request finishes"
+    );
 }
 
 fn machine_mode() -> impl Strategy<Value = MachineMode> {
@@ -573,6 +668,15 @@ fn worktree_end() -> impl Strategy<Value = WorktreeEnd> {
     ]
 }
 
+fn pr_end() -> impl Strategy<Value = PrEnd> {
+    prop_oneof![
+        Just(PrEnd::None),
+        Just(PrEnd::Open),
+        Just(PrEnd::Merged),
+        Just(PrEnd::Closed)
+    ]
+}
+
 fn trigger() -> impl Strategy<Value = Trigger> {
     let merge_source = prop_oneof![Just(MergeSource::GitHost), Just(MergeSource::Worker)];
     let merge_policy = prop_oneof![Just(MergePolicy::Deliver), Just(MergePolicy::Human)];
@@ -601,6 +705,16 @@ fn trigger() -> impl Strategy<Value = Trigger> {
                     open_ask,
                     running_job,
                     report_sent,
+                })
+            }
+        ),
+        (any::<bool>(), any::<bool>(), any::<bool>(), pr_end()).prop_map(
+            |(open_ask, running_job, report_sent, pr)| {
+                Trigger::Finish(FinishFacts {
+                    open_ask,
+                    running_job,
+                    report_sent,
+                    pr,
                 })
             }
         ),
@@ -644,6 +758,13 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
             !(source == MergeSource::Worker && policy == MergePolicy::Human)
         }
         Trigger::Close(f) => !task.keep && !f.open_ask && !f.running_job && f.report_sent,
+        Trigger::Finish(f) => {
+            !task.keep
+                && !f.open_ask
+                && !f.running_job
+                && f.report_sent
+                && matches!(f.pr, PrEnd::None | PrEnd::Closed)
+        }
         Trigger::Cleaned(f) => {
             f.pane_gone && f.processes_gone && f.worktree != WorktreeEnd::Present
         }
@@ -679,7 +800,7 @@ proptest! {
                         prop_assert_eq!(current.state, S::Closing, "closed only after closing");
                         prop_assert!(matches!(trigger, Trigger::Cleaned(_)), "closed only after verification");
                     }
-                    if step.to == S::Closing && matches!(trigger, Trigger::Close(_)) {
+                    if step.to == S::Closing && matches!(trigger, Trigger::Close(_) | Trigger::Finish(_)) {
                         prop_assert!(!keep, "a keep task closed on its own");
                     }
                     current = TaskSnapshot { state: step.to, state_before_park: step.state_before_park, keep };

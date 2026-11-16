@@ -8,6 +8,7 @@
 use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result, anyhow, bail};
+use headwork_adapters::git::GitHost;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
@@ -16,7 +17,7 @@ use headwork_core::{
 use headwork_store::{NewPr, NewRecap, Store, StoreError, Task};
 use serde_json::{Value, json};
 
-use super::close::close;
+use super::close::{begin_own_close, close, end_closing};
 use super::jobs::{self, Registration};
 use super::rules;
 use super::spawn::{SpawnRequest, pump, spawn};
@@ -46,6 +47,16 @@ impl Identity {
             .ok()
             .and_then(|role| role.parse().ok());
         Self { session, role }
+    }
+
+    /// Who acts for this identity in the event log: the orchestrator, a worker, or else the user.
+    #[must_use]
+    pub const fn actor(&self) -> Actor {
+        match self.role {
+            Some(Role::Orchestrator) => Actor::Orchestrator,
+            Some(Role::Worker) => Actor::Worker,
+            None => Actor::User,
+        }
     }
 
     fn managed(&self) -> Option<(&str, Role)> {
@@ -173,8 +184,10 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "done",
-        description: "Finish the task: records the report, then closes this session, its pane and its worktree. Refused \
-                      while a question to the user is open.",
+        description: "Finish the task through the checked close: a merged pull request moves it through in_review and \
+                      merged, then this session, its pane and its worktree close. Refused, with the task left as it \
+                      was, while a pull request of the task is open, a question waits on the user, a job runs, or \
+                      your report has not reached the orchestrator by SendMessage.",
         roles: WORKER,
         schema: || {
             object(
@@ -290,6 +303,7 @@ fn object(properties: Value, required: &[&str]) -> Value {
 pub struct Server<'a> {
     store: &'a mut Store,
     env: Env<'a>,
+    git: &'a dyn GitHost,
     identity: Identity,
     closing: Option<Task>,
 }
@@ -297,15 +311,17 @@ pub struct Server<'a> {
 impl<'a> Server<'a> {
     /// A server for one session. `env.actor` is replaced by the role's actor.
     #[must_use]
-    pub const fn new(store: &'a mut Store, mut env: Env<'a>, identity: Identity) -> Self {
-        env.actor = match identity.role {
-            Some(Role::Orchestrator) => Actor::Orchestrator,
-            Some(Role::Worker) => Actor::Worker,
-            None => Actor::User,
-        };
+    pub const fn new(
+        store: &'a mut Store,
+        mut env: Env<'a>,
+        git: &'a dyn GitHost,
+        identity: Identity,
+    ) -> Self {
+        env.actor = identity.actor();
         Self {
             store,
             env,
+            git,
             identity,
             closing: None,
         }
@@ -363,7 +379,7 @@ impl<'a> Server<'a> {
         let Some(task) = self.closing.take() else {
             return Ok(());
         };
-        close(
+        end_closing(
             self.store,
             &self.env,
             task.id,
@@ -853,6 +869,7 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .unwrap_or("done")
             .to_owned();
+        begin_own_close(self.store, &self.env, self.git, task.id)?;
         self.store
             .record_report(task.id, session, "done", &summary, &[], None)?;
         self.closing = Some(task);
