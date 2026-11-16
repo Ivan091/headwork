@@ -91,14 +91,19 @@ impl Env<'_> {
         Ok(self.home.expand(&vars.expand(template)?))
     }
 
+    /// The shell that runs commands: `[machine] shell`, else Git Bash.
+    #[must_use]
+    pub fn shell(&self) -> PathBuf {
+        headwork_adapters::shell::resolve(self.config.machine.shell.as_deref())
+    }
+
     /// Runs the project's worktree commands.
     ///
     /// # Errors
     ///
     /// Fails when the project left the config.
     pub fn worktrees(&self, task: &Task) -> Result<Worktrees> {
-        let shell = headwork_adapters::shell::resolve(self.config.machine.shell.as_deref());
-        Ok(Worktrees::new(shell, self.main_path(task)?))
+        Ok(Worktrees::new(self.shell(), self.main_path(task)?))
     }
 }
 

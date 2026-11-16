@@ -1,7 +1,7 @@
 //! The jobs registry (design sections 3.3 and 6.1): long-running processes a session registered, so a park can stop
 //! them cleanly and a resume can run them again.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -117,7 +117,7 @@ pub fn rotate_log(log: &Path, limit: u64, keep: u32) {
     let numbered = |n: u32| {
         let mut name = log.as_os_str().to_owned();
         name.push(format!(".{n}"));
-        std::path::PathBuf::from(name)
+        PathBuf::from(name)
     };
     std::fs::remove_file(numbered(keep)).ok();
     for n in (1..keep).rev() {
@@ -157,7 +157,7 @@ pub fn start(
             ..job.clone()
         },
     )?;
-    match restart(store, &row, env.actor) {
+    match restart(store, &row, &env.shell(), env.actor) {
         Ok(_) => store
             .job(row.id)?
             .with_context(|| format!("job {} vanished after it started", row.id)),
@@ -229,12 +229,43 @@ pub fn stop(store: &mut Store, job: &JobRow, note: &str, actor: Actor) -> Result
     Ok(())
 }
 
+/// Opens a job log for appending with write access, which programs built on MSYS (Git Bash) need to write to it.
+///
+/// Append-only handles, as `OpenOptions::append` makes them, silently lose the output of such programs.
+fn open_log(path: &str) -> Result<std::fs::File> {
+    use std::io::Seek;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {path}"))?;
+    file.seek(std::io::SeekFrom::End(0))
+        .with_context(|| format!("opening {path}"))?;
+    Ok(file)
+}
+
+/// The program a job runs: the configured `shell` for a bare `bash` or `sh` or WSL's `bash`, else `program` as given.
+///
+/// A bare `bash` makes Windows start WSL's `bash.exe` from `System32`, with another file system and no Git Bash tools.
+#[must_use]
+pub fn program_for(program: &str, shell: &Path) -> PathBuf {
+    let path = Path::new(program);
+    let bare_shell = headwork_adapters::shell::is_bare(path)
+        && matches!(program, "bash" | "sh" | "bash.exe" | "sh.exe");
+    if bare_shell || headwork_adapters::shell::is_wsl_bash(path) {
+        shell.to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
+}
+
 /// Starts a parked job again with its stored command line, detached, appending to its log.
 ///
 /// # Errors
 ///
 /// Fails when the folder is gone, the log cannot be opened, or the program does not start.
-pub fn restart(store: &mut Store, job: &JobRow, actor: Actor) -> Result<u32> {
+pub fn restart(store: &mut Store, job: &JobRow, shell: &Path, actor: Actor) -> Result<u32> {
     let Some((program, args)) = job.argv.split_first() else {
         bail!("job `{}` has no command line", job.label);
     };
@@ -245,15 +276,11 @@ pub fn restart(store: &mut Store, job: &JobRow, actor: Actor) -> Result<u32> {
         job.label
     );
     rotate_log(Path::new(&job.log_path), LOG_LIMIT_BYTES, LOG_KEEP);
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&job.log_path)
-        .with_context(|| format!("opening {}", job.log_path))?;
+    let log = open_log(&job.log_path)?;
     let err = log
         .try_clone()
         .with_context(|| format!("opening {}", job.log_path))?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(program_for(program, shell));
     command
         .args(args)
         .current_dir(&job.cwd)
@@ -266,7 +293,73 @@ pub fn restart(store: &mut Store, job: &JobRow, actor: Actor) -> Result<u32> {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::rotate_log;
+    use std::path::Path;
+
+    use super::{open_log, program_for, rotate_log};
+
+    #[test]
+    fn a_bare_shell_becomes_the_configured_one() {
+        let shell = Path::new("C:/Program Files/Git/bin/bash.exe");
+        for bare in ["bash", "sh", "bash.exe", "C:/Windows/System32/bash.exe"] {
+            assert_eq!(program_for(bare, shell), shell, "{bare}");
+        }
+        for other in ["cargo", "C:/Program Files/Git/usr/bin/bash.exe", "python"] {
+            assert_eq!(program_for(other, shell), Path::new(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn the_shell_of_a_job_writes_its_output_to_the_log() {
+        let shell = headwork_adapters::shell::default_shell();
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("job.log");
+        let log_text = log.to_str().unwrap();
+        let file = open_log(log_text).unwrap();
+        let err = file.try_clone().unwrap();
+        let mut command = std::process::Command::new(program_for("bash", &shell));
+        command.args(["-c", "echo out-line; echo err-line 1>&2"]);
+        let (pid, _) =
+            headwork_adapters::proc::spawn_detached_to(&mut command, file.into(), err.into())
+                .unwrap();
+        let mut text = String::new();
+        for _ in 0..100 {
+            text = std::fs::read_to_string(&log).unwrap();
+            if text.contains("err-line") && !headwork_adapters::proc::is_alive(pid).unwrap() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            text.contains("out-line") && text.contains("err-line"),
+            "log: {text:?}"
+        );
+    }
+
+    #[test]
+    fn the_log_is_opened_for_writing_and_appends() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("job.log");
+        std::fs::write(
+            &log, "old
+",
+        )
+        .unwrap();
+        open_log(log.to_str().unwrap())
+            .unwrap()
+            .write_all(
+                b"new
+",
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "old
+new
+",
+            "appended"
+        );
+    }
 
     #[test]
     fn a_large_log_rotates_and_the_oldest_copy_is_dropped() {
