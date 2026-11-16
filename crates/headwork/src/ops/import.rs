@@ -1,6 +1,6 @@
 //! `import`: adopt what today's orchestrate scripts started, so headwork can shadow the current setup.
 //!
-//! Workers are found two ways: running wmux agents labelled `<project>/<slug>` (what `spawn-child.sh` makes), and
+//! Workers are found two ways: running wmux agents labelled `<project>/<slug>` (what the old spawn script makes), and
 //! Claude panes wmux restored after a restart, which are no longer agents. For those, wmux's `agent-state` gives the
 //! session id, and the session's transcript gives the name (from the first prompt, "You are the worker session …", or
 //! "child" in the scripts' wording) and the folder it runs in. Projects come from `projects.conf`; worktrees from
@@ -23,7 +23,7 @@ use super::{Env, slashed};
 /// The words of the first prompt a worker gets: from headwork, and from the orchestrate scripts, which call it a child.
 const WORKER_PROMPTS: &[&str] = &["You are the worker session ", "You are the child session "];
 
-/// The heading `spawn-child.sh` appends to every brief except a keep task's.
+/// The heading the old spawn script appends to every brief except a keep task's.
 const CLOSING_HEADING: &str = "## Closing yourself";
 
 /// How far into a transcript the name and folder are looked for.

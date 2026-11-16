@@ -676,7 +676,7 @@ fn store_checks(d: &Doctor<'_>, store: &Store) -> Vec<Check> {
         Ok(None) => Check::warn(
             "orchestrator",
             "no live orchestrator session in the store: the orchestrator runs unmanaged",
-            "start the orchestrator with `headwork orchestrator` instead of root.sh",
+            "start the orchestrator with `headwork orchestrator`",
         ),
         Err(error) => Check::warn("orchestrator", format!("{error}"), "check the store"),
     });

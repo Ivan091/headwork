@@ -117,7 +117,7 @@ it running (the restart ends it), and resume reopens it in an `orchestrator` wor
 the same conversation and its recorded name, at logon too and after a crash. An orchestrator that still runs is left
 alone. See `docs/decisions.md` (2026-11-14, the root parks and resumes).
 
-### Migration on this machine (steps 0 and 1)
+### Migration on this machine (step 0)
 
 Milestone 7 installed headwork for real, with `hooks.enforce = false` (shadow mode). `headwork doctor` checks all of it
 (binary, PATH, config, store, wmux, gh, claude, plugin entry, hooks file, enforce switch, disk, deprecated config keys,
@@ -130,7 +130,6 @@ What changed in the live setup:
 | The binary, copied from `target/release/headwork.exe` | `~/.local/bin/headwork.exe` (on PATH) |
 | Config and store | `~/.headwork/config.toml`, `state.db` (`config.toml.import` is what `headwork import` wrote) |
 | The plugin, as a local marketplace pointing at `S:/Code/headwork/headwork` | `extraKnownMarketplaces.headwork` and `enabledPlugins."headwork@headwork"` in `~/.claude/settings.json` |
-| Spawn wrappers | `~/.claude/skills/orchestrate/scripts/{spawn-child,close-child,children}.sh`, the old ones as `*.legacy.sh` |
 
 The plugin does nothing in a session headwork did not start: its hooks run `${HEADWORK_EXE:-true}`, and only the
 launcher sets `HEADWORK_EXE`. Its MCP server connects with no tools in such a session. A hook that fails (missing
@@ -149,9 +148,10 @@ their MCP server at the next tool call and hand their exit to the new build. Ses
 session, or park and resume. Plugin files (`hooks.json`, `.mcp.json`) need a new session. A pinned launcher cannot
 record its exit once a newer migration ran; `headwork close <name>` finishes such a session (docs/hot-reload.md).
 
-**Undo, step 1 (spawn wrappers):** `echo legacy > ~/.claude/skills/orchestrate/engine`. Every script then runs its
-`*.legacy.sh` twin. One call can choose with `ORCH_ENGINE=legacy`. Workers already in the store keep closing through
-`headwork close`; the close wrapper falls back to the legacy script for a worker the store does not know.
+**Legacy orchestrate scripts retired (2026-11-16).** The scripts in `~/.claude/skills/orchestrate/scripts` that headwork
+replaced (the spawn, close, list and root scripts, with their `*.legacy.sh` twins and the `engine` switch) are gone, and so is
+the undo path back to them. Spawning, closing and listing go through `headwork spawn`, `close` and `board` only.
+`projects.conf` stays; `headwork import` still reads it. See `docs/decisions.md` (2026-11-16, legacy scripts retired).
 
 **Undo, step 0 (plugin and hooks):** delete the keys `extraKnownMarketplaces.headwork` and
 `enabledPlugins."headwork@headwork"` from `~/.claude/settings.json` (then `sync-config`). New sessions load no plugin.
@@ -160,8 +160,7 @@ The binary, `~/.headwork` and the PATH copy can stay; remove them with `rm -r ~/
 **The orchestrator as a store session:** `headwork orchestrator` starts `claude --agent <agent> --remote-control
 orchestrator -n orchestrator` here, records it as the store's orchestrator session and gives it its identity. `--name`
 changes the name; the agent is `orchestrator` once `~/.claude/agents/orchestrator.md` exists, else `root`, and
-`--agent` overrides both. `root.sh` starts the orchestrator this way (step 3); the `engine` switch (`legacy`) brings
-back the old unmanaged start.
+`--agent` overrides both.
 
 **Root and children became orchestrator and workers (2026-11-14).** The coordinating session was called the root and the
 sessions it spawns children; `docs/decisions.md` (2026-11-14, orchestrator and workers) lists every renamed name. What
@@ -186,8 +185,7 @@ Moving the running root (a store session named `root`, launched by a hot-reload 
 1. Install this build (`target/release/headwork.exe install`). Migration 0009 runs at the first store open. Nothing
    changes for the running sessions: the root stays `root`, the rules keep naming `root`, and `headwork doctor` shows
    check `orchestrator` as ok.
-2. When the root is idle, end it and start it again under the new name from `S:/Code`: `headwork orchestrator` (or
-   `root.sh` once the config task points it there). Until the config task adds `~/.claude/agents/orchestrator.md`
+2. When the root is idle, end it and start it again under the new name from `S:/Code`: `headwork orchestrator`. Until the config task adds `~/.claude/agents/orchestrator.md`
    it runs the `root` agent, and with that file the `orchestrator` agent, with no change here. Its earlier
    conversation does not come along; give it a recap first or let it read `HANDOFF.md`.
 3. From then on the rules name `orchestrator`; every running worker gets them at its next prompt. A worker started
