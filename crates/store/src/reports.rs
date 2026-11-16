@@ -77,6 +77,19 @@ impl Store {
         Ok(())
     }
 
+    /// The URLs of every pull request recorded for the task, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn pr_urls_of(&self, task: TaskId) -> Result<Vec<String>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT url FROM prs WHERE task_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map(params![task.0], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// The rules added at run time that are still active, oldest first.
     ///
     /// # Errors

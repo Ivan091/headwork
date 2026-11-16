@@ -461,3 +461,19 @@ and the reason.
   remove` without force when the worktree holds no work: its branch has no commits beyond the main checkout's `HEAD`
   and git itself refuses changes or untracked files. It logs `worktree-removed-pristine` with the script's error and
   deletes the empty branch as before. A worktree with commits or changes still stays and keeps the task `closing`.
+- 2026-11-16 A worker closes its own task through the checked path, never force-close (the audit counted 25 of 25
+  closes as `force-close`, and no task ever reached `in_review` or `merged`). The `done` tool and `headwork close
+  <own name>` run from the worker's own session (`HEADWORK_ROLE=worker`, `HEADWORK_SESSION` the task's session) both
+  call `close_own`: it asks the git host now for every pull request recorded for the task (by URL, new
+  `GitHost::pr_by_url`), the worktree's branch and the branch checked out in the task folder, because workers often
+  open their pull request from a branch other than the worktree's. A merged one moves the task `working` →
+  `in_review` → `merged` → `closing` (merge reported as the git host's, so `merge = "human"` projects work too); a
+  task with no pull request, or whose pull request was closed unmerged, takes the new `finish` trigger `working` →
+  `closing` with the same guard as `close` (no open ask, no running job, a `SendMessage` report) plus no open pull
+  request; an `in_review` task whose pull request closed goes back through `changes-requested` first; a dropped task
+  begins closing. Every step is checked against the lifecycle before any is applied, so a refusal leaves the task as
+  it was and logs `close-refused`. A `done` that is refused records no report. Force-close (`ForceClose`) stays for
+  the user (no role) and the orchestrator, and each transition is logged with the caller's actor instead of always
+  `user`. A worker's `headwork close` of another task is refused outright, not shadowed: the close is a lifecycle
+  guard like `done`'s, not a hook rule. A worker the checked path refuses and that cannot fix it tells the
+  orchestrator, whose `close` force-closes.

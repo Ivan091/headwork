@@ -12,16 +12,21 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
+use headwork_adapters::git::{GitHost, PrInfo, PrState};
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::{TaskVars, WorktreeCommand};
-use headwork_core::lifecycle::{CleanupFacts, Trigger, WorktreeEnd};
+use headwork_core::guard::DEFAULT_BRANCHES;
+use headwork_core::lifecycle::{
+    CleanupFacts, CloseCause, CloseFacts, FinishFacts, MergeSource, PrEnd, Trigger, WorktreeEnd,
+};
 use headwork_core::{Actor, JobState, SessionState, TaskState};
-use headwork_store::{SessionRow, Store, StoreError, Task, TaskId};
+use headwork_store::{PrSeen, SessionRow, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
+use super::hook::{Git, GitProbe};
 use super::{Env, slashed};
 
 /// How long `close` waits for a launcher to finish after its `claude` was ended.
@@ -41,18 +46,27 @@ pub struct CloseReport {
     pub pending: Option<String>,
 }
 
-/// Closes a task. `own_session` is the session the caller runs in, from `HEADWORK_SESSION`: closing that session
-/// ends the caller, so the launcher finishes the close.
+/// Force-closes a task, as the user or the orchestrator.
+///
+/// Every state that is not over goes to `closing` at once. `own_session` is the session the caller runs in, from
+/// `HEADWORK_SESSION`: closing that session ends the caller, so the launcher finishes the close. A worker never
+/// force-closes; it finishes its own task with [`close_own`].
 ///
 /// # Errors
 ///
-/// Fails when the store fails or the task cannot start closing.
+/// Fails when the store fails, the task cannot start closing, or the actor is a worker.
 pub fn close(
     store: &mut Store,
     env: &Env<'_>,
     id: TaskId,
     own_session: Option<&str>,
 ) -> Result<CloseReport> {
+    if env.actor == Actor::Worker {
+        bail!(
+            "a worker does not force-close a task: finish your own task with `done` or `headwork close <your name>`, \
+             and ask the orchestrator to close anything else"
+        );
+    }
     let before = store.task(id)?;
     if !matches!(before.state, TaskState::Closing | TaskState::Closed) {
         super::recap::note(
@@ -64,6 +78,221 @@ pub fn close(
         );
     }
     begin_closing(store, env, id)?;
+    end_closing(store, env, id, own_session)
+}
+
+/// Closes a worker's own task through the checked path.
+///
+/// A merged pull request moves it through `in_review` and
+/// `merged` to `closing`, a task without one (or whose pull request was closed unmerged) finishes from `working`, and
+/// a dropped task begins closing. Every step is checked before any is applied: an open pull request, an ask waiting
+/// on the user, a running job or a missing report to the orchestrator refuses the close and leaves the task as it was.
+///
+/// # Errors
+///
+/// Fails with the refusal when the task may not close yet, or when the store or the git host fails.
+pub fn close_own(
+    store: &mut Store,
+    env: &Env<'_>,
+    git: &dyn GitHost,
+    id: TaskId,
+    own_session: Option<&str>,
+) -> Result<CloseReport> {
+    begin_own_close(store, env, git, id)?;
+    end_closing(store, env, id, own_session)
+}
+
+/// The checked half of [`close_own`]: moves the worker's own task to `closing`, or refuses and leaves it as it was.
+/// A task already closing or closed is left alone.
+///
+/// # Errors
+///
+/// Fails with the refusal when the task may not close yet, or when the store or the git host fails.
+pub fn begin_own_close(
+    store: &mut Store,
+    env: &Env<'_>,
+    git: &dyn GitHost,
+    id: TaskId,
+) -> Result<()> {
+    let before = store.task(id)?;
+    if matches!(before.state, TaskState::Closing | TaskState::Closed) {
+        return Ok(());
+    }
+    let steps = match own_steps(store, env, git, &before) {
+        Ok(steps) => steps,
+        Err(error) => {
+            store.append_event(
+                env.actor,
+                Some(id),
+                None,
+                "close-refused",
+                &serde_json::json!({ "state": before.state, "reason": format!("{error:#}") }),
+            )?;
+            return Err(error);
+        }
+    };
+    for trigger in &steps {
+        store.transition(id, trigger, env.actor)?;
+    }
+    super::recap::note(
+        store,
+        env,
+        &before,
+        headwork_core::RecapKind::Close,
+        "closing",
+    );
+    Ok(())
+}
+
+/// The transitions that take a worker's own task to `closing`, all checked against the lifecycle before any is
+/// applied.
+fn own_steps(
+    store: &mut Store,
+    env: &Env<'_>,
+    git: &dyn GitHost,
+    task: &Task,
+) -> Result<Vec<Trigger>> {
+    let id = task.id;
+    if task.state == TaskState::Dropped {
+        return Ok(vec![Trigger::BeginClosing]);
+    }
+    if task.state == TaskState::NeedsUser {
+        bail!("{}", headwork_core::Refusal::OpenAsk);
+    }
+    let (pr, info) = if matches!(task.state, TaskState::Working | TaskState::InReview) {
+        pr_end(store, env, git, task)?
+    } else {
+        (PrEnd::None, None)
+    };
+    let facts = FinishFacts {
+        open_ask: store.has_waiting_ask(id)?,
+        running_job: super::jobs::has_running_job(store, id)?,
+        report_sent: store.report_sent(id)?,
+        pr,
+    };
+    let close = Trigger::Close(CloseFacts {
+        cause: CloseCause::Done,
+        open_ask: facts.open_ask,
+        running_job: facts.running_job,
+        report_sent: facts.report_sent,
+    });
+    let project = env.project(task)?;
+    let merged = Trigger::Merged {
+        source: MergeSource::GitHost,
+        policy: project.merge,
+    };
+    let steps = match (task.state, pr) {
+        (TaskState::Merged, _) => vec![close],
+        (TaskState::Working, PrEnd::Merged) => {
+            let repo_allowed = info.as_ref().is_some_and(|info| {
+                project
+                    .allowed_repos
+                    .iter()
+                    .any(|repo| repo.as_str().eq_ignore_ascii_case(&info.repo))
+            });
+            vec![Trigger::ReviewOpened { repo_allowed }, merged, close]
+        }
+        (TaskState::InReview, PrEnd::Merged) => vec![merged, close],
+        (TaskState::InReview, PrEnd::Closed | PrEnd::None) => vec![
+            Trigger::ChangesRequested,
+            Trigger::Finish(FinishFacts {
+                pr: PrEnd::Closed,
+                ..facts
+            }),
+        ],
+        (TaskState::InReview, PrEnd::Open) => bail!("{}", headwork_core::Refusal::PrOpen),
+        _ => vec![Trigger::Finish(facts)],
+    };
+    let mut snapshot = task.snapshot();
+    for trigger in &steps {
+        let step =
+            headwork_core::apply(&snapshot, trigger).map_err(|refusal| anyhow!("{refusal}"))?;
+        snapshot.state = step.to;
+        snapshot.state_before_park = step.state_before_park;
+    }
+    Ok(steps)
+}
+
+/// Where the task's pull requests stand, asked of the git host now: those recorded for the task, the one of its
+/// worktree's branch and the one of the branch checked out in its folder. Any open one makes it [`PrEnd::Open`], else
+/// any merged one [`PrEnd::Merged`], else any closed one [`PrEnd::Closed`]. A task in the main checkout has none.
+fn pr_end(
+    store: &mut Store,
+    env: &Env<'_>,
+    git: &dyn GitHost,
+    task: &Task,
+) -> Result<(PrEnd, Option<PrInfo>)> {
+    if task.in_main {
+        return Ok((PrEnd::None, None));
+    }
+    let mut seen: Vec<PrInfo> = Vec::new();
+    for url in store.pr_urls_of(task.id)? {
+        if let Some(pr) = git.pr_by_url(&url)? {
+            seen.push(pr);
+        }
+    }
+    let dir = env.task_dir(task)?;
+    let dir = if dir.is_dir() {
+        dir
+    } else {
+        env.main_path(task)?
+    };
+    let mut branches = vec![
+        store
+            .worktree_of(task.id)?
+            .map_or_else(|| task.slug().to_string(), |w| w.branch),
+    ];
+    if let Some(current) = Git.branch(&slashed(&dir))
+        && !branches.contains(&current)
+        && !DEFAULT_BRANCHES.contains(&current.as_str())
+    {
+        branches.push(current);
+    }
+    for branch in &branches {
+        if let Some(pr) = git.pr_for_branch(&dir, branch)?
+            && !seen.iter().any(|known| known.url == pr.url)
+        {
+            seen.push(pr);
+        }
+    }
+    for pr in &seen {
+        store.record_pr(
+            task.id,
+            &PrSeen {
+                repo: &pr.repo,
+                number: pr.number,
+                url: &pr.url,
+                state: pr.state.as_str(),
+            },
+            env.actor,
+        )?;
+    }
+    let pick = [
+        (PrState::Open, PrEnd::Open),
+        (PrState::Merged, PrEnd::Merged),
+        (PrState::Closed, PrEnd::Closed),
+    ];
+    Ok(pick
+        .into_iter()
+        .find_map(|(state, end)| {
+            seen.iter()
+                .find(|pr| pr.state == state)
+                .map(|pr| (end, Some(pr.clone())))
+        })
+        .unwrap_or((PrEnd::None, None)))
+}
+
+/// Ends a `closing` task's session, pane, process tree and worktree, and marks it `closed` once each is verified gone.
+///
+/// # Errors
+///
+/// Fails when the store fails or the task is not closing.
+pub fn end_closing(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    own_session: Option<&str>,
+) -> Result<CloseReport> {
     let task = store.task(id)?;
     remove_brief(env, &task.brief_path);
     if let Some(session) = store.session_of(id)?

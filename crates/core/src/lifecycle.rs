@@ -110,6 +110,32 @@ pub struct CloseFacts {
     pub report_sent: bool,
 }
 
+/// Where the task's pull request stands when its worker finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrEnd {
+    /// The task has no pull request: a lookup, a report, work in the main checkout.
+    None,
+    /// The pull request is open.
+    Open,
+    /// The pull request is merged.
+    Merged,
+    /// The pull request was closed without a merge.
+    Closed,
+}
+
+/// Facts for `working` → `closing` when the worker finishes without a merged pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinishFacts {
+    /// An ask of the task still waits on the user.
+    pub open_ask: bool,
+    /// A job of the task still runs.
+    pub running_job: bool,
+    /// The worker sent its report to the orchestrator.
+    pub report_sent: bool,
+    /// The task's pull request.
+    pub pr: PrEnd,
+}
+
 /// What happened to a task's worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorktreeEnd {
@@ -175,6 +201,8 @@ pub enum Trigger {
     },
     /// `merged` → `closing`.
     Close(CloseFacts),
+    /// The worker finishes a task that has no merged pull request to close through: `working` → `closing`.
+    Finish(FinishFacts),
     /// The orchestrator or the user drops the task: any state that is not closing or over → `dropped`.
     Drop,
     /// `dropped` → `closing`, at once.
@@ -215,6 +243,7 @@ impl Trigger {
             Self::ChangesRequested => "changes-requested",
             Self::Merged { .. } => "merged",
             Self::Close(_) => "close",
+            Self::Finish(_) => "finish",
             Self::Drop => "drop",
             Self::BeginClosing => "begin-closing",
             Self::ForceClose => "force-close",
@@ -297,6 +326,12 @@ pub enum Refusal {
     /// The report to the orchestrator is missing.
     #[error("the task has not sent its report to the orchestrator")]
     ReportMissing,
+    /// The task's pull request is still open.
+    #[error("the task's pull request is still open: merge it, or have it closed, before finishing")]
+    PrOpen,
+    /// The task's pull request is merged, so it finishes through `in_review` and `merged`.
+    #[error("the task's pull request is merged: the task closes through in_review and merged")]
+    PrMerged,
     /// The pane is still open.
     #[error("the host pane is still open")]
     PaneOpen,
@@ -321,7 +356,9 @@ impl Trigger {
             Self::SessionStarted(_) | Self::SpawnTimedOut | Self::LaunchFailed => {
                 matches!(state, S::Spawning)
             }
-            Self::AskOpened | Self::ReviewOpened { .. } => matches!(state, S::Working),
+            Self::AskOpened | Self::ReviewOpened { .. } | Self::Finish(_) => {
+                matches!(state, S::Working)
+            }
             Self::AskAnswered => matches!(state, S::NeedsUser),
             Self::ChangesRequested | Self::Merged { .. } => matches!(state, S::InReview),
             Self::Close(_) => matches!(state, S::Merged),
@@ -362,6 +399,7 @@ impl Trigger {
                 policy: MergePolicy::Human,
             } => Err(Refusal::HumanMergeOnly),
             Self::Close(facts) => check_close(task.keep, facts),
+            Self::Finish(facts) => check_finish(task.keep, facts),
             Self::Cleaned(facts) => check_cleanup(facts),
             Self::ProcessLost {
                 machine: MachineMode::Parking,
@@ -402,7 +440,7 @@ impl Trigger {
             Self::AskAnswered | Self::ChangesRequested => (S::Working, keep),
             Self::ReviewOpened { .. } => (S::InReview, keep),
             Self::Merged { .. } => (S::Merged, keep),
-            Self::Close(_) | Self::BeginClosing => (S::Closing, keep),
+            Self::Close(_) | Self::Finish(_) | Self::BeginClosing => (S::Closing, keep),
             Self::ForceClose => (S::Closing, None),
             Self::Drop => (S::Dropped, None),
             Self::Cleaned(_) => (S::Closed, keep),
@@ -514,6 +552,26 @@ const fn check_close(keep: bool, facts: CloseFacts) -> Result<(), Refusal> {
         return Err(Refusal::ReportMissing);
     }
     Ok(())
+}
+
+const fn check_finish(keep: bool, facts: FinishFacts) -> Result<(), Refusal> {
+    if keep {
+        return Err(Refusal::KeepTask);
+    }
+    if facts.open_ask {
+        return Err(Refusal::OpenAsk);
+    }
+    if facts.running_job {
+        return Err(Refusal::RunningJob);
+    }
+    if !facts.report_sent {
+        return Err(Refusal::ReportMissing);
+    }
+    match facts.pr {
+        PrEnd::Open => Err(Refusal::PrOpen),
+        PrEnd::Merged => Err(Refusal::PrMerged),
+        PrEnd::None | PrEnd::Closed => Ok(()),
+    }
 }
 
 const fn check_cleanup(facts: CleanupFacts) -> Result<(), Refusal> {
