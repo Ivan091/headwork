@@ -12,9 +12,10 @@ use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::close::close_surface_or_workspace;
 use headwork::ops::launch::{StartMode, claude_command, exited, orchestrator_agent};
+use headwork::ops::place::IDLE_LABEL;
 use headwork::ops::spawn::{Outcome, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
-use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
+use headwork_adapters::host::{PaneId, SurfaceId, Target, TerminalHost, WorkspaceId};
 use headwork_core::{
     Actor, Config, Effort, Model, PermissionMode, PlaceKind, ProjectName, SessionState, Slug,
     TaskRequest, TaskState,
@@ -208,7 +209,7 @@ fn main_checkout_tasks_need_no_worktree_and_share_the_workspace() {
         "one workspace per project: {calls:?}"
     );
     assert!(
-        calls.iter().any(|c| c.starts_with("grid ")),
+        calls.iter().any(|c| c.starts_with("split ")),
         "the second child gets a pane of its own: {calls:?}"
     );
     assert!(
@@ -440,7 +441,7 @@ fn release(w: &World, task: &headwork_store::Task) {
 }
 
 #[test]
-fn four_children_fill_a_grid_of_panes_and_the_fifth_stacks_as_a_tab() {
+fn four_workers_split_into_four_panes_and_the_fifth_stacks_as_a_tab() {
     let mut w = world(10, "builtin");
     let tasks: Vec<_> = ["a", "b", "c", "d", "e"]
         .iter()
@@ -474,22 +475,51 @@ fn four_children_fill_a_grid_of_panes_and_the_fifth_stacks_as_a_tab() {
     assert_eq!(panes.len(), 4, "four different panes: {places:?}");
     assert_eq!(
         layout_of(&w),
-        [(1, 0.5, 0.5), (1, 0.5, 0.5), (1, 0.5, 0.5), (2, 0.5, 0.5)],
-        "a two by two grid, the fifth child a tab of the last pane"
+        [(1, 0.25, 0.5), (1, 0.25, 0.5), (1, 0.5, 0.5), (2, 0.5, 1.0)],
+        "the first pane split three times, the fifth child a tab of the last pane"
     );
     let calls = w.host.calls();
-    let grids: Vec<&String> = calls.iter().filter(|c| c.starts_with("grid ")).collect();
-    assert_eq!(
-        grids.len(),
-        1,
-        "one grid, made by the second child: {calls:?}"
-    );
-    assert!(grids.first().unwrap().ends_with(" 4"), "{grids:?}");
-    assert!(calls.iter().all(|c| !c.starts_with("split ")), "{calls:?}");
+    let splits = calls.iter().filter(|c| c.starts_with("split ")).count();
+    assert_eq!(splits, 3, "one split per worker after the first: {calls:?}");
+}
+
+fn spawned_placeholders(w: &World) -> usize {
+    w.host
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("spawn ") && c.contains(" headwork:free in "))
+        .count()
 }
 
 #[test]
-fn a_closing_child_leaves_its_pane_to_the_next_one() {
+fn three_workers_close_one_by_one_and_leave_no_pane() {
+    let mut w = world(10, "builtin");
+    let tasks: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|slug| w.spawn(&format!("task-{slug}"), false).0)
+        .collect();
+    assert_eq!(layout_of(&w).len(), 3, "three panes");
+    let mut left = Vec::new();
+    for task in &tasks {
+        release(&w, task);
+        left.push(
+            w.host
+                .workspaces()
+                .unwrap()
+                .first()
+                .map_or(0, |_| layout_of(&w).len()),
+        );
+    }
+    assert_eq!(left, [2, 1, 0], "each close takes its pane away");
+    assert!(
+        w.host.workspaces().unwrap().is_empty(),
+        "the workspace closed"
+    );
+    assert_eq!(spawned_placeholders(&w), 0, "{:?}", w.host.calls());
+}
+
+#[test]
+fn a_close_beside_a_busy_pane_leaves_no_placeholder_and_the_next_spawn_splits_again() {
     let mut w = world(10, "builtin");
     let tasks: Vec<_> = ["a", "b", "c", "d"]
         .iter()
@@ -500,20 +530,16 @@ fn a_closing_child_leaves_its_pane_to_the_next_one() {
     release(&w, gone);
     let ended = w.store.session_of(gone.id).unwrap().unwrap().id;
     w.store.session_ended(&ended, Some(0)).unwrap();
-    assert_eq!(
-        layout_of(&w),
-        [(1, 0.5, 0.5), (1, 0.5, 0.5), (1, 0.5, 0.5), (1, 0.5, 0.5)],
-        "the pane stays, holding the placeholder"
-    );
-    let placeholder = format!("pane {}", pane.clone().unwrap());
-    assert!(
+    assert_eq!(layout_of(&w).len(), 3, "its pane is gone, three stay");
+    assert_eq!(spawned_placeholders(&w), 0, "{:?}", w.host.calls());
+    let splits = |w: &World| {
         w.host
             .calls()
             .iter()
-            .any(|c| c.contains(" headwork:free in ") && c.ends_with(&placeholder)),
-        "{:?}",
-        w.host.calls()
-    );
+            .filter(|c| c.starts_with("split "))
+            .count()
+    };
+    let before = splits(&w);
     let (next, _) = w.spawn("task-e", false);
     let session = w.store.session_of(next.id).unwrap().unwrap();
     assert_eq!(
@@ -521,19 +547,60 @@ fn a_closing_child_leaves_its_pane_to_the_next_one() {
         Some(PlaceKind::Pane),
         "a pane of its own"
     );
-    assert_eq!(session.host_pane, pane, "the pane the closed child left");
+    assert_ne!(session.host_pane, pane, "a new pane, not the closed one");
+    assert_eq!(
+        splits(&w),
+        before + 1,
+        "it split again: {:?}",
+        w.host.calls()
+    );
+    assert_eq!(layout_of(&w).len(), 4, "four panes again");
+}
+
+#[test]
+fn a_placeholder_an_older_build_left_is_closed() {
+    let mut w = world(10, "builtin");
+    let (a, _) = w.spawn("task-a", false);
+    let (b, _) = w.spawn("task-b", false);
+    let workspace = w.host.workspaces().unwrap().into_iter().next().unwrap().id;
+    let pane = w
+        .store
+        .session_of(b.id)
+        .unwrap()
+        .unwrap()
+        .host_pane
+        .unwrap();
+    let placeholder = w
+        .host
+        .spawn(
+            &workspace,
+            Path::new("."),
+            IDLE_LABEL,
+            &[EXE.to_owned(), "idle".to_owned(), "demo".to_owned()],
+            &Target::Pane {
+                pane: PaneId(pane),
+                replace_tab: false,
+            },
+        )
+        .unwrap();
+    release(&w, &b);
     assert!(
         w.host
             .calls()
-            .iter()
-            .rfind(|c| !c.starts_with("rename-surface"))
-            .unwrap()
-            .clone()
-            .ends_with(" replace"),
-        "it replaces the placeholder: {:?}",
+            .contains(&format!("close-surface {}", placeholder.surface)),
+        "{:?}",
         w.host.calls()
     );
-    assert_eq!(layout_of(&w).len(), 4, "still four panes");
+    assert_eq!(
+        layout_of(&w).len(),
+        1,
+        "only the first worker's pane is left"
+    );
+    release(&w, &a);
+    assert!(
+        w.host.workspaces().unwrap().is_empty(),
+        "the workspace closed"
+    );
 }
 
 #[test]
@@ -546,13 +613,13 @@ fn the_workspace_closes_with_its_last_worker() {
     release(&w, &a);
     assert!(
         w.host.workspaces().unwrap().is_empty(),
-        "placeholders and shells hold no session: {:?}",
+        "shells hold no session: {:?}",
         w.host.calls()
     );
 }
 
 #[test]
-fn a_free_pane_the_user_left_is_used_before_making_a_grid() {
+fn a_free_pane_the_user_left_is_used_before_splitting() {
     let mut w = world(10, "builtin");
     let (first, _) = w.spawn("task-a", false);
     let workspace = w.host.workspaces().unwrap().into_iter().next().unwrap().id;
@@ -568,9 +635,10 @@ fn a_free_pane_the_user_left_is_used_before_making_a_grid() {
         "the user's pane"
     );
     let calls = w.host.calls();
-    assert!(
-        calls.iter().all(|c| !c.starts_with("grid ")),
-        "no grid: {calls:?}"
+    assert_eq!(
+        calls.iter().filter(|c| c.starts_with("split ")).count(),
+        1,
+        "only the user's split: {calls:?}"
     );
     let replaced = format!("pane {pane} replace");
     assert!(
@@ -588,51 +656,11 @@ fn a_free_pane_the_user_left_is_used_before_making_a_grid() {
     );
 }
 
-fn close_free_panes(w: &World) {
-    let workspace = w.host.workspaces().unwrap().into_iter().next().unwrap().id;
-    let busy: Vec<SurfaceId> = w
-        .host
-        .panes()
-        .unwrap()
-        .into_iter()
-        .filter(|p| p.running)
-        .map(|p| p.surface)
-        .collect();
-    for cell in w.host.layout(&workspace).unwrap().cells() {
-        if cell.surfaces.iter().all(|s| !busy.contains(s)) {
-            w.host.close_pane(&cell.pane).unwrap();
-        }
-    }
-}
-
-#[test]
-fn a_grid_short_of_a_pane_closed_by_hand_splits_its_first_pane() {
-    let mut w = world(10, "builtin");
-    w.spawn("task-a", false);
-    w.spawn("task-b", false);
-    close_free_panes(&w);
-    assert_eq!(layout_of(&w).len(), 2, "the user closed the two free panes");
-    let (third, _) = w.spawn("task-c", false);
-    let session = w.store.session_of(third.id).unwrap().unwrap();
-    assert_eq!(
-        session.host_place,
-        Some(PlaceKind::Pane),
-        "a pane of its own"
-    );
-    assert_eq!(layout_of(&w).len(), 3, "three panes");
-    assert!(
-        w.host.calls().iter().any(|c| c.starts_with("split ")),
-        "{:?}",
-        w.host.calls()
-    );
-}
-
 #[test]
 fn a_split_that_lands_elsewhere_is_closed_and_the_child_stacks() {
     let mut w = world(10, "builtin");
     w.spawn("task-a", false);
     w.spawn("task-b", false);
-    close_free_panes(&w);
     w.host.stray_splits();
     let (third, _) = w.spawn("task-c", false);
     let calls = w.host.calls();
@@ -656,12 +684,7 @@ fn tabs_mode_keeps_one_pane() {
         w.spawn(&format!("task-{slug}"), false);
     }
     let calls = w.host.calls();
-    assert!(
-        calls
-            .iter()
-            .all(|c| !c.starts_with("split ") && !c.starts_with("grid ")),
-        "{calls:?}"
-    );
+    assert!(calls.iter().all(|c| !c.starts_with("split ")), "{calls:?}");
     let spawns: Vec<&String> = calls.iter().filter(|c| c.starts_with("spawn ")).collect();
     assert!(
         spawns.first().unwrap().ends_with(" pane pane-2 replace"),

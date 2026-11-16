@@ -300,19 +300,6 @@ pub trait TerminalHost: fmt::Debug {
     /// Returns the host's failure.
     fn split(&self, beside: &SurfaceId, down: bool) -> Result<(PaneId, SurfaceId), HostError>;
 
-    /// Cuts `anchor` into a grid of `count` panes and returns the new ones, each holding a shell. Only for a
-    /// workspace whose single pane is `anchor`: wmux first gathers every other pane's surfaces into the anchor.
-    ///
-    /// # Errors
-    ///
-    /// Returns the host's failure.
-    fn grid(
-        &self,
-        workspace: &WorkspaceId,
-        anchor: &PaneId,
-        count: u32,
-    ) -> Result<Vec<PaneId>, HostError>;
-
     /// Closes a pane with its surfaces.
     ///
     /// # Errors

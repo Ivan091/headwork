@@ -329,65 +329,6 @@ impl TerminalHost for FakeHost {
         Ok((pane, shell))
     }
 
-    fn grid(
-        &self,
-        workspace: &WorkspaceId,
-        anchor: &PaneId,
-        count: u32,
-    ) -> Result<Vec<PaneId>, HostError> {
-        let mut state = self.state.borrow_mut();
-        let mut fresh = Vec::new();
-        for _ in 1..count {
-            let pane = PaneId(state.id("pane"));
-            let shell = SurfaceId(state.id("surf"));
-            fresh.push((pane, shell));
-        }
-        let tree = state
-            .tree(workspace)
-            .ok_or_else(|| HostError::Missing(format!("no workspace {workspace}")))?;
-        let PaneTree::Leaf { pane, surfaces } = tree else {
-            return Err(HostError::Failed {
-                command: "layout grid".to_owned(),
-                message: "the fake host grids only a lone pane".to_owned(),
-            });
-        };
-        if pane != anchor {
-            return Err(HostError::Missing(format!(
-                "no pane {anchor} in {workspace}"
-            )));
-        }
-        let mut leaves = vec![PaneTree::Leaf {
-            pane: pane.clone(),
-            surfaces: std::mem::take(surfaces),
-        }];
-        leaves.extend(fresh.iter().map(|(pane, shell)| PaneTree::Leaf {
-            pane: pane.clone(),
-            surfaces: vec![shell.clone()],
-        }));
-        let columns = (1..=count).find(|c| c * c >= count).unwrap_or(1);
-        let rows = count.div_ceil(columns);
-        let mut parts = Vec::new();
-        let mut rest = leaves.into_iter();
-        for _ in 0..columns {
-            let column: Vec<PaneTree> = rest
-                .by_ref()
-                .take(usize::try_from(rows).unwrap_or(1))
-                .collect();
-            parts.push(PaneTree::Split {
-                down: true,
-                ratio: 0.5,
-                parts: column,
-            });
-        }
-        *tree = PaneTree::Split {
-            down: false,
-            ratio: 0.5,
-            parts,
-        };
-        state.calls.push(format!("grid {anchor} {count}"));
-        Ok(fresh.into_iter().map(|(pane, _)| pane).collect())
-    }
-
     fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {
         let mut state = self.state.borrow_mut();
         let doomed: Vec<SurfaceId> = state

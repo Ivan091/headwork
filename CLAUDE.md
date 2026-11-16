@@ -83,12 +83,14 @@ It only reports until `[hooks] enforce = true`. A windowless build (no console f
 ### Panes
 
 `[layout]` in `config.toml` decides where a worker opens in its project's workspace. The default, `mode = "panes"` with
-`panes = 4`, gives each worker its own pane: the second worker cuts the workspace into a 2x2 grid, later ones take the
-free panes, a fifth stacks as a tab, and a worker that closes leaves a `headwork idle` placeholder so the next one takes
-its pane. The workspace closes with its last worker. `mode = "tabs"` keeps every worker a tab. Workers already open are
-never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that it is a tab. Why it
-works this way is in `docs/decisions.md` (2026-11-14, split panes). Run the real check with
-`cargo test -p headwork --test live -- --ignored`; it opens and closes a `headwork-test` workspace.
+`panes = 4`, gives each worker its own pane: a worker takes a free pane when there is one, else splits the workspace's
+first pane (the only split wmux does), and a fifth stacks as a tab. No empty pane is cut ahead of time. A worker that
+closes takes its pane away, and the panes beside it take the space; the workspace closes with its last worker. A pane
+that still holds a session (a stacked worker, the orchestrator) stays. `mode = "tabs"` keeps every worker a tab.
+Workers already open are never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that
+it is a tab. Why it works this way is in `docs/decisions.md` (2026-11-14, split panes; 2026-11-16, panes close with
+their worker). Run the real check with `cargo test -p headwork --test live -- --ignored`; it opens and closes
+`headwork-test` workspaces.
 
 ### Pane titles
 

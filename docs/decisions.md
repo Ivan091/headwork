@@ -511,3 +511,16 @@ and the reason.
 - 2026-11-16 The legacy orchestrate scripts (`spawn-child.sh`, `close-child.sh`, `children.sh`, `root.sh`, their
   `*.legacy.sh` twins and the `engine` switch) are retired at the user's decision. `CLAUDE.md` no longer documents an undo
   path to them; the entries above that mention them stay as history. `headwork import` still reads `projects.conf`.
+- 2026-11-16, panes close with their worker. The user does not want empty panes on screen, so the 2026-11-14 grid and
+  placeholders are gone. A new worker takes a free pane (a fresh workspace's shell, a pane the user left) or splits the
+  workspace's first pane, up to `layout.panes`, then stacks as a tab; `layout grid` is no longer used and left the host
+  trait. A closing worker's surface simply closes: checked live on wmux 2.60, a pane whose last surface closes leaves
+  the tree and its sibling takes the space, the first pane included, and a later `split` still lands in the workspace.
+  A pane that keeps another surface (a stacked worker, a shell the user opened, the orchestrator) stays. Splitting only
+  the first pane makes the shape uneven: with four workers the panes are two eighths, a quarter and a half (side by
+  side, then top and bottom, then side by side, by the 16:9 aspect), because wmux splits no other pane. `headwork idle`
+  is retired: nothing starts a placeholder any more. Placeholders older builds left (label `headwork:free`) are closed
+  whenever a worker opens or closes in their workspace; the label stays in the code only to find them. A pinned older
+  process that still runs `headwork idle` on this build gets a usage error, so its placeholder exits at once and is
+  closed the same way. The two live tests now use separate workspaces (`headwork-test`, `headwork-test-tick`), so they
+  no longer collide when run in parallel.
