@@ -94,7 +94,7 @@ their worker). Run the real check with `cargo test -p headwork --test live -- --
 
 ### Pane titles
 
-Each worker's pane or tab is titled `<task name> - <model> <effort>`, from `[layout] title` (`{name}`, `{model}`, `{effort}`), set
+Each worker's pane or tab is titled `<task name>`, from `[layout] title` (default `{name}`; `{model}` and `{effort}` also work), set
 when the pane opens, re-asserted by every tick, and by `headwork retitle [<name>]` on demand. The effort is the stored
 one, else the level Claude's settings give the model (`ops/effort.rs`), else `medium`; spawn stores it. `?` shows only when
 it cannot be told. See `docs/decisions.md` (2026-11-14, pane titles).

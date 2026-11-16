@@ -448,7 +448,7 @@ pub struct LayoutConfig {
 }
 
 /// The default `[layout] title`.
-pub const DEFAULT_TITLE: &str = "{name} - {model} {effort}";
+pub const DEFAULT_TITLE: &str = "{name}";
 
 impl Default for LayoutConfig {
     fn default() -> Self {

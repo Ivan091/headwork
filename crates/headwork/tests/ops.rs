@@ -718,7 +718,7 @@ fn a_pane_is_titled_with_the_task_name_model_and_effort_when_it_opens() {
     assert!(
         w.host
             .calls()
-            .contains(&format!("rename-surface {surface} demo-sand - haiku high")),
+            .contains(&format!("rename-surface {surface} demo-sand")),
         "{:?}",
         w.host.calls()
     );
@@ -781,7 +781,7 @@ fn a_spawn_without_an_effort_stores_the_level_the_settings_give_its_model() {
     assert!(
         w.host
             .calls()
-            .contains(&format!("rename-surface {surface} demo-sand - haiku xhigh")),
+            .contains(&format!("rename-surface {surface} demo-sand")),
         "{:?}",
         w.host.calls()
     );

@@ -345,12 +345,12 @@ fn the_pane_title_is_a_template_of_name_model_and_effort() {
         default
             .layout
             .title_for("me-sim-cars", "opus", Some("high")),
-        "me-sim-cars - opus high",
+        "me-sim-cars",
         "default with an effort"
     );
     assert_eq!(
         default.layout.title_for("headwork-m7", "sonnet", None),
-        "headwork-m7 - sonnet ?",
+        "headwork-m7",
         "default without an effort"
     );
     let custom = Config::parse(

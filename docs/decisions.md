@@ -524,3 +524,4 @@ and the reason.
   process that still runs `headwork idle` on this build gets a usage error, so its placeholder exits at once and is
   closed the same way. The two live tests now use separate workspaces (`headwork-test`, `headwork-test-tick`), so they
   no longer collide when run in parallel.
+- 2026-11-16 Pane titles show the task name only: `[layout] title` defaults to `{name}`; the model and effort are in Claude's status line. The template and its placeholders stay for anyone who sets it. The orchestrator is not a task, so headwork never titles its tab.
