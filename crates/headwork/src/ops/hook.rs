@@ -371,6 +371,7 @@ pub fn scope_for(
                     writable.push(GuardPath::new(&slashed(&dir)));
                 }
                 scope.fable_allowed = store.fable_allowed(task.id)?;
+                scope.task_name = Some(task.name.to_string());
                 if let Some(project) = config.project(task.project()) {
                     scope.read_only = project
                         .read_only_paths

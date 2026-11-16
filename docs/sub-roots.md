@@ -144,3 +144,6 @@ Roughly a milestone of its own, not a prototype.
 Guard the CLI hole from Q1: a would-deny rule (`child-admin`, shadow like the rest) for a child running `headwork`
 `spawn`, `queue`, `drop`, `park`, `resume`, `import`, or `close` of any name but its own, since children close
 themselves with `headwork close <own-name>`. It belongs in its own small task, after the shadow week's report.
+
+Done on 2026-11-16 as `worker-admin` (old spelling `child-admin`), with `worker-git-outside` beside it; see
+`docs/decisions.md`.

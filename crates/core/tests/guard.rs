@@ -47,6 +47,7 @@ fn worker(branch: &str) -> Scope {
         ],
         fable_allowed: false,
         scripts: Vec::new(),
+        task_name: Some("me-sim-sand".to_owned()),
     }
 }
 
@@ -184,6 +185,125 @@ fn worker_bash_table() {
             rule(&check_tool(&worker(branch), &call)),
             *expected,
             "{command} on {branch}"
+        );
+    }
+}
+
+#[test]
+fn worker_admin_table() {
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("headwork board", None),
+        ("headwork log me-sim-sand", None),
+        ("headwork doctor", None),
+        ("headwork jobs", None),
+        ("headwork recap me-sim-sand", None),
+        ("headwork shadow-report", None),
+        ("headwork rule test 'git push'", None),
+        ("headwork --version", None),
+        ("headwork spawn --help", None),
+        ("headwork close me-sim-sand", None),
+        ("headwork close me-sim/sand --json", None),
+        ("headwork close me-sim-other", Some(RuleId::WorkerAdmin)),
+        (
+            "headwork spawn me-sim x brief.md",
+            Some(RuleId::WorkerAdmin),
+        ),
+        ("headwork queue", Some(RuleId::WorkerAdmin)),
+        ("headwork park", Some(RuleId::WorkerAdmin)),
+        ("headwork resume", Some(RuleId::WorkerAdmin)),
+        ("headwork import", Some(RuleId::WorkerAdmin)),
+        ("headwork tick", Some(RuleId::WorkerAdmin)),
+        ("headwork root", Some(RuleId::WorkerAdmin)),
+        ("headwork.exe queue --order a,b", Some(RuleId::WorkerAdmin)),
+        (
+            "C:/Users/User/.local/bin/headwork.exe park",
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "\"C:/Users/User/.local/bin/headwork.exe\" close me-sim-other",
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "\"C:/Users/User/.local/bin/headwork.exe\" close me-sim-sand",
+            None,
+        ),
+        (
+            "cargo run -p headwork -- spawn me-sim x brief.md",
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "cargo run --release --package headwork -- install",
+            Some(RuleId::WorkerAdmin),
+        ),
+        ("cargo run -p headwork -- board", None),
+        ("cargo run -p render -- spawn", None),
+        ("echo headwork spawn", None),
+    ];
+    let scope = worker("sand");
+    for (command, expected) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn worker_git_outside_table() {
+    let table: &[(&str, Option<RuleId>)] = &[
+        (
+            "git -C ../other commit -m x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("git -C . commit -m x", None),
+        ("git -C src -C .. commit -m x", None),
+        (
+            "git -C src -C ../.. commit -m x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("cd /elsewhere && git push", Some(RuleId::WorkerGitOutside)),
+        (
+            "cd S:/Code/me-sim/me-sim; git reset --hard",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("cd sub && git commit -m x", None),
+        (
+            "cd C:/Users/User/AppData/Local/Temp/scratch && git init",
+            None,
+        ),
+        ("git -C /elsewhere status", None),
+        ("git -C /elsewhere log --oneline", None),
+        ("git -C /elsewhere fetch", None),
+        ("git -C /elsewhere branch", None),
+        ("git -C /elsewhere branch --list 'f*'", None),
+        ("git -C /elsewhere worktree list", None),
+        ("git -C /elsewhere stash list", None),
+        (
+            "git -C /elsewhere branch -D old",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C /elsewhere worktree remove x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C /elsewhere tag -d v1",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("git -C /elsewhere stash", Some(RuleId::WorkerGitOutside)),
+        ("cd - && git commit -m x", None),
+        (
+            "cd /elsewhere && cd S:/Code/me-sim/me-sim-sand && git commit -m x",
+            None,
+        ),
+    ];
+    let scope = worker("sand");
+    for (command, expected) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}"
         );
     }
 }

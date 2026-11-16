@@ -11,7 +11,7 @@ pub mod stop;
 
 use serde::Serialize;
 
-use crate::{Role, RuleId};
+use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
 pub use paths::GuardPath;
 pub use shell::{SimpleCommand, commands};
 
@@ -26,6 +26,91 @@ pub const BUILD_TOOLS: &[&str] = &[
 
 /// Git subcommands the orchestrator may not run.
 const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
+
+/// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user. A
+/// worker may run only `close` of its own task among them.
+pub const ADMIN_COMMANDS: &[&str] = &[
+    "spawn",
+    "queue",
+    "drop",
+    "close",
+    "park",
+    "resume",
+    "import",
+    "tick",
+    "retitle",
+    "orchestrator",
+    "root",
+    "launch",
+    "finish",
+    "exited",
+    "install",
+];
+
+/// Git subcommands that change a repository, its index or its working tree whatever their arguments.
+pub const GIT_WRITES: &[&str] = &[
+    "commit",
+    "push",
+    "pull",
+    "reset",
+    "checkout",
+    "switch",
+    "restore",
+    "merge",
+    "rebase",
+    "cherry-pick",
+    "revert",
+    "am",
+    "clean",
+    "add",
+    "rm",
+    "mv",
+    "init",
+];
+
+/// `git branch` and `git tag` options that delete, rename, copy, force or annotate.
+const REF_WRITE_FLAGS: &[&str] = &[
+    "-d",
+    "-D",
+    "--delete",
+    "-m",
+    "-M",
+    "--move",
+    "-c",
+    "-C",
+    "--copy",
+    "-f",
+    "--force",
+    "-a",
+    "--annotate",
+    "-s",
+    "--sign",
+    "--message",
+];
+
+/// `git branch` and `git tag` options that make a positional argument a filter of a listing.
+const REF_LIST_FLAGS: &[&str] = &[
+    "-l",
+    "--list",
+    "-r",
+    "--remotes",
+    "--all",
+    "-n",
+    "-v",
+    "-vv",
+    "--verbose",
+    "--contains",
+    "--no-contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+    "--show-current",
+    "--sort",
+    "--format",
+];
+
+/// `git worktree` actions that add, move or remove worktrees.
+const WORKTREE_WRITES: &[&str] = &["add", "remove", "prune", "move", "lock", "unlock", "repair"];
 
 /// Branch names that count as a default branch when the project does not say otherwise.
 pub const DEFAULT_BRANCHES: &[&str] = &["main", "master"];
@@ -130,6 +215,8 @@ pub struct Scope {
     pub remotes: Vec<(String, String)>,
     /// The user allowed Fable for this task.
     pub fable_allowed: bool,
+    /// A worker's own task name, `<project>-<slug>`, which it may close itself.
+    pub task_name: Option<String>,
 }
 
 /// Decides a tool call by the session's role.
@@ -180,17 +267,44 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
     }
 }
 
+/// Checks each simple command of a line in turn. For a worker it follows `cd` and `pushd`, so a git command sees the
+/// folder it runs in; `None` is a folder the guard cannot tell, such as after `cd -` or `popd`.
 fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decision {
+    let mut cwd = Some(scope.cwd.clone());
     for command in commands(line) {
         let decision = match role {
             Role::Orchestrator => check_orchestrator_command(scope, &command),
-            Role::Worker => check_worker_command(scope, &command, background),
+            Role::Worker => {
+                match command.program_name().as_str() {
+                    "cd" | "pushd" => {
+                        cwd = cwd.and_then(|cwd| changed_dir(&cwd, &command));
+                        continue;
+                    }
+                    "popd" => {
+                        cwd = None;
+                        continue;
+                    }
+                    _ => {}
+                }
+                check_worker_command(scope, &command, cwd.as_deref(), background)
+            }
         };
         if decision != Decision::Allow {
             return decision;
         }
     }
     Decision::Allow
+}
+
+/// The folder a `cd` moves to from `cwd`: its first operand, the home folder without one, unknown for `cd -`.
+fn changed_dir(cwd: &str, command: &SimpleCommand) -> Option<String> {
+    let target = command
+        .args()
+        .iter()
+        .map(String::as_str)
+        .find(|arg| *arg == "-" || !arg.starts_with('-'))
+        .unwrap_or("~");
+    (target != "-").then(|| GuardPath::resolve(cwd, target).as_str().to_owned())
 }
 
 fn user_only(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
@@ -246,8 +360,16 @@ fn check_orchestrator_command(scope: &Scope, command: &SimpleCommand) -> Decisio
     Decision::Allow
 }
 
-fn check_worker_command(scope: &Scope, command: &SimpleCommand, background: bool) -> Decision {
+fn check_worker_command(
+    scope: &Scope,
+    command: &SimpleCommand,
+    cwd: Option<&str>,
+    background: bool,
+) -> Decision {
     if let Some(decision) = user_only(scope, command) {
+        return decision;
+    }
+    if let Some(decision) = check_admin(scope, command) {
         return decision;
     }
     if background
@@ -267,6 +389,9 @@ fn check_worker_command(scope: &Scope, command: &SimpleCommand, background: bool
     let Some((sub, args)) = git_subcommand(command) else {
         return Decision::Allow;
     };
+    if let Some(decision) = check_git_outside(scope, command, cwd, &sub, &args) {
+        return decision;
+    }
     let on_default = scope
         .branch
         .as_deref()
@@ -278,6 +403,118 @@ fn check_worker_command(scope: &Scope, command: &SimpleCommand, background: bool
         ),
         "push" => check_push(scope, &args, on_default),
         _ => Decision::Allow,
+    }
+}
+
+/// A worker running an orchestrator command of the headwork CLI, other than closing its own task.
+fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
+    let args = headwork_args(command)?;
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version"))
+    {
+        return None;
+    }
+    let mut words = args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with('-'));
+    let sub = words.next()?;
+    if !ADMIN_COMMANDS.contains(&sub) {
+        return None;
+    }
+    if sub == "close"
+        && let (Some(own), Some(name)) = (scope.task_name.as_deref(), words.next())
+        && (name == own || name.replacen('/', "-", 1) == own)
+    {
+        return None;
+    }
+    Some(Decision::deny(
+        RuleId::WorkerAdmin,
+        format!(
+            "`headwork {sub}` is the orchestrator's: ask the orchestrator (session `{ORCHESTRATOR_ADDRESS}`) to do it; \
+             a worker only closes itself, with `headwork close <its own name>`"
+        ),
+    ))
+}
+
+/// The arguments a command passes to the headwork CLI: those of `headwork` under any path or extension, or those
+/// after `--` of `cargo run -p headwork`. `None` for anything else.
+fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
+    match command.program_name().as_str() {
+        "headwork" => Some(command.args()),
+        "cargo" => {
+            let args = command.args();
+            let run = args.iter().find(|arg| !arg.starts_with('+'))?;
+            let split = args.iter().position(|arg| arg == "--")?;
+            let (before, after) = args.split_at(split);
+            let named = before.windows(2).any(|pair| {
+                matches!(pair, [flag, name]
+                    if matches!(flag.as_str(), "-p" | "--package" | "--bin") && name == "headwork")
+            }) || before.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "-pheadwork" | "--package=headwork" | "--bin=headwork"
+                )
+            });
+            (run == "run" && named).then(|| after.get(1..).unwrap_or_default())
+        }
+        _ => None,
+    }
+}
+
+/// A worker's git write against a folder outside its writable folders. The folder is the command's working folder
+/// with each `-C` applied in turn, as git stacks them; `--git-dir` and `--work-tree` leave it unknown and allowed.
+fn check_git_outside(
+    scope: &Scope,
+    command: &SimpleCommand,
+    cwd: Option<&str>,
+    sub: &str,
+    args: &[String],
+) -> Option<Decision> {
+    if !is_git_write(sub, args) {
+        return None;
+    }
+    let mut folder = GuardPath::resolve(&scope.cwd, cwd?);
+    let mut words = command.args().iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "-C" => folder = GuardPath::resolve(folder.as_str(), words.next()?),
+            "-c" | "--namespace" => {
+                words.next();
+            }
+            flag if flag.starts_with("--git-dir") || flag.starts_with("--work-tree") => {
+                return None;
+            }
+            flag if flag.starts_with('-') => {}
+            _ => break,
+        }
+    }
+    if scope.writable.iter().any(|root| folder.is_within(root)) {
+        return None;
+    }
+    Some(Decision::deny(
+        RuleId::WorkerGitOutside,
+        format!(
+            "`git {sub}` would change {folder}, outside this task's folder ({}); change only your own worktree, or \
+             ask the orchestrator (session `{ORCHESTRATOR_ADDRESS}`)",
+            scope.cwd
+        ),
+    ))
+}
+
+/// Whether a git subcommand with these arguments changes a repository; listings and reads do not.
+fn is_git_write(sub: &str, args: &[String]) -> bool {
+    let has = |flags: &[&str]| args.iter().any(|arg| flags.contains(&arg.as_str()));
+    let first = args.first().map(String::as_str);
+    match sub {
+        "branch" | "tag" => {
+            has(REF_WRITE_FLAGS)
+                || (args.iter().any(|arg| !arg.starts_with('-')) && !has(REF_LIST_FLAGS))
+        }
+        "worktree" => first.is_some_and(|action| WORKTREE_WRITES.contains(&action)),
+        "stash" => !matches!(first, Some("list" | "show")),
+        sub => GIT_WRITES.contains(&sub),
     }
 }
 
