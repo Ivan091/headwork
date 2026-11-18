@@ -254,7 +254,11 @@ mod tests {
     #[test]
     fn an_untrusted_folder_is_granted_and_nothing_else_changes() {
         let dir = tempfile::tempdir().unwrap();
-        let before = r#"{"oauthAccount":{"token":"secret"},"numStartups":7,"projects":{"S:/Code":{"hasTrustDialogAccepted":true,"allowedTools":[]},"S:/Code/site/site":{"hasTrustDialogAccepted":false,"lastCost":1.5}}}"#;
+        let before = concat!(
+            r#"{"oauthAccount":{"token":"secret"},"numStartups":7,"projects":{"#,
+            r#""S:/Code":{"hasTrustDialogAccepted":true,"allowedTools":[]},"#,
+            r#""S:/Code/site/site":{"hasTrustDialogAccepted":false,"lastCost":1.5}}}"#
+        );
         let file = state_file(&dir, before);
         assert_eq!(
             ensure_trusted(&file, KEY).unwrap(),
