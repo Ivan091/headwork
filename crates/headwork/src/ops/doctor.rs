@@ -11,8 +11,9 @@ use std::process::Command;
 use anyhow::Result;
 use headwork_adapters::disk::Disks;
 use headwork_adapters::host::TerminalHost;
+use headwork_adapters::trust::Trust;
 use headwork_adapters::{proc, shell};
-use headwork_core::Config;
+use headwork_core::{Actor, Config};
 use headwork_store::{EVENT_WOULD_DENY, EventFilter, MIGRATIONS, Store};
 use serde::Serialize;
 use serde_json::Value;
@@ -213,12 +214,53 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(enforce_check(config));
         checks.push(disk_check(d, config));
     }
+    if let Ok(config) = &config {
+        checks.push(trust_check(d, config, store.as_ref()));
+    }
     if let Some(store) = &store {
         checks.extend(store_checks(d, store));
         let enforce = config.as_ref().is_ok_and(|config| config.hooks.enforce);
         checks.push(tick_check(store, enforce));
     }
     DoctorReport { checks }
+}
+
+/// Trusts every project's main checkout in Claude Code's state file, so no worker stops at the trust prompt, and
+/// logs each change when the store opened.
+fn trust_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check {
+    let found = super::trust::ensure_all(d.home, config);
+    let mut granted = Vec::new();
+    let mut failed = Vec::new();
+    for one in &found {
+        if let Some(store) = store {
+            drop(super::trust::log(store, d.home, Actor::User, None, one));
+        }
+        match &one.outcome {
+            Ok(Trust::Already) => {}
+            Ok(Trust::Granted) => granted.push(one.key.clone()),
+            Err(error) => failed.push(format!("{}: {error}", one.project)),
+        }
+    }
+    if !failed.is_empty() {
+        return Check::warn(
+            "trust",
+            failed.join("; "),
+            format!(
+                "fix {} or trust the folder once by starting `claude` in it; a worker stopped at the prompt is raised as an ask",
+                d.home.claude_json().display()
+            ),
+        );
+    }
+    let detail = if granted.is_empty() {
+        format!("all {} project folders are trusted", found.len())
+    } else {
+        format!(
+            "{} project folders trusted; trusted now: {}",
+            found.len(),
+            granted.join(", ")
+        )
+    };
+    Check::ok("trust", detail)
 }
 
 fn unenforced_keys_check(config: &Config) -> Check {

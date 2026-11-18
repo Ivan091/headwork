@@ -262,6 +262,36 @@ impl Store {
         .transpose()
     }
 
+    /// Supersedes one ask that still waits, as when the question went away by itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn supersede_ask(
+        &mut self,
+        ask: AskId,
+        task: TaskId,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE asks SET state = 'superseded' WHERE id = ?1 AND state IN ('pending', 'open')",
+            params![ask.0],
+        )?;
+        if changed > 0 {
+            insert_event(
+                &tx,
+                actor,
+                Some(task),
+                None,
+                "ask-superseded",
+                &serde_json::json!({ "ask": ask.0 }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Renames the topic of an ask, so a handled answer is not handled again.
     ///
     /// # Errors

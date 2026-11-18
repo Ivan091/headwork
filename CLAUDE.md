@@ -100,6 +100,20 @@ when the pane opens, re-asserted by every tick, and by `headwork retitle [<name>
 one, else the level Claude's settings give the model (`ops/effort.rs`), else `medium`; spawn stores it. `?` shows only when
 it cannot be told. See `docs/decisions.md` (2026-11-14, pane titles).
 
+### Folder trust
+
+Claude Code keeps folder trust per repository in its state file (`~/.claude.json`, `projects["<path>"].hasTrustDialogAccepted`);
+a task worktree inherits its main repository's trust, a parent folder's does not reach a repository inside it. So before a
+task's session starts (spawn and resume) and in `headwork doctor` (check `trust`), headwork sets that one field for the
+`main` folder of the task's project, keyed the way Claude Code writes it (forward slashes, upper-case drive letter), and
+logs `trust-granted` (or `trust-error`, which never stops the spawn). Only configured `main` folders, never another key or
+setting. The write is atomic (a temp file renamed over it), the previous version goes to `~/.claude.json.headwork-backup`,
+and nothing prints the file's contents. The file is `$HEADWORK_CLAUDE_JSON`, else `$CLAUDE_CONFIG_DIR/.claude.json`, else
+`~/.claude.json`; tests point `HEADWORK_CLAUDE_JSON` (or `Home::with_claude_json`) at a temporary file. If a starting
+worker still shows the trust dialog, the tick raises a `trust` ask, a blocked state on the pane whose buttons answer the
+dialog (`1` yes, `2` no), a notification and a `trust-prompt` finding, and holds the spawn timeout until the dialog is gone.
+See `docs/decisions.md` (2026-11-18, folder trust).
+
 ### Restart: park, then resume
 
 Before restarting the computer, tell the orchestrator "park" (its MCP tool starts it), or run `headwork park` by hand: it waits

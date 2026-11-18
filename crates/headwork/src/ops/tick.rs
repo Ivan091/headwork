@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use headwork_adapters::disk::{Disks, large_files, volume_of};
 use headwork_adapters::git::{GitHost, PrState};
-use headwork_adapters::host::{SurfaceId, WorkspaceId};
+use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource};
 use headwork_core::watch::{self, DiskLevel, Limits, Runaway, Stuck};
@@ -37,6 +37,18 @@ pub const KEEP_WORKTREE: &str = "Keep the worktree (Recommended)";
 
 /// The answer that deletes it, changes and all.
 pub const DELETE_WORKTREE: &str = "Delete it";
+
+/// The topic of the ask about a session stopped at Claude Code's folder trust prompt.
+const TRUST_TOPIC: &str = "trust";
+
+/// The topic once the prompt went away or its answer was carried out.
+const TRUST_DONE: &str = "trust-handled";
+
+/// The answer that trusts the folder; the pane's blocked state sends `1`, the dialog's "Yes".
+pub const TRUST_FOLDER: &str = "Trust the folder (Recommended)";
+
+/// The answer that does not; the pane's blocked state sends `2`, the dialog's "No, exit".
+pub const DONT_TRUST_FOLDER: &str = "Do not trust it: the session exits";
 
 /// What the tick acts with besides the store.
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +128,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
         },
     };
     run.rules()?;
+    run.trust_prompts()?;
     run.spawn_timeouts()?;
     run.lost_sessions()?;
     run.orphan_panes()?;
@@ -267,6 +280,9 @@ impl<'b> Run<'_, 'b> {
 
     fn spawn_timeouts(&mut self) -> Result<()> {
         for id in self.store.tasks_in(TaskState::Spawning)? {
+            if self.waiting_on_trust(id)? {
+                continue;
+            }
             let session = self.store.session_of(id)?;
             let age = match &session {
                 Some(session) => self.store.session_clock(&session.id)?.started_age_s,
@@ -297,6 +313,101 @@ impl<'b> Run<'_, 'b> {
             )?;
         }
         Ok(())
+    }
+
+    fn waiting_on_trust(&self, id: TaskId) -> Result<bool> {
+        Ok(self
+            .store
+            .topic_ask(id, TRUST_TOPIC)?
+            .is_some_and(|ask| ask.state.is_waiting()))
+    }
+
+    /// A starting session whose pane shows Claude Code's folder trust dialog waits on the user, unseen: headwork
+    /// trusts every project's main checkout before a session starts, so this is the fallback. The tick raises it as
+    /// a `trust` ask, a blocked state on the pane whose buttons answer the dialog, and a notification, and holds back
+    /// the spawn timeout meanwhile. Once the dialog is gone the ask is retired; an answer given through the store is
+    /// carried out by sending the dialog's key.
+    fn trust_prompts(&mut self) -> Result<()> {
+        if !self.report.host_up {
+            return Ok(());
+        }
+        for (id, surface) in self.store.live_task_surfaces()? {
+            let Some(session) = self.store.session_of(id)? else {
+                continue;
+            };
+            if session.state != SessionState::Starting {
+                continue;
+            }
+            let surface = SurfaceId(surface);
+            let screen = match self.env().host.read_screen(&surface, 40) {
+                Ok(screen) => screen,
+                Err(error) => {
+                    self.error(
+                        &format!("trust-screen:{}", session.id),
+                        Some(id),
+                        &error.to_string(),
+                    )?;
+                    continue;
+                }
+            };
+            let ask = self.store.topic_ask(id, TRUST_TOPIC)?;
+            if !watch::trust_prompt(&screen) {
+                if let Some(ask) = ask.filter(|ask| ask.state.is_waiting()) {
+                    let actor = self.actor();
+                    self.store.supersede_ask(ask.id, id, actor)?;
+                    self.store.set_ask_topic(ask.id, TRUST_DONE)?;
+                    drop(self.env().host.clear_blocked(&surface));
+                }
+                continue;
+            }
+            if let Some(ask) = &ask
+                && let (AskState::Answered, Some(answer)) = (ask.state, ask.answer.as_deref())
+            {
+                let key = if answer.starts_with("Trust") {
+                    '1'
+                } else {
+                    '2'
+                };
+                self.env().host.send_key(&surface, Key::Char(key))?;
+                self.store.set_ask_topic(ask.id, TRUST_DONE)?;
+                drop(self.env().host.clear_blocked(&surface));
+                continue;
+            }
+            let name = self.name(id)?;
+            let dir = self.env().task_dir(&self.store.task(id)?)?;
+            let question = format!(
+                "{name} stopped at Claude Code's \"Do you trust this folder?\" prompt for {}. Trust it?",
+                slashed(&dir)
+            );
+            if !ask.as_ref().is_some_and(|ask| ask.state.is_waiting()) {
+                let options = [TRUST_FOLDER.to_owned(), DONT_TRUST_FOLDER.to_owned()];
+                let actor = self.actor();
+                self.store
+                    .open_topic_ask(id, TRUST_TOPIC, &question, &options, actor)?;
+                let choices = [
+                    Choice {
+                        id: "trust".to_owned(),
+                        label: format!("1 {TRUST_FOLDER}"),
+                        key: "1".to_owned(),
+                    },
+                    Choice {
+                        id: "exit".to_owned(),
+                        label: format!("2 {DONT_TRUST_FOLDER}"),
+                        key: "2".to_owned(),
+                    },
+                ];
+                drop(self.env().host.show_blocked(&surface, &question, &choices));
+            }
+            self.standing(
+                &format!("trust-prompt:{}", session.id),
+                FindingId::TrustPrompt,
+                Some(id),
+                Status::Standing,
+                &serde_json::json!({ "dir": slashed(&dir) }),
+                Some(&question),
+            )?;
+        }
+        self.sweep(FindingId::TrustPrompt)
     }
 
     fn end_session(&self, session: &SessionRow) -> Result<()> {

@@ -155,8 +155,8 @@ pub fn pump(store: &mut Store, env: &Env<'_>) -> Result<Vec<Pumped>> {
     Ok(out)
 }
 
-/// Makes the worktree when the task needs one, records the session, and starts `headwork launch` in a pane of the
-/// project's workspace. Returns the surface.
+/// Makes the worktree when the task needs one, trusts the project's main checkout, records the session, and starts
+/// `headwork launch` in a pane of the project's workspace. Returns the surface.
 fn open_pane(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<String> {
     let project = env.project(task)?;
     let main = env.main_path(task)?;
@@ -180,6 +180,7 @@ fn open_pane(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<String> {
         }
         store.record_worktree(task.id, &slashed(&dir), slug, env.actor)?;
     }
+    super::trust::before_start(store, env, task)?;
     let (workspace, fresh) = env.host.ensure_workspace(task.project().as_str(), &main)?;
     let session_id = uuid::Uuid::new_v4().to_string();
     store.record_session(

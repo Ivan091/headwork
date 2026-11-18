@@ -40,7 +40,9 @@ fn the_tick_sees_a_pane_no_task_owns_in_the_real_host() {
         main.display().to_string().replace('\\', "/")
     );
     let config = Config::parse(&text, "live").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let (workspace, _) = host
@@ -141,7 +143,9 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
         main.display().to_string().replace('\\', "/")
     );
     let config = Config::parse(&text, "live").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");

@@ -88,7 +88,9 @@ const ALL_EVENTS: &[(&str, &str)] = &[
 fn install() -> Install {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("headwork-home");
-    let home = Home::at(Some(root.clone())).unwrap();
+    let home = Home::at(Some(root.clone()))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
     write(
         &root.join("config.toml"),
@@ -332,4 +334,60 @@ fn an_ignored_config_key_is_flagged() {
     .unwrap();
     let report = run(&install, &FakeProbe::default());
     assert_eq!(status(&report, "unenforced-keys"), Status::Warn, "ntfy set");
+}
+
+#[test]
+fn doctor_trusts_every_project_main_checkout_and_reports_it() {
+    let install = install();
+    let file = install.home.claude_json().to_path_buf();
+    write(
+        &file,
+        r#"{"projects":{"S:/Code/me-sim/me-sim":{"hasTrustDialogAccepted":true}}}"#,
+    );
+    let report = run(&install, &FakeProbe::default());
+    let check = report.checks.iter().find(|c| c.id == "trust").unwrap();
+    assert_eq!(check.status, Status::Ok, "{check:?}");
+    assert!(
+        check.detail.contains("S:/Code/me-studio/me-studio"),
+        "{check:?}"
+    );
+    assert!(
+        !check.detail.contains("trusted now: S:/Code/me-sim/me-sim"),
+        "{check:?}"
+    );
+    let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let projects = state["projects"].as_object().unwrap();
+    assert_eq!(
+        projects.len(),
+        3,
+        "one key per project: {:?}",
+        projects.keys()
+    );
+    assert!(
+        projects
+            .values()
+            .all(|p| p["hasTrustDialogAccepted"] == true),
+        "all trusted"
+    );
+    let again = run(&install, &FakeProbe::default());
+    let check = again.checks.iter().find(|c| c.id == "trust").unwrap();
+    assert!(
+        check
+            .detail
+            .starts_with("all 3 project folders are trusted"),
+        "{check:?}"
+    );
+}
+
+#[test]
+fn a_broken_claude_state_file_warns_without_its_contents() {
+    let install = install();
+    write(
+        install.home.claude_json(),
+        r#"{"oauthAccount":"secret" broken"#,
+    );
+    let report = run(&install, &FakeProbe::default());
+    let check = report.checks.iter().find(|c| c.id == "trust").unwrap();
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert!(!format!("{check:?}").contains("secret"), "{check:?}");
 }

@@ -85,7 +85,9 @@ fn world(resume_after_crash: &str) -> World {
          deliver = \"pr\"\nmerge = \"deliver\"\n"
     );
     let config = Config::parse(&text, "test").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");
@@ -416,12 +418,19 @@ fn spawn_park_resume_round_trip() {
         wait_for_host: Duration::ZERO,
         claude_dir,
     };
+    std::fs::write(w.home.claude_json(), "{}").unwrap();
     let env = env!(w);
     let resumed = resume(&mut w.store, &env, &opts).unwrap();
     assert_eq!(
         w.store.machine_mode().unwrap(),
         MachineMode::Normal,
         "machine"
+    );
+    let main_key =
+        headwork_adapters::trust::project_key(&w.dir.path().join("demo").display().to_string());
+    assert!(
+        headwork_adapters::trust::is_trusted(w.home.claude_json(), &main_key).unwrap(),
+        "resume trusts the main checkout again before the panes open"
     );
     assert!(
         w.host
