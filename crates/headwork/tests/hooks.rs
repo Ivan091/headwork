@@ -76,7 +76,9 @@ fn world(hooks: &str, keep: bool) -> World {
          user_only = [\"scripts/publish.sh\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");

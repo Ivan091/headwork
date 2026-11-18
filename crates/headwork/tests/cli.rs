@@ -19,6 +19,7 @@ fn headwork(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_headwork"))
         .args(args)
         .env("HEADWORK_HOME", home)
+        .env("HEADWORK_CLAUDE_JSON", home.join(".claude.json"))
         .output()
         .unwrap()
 }
@@ -142,6 +143,7 @@ fn hook(home: &Path, session: Option<&str>, event: &str, input: &str) -> Output 
     command
         .args(["hook", event])
         .env("HEADWORK_HOME", home)
+        .env("HEADWORK_CLAUDE_JSON", home.join(".claude.json"))
         .env_remove("HEADWORK_SESSION")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

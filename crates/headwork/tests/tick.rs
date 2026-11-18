@@ -14,7 +14,9 @@ use headwork::ops::Env;
 use headwork::ops::lost::{self, Lost, LostCause};
 use headwork::ops::rules::RuleFiles;
 use headwork::ops::spawn::{SpawnRequest, spawn};
-use headwork::ops::tick::{DELETE_WORKTREE, KEEP_WORKTREE, Status, TickEnv, TickReport, tick};
+use headwork::ops::tick::{
+    DELETE_WORKTREE, KEEP_WORKTREE, Status, TRUST_FOLDER, TickEnv, TickReport, tick,
+};
 use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
@@ -93,7 +95,9 @@ fn world_with(enforce: bool, max_workers: u32) -> World {
     );
     let config = Config::parse(&text, "test").unwrap();
     let config_text = text;
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let hash = RuleFiles::load(&home, &config, &[], "orchestrator")
@@ -416,6 +420,7 @@ fn the_board_command_shows_a_task_whose_process_is_gone_as_interrupted() {
     let output = Command::new(env!("CARGO_BIN_EXE_headwork"))
         .args(["board", "--json"])
         .env("HEADWORK_HOME", w.home.root())
+        .env("HEADWORK_CLAUDE_JSON", w.home.root().join(".claude.json"))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1100,4 +1105,109 @@ impl Drop for World {
             child.wait().ok();
         }
     }
+}
+
+const TRUST_SCREEN: &str = " Do you trust this folder?\n S:/Code/demo-sand\n > 1. Yes, I trust this folder\n   2. No, exit\n";
+
+fn trust_surface(w: &World, task: &Task) -> SurfaceId {
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    SurfaceId(session.host_surface.unwrap())
+}
+
+#[test]
+fn a_trust_prompt_on_a_starting_pane_becomes_an_ask_and_holds_the_spawn_timeout() {
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    let surface = trust_surface(&w, &task);
+    w.host.set_screen(&surface, TRUST_SCREEN);
+    w.limits.spawn_timeout = 0;
+    let report = run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Spawning,
+        "held while the user is asked"
+    );
+    assert_eq!(
+        rules(&report),
+        [(FindingId::TrustPrompt, Status::Standing)],
+        "finding"
+    );
+    let ask = w.store.topic_ask(task.id, "trust").unwrap().unwrap();
+    assert!(ask.state.is_waiting(), "asked");
+    assert!(
+        notified(&w, "Do you trust this folder"),
+        "{:?}",
+        w.host.calls()
+    );
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c.starts_with(&format!("blocked {surface}")) && c.contains("(2 choices)")),
+        "blocked state with the dialog's two answers: {:?}",
+        w.host.calls()
+    );
+    run_tick(&mut w);
+    assert_eq!(count(&w, "ask-opened"), 1, "asked once");
+    assert_eq!(count(&w, "finding"), 1, "reported once");
+    w.host.set_screen(&surface, " Welcome to Claude Code\n > ");
+    run_tick(&mut w);
+    assert!(
+        w.store.topic_ask(task.id, "trust").unwrap().is_none(),
+        "the ask is retired"
+    );
+    assert_eq!(count(&w, "ask-superseded"), 1, "superseded");
+    assert_eq!(count(&w, "finding-cleared"), 1, "finding cleared");
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c == &format!("unblocked {surface}")),
+        "blocked state cleared: {:?}",
+        w.host.calls()
+    );
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Failed,
+        "the spawn timeout applies again"
+    );
+}
+
+#[test]
+fn an_answered_trust_ask_presses_the_dialogs_yes() {
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    let surface = trust_surface(&w, &task);
+    w.host.set_screen(&surface, TRUST_SCREEN);
+    run_tick(&mut w);
+    let ask = w.store.topic_ask(task.id, "trust").unwrap().unwrap();
+    w.store
+        .answer_ask(ask.id, TRUST_FOLDER, Actor::User)
+        .unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c == &format!("send-key {surface} Char('1')")),
+        "{:?}",
+        w.host.calls()
+    );
+    assert!(
+        w.store.topic_ask(task.id, "trust").unwrap().is_none(),
+        "handled once"
+    );
+}
+
+#[test]
+fn a_live_session_is_never_read_for_a_trust_prompt() {
+    let mut w = world();
+    let (task, _) = working(&mut w, "sand");
+    w.host.set_screen(&trust_surface(&w, &task), TRUST_SCREEN);
+    let report = run_tick(&mut w);
+    assert!(report.lines.is_empty(), "{:?}", report.lines);
+    assert!(
+        w.store.topic_ask(task.id, "trust").unwrap().is_none(),
+        "no ask"
+    );
 }

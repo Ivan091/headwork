@@ -534,3 +534,14 @@ and the reason.
   (`bash`, `sh`, `cargo`, `python`, `py`, `uv`); anything else is left alone and the job ends. `headwork job forget <id>
   --reason` and the `job_forget` MCP tool (a worker's own jobs, any job for the orchestrator) mark a job over without
   touching any process, logged as `job-forgotten`.
+- 2026-11-18 Folder trust: the user decided that headwork marks each configured project's `main` folder trusted in
+  Claude Code's state file, so no worker stops unseen at "Do you trust this folder?". Spawn, resume and `doctor` set
+  `projects["<main>"].hasTrustDialogAccepted = true` when it is not already, and only that field of only those keys.
+  The file is re-encoded with `serde_json`, which sorts its keys; Claude Code does not depend on their order and
+  rewrites the file in its own order at its next save, and turning on `preserve_order` would change the key order of
+  every JSON headwork prints and stores. The read-change-rename window is a few milliseconds, but a Claude session
+  that writes in it can still lose its change or ours; ours is retried at the next spawn or doctor run. A missing file
+  is created with the one entry. A trust dialog that shows anyway (a write failed, a session started outside headwork's
+  checks) becomes a `trust` tool ask with a blocked state whose buttons send the dialog's own keys, so the user, not
+  headwork, answers it; an answer given through the store is carried out by sending the same key. Hooks do not run
+  before trust, so only sessions still `starting` are read.

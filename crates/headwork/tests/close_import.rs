@@ -71,7 +71,9 @@ fn world_removing(max_workers: u32, remove: &str) -> World {
          deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");

@@ -10,6 +10,10 @@ use headwork_store::Store;
 /// The environment variable that overrides the home folder.
 pub const HOME_VAR: &str = headwork_adapters::runtime::ENV_HOME;
 
+/// The environment variable that names Claude Code's state file instead of the usual place; tests point it at a
+/// temporary file.
+pub const CLAUDE_JSON_VAR: &str = "HEADWORK_CLAUDE_JSON";
+
 /// The name of a project-local overlay in a project's main checkout.
 pub const OVERLAY_FILE: &str = ".headwork.toml";
 
@@ -17,7 +21,8 @@ pub const OVERLAY_FILE: &str = ".headwork.toml";
 #[derive(Debug, Clone)]
 pub struct Home {
     root: PathBuf,
-    user_home: PathBuf,
+    user_dir: PathBuf,
+    claude_json: PathBuf,
 }
 
 impl Home {
@@ -37,11 +42,36 @@ impl Home {
     ///
     /// Fails when the user's home folder is unknown.
     pub fn at(root: Option<PathBuf>) -> Result<Self> {
-        let user_home = std::env::home_dir().context("the user's home folder is unknown")?;
+        let user_dir = std::env::home_dir().context("the user's home folder is unknown")?;
         let root = root.unwrap_or_else(|| {
-            std::env::var_os(HOME_VAR).map_or_else(|| user_home.join(".headwork"), PathBuf::from)
+            std::env::var_os(HOME_VAR).map_or_else(|| user_dir.join(".headwork"), PathBuf::from)
         });
-        Ok(Self { root, user_home })
+        let claude_json = std::env::var_os(CLAUDE_JSON_VAR)
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("CLAUDE_CONFIG_DIR")
+                    .map(|dir| PathBuf::from(dir).join(".claude.json"))
+            })
+            .unwrap_or_else(|| user_dir.join(".claude.json"));
+        Ok(Self {
+            root,
+            user_dir,
+            claude_json,
+        })
+    }
+
+    /// The same home with Claude Code's state file somewhere else.
+    #[must_use]
+    pub fn with_claude_json(mut self, file: PathBuf) -> Self {
+        self.claude_json = file;
+        self
+    }
+
+    /// Claude Code's state file, where folder trust is kept: `$HEADWORK_CLAUDE_JSON`, else
+    /// `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`.
+    #[must_use]
+    pub fn claude_json(&self) -> &Path {
+        &self.claude_json
     }
 
     /// The home folder.
@@ -53,7 +83,7 @@ impl Home {
     /// Expands a leading `~` in a configured path.
     #[must_use]
     pub fn expand(&self, path: &str) -> PathBuf {
-        expand_home(path, &self.user_home)
+        expand_home(path, &self.user_dir)
     }
 
     /// Where a task's brief is kept.

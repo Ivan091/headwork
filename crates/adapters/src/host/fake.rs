@@ -19,6 +19,7 @@ struct State {
     panes: Vec<Pane>,
     states: Vec<SurfaceState>,
     calls: Vec<String>,
+    screens: Vec<(SurfaceId, String)>,
     stray_splits: bool,
 }
 
@@ -165,6 +166,13 @@ impl FakeHost {
     /// Adds a surface state, as `agent-state` reports it.
     pub fn add_state(&self, state: SurfaceState) {
         self.state.borrow_mut().states.push(state);
+    }
+
+    /// Sets what a surface's screen shows from now on; a surface never set shows nothing.
+    pub fn set_screen(&self, surface: &SurfaceId, text: &str) {
+        let mut state = self.state.borrow_mut();
+        state.screens.retain(|(s, _)| s != surface);
+        state.screens.push((surface.clone(), text.to_owned()));
     }
 
     /// Marks a pane's program as exited, as if it ended by itself.
@@ -366,7 +374,14 @@ impl TerminalHost for FakeHost {
 
     fn read_screen(&self, surface: &SurfaceId, lines: u32) -> Result<String, HostError> {
         self.record(format!("read-screen {surface} {lines}"));
-        Ok(String::new())
+        Ok(self
+            .state
+            .borrow()
+            .screens
+            .iter()
+            .find(|(s, _)| s == surface)
+            .map(|(_, text)| text.clone())
+            .unwrap_or_default())
     }
 
     fn send_text(&self, surface: &SurfaceId, text: &str) -> Result<(), HostError> {

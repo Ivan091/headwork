@@ -79,7 +79,9 @@ main_only = ["probe"]
 "#
     );
     let config = Config::parse(&text, "test").unwrap();
-    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");
@@ -383,6 +385,7 @@ fn the_exited_command_does_the_launchers_exit_work() {
         .arg(task.id.to_string())
         .arg("--home")
         .arg(w.home.root())
+        .env("HEADWORK_CLAUDE_JSON", w.home.root().join(".claude.json"))
         .output()
         .unwrap();
     assert!(
@@ -801,5 +804,75 @@ fn the_orchestrator_runs_its_agent_file_once_it_exists() {
         orchestrator_agent(claude.path()),
         "orchestrator",
         "the new agent"
+    );
+}
+
+fn trust_events(w: &World) -> Vec<(String, String)> {
+    w.store
+        .events(EventFilter {
+            task: None,
+            limit: 200,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind.starts_with("trust-"))
+        .map(|e| (e.kind, e.data.to_string()))
+        .collect()
+}
+
+#[test]
+fn spawn_trusts_the_main_checkout_once_and_nothing_else() {
+    let mut w = world(10, "builtin");
+    let file = w.home.claude_json().to_path_buf();
+    std::fs::write(
+        &file,
+        r#"{"oauthAccount":{"token":"t"},"projects":{"S:/Elsewhere":{"hasTrustDialogAccepted":false}}}"#,
+    )
+    .unwrap();
+    let main =
+        headwork_adapters::trust::project_key(&w.dir.path().join("demo").display().to_string());
+    let (task, _) = w.spawn("sand", false);
+    assert_eq!(task.state, TaskState::Spawning, "started");
+    let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(
+        state["projects"][&main]["hasTrustDialogAccepted"], true,
+        "main trusted"
+    );
+    assert_eq!(
+        state["projects"]["S:/Elsewhere"]["hasTrustDialogAccepted"], false,
+        "other key untouched"
+    );
+    assert_eq!(state["oauthAccount"]["token"], "t", "the rest kept");
+    assert_eq!(
+        state["projects"].as_object().unwrap().len(),
+        2,
+        "no worktree key, no broader key"
+    );
+    let events = trust_events(&w);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, "trust-granted", "logged");
+    assert!(events[0].1.contains(&main), "names the path: {events:?}");
+    assert!(!events[0].1.contains("oauth"), "no contents: {events:?}");
+    w.spawn("dune", false);
+    assert_eq!(
+        trust_events(&w).len(),
+        1,
+        "trusted already: nothing written or logged"
+    );
+}
+
+#[test]
+fn a_state_file_that_cannot_be_read_is_logged_and_the_spawn_goes_on() {
+    let mut w = world(10, "builtin");
+    std::fs::write(w.home.claude_json(), "{ not json").unwrap();
+    let (task, _) = w.spawn("sand", false);
+    assert_eq!(task.state, TaskState::Spawning, "started anyway");
+    let events = trust_events(&w);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, "trust-error", "logged");
+    assert_eq!(
+        std::fs::read_to_string(w.home.claude_json()).unwrap(),
+        "{ not json",
+        "untouched"
     );
 }

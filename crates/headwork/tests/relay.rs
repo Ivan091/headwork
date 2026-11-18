@@ -88,6 +88,7 @@ fn the_relay_switches_to_a_new_build_between_calls() {
     let mut child = Command::new(&installed)
         .arg("mcp")
         .env("HEADWORK_HOME", &home)
+        .env("HEADWORK_CLAUDE_JSON", home.join(".claude.json"))
         .env("HEADWORK_EXE", &installed)
         .env("HEADWORK_SESSION", "0b6c1d2e-0000-4000-8000-00000000000a")
         .env("HEADWORK_ROLE", "root")

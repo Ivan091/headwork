@@ -21,6 +21,7 @@ pub mod shadow;
 pub mod spawn;
 pub mod tick;
 pub mod title;
+pub mod trust;
 
 use std::path::{Path, PathBuf};
 

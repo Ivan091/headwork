@@ -376,6 +376,8 @@ text_enum!(
         RulesStale => "rules-stale",
         /// An ask waits on the user for too long.
         AskStale => "ask-stale",
+        /// A starting session stopped at Claude Code's folder trust prompt and the user is asked.
+        TrustPrompt => "trust-prompt",
         /// The tick could not look at something it checks, such as the git host or a volume.
         TickError => "tick-error",
     }

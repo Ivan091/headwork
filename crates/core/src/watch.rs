@@ -163,6 +163,24 @@ pub const fn ask_due(age_s: u64, since_notified_s: Option<u64>, limits: &Limits)
     }
 }
 
+/// Lines of Claude Code's folder trust dialog, in its current and earlier wordings, lower case.
+const TRUST_PROMPT_LINES: [&str; 5] = [
+    "do you trust this folder",
+    "do you trust the files in this folder",
+    "yes, i trust this folder",
+    "yes, proceed",
+    "is this a project you created or one you trust",
+];
+
+/// Whether a screen shows Claude Code's folder trust dialog. "Yes, proceed" counts only beside the word "trust".
+#[must_use]
+pub fn trust_prompt(screen: &str) -> bool {
+    let screen = screen.to_lowercase();
+    TRUST_PROMPT_LINES
+        .iter()
+        .any(|line| screen.contains(line) && (*line != "yes, proceed" || screen.contains("trust")))
+}
+
 /// Whether a merged task has lingered long enough to start closing.
 #[must_use]
 pub const fn merged_grace_over(age_s: u64, limits: &Limits) -> bool {
@@ -184,6 +202,39 @@ mod tests {
         merged_grace: 300,
         closing_grace: 60,
     };
+
+    #[test]
+    fn the_trust_dialog_is_recognized_in_every_wording() {
+        for (screen, shown) in [
+            (
+                "Do you trust this folder?
+> 1. Yes, I trust this folder
+  2. No, exit",
+                true,
+            ),
+            (
+                " Do you trust the files in this folder?
+ S:/Code/site/site",
+                true,
+            ),
+            (
+                "Accessing workspace:
+Is this a project you created or one you trust?
+ 1. Yes, proceed",
+                true,
+            ),
+            ("YES, I TRUST THIS FOLDER", true),
+            (
+                "> 1. Yes, proceed
+  2. No",
+                false,
+            ),
+            ("I trust the tests now; running cargo test", false),
+            ("", false),
+        ] {
+            assert_eq!(trust_prompt(screen), shown, "{screen}");
+        }
+    }
 
     #[test]
     fn disk_levels_follow_the_two_thresholds() {
