@@ -625,6 +625,7 @@ fn a_merged_grace_waits_for_a_running_job() {
                 argv: &argv,
                 cwd: ".",
                 pid: Some(child.id()),
+                identity: headwork_adapters::proc::identify(child.id()).as_ref(),
                 checkpoint_path: None,
                 heavy: false,
                 restart: false,

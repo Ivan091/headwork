@@ -149,3 +149,48 @@ fn a_detached_process_runs_on_its_own() {
         "gone"
     );
 }
+
+#[test]
+fn identify_names_a_running_process_and_nothing_once_it_ended() {
+    use headwork_adapters::proc::{Liveness, ProcessIdentity, identify, liveness};
+    let mut child = helper("helper_sleeper")
+        .env(ROLE, "sleeper")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let found = identify(pid).expect("the child runs");
+    let image = me().file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        found.image.eq_ignore_ascii_case(&image),
+        "{found:?} vs {image}"
+    );
+    assert!(
+        found.started.abs_diff(now) <= 5,
+        "{found:?} started near {now}"
+    );
+    let argv = vec!["anything".to_owned()];
+    assert_eq!(
+        liveness(pid, Some(&found), &argv),
+        Liveness::Alive,
+        "the same process"
+    );
+    let earlier = ProcessIdentity {
+        started: found.started - 3600,
+        ..found.clone()
+    };
+    assert!(
+        matches!(
+            liveness(pid, Some(&earlier), &argv),
+            Liveness::Reused { .. }
+        ),
+        "a process that started later holds the pid"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(identify(pid), None, "gone");
+    assert_eq!(liveness(pid, Some(&found), &argv), Liveness::Gone, "gone");
+}

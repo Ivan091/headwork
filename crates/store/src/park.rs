@@ -1,6 +1,7 @@
 //! Parks, recaps and the jobs registry (design sections 2.2 and 6).
 
 use headwork_core::config::ParkPolicy;
+use headwork_core::process::ProcessIdentity;
 use headwork_core::{Actor, JobState, MachineMode, RecapKind};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
@@ -77,6 +78,8 @@ pub struct JobRow {
     pub cwd: String,
     /// Its process id while it runs.
     pub pid: Option<u32>,
+    /// What the process under `pid` was when the pid was recorded; absent for jobs recorded before identities were kept.
+    pub identity: Option<ProcessIdentity>,
     /// The file a `checkpoint` park waits on.
     pub checkpoint_path: Option<String>,
     /// It holds a heavy slot.
@@ -112,6 +115,8 @@ pub struct NewJob<'a> {
     pub cwd: &'a str,
     /// Its process id.
     pub pid: Option<u32>,
+    /// What the process under `pid` is.
+    pub identity: Option<&'a ProcessIdentity>,
     /// The checkpoint file.
     pub checkpoint_path: Option<&'a str>,
     /// It holds a heavy slot.
@@ -123,7 +128,7 @@ pub struct NewJob<'a> {
 }
 
 const JOB_COLUMNS: &str = "id, task_id, project, label, park_policy, argv, cwd, pid, checkpoint_path, heavy, restart, \
-                           state, log_path, started_at, note";
+                           state, log_path, started_at, note, pid_image, pid_started";
 
 type RawJob = (
     i64,
@@ -141,6 +146,7 @@ type RawJob = (
     String,
     String,
     Option<String>,
+    (Option<String>, Option<i64>),
 );
 
 fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawJob> {
@@ -160,6 +166,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawJob> {
         row.get(12)?,
         row.get(13)?,
         row.get(14)?,
+        (row.get(15)?, row.get(16)?),
     ))
 }
 
@@ -180,6 +187,7 @@ fn into_job(raw: RawJob) -> Result<JobRow, StoreError> {
         log_path,
         started_at,
         note,
+        (pid_image, pid_started),
     ) = raw;
     Ok(JobRow {
         id,
@@ -192,6 +200,7 @@ fn into_job(raw: RawJob) -> Result<JobRow, StoreError> {
         pid: pid
             .map(|n| u32::try_from(n).map_err(|_| StoreError::OutOfRange(n)))
             .transpose()?,
+        identity: identity(pid_image, pid_started)?,
         checkpoint_path,
         heavy,
         restart,
@@ -199,6 +208,28 @@ fn into_job(raw: RawJob) -> Result<JobRow, StoreError> {
         log_path,
         started_at,
         note,
+    })
+}
+
+fn identity(
+    image: Option<String>,
+    started: Option<i64>,
+) -> Result<Option<ProcessIdentity>, StoreError> {
+    match (image, started) {
+        (Some(image), Some(started)) => Ok(Some(ProcessIdentity {
+            image,
+            started: u64::try_from(started).map_err(|_| StoreError::OutOfRange(started))?,
+        })),
+        _ => Ok(None),
+    }
+}
+
+fn identity_columns(
+    identity: Option<&ProcessIdentity>,
+) -> Result<(Option<&str>, Option<i64>), StoreError> {
+    identity.map_or(Ok((None, None)), |id| {
+        let started = i64::try_from(id.started).map_err(|_| StoreError::OutOfRange(i64::MAX))?;
+        Ok((Some(id.image.as_str()), Some(started)))
     })
 }
 
@@ -532,11 +563,12 @@ impl Store {
     pub fn register_job(&mut self, job: &NewJob<'_>, actor: Actor) -> Result<i64, StoreError> {
         let tx = self.conn.transaction()?;
         let argv = serde_json::to_string(job.argv).map_err(StoreError::Json)?;
+        let (image, started) = identity_columns(job.identity)?;
         tx.execute(
             &format!(
                 "INSERT INTO jobs (task_id, session_id, project, label, park_policy, argv, cwd, pid, checkpoint_path, heavy,
-                                   restart, state, log_path, started_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'running', ?12, {NOW})"
+                                   restart, state, log_path, started_at, pid_image, pid_started)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'running', ?12, {NOW}, ?13, ?14)"
             ),
             params![
                 job.task_id.map(|id| id.0),
@@ -551,6 +583,8 @@ impl Store {
                 job.heavy,
                 job.restart,
                 job.log_path,
+                image,
+                started,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -561,7 +595,7 @@ impl Store {
             job.session_id,
             "job-registered",
             &serde_json::json!({
-                "job": id, "label": job.label, "policy": job.park_policy, "pid": job.pid, "restart": job.restart,
+                "job": id, "label": job.label, "policy": job.park_policy, "pid": job.pid, "image": image, "restart": job.restart,
             }),
         )?;
         tx.commit()?;
@@ -654,16 +688,24 @@ impl Store {
         Ok(())
     }
 
-    /// Records the process a job runs as, after a restart.
+    /// Records the process a job runs as, after a restart, with what that process is.
     ///
     /// # Errors
     ///
     /// Returns the SQLite error.
-    pub fn set_job_pid(&mut self, id: i64, pid: u32, actor: Actor) -> Result<(), StoreError> {
+    pub fn set_job_pid(
+        &mut self,
+        id: i64,
+        pid: u32,
+        identity: Option<&ProcessIdentity>,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let (image, started) = identity_columns(identity)?;
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE jobs SET pid = ?1, state = 'running', ended_at = NULL, note = NULL WHERE id = ?2",
-            params![i64::from(pid), id],
+            "UPDATE jobs SET pid = ?1, pid_image = ?2, pid_started = ?3, state = 'running', ended_at = NULL, note = NULL
+             WHERE id = ?4",
+            params![i64::from(pid), image, started, id],
         )?;
         let task: Option<i64> = tx.query_row(
             "SELECT task_id FROM jobs WHERE id = ?1",
@@ -676,10 +718,46 @@ impl Store {
             task.map(TaskId),
             None,
             "job-started",
-            &serde_json::json!({ "job": id, "pid": pid }),
+            &serde_json::json!({ "job": id, "pid": pid, "image": image }),
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Marks an open job over without touching its process, and logs why.
+    ///
+    /// Returns `false` when the job is already over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error, `QueryReturnedNoRows` when no job has this id.
+    pub fn forget_job(&mut self, id: i64, reason: &str, actor: Actor) -> Result<bool, StoreError> {
+        let tx = self.conn.transaction()?;
+        let note = format!("forgotten: {reason}");
+        let changed = tx.execute(
+            &format!(
+                "UPDATE jobs SET state = 'done', note = ?1, ended_at = {NOW}
+                 WHERE id = ?2 AND state IN ('running', 'stopping', 'parked')"
+            ),
+            params![note, id],
+        )?;
+        let (task, pid): (Option<i64>, Option<i64>) = tx.query_row(
+            "SELECT task_id, pid FROM jobs WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if changed > 0 {
+            insert_event(
+                &tx,
+                actor,
+                task.map(TaskId),
+                None,
+                "job-forgotten",
+                &serde_json::json!({ "job": id, "pid": pid, "reason": reason }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
     }
 
     /// Supersedes every ask of a task that still waits and returns what each one asked.

@@ -1,0 +1,2 @@
+ALTER TABLE jobs ADD COLUMN pid_image TEXT;
+ALTER TABLE jobs ADD COLUMN pid_started INTEGER;

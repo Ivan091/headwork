@@ -218,6 +218,7 @@ fn close_ends_the_sessions_and_jobs_of_the_task() {
                 argv: &argv,
                 cwd: ".",
                 pid: None,
+                identity: None,
                 checkpoint_path: None,
                 heavy: false,
                 restart: true,
@@ -732,4 +733,174 @@ fn a_self_close_of_a_session_from_before_hot_reload_starts_a_backup_finisher() {
         launcher.kill().unwrap_or(());
         launcher.wait().unwrap();
     }
+}
+
+fn stale_job(w: &mut World, task: &Task, pid: u32, policy: ParkPolicy) -> i64 {
+    let argv = vec!["bash".to_owned(), "scripts/rl-run.sh".to_owned()];
+    let identity =
+        headwork_adapters::proc::identify(pid).map(|now| headwork_core::process::ProcessIdentity {
+            started: now.started - 3600,
+            ..now
+        });
+    w.store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "demo",
+                label: "sac32",
+                park_policy: policy,
+                argv: &argv,
+                cwd: ".",
+                pid: Some(pid),
+                identity: identity.as_ref(),
+                checkpoint_path: Some("out/checkpoint.json"),
+                heavy: true,
+                restart: true,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap()
+}
+
+fn assert_left_alone(w: &World, job: i64, other: &mut std::process::Child) {
+    let row = w.store.job(job).unwrap().unwrap();
+    assert_eq!(row.state, JobState::Done, "over, not parked: {row:?}");
+    assert!(
+        row.note
+            .as_deref()
+            .is_some_and(|note| note.contains("another program")),
+        "{row:?}"
+    );
+    assert!(
+        headwork_adapters::proc::is_alive(other.id()).unwrap(),
+        "the program that took the pid still runs"
+    );
+    other.kill().unwrap();
+    other.wait().unwrap();
+}
+
+#[test]
+fn a_job_whose_pid_another_program_took_is_never_stopped() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let mut other = sleeper();
+    let job = stale_job(&mut w, &task, other.id(), ParkPolicy::Checkpoint);
+    let row = w.store.job(job).unwrap().unwrap();
+    assert!(
+        !headwork::ops::jobs::has_running_job(&w.store, task.id).unwrap(),
+        "does not count as running"
+    );
+    headwork::ops::jobs::stop(&mut w.store, &row, "stopped by its session", Actor::Worker).unwrap();
+    assert_left_alone(&w, job, &mut other);
+}
+
+#[test]
+fn refreshing_the_jobs_marks_a_taken_over_pid_over() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let mut other = sleeper();
+    let job = stale_job(&mut w, &task, other.id(), ParkPolicy::Checkpoint);
+    let open = headwork::ops::jobs::refresh(&mut w.store, Actor::Tick).unwrap();
+    assert!(open.iter().all(|row| row.id != job), "not listed");
+    assert_left_alone(&w, job, &mut other);
+}
+
+#[test]
+fn closing_a_task_leaves_a_program_that_took_its_job_pid() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let mut other = sleeper();
+    let job = stale_job(&mut w, &task, other.id(), ParkPolicy::Rerun);
+    let env = env!(w);
+    close(&mut w.store, &env, task.id, None).unwrap();
+    assert_left_alone(&w, job, &mut other);
+}
+
+#[test]
+fn a_job_from_before_identities_under_an_unrelated_program_is_left_alone() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let mut other = sleeper();
+    let argv = vec!["bash".to_owned(), "scripts/rl-run.sh".to_owned()];
+    let job = w
+        .store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "demo",
+                label: "sac32",
+                park_policy: ParkPolicy::Checkpoint,
+                argv: &argv,
+                cwd: ".",
+                pid: Some(other.id()),
+                identity: None,
+                checkpoint_path: Some("out/checkpoint.json"),
+                heavy: true,
+                restart: true,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let row = w.store.job(job).unwrap().unwrap();
+    headwork::ops::jobs::stop(&mut w.store, &row, "stopped for the park", Actor::User).unwrap();
+    assert_left_alone(&w, job, &mut other);
+}
+
+#[test]
+fn forgetting_a_job_touches_no_process() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let mut other = sleeper();
+    let argv = vec!["ping".to_owned()];
+    let identity = headwork_adapters::proc::identify(other.id());
+    let job = w
+        .store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "demo",
+                label: "pinger",
+                park_policy: ParkPolicy::Rerun,
+                argv: &argv,
+                cwd: ".",
+                pid: Some(other.id()),
+                identity: identity.as_ref(),
+                checkpoint_path: None,
+                heavy: false,
+                restart: true,
+                log_path: "ping.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    assert!(
+        headwork::ops::jobs::forget(&mut w.store, job, "  ", Actor::User).is_err(),
+        "a reason is required"
+    );
+    let row =
+        headwork::ops::jobs::forget(&mut w.store, job, "stopped and forked", Actor::User).unwrap();
+    assert_eq!(
+        (row.state, row.note.as_deref()),
+        (JobState::Done, Some("forgotten: stopped and forked")),
+        "over"
+    );
+    assert!(
+        headwork::ops::jobs::forget(&mut w.store, job, "again", Actor::User).is_err(),
+        "already over"
+    );
+    assert!(
+        headwork::ops::jobs::forget(&mut w.store, 9999, "none", Actor::User).is_err(),
+        "unknown"
+    );
+    assert!(
+        headwork_adapters::proc::is_alive(other.id()).unwrap(),
+        "the process still runs"
+    );
+    other.kill().unwrap();
+    other.wait().unwrap();
 }
