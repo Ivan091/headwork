@@ -264,6 +264,21 @@ const TOOLS: &[ToolDef] = &[
         schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
     },
     ToolDef {
+        name: "job_forget",
+        description: "Mark a registered job over without touching any process: for a job whose process ended unseen or \
+                      whose pid another program now holds. A worker forgets its own jobs, the orchestrator any.",
+        roles: BOTH,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "reason": { "type": "string", "description": "Why the job is over; it goes into the log." },
+                }),
+                &["id", "reason"],
+            )
+        },
+    },
+    ToolDef {
         name: "park",
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
                       panes close. It runs in the background; read `board` for the machine mode, and write your own \
@@ -496,6 +511,7 @@ impl<'a> Server<'a> {
                 let task = self.own_task(&session)?;
                 self.job_stop(&task, args)
             }
+            "job_forget" => self.job_forget(&session, role, args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -564,6 +580,25 @@ impl<'a> Server<'a> {
             .ok_or_else(|| anyhow!("no job {id} of yours"))?;
         jobs::stop(self.store, &job, "stopped by its session", self.env.actor)?;
         to_text(&self.store.job(id)?)
+    }
+
+    fn job_forget(&mut self, session: &str, role: Role, args: &Value) -> Result<String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("`id` is required and must be an integer"))?;
+        let reason = args
+            .get("reason")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("`reason` is required"))?;
+        if role == Role::Worker {
+            let task = self.own_task(session)?;
+            self.store
+                .job(id)?
+                .filter(|job| job.task_id == Some(task.id))
+                .ok_or_else(|| anyhow!("no job {id} of yours"))?;
+        }
+        to_text(&jobs::forget(self.store, id, reason, self.env.actor)?)
     }
 
     fn start_detached(&self, command: &'static str, args: &Value) -> Result<String> {

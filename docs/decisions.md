@@ -525,3 +525,12 @@ and the reason.
   closed the same way. The two live tests now use separate workspaces (`headwork-test`, `headwork-test-tick`), so they
   no longer collide when run in parallel.
 - 2026-11-16 Pane titles show the task name only: `[layout] title` defaults to `{name}`; the model and effort are in Claude's status line. The template and its placeholders stay for anyone who sets it. The orchestrator is not a task, so headwork never titles its tab.
+- 2026-11-18 Jobs survive pid reuse. A job records the identity of its process (image name and start time, read with
+  `sysinfo`, migration 0011) when its pid is stored, by `job_register` and at every start. Every liveness check of a
+  job (`jobs`, `job_status`, `board`'s close facts, the tick, park, resume, `job_stop`, close) compares it with what runs
+  under the pid now: a different image or a start more than a second apart means the job's process is gone, the job is
+  recorded `done` with a note naming the program that took the pid, and nothing is signalled. A job recorded before
+  this change has no identity and counts as alive only when the pid runs its own program or a shell or launcher
+  (`bash`, `sh`, `cargo`, `python`, `py`, `uv`); anything else is left alone and the job ends. `headwork job forget <id>
+  --reason` and the `job_forget` MCP tool (a worker's own jobs, any job for the orchestrator) mark a job over without
+  touching any process, logged as `job-forgotten`.

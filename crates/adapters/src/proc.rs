@@ -8,6 +8,8 @@
 use std::io;
 use std::process::{Child, Command, ExitStatus};
 
+pub use headwork_core::process::{Liveness, ProcessIdentity};
+
 /// Why a process operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ProcError {
@@ -164,6 +166,29 @@ pub fn kill_tree(pid: u32) -> Result<bool, ProcError> {
 /// Returns [`ProcError::Tool`] when the system tool cannot run.
 pub fn is_alive(pid: u32) -> Result<bool, ProcError> {
     imp::is_alive(pid)
+}
+
+/// The image name and start time of the process with this id, or `None` when none runs.
+#[must_use]
+pub fn identify(pid: u32) -> Option<ProcessIdentity> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    system.process(pid).map(|process| ProcessIdentity {
+        image: process.name().to_string_lossy().into_owned(),
+        started: process.start_time(),
+    })
+}
+
+/// What runs under a recorded pid now, judged against the identity recorded with it (see [`headwork_core::process`]).
+#[must_use]
+pub fn liveness(pid: u32, recorded: Option<&ProcessIdentity>, argv: &[String]) -> Liveness {
+    headwork_core::process::judge(recorded, argv, identify(pid))
 }
 
 /// The ids of the processes running a program image, such as `claude.exe` on Windows or `claude` elsewhere.

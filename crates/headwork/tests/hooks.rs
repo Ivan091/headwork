@@ -729,7 +729,8 @@ fn mcp_tools_follow_the_role() {
             "job_register",
             "job_start",
             "job_status",
-            "job_stop"
+            "job_stop",
+            "job_forget"
         ],
         "child"
     );
@@ -748,6 +749,7 @@ fn mcp_tools_follow_the_role() {
             "rule_retire",
             "recap",
             "job_status",
+            "job_forget",
             "park",
             "resume"
         ],

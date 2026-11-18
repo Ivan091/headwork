@@ -422,12 +422,11 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
 /// recorded `done`.
 fn finalize_jobs(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
     for job in store.open_jobs(Some(id))? {
-        if let Some(pid) = job.pid
-            && proc::is_alive(pid)?
-        {
-            proc::kill_tree(pid)?;
-        }
-        store.set_job_state(job.id, JobState::Done, Some("the task closed"), env.actor)?;
+        let note = super::jobs::end_process(&job)?.map_or_else(
+            || "the task closed".to_owned(),
+            |left| format!("the task closed; {left}"),
+        );
+        store.set_job_state(job.id, JobState::Done, Some(&note), env.actor)?;
     }
     Ok(())
 }

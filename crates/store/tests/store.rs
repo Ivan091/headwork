@@ -9,6 +9,7 @@ use std::path::Path;
 
 use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
+use headwork_core::process::ProcessIdentity;
 use headwork_core::{
     Actor, AdmissionRefusal, AskKind, AskState, Config, Effort, JobState, MachineMode, Model,
     PermissionMode, PlaceKind, ProjectName, RecapKind, Refusal, Role, SessionState, Slug,
@@ -947,6 +948,10 @@ fn jobs_keep_their_command_line_and_move_through_states() {
                 argv: &argv,
                 cwd: "S:/Code/me-sim",
                 pid: Some(4242),
+                identity: Some(&ProcessIdentity {
+                    image: "bash.exe".to_owned(),
+                    started: 1_700_000_000,
+                }),
                 checkpoint_path: Some("out/checkpoint.json"),
                 heavy: true,
                 restart: true,
@@ -958,6 +963,13 @@ fn jobs_keep_their_command_line_and_move_through_states() {
     let job = store.job(id).unwrap().unwrap();
     assert_eq!(job.argv, argv, "argv round trip");
     assert_eq!(job.park_policy, ParkPolicy::Checkpoint, "policy");
+    assert_eq!(
+        job.identity
+            .as_ref()
+            .map(|id| (id.image.as_str(), id.started)),
+        Some(("bash.exe", 1_700_000_000)),
+        "identity round trip"
+    );
     assert_eq!(store.open_jobs(Some(task.id)).unwrap().len(), 1, "open");
     store
         .set_job_state(id, JobState::Parked, Some("checkpointed"), Actor::User)
@@ -967,13 +979,14 @@ fn jobs_keep_their_command_line_and_move_through_states() {
         1,
         "parked"
     );
-    store.set_job_pid(id, 4343, Actor::User).unwrap();
+    store.set_job_pid(id, 4343, None, Actor::User).unwrap();
     let job = store.job(id).unwrap().unwrap();
     assert_eq!(
         (job.state, job.pid),
         (JobState::Running, Some(4343)),
         "restarted"
     );
+    assert_eq!(job.identity, None, "a restart replaces the identity");
     assert_eq!(
         job.note, None,
         "the note of the stop is cleared by the restart"
@@ -982,6 +995,60 @@ fn jobs_keep_their_command_line_and_move_through_states() {
         .set_job_state(id, JobState::Done, None, Actor::User)
         .unwrap();
     assert!(store.open_jobs(None).unwrap().is_empty(), "over");
+}
+
+#[test]
+fn forgetting_a_job_ends_it_once_and_logs_why() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    let argv = vec!["bash".to_owned()];
+    let id = store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "me-sim",
+                label: "sac32",
+                park_policy: ParkPolicy::Checkpoint,
+                argv: &argv,
+                cwd: "S:/Code/me-sim",
+                pid: Some(38260),
+                identity: None,
+                checkpoint_path: Some("out/checkpoint.json"),
+                heavy: true,
+                restart: true,
+                log_path: "jobs/car.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    assert!(
+        store
+            .forget_job(id, "pid reused", Actor::Orchestrator)
+            .unwrap(),
+        "forgotten"
+    );
+    let job = store.job(id).unwrap().unwrap();
+    assert_eq!(
+        (job.state, job.note.as_deref()),
+        (JobState::Done, Some("forgotten: pid reused")),
+        "over with the reason"
+    );
+    assert!(store.open_jobs(None).unwrap().is_empty(), "no longer open");
+    assert!(
+        !store.forget_job(id, "again", Actor::User).unwrap(),
+        "already over"
+    );
+    let events = store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 50,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "job-forgotten")
+        .count();
+    assert_eq!(events, 1, "logged once");
 }
 
 #[test]

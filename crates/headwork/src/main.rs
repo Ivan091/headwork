@@ -144,6 +144,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Act on one registered job.
+    Job {
+        #[command(subcommand)]
+        action: JobAction,
+    },
     /// Set the title of every live worker pane (or one task's) from its model and effort.
     Retitle {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`; every live task when absent.
@@ -284,6 +289,20 @@ enum Command {
         /// The headwork home; panes do not inherit the caller's environment.
         #[arg(long)]
         home: Option<PathBuf>,
+    },
+}
+
+/// What `job` does.
+#[derive(Debug, Subcommand)]
+enum JobAction {
+    /// Mark a job over without touching any process, for a job whose process ended unseen or whose pid another
+    /// program now holds.
+    Forget {
+        /// The job's id, as `headwork jobs` lists it.
+        id: i64,
+        /// Why it is over; recorded in the job's note and the event log.
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -477,6 +496,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Close { .. }
         | Command::Tick { .. }
         | Command::Jobs { .. }
+        | Command::Job { .. }
         | Command::Retitle { .. }
         | Command::Recap { .. }
         | Command::ShadowReport { .. }) => other,
@@ -501,6 +521,13 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
         Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
+        Command::Job {
+            action: JobAction::Forget { id, reason },
+        } => {
+            let job = headwork::ops::jobs::forget(&mut store, id, &reason, Actor::User)?;
+            writeln!(out, "job {} (`{}`) is over: {reason}", job.id, job.label)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Recap { name } => recap_command(&store, &name, out),
         Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
         Command::ShadowReport { json } => shadow_command(&store, &ctx, json, out),

@@ -31,8 +31,8 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, rules,
-rule_add, rule_retire, job_status, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
-job_register, job_status, job_stop) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
+rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
+job_register, job_status, job_stop, job_forget) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
@@ -59,6 +59,7 @@ cargo run -p headwork -- tick [--json]                 # reconcile the store wit
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- jobs              # the registered long-running jobs
+cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over without touching any process
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
