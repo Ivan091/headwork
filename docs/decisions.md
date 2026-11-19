@@ -584,3 +584,14 @@ and the reason.
   opened by the worker MCP tool `helper_tab` as a new tab (`Target::Tab`) of the worker's recorded workspace, labelled
   `headwork:helper`; release ignores helper surfaces when deciding whether the workspace is still busy, so the
   workspace closes with its worker. The worker rules say to use it.
+- 2026-11-19 Several pull requests per task (second audit, `multi-pr-tasks`). A lead delivers in several pull requests, so
+  `review-opened` also applies in `merged` (a later pull request takes the task back to `in_review`), and `merged` →
+  `closing` needs every pull request settled: the worker's own close refuses while any is open, in `merged` too. Close
+  and the tick share one lookup (`ops/prs.rs`): the URLs recorded for the task, the stored branch and the branch checked
+  out in the task's folder, so a renamed branch is found; any open one decides, else any merged, else any closed. The
+  tick reconciles `merged` tasks as well. The merged grace counts only once the session has also been quiet for the
+  grace with no tool call running (`watch::merged_grace_over`), so an enforced tick never closes a lead that keeps
+  working after its first merge. Worktree removal also deletes the empty branch checked out in the folder when the
+  worker renamed it. Two finishers no longer run one close: `finish` takes a claim, an exclusive lock on
+  `<home>/closing/<task id>.lock` that the system releases when its holder dies; a second finisher logs `close-claimed`
+  and leaves. A lock file rather than a store column keeps the schema unchanged and needs no staleness rule.

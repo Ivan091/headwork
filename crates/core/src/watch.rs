@@ -181,10 +181,43 @@ pub fn trust_prompt(screen: &str) -> bool {
         .any(|line| screen.contains(line) && (*line != "yes, proceed" || screen.contains("trust")))
 }
 
+/// How a merged task's session has behaved since the merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergedSession {
+    /// The task has no live session.
+    Gone,
+    /// The session is live.
+    Live {
+        /// Seconds since its last hook event, none when there was none.
+        idle_s: Option<u64>,
+        /// A tool call is running.
+        tool_in_flight: bool,
+    },
+}
+
 /// Whether a merged task has lingered long enough to start closing.
+///
+/// The merge must be older than the grace and its session quiet as long, so a task that delivers in several pull
+/// requests and keeps working after a merge is not closed under it.
 #[must_use]
-pub const fn merged_grace_over(age_s: u64, limits: &Limits) -> bool {
-    age_s >= limits.merged_grace
+pub const fn merged_grace_over(age_s: u64, session: MergedSession, limits: &Limits) -> bool {
+    if age_s < limits.merged_grace {
+        return false;
+    }
+    match session {
+        MergedSession::Gone => true,
+        MergedSession::Live {
+            tool_in_flight: true,
+            ..
+        } => false,
+        MergedSession::Live {
+            idle_s,
+            tool_in_flight: false,
+        } => match idle_s {
+            Some(idle) => idle >= limits.merged_grace,
+            None => true,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -316,8 +349,48 @@ Is this a project you created or one you trust?
 
     #[test]
     fn the_merged_grace_is_inclusive() {
-        assert!(!merged_grace_over(299, &LIMITS), "just under");
-        assert!(merged_grace_over(300, &LIMITS), "at the limit");
+        assert!(
+            !merged_grace_over(299, MergedSession::Gone, &LIMITS),
+            "just under"
+        );
+        assert!(
+            merged_grace_over(300, MergedSession::Gone, &LIMITS),
+            "at the limit"
+        );
+    }
+
+    #[test]
+    fn the_merged_grace_waits_for_a_quiet_session() {
+        let live = |idle_s, tool_in_flight| MergedSession::Live {
+            idle_s,
+            tool_in_flight,
+        };
+        let cases = [
+            (
+                300,
+                live(Some(300), false),
+                true,
+                "quiet as long as the grace",
+            ),
+            (300, live(Some(299), false), false, "worked a moment ago"),
+            (
+                3_600,
+                live(Some(10), false),
+                false,
+                "a lead still working long after its first merge",
+            ),
+            (300, live(Some(900), true), false, "a tool call is running"),
+            (300, live(None, false), true, "no hook event yet"),
+            (
+                299,
+                live(Some(900), false),
+                false,
+                "the merge is too recent",
+            ),
+        ];
+        for (age, session, over, why) in cases {
+            assert_eq!(merged_grace_over(age, session, &LIMITS), over, "{why}");
+        }
     }
 
     #[test]

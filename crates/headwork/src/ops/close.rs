@@ -12,8 +12,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
-use headwork_adapters::git::{GitHost, PrInfo, PrState};
+use anyhow::{Context, Result, anyhow, bail};
+use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
@@ -23,7 +23,7 @@ use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, FinishFacts, MergeSource, PrEnd, Trigger, WorktreeEnd,
 };
 use headwork_core::{Actor, JobState, SessionState, TaskState};
-use headwork_store::{PrSeen, SessionRow, Store, StoreError, Task, TaskId};
+use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
 use super::hook::{Git, GitProbe};
@@ -159,8 +159,12 @@ fn own_steps(
     if task.state == TaskState::NeedsUser {
         bail!("{}", headwork_core::Refusal::OpenAsk);
     }
-    let (pr, info) = if matches!(task.state, TaskState::Working | TaskState::InReview) {
-        pr_end(store, env, git, task)?
+    let (pr, info) = if matches!(
+        task.state,
+        TaskState::Working | TaskState::InReview | TaskState::Merged
+    ) {
+        let found = super::prs::lookup(store, env, git, task)?;
+        (found.end(), found.deciding().cloned())
     } else {
         (PrEnd::None, None)
     };
@@ -182,6 +186,9 @@ fn own_steps(
         policy: project.merge,
     };
     let steps = match (task.state, pr) {
+        (TaskState::Merged | TaskState::InReview, PrEnd::Open) => {
+            bail!("{}", headwork_core::Refusal::PrOpen)
+        }
         (TaskState::Merged, _) => vec![close],
         (TaskState::Working, PrEnd::Merged) => {
             let repo_allowed = info.as_ref().is_some_and(|info| {
@@ -200,7 +207,6 @@ fn own_steps(
                 ..facts
             }),
         ],
-        (TaskState::InReview, PrEnd::Open) => bail!("{}", headwork_core::Refusal::PrOpen),
         _ => vec![Trigger::Finish(facts)],
     };
     let mut snapshot = task.snapshot();
@@ -211,75 +217,6 @@ fn own_steps(
         snapshot.state_before_park = step.state_before_park;
     }
     Ok(steps)
-}
-
-/// Where the task's pull requests stand, asked of the git host now: those recorded for the task, the one of its
-/// worktree's branch and the one of the branch checked out in its folder. Any open one makes it [`PrEnd::Open`], else
-/// any merged one [`PrEnd::Merged`], else any closed one [`PrEnd::Closed`]. A task in the main checkout has none.
-fn pr_end(
-    store: &mut Store,
-    env: &Env<'_>,
-    git: &dyn GitHost,
-    task: &Task,
-) -> Result<(PrEnd, Option<PrInfo>)> {
-    if task.in_main {
-        return Ok((PrEnd::None, None));
-    }
-    let mut seen: Vec<PrInfo> = Vec::new();
-    for url in store.pr_urls_of(task.id)? {
-        if let Some(pr) = git.pr_by_url(&url)? {
-            seen.push(pr);
-        }
-    }
-    let dir = env.task_dir(task)?;
-    let dir = if dir.is_dir() {
-        dir
-    } else {
-        env.main_path(task)?
-    };
-    let mut branches = vec![
-        store
-            .worktree_of(task.id)?
-            .map_or_else(|| task.slug().to_string(), |w| w.branch),
-    ];
-    if let Some(current) = Git.branch(&slashed(&dir))
-        && !branches.contains(&current)
-        && !DEFAULT_BRANCHES.contains(&current.as_str())
-    {
-        branches.push(current);
-    }
-    for branch in &branches {
-        if let Some(pr) = git.pr_for_branch(&dir, branch)?
-            && !seen.iter().any(|known| known.url == pr.url)
-        {
-            seen.push(pr);
-        }
-    }
-    for pr in &seen {
-        store.record_pr(
-            task.id,
-            &PrSeen {
-                repo: &pr.repo,
-                number: pr.number,
-                url: &pr.url,
-                state: pr.state.as_str(),
-            },
-            env.actor,
-        )?;
-    }
-    let pick = [
-        (PrState::Open, PrEnd::Open),
-        (PrState::Merged, PrEnd::Merged),
-        (PrState::Closed, PrEnd::Closed),
-    ];
-    Ok(pick
-        .into_iter()
-        .find_map(|(state, end)| {
-            seen.iter()
-                .find(|pr| pr.state == state)
-                .map(|pr| (end, Some(pr.clone())))
-        })
-        .unwrap_or((PrEnd::None, None)))
 }
 
 /// Ends a `closing` task's session, pane, process tree and worktree, and marks it `closed` once each is verified gone.
@@ -362,6 +299,45 @@ fn remove_brief(env: &Env<'_>, brief: &str) {
 ///
 /// Fails when the store fails or the task is not closing.
 pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseReport> {
+    let Some(_claim) = claim_close(env, id)? else {
+        store.append_event(
+            env.actor,
+            Some(id),
+            None,
+            "close-claimed",
+            &serde_json::json!({ "note": "another finisher holds this close" }),
+        )?;
+        return report(store, id, Some(ANOTHER_FINISHER.to_owned()));
+    };
+    finish_claimed(store, env, id)
+}
+
+/// What a finisher reports when another one already runs the same close.
+pub const ANOTHER_FINISHER: &str = "another finisher is closing this task";
+
+/// Takes the task's close claim: an exclusive lock on `<home>/closing/<id>.lock`, held until the returned file drops
+/// and released by the system if the finisher dies. `None` when another finisher holds it, so two finishers (the
+/// launcher's, a backup, the tick, `headwork close`) never end the same task at once.
+fn claim_close(env: &Env<'_>, id: TaskId) -> Result<Option<std::fs::File>> {
+    let folder = env.home.root().join("closing");
+    std::fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
+    let path = folder.join(format!("{id}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("locking {}", path.display()))
+        }
+    }
+}
+
+fn finish_claimed(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseReport> {
     let task = store.task(id)?;
     match task.state {
         TaskState::Closed => return report(store, id, None),
@@ -506,6 +482,7 @@ pub(super) fn remove_worktree(
         delete_empty_branch(store, env, &task, &worktree.branch)?;
         return Ok(WorktreeEnd::Removed);
     }
+    let branches = task_branches(&worktree);
     let main = slashed(&env.main_path(&task)?);
     let vars = TaskVars {
         slug: task.slug().as_str(),
@@ -518,7 +495,7 @@ pub(super) fn remove_worktree(
     if !worktrees.is_registered(Path::new(&worktree.path))? {
         let end = remove_stray_folder(store, env, id, &worktree.path)?;
         if matches!(end, WorktreeEnd::Removed) {
-            delete_empty_branch(store, env, &task, &worktree.branch)?;
+            delete_empty_branches(store, env, &task, &branches)?;
         }
         return Ok(end);
     }
@@ -534,7 +511,7 @@ pub(super) fn remove_worktree(
     };
     let Some(error) = refusal else {
         store.set_worktree_state(id, "removed", env.actor)?;
-        delete_empty_branch(store, env, &task, &worktree.branch)?;
+        delete_empty_branches(store, env, &task, &branches)?;
         return Ok(WorktreeEnd::Removed);
     };
     let script = matches!(command, WorktreeCommand::Command(_));
@@ -547,7 +524,7 @@ pub(super) fn remove_worktree(
             &serde_json::json!({ "script_error": error }),
         )?;
         store.set_worktree_state(id, "removed", env.actor)?;
-        delete_empty_branch(store, env, &task, &worktree.branch)?;
+        delete_empty_branches(store, env, &task, &branches)?;
         return Ok(WorktreeEnd::Removed);
     }
     store.append_event(
@@ -586,6 +563,32 @@ fn remove_stray_folder(
         &serde_json::json!({ "error": error }),
     )?;
     Ok(WorktreeEnd::Present)
+}
+
+/// The branches a task's worktree leaves behind: the stored one, and the one checked out in the folder when the worker
+/// renamed or switched it.
+fn task_branches(worktree: &WorktreeRow) -> Vec<String> {
+    let mut branches = vec![worktree.branch.clone()];
+    if let Some(current) = Git.branch(&worktree.path)
+        && !branches.contains(&current)
+        && !DEFAULT_BRANCHES.contains(&current.as_str())
+        && current != "HEAD"
+    {
+        branches.push(current);
+    }
+    branches
+}
+
+fn delete_empty_branches(
+    store: &Store,
+    env: &Env<'_>,
+    task: &Task,
+    branches: &[String],
+) -> Result<()> {
+    for branch in branches {
+        delete_empty_branch(store, env, task, branch)?;
+    }
+    Ok(())
 }
 
 /// Deletes a closed task's branch when it holds no commits beyond the main checkout's `HEAD`, so the slug can be

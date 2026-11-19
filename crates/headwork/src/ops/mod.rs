@@ -12,6 +12,7 @@ pub mod lost;
 pub mod mcp;
 pub mod park;
 pub mod place;
+pub mod prs;
 pub mod recap;
 pub mod relay;
 pub mod reload;

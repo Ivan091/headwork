@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use headwork_adapters::disk::{Disks, large_files, volume_of};
-use headwork_adapters::git::{GitHost, PrState};
+use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
 use headwork_adapters::proc;
-use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource};
-use headwork_core::watch::{self, DiskLevel, Limits, Runaway, Stuck};
+use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
+use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
 use headwork_core::{Actor, AskState, FindingId, MachineMode, SessionState, TaskState, Trigger};
-use headwork_store::{PrSeen, SessionRow, Store, Task, TaskId};
+use headwork_store::{SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
 use super::close::{finish, remove_worktree, surface_present};
@@ -515,7 +515,7 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn pull_requests(&mut self) -> Result<()> {
-        for state in [TaskState::Working, TaskState::InReview] {
+        for state in [TaskState::Working, TaskState::InReview, TaskState::Merged] {
             for id in self.store.tasks_in(state)? {
                 let task = self.store.task(id)?;
                 if task.in_main {
@@ -534,41 +534,27 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn reconcile_pr(&mut self, task: &Task) -> Result<()> {
-        let branch = self
-            .store
-            .worktree_of(task.id)?
-            .map_or_else(|| task.slug().to_string(), |w| w.branch);
-        let dir = {
-            let dir = self.env().task_dir(task)?;
-            if dir.is_dir() {
-                dir
-            } else {
-                self.env().main_path(task)?
-            }
-        };
-        let Some(pr) = self.t.git.pr_for_branch(&dir, &branch)? else {
+        let env = self.env();
+        let git = self.t.git;
+        let found = super::prs::lookup(self.store, env, git, task)?;
+        let end = found.end();
+        let Some(pr) = found.deciding() else {
             return Ok(());
         };
-        let actor = self.actor();
-        self.store.record_pr(
-            task.id,
-            &PrSeen {
-                repo: &pr.repo,
-                number: pr.number,
-                url: &pr.url,
-                state: pr.state.as_str(),
-            },
-            actor,
-        )?;
-        let project = self.env().project(task)?;
+        let project = env.project(task)?;
         let repo_allowed = project
             .allowed_repos
             .iter()
             .any(|repo| repo.as_str().eq_ignore_ascii_case(&pr.repo));
         let policy = project.merge;
+        let actor = self.actor();
         let mut state = task.state;
         let detail = serde_json::json!({ "url": pr.url, "number": pr.number });
-        if state == TaskState::Working && pr.state != PrState::Closed {
+        let opens = matches!(
+            (state, end),
+            (TaskState::Working, PrEnd::Open | PrEnd::Merged) | (TaskState::Merged, PrEnd::Open)
+        );
+        if opens {
             if self
                 .store
                 .transition(task.id, &Trigger::ReviewOpened { repo_allowed }, actor)
@@ -577,7 +563,7 @@ impl<'b> Run<'_, 'b> {
                 return Ok(());
             }
             state = TaskState::InReview;
-            if pr.state == PrState::Open {
+            if end == PrEnd::Open {
                 self.applied(FindingId::PrOpened, Some(task.id), detail.clone())?;
             }
         }
@@ -585,13 +571,13 @@ impl<'b> Run<'_, 'b> {
             source: MergeSource::GitHost,
             policy,
         };
-        let moved = match (state, pr.state) {
-            (TaskState::InReview, PrState::Merged) => self
+        let moved = match (state, end) {
+            (TaskState::InReview, PrEnd::Merged) => self
                 .store
                 .transition(task.id, &merged, actor)
                 .is_ok()
                 .then_some(FindingId::PrMerged),
-            (TaskState::InReview, PrState::Closed) => self
+            (TaskState::InReview, PrEnd::Closed) => self
                 .store
                 .transition(task.id, &Trigger::ChangesRequested, actor)
                 .is_ok()
@@ -608,7 +594,19 @@ impl<'b> Run<'_, 'b> {
         for id in self.store.tasks_in(TaskState::Merged)? {
             let task = self.store.task(id)?;
             let age = self.store.task_age_s(id)?;
-            if task.keep || !watch::merged_grace_over(age, &self.limits) {
+            let session = match self.store.session_of(id)? {
+                Some(session)
+                    if matches!(session.state, SessionState::Starting | SessionState::Live) =>
+                {
+                    let clock = self.store.session_clock(&session.id)?;
+                    MergedSession::Live {
+                        idle_s: clock.idle_age_s,
+                        tool_in_flight: clock.tool_in_flight,
+                    }
+                }
+                Some(_) | None => MergedSession::Gone,
+            };
+            if task.keep || !watch::merged_grace_over(age, session, &self.limits) {
                 continue;
             }
             let facts = CloseFacts {

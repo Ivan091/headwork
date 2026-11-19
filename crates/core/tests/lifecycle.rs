@@ -104,6 +104,7 @@ const TABLE: &[(&str, TaskState, TaskState)] = &[
     ("ask-opened", S::Working, S::NeedsUser),
     ("ask-answered", S::NeedsUser, S::Working),
     ("review-opened", S::Working, S::InReview),
+    ("review-opened", S::Merged, S::InReview),
     ("changes-requested", S::InReview, S::Working),
     ("merged", S::InReview, S::Merged),
     ("close", S::Merged, S::Closing),
