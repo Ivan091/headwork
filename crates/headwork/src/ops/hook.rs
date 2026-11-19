@@ -705,6 +705,9 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     Ok(HookReply::default())
 }
 
+/// What a background `Agent` call's response holds: its status, or the text the harness shows the model.
+const ASYNC_AGENT_MARKS: &[&str] = &["async_launched", "Async agent launched"];
+
 /// Whether the call just started work that runs on and notifies the session when it ends: a `Bash` with
 /// `run_in_background`, a `Monitor`, a `Workflow`, or an `Agent` the model or the harness runs in the background.
 fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
@@ -719,10 +722,10 @@ fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
         "Monitor" | "Workflow" => true,
         "Agent" | "Task" => {
             requested
-                || call
-                    .input
-                    .get("tool_response")
-                    .is_some_and(|response| response.to_string().contains("async_launched"))
+                || call.input.get("tool_response").is_some_and(|response| {
+                    let text = response.to_string();
+                    ASYNC_AGENT_MARKS.iter().any(|mark| text.contains(mark))
+                })
         }
         _ => false,
     }
