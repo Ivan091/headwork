@@ -544,6 +544,56 @@ fn no_push_is_demanded_right_after_the_user_typed() {
     );
 }
 
+fn allow_ask(command: &str) -> Value {
+    json!({ "questions": [{
+        "question": format!("May this task run `{command}`?"),
+        "header": "Allow",
+        "options": [
+            { "label": "Allow it for this task (Recommended)", "description": "d" },
+            { "label": "Keep it mine", "description": "d" },
+        ],
+        "multiSelect": false,
+    }] })
+}
+
+fn answer_allow(w: &mut World, command: &str, answer: &str) {
+    let asked = allow_ask(command);
+    w.post("PushNotification", &json!({}));
+    w.pre("AskUserQuestion", &asked);
+    let question = format!("May this task run `{command}`?");
+    let input = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_input": asked,
+        "tool_response": { "answers": { question: answer } },
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+}
+
+#[test]
+fn an_allow_ask_lets_one_task_run_a_user_only_command() {
+    let mut w = world("enforce = true", false);
+    w.start();
+    let publish = json!({ "command": "bash scripts/publish.sh --all" });
+    assert_eq!(w.pre("Bash", &publish).exit, 2, "the user's alone");
+    answer_allow(&mut w, "scripts/publish.sh --all", "Keep it mine");
+    assert_eq!(w.pre("Bash", &publish).exit, 2, "refused stays refused");
+    answer_allow(
+        &mut w,
+        "scripts/publish.sh --all",
+        "Allow it for this task (Recommended)",
+    );
+    assert_eq!(
+        w.pre("Bash", &publish),
+        HookReply::default(),
+        "allowed for this task"
+    );
+    assert_eq!(
+        w.store.user_only_allowed(w.task.id).unwrap(),
+        ["scripts/publish.sh"],
+        "recorded once, as the configured pattern"
+    );
+}
+
 #[test]
 fn the_stop_gate_wants_an_ask_or_a_report() {
     let mut w = world("", false);

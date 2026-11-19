@@ -17,6 +17,8 @@ pub const EVENT_TOOL: &str = "tool-used";
 pub const EVENT_DENY: &str = "deny";
 /// The event of a deny that shadow mode only logged.
 pub const EVENT_WOULD_DENY: &str = "would-deny";
+/// The event that records a user-only command the user allowed for one task.
+pub const EVENT_USER_ONLY_ALLOWED: &str = "user-only-allowed";
 /// The event of a session message to an orchestrator address that a `PreToolUse` hook sent on to the live address.
 pub const EVENT_READDRESSED: &str = "readdressed";
 
@@ -238,6 +240,44 @@ impl Store {
             params![format!("-{seconds} seconds")],
             |row| row.get(0),
         )?)
+    }
+
+    /// Records that the user allowed a task to run a user-only command, answering an `Allow` ask. The event log is
+    /// the record, so no schema change is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn allow_user_only(
+        &mut self,
+        task: TaskId,
+        session: &str,
+        pattern: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        insert_event(
+            &self.conn,
+            actor,
+            Some(task),
+            Some(session),
+            EVENT_USER_ONLY_ALLOWED,
+            &serde_json::json!({ "pattern": pattern }),
+        )?;
+        Ok(())
+    }
+
+    /// The user-only commands the user allowed for a task.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn user_only_allowed(&self, task: TaskId) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT json_extract(data, '$.pattern') FROM events
+                 WHERE task_id = ?1 AND type = ?2 AND json_extract(data, '$.pattern') IS NOT NULL ORDER BY 1",
+        )?;
+        let rows = stmt.query_map(params![task.0, EVENT_USER_ONLY_ALLOWED], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Whether the user typed a prompt into the session within the last `seconds`; a message from another session

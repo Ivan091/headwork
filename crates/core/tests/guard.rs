@@ -53,6 +53,7 @@ fn worker(branch: &str) -> Scope {
             home: Some(USER.to_owned()),
             temp: Some(TEMP.to_owned()),
         },
+        allowed_user_only: Vec::new(),
     }
 }
 

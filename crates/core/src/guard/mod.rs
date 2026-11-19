@@ -15,6 +15,9 @@ use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
 pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
 
+/// The header of the ask by which the user allows one task a user-only command.
+pub const ALLOW_HEADER: &str = "Allow";
+
 /// The global skills that deliver a change; a project with its own delivery command forbids them.
 pub const DELIVERY_SKILLS: &[&str] = &["commit", "push", "create-pr", "contribute", "ship"];
 
@@ -219,6 +222,8 @@ pub struct Scope {
     pub task_name: Option<String>,
     /// What `~`, `$HOME` and `/tmp` stand for in paths the session names.
     pub places: Places,
+    /// User-only commands the user allowed for this task in an `Allow` ask.
+    pub allowed_user_only: Vec<String>,
 }
 
 /// Decides a tool call by the session's role.
@@ -313,11 +318,20 @@ fn user_only(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
     scope
         .user_only
         .iter()
+        .filter(|pattern| !scope.allowed_user_only.contains(pattern))
         .find(|pattern| command.runs(pattern))
         .map(|pattern| {
+            let ask = if scope.task_name.is_some() {
+                format!(
+                    "ask the user to run it, or to allow it for this task with an `AskUserQuestion` headed `{ALLOW_HEADER}` \
+                     that names `{pattern}` and offers an option starting with `Allow`"
+                )
+            } else {
+                "ask the user to run it".to_owned()
+            };
             Decision::deny(
                 RuleId::UserOnly,
-                format!("`{pattern}` is the user's alone (publishing, uploads, releases, logins); ask the user to run it"),
+                format!("`{pattern}` is the user's alone (publishing, uploads, releases, logins); {ask}"),
             )
         })
 }
