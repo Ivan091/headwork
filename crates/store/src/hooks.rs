@@ -240,6 +240,61 @@ impl Store {
         )?)
     }
 
+    /// Whether the user typed a prompt into the session within the last `seconds`; a message from another session
+    /// does not count.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn user_prompted_within(&self, session: &str, seconds: u32) -> Result<bool, StoreError> {
+        let since = format!("-{seconds} seconds");
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND type = ?2
+                 AND NOT COALESCE(json_extract(data, '$.cross_session'), 0)
+                 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
+            params![session, EVENT_PROMPT, since],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Supersedes the session's own asks that are still open, as when the user typed past a dialog instead of
+    /// answering it, or the session asks again. Asks the store raised itself (a topic, such as `trust`) stay. Returns
+    /// how many were superseded.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn supersede_session_asks(
+        &mut self,
+        session: &str,
+        actor: Actor,
+    ) -> Result<usize, StoreError> {
+        let tx = self.conn.transaction()?;
+        let open: Vec<(i64, Option<i64>)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, task_id FROM asks WHERE session_id = ?1 AND state = 'open' AND topic IS NULL ORDER BY id",
+            )?;
+            let rows = stmt.query_map(params![session], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for (id, task) in &open {
+            tx.execute(
+                "UPDATE asks SET state = 'superseded' WHERE id = ?1",
+                params![id],
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                task.map(TaskId),
+                Some(session),
+                "ask-superseded",
+                &serde_json::json!({ "ask": id }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(open.len())
+    }
+
     /// What the session did since its last prompt.
     ///
     /// # Errors

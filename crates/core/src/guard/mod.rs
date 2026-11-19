@@ -12,7 +12,7 @@ pub mod stop;
 use serde::Serialize;
 
 use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
-pub use paths::GuardPath;
+pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
 
 /// The global skills that deliver a change; a project with its own delivery command forbids them.
@@ -217,6 +217,8 @@ pub struct Scope {
     pub fable_allowed: bool,
     /// A worker's own task name, `<project>-<slug>`, which it may close itself.
     pub task_name: Option<String>,
+    /// What `~`, `$HOME` and `/tmp` stand for in paths the session names.
+    pub places: Places,
 }
 
 /// Decides a tool call by the session's role.
@@ -238,7 +240,7 @@ pub fn check_tool(scope: &Scope, call: &ToolCall<'_>) -> Decision {
 }
 
 fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
-    let target = GuardPath::resolve(&scope.cwd, path);
+    let target = scope.places.resolve(&scope.cwd, path);
     let inside = scope.writable.iter().any(|root| target.is_within(root));
     match role {
         Role::Orchestrator if !inside => Decision::deny(
@@ -277,7 +279,7 @@ fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decisi
             Role::Worker => {
                 match command.program_name().as_str() {
                     "cd" | "pushd" => {
-                        cwd = cwd.and_then(|cwd| changed_dir(&cwd, &command));
+                        cwd = cwd.and_then(|cwd| changed_dir(&scope.places, &cwd, &command));
                         continue;
                     }
                     "popd" => {
@@ -297,14 +299,14 @@ fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decisi
 }
 
 /// The folder a `cd` moves to from `cwd`: its first operand, the home folder without one, unknown for `cd -`.
-fn changed_dir(cwd: &str, command: &SimpleCommand) -> Option<String> {
+fn changed_dir(places: &Places, cwd: &str, command: &SimpleCommand) -> Option<String> {
     let target = command
         .args()
         .iter()
         .map(String::as_str)
         .find(|arg| *arg == "-" || !arg.starts_with('-'))
         .unwrap_or("~");
-    (target != "-").then(|| GuardPath::resolve(cwd, target).as_str().to_owned())
+    (target != "-").then(|| places.resolve(cwd, target).as_str().to_owned())
 }
 
 fn user_only(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
@@ -475,11 +477,11 @@ fn check_git_outside(
     if !is_git_write(sub, args) {
         return None;
     }
-    let mut folder = GuardPath::resolve(&scope.cwd, cwd?);
+    let mut folder = scope.places.resolve(&scope.cwd, cwd?);
     let mut words = command.args().iter();
     while let Some(word) = words.next() {
         match word.as_str() {
-            "-C" => folder = GuardPath::resolve(folder.as_str(), words.next()?),
+            "-C" => folder = scope.places.resolve(folder.as_str(), words.next()?),
             "-c" | "--namespace" => {
                 words.next();
             }

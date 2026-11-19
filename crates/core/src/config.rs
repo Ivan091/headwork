@@ -693,6 +693,20 @@ impl Config {
         self.projects.get(name)
     }
 
+    /// Every project's user-only commands, sorted and without repeats. A session of any project is held to all of
+    /// them: a me-sim worker can run me-studio's publisher as easily as its own scripts.
+    #[must_use]
+    pub fn all_user_only(&self) -> Vec<String> {
+        let mut all: Vec<String> = self
+            .projects
+            .values()
+            .flat_map(|project| project.user_only.iter().cloned())
+            .collect();
+        all.sort();
+        all.dedup();
+        all
+    }
+
     /// The models a project's sessions may run: the project's own set when it has one, else the machine's.
     #[must_use]
     pub fn allowed_models(&self, project: &ProjectConfig) -> Vec<Model> {

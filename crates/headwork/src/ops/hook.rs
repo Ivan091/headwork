@@ -16,7 +16,7 @@ use headwork_core::config::{Delivery, PushMode, WorktreeCommand};
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::stop::{StopFacts, check_stop};
 use headwork_core::guard::{
-    DEFAULT_BRANCHES, Decision, GuardPath, Scope, ToolCall, check_tool, repo_from_url,
+    DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope, ToolCall, check_tool, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{
@@ -298,6 +298,13 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         EVENT_PROMPT,
         &json!({ "cross_session": text.starts_with("<cross-session-message"), "from": from }),
     )?;
+    if !text.starts_with("<cross-session-message")
+        && store.supersede_session_asks(&call.session.id, Actor::Hook)? > 0
+        && let Some(task) = call.task
+        && task.state == TaskState::NeedsUser
+    {
+        lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
+    }
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
@@ -339,6 +346,10 @@ pub fn scope_for(
             .iter()
             .map(|branch| (*branch).to_owned())
             .collect(),
+        places: Places {
+            home: Some(slashed(&env.home.expand("~"))),
+            temp: Some(slashed(env.temp)),
+        },
         ..Scope::default()
     };
     match role {
@@ -352,7 +363,6 @@ pub fn scope_for(
                     .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir)))),
             );
             for project in config.projects.values() {
-                scope.user_only.extend(project.user_only.iter().cloned());
                 if let Delivery::Command(command) = &project.deliver {
                     scope.scripts.extend(first_word(command));
                 }
@@ -378,7 +388,6 @@ pub fn scope_for(
                         .iter()
                         .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
                         .collect();
-                    scope.user_only.clone_from(&project.user_only);
                     scope.long_jobs.clone_from(&project.long_jobs);
                     scope.own_delivery = matches!(project.deliver, Delivery::Command(_));
                     scope.allowed_repos = project
@@ -398,6 +407,7 @@ pub fn scope_for(
             }
         }
     }
+    scope.user_only = config.all_user_only();
     scope.writable = writable;
     Ok(scope)
 }
@@ -579,6 +589,11 @@ fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<De
     let push = match push {
         PushMode::None => Precondition::NotRequired,
         PushMode::Claude
+            if store.user_prompted_within(&call.session.id, config.hooks.push_window_secs)? =>
+        {
+            Precondition::NotRequired
+        }
+        PushMode::Claude
             if store.used_tool_within(
                 &call.session.id,
                 "PushNotification",
@@ -624,6 +639,7 @@ fn open_ask(store: &mut Store, call: &Call<'_>, tool_input: &Value) -> Result<()
     } else {
         AskKind::Question
     };
+    store.supersede_session_asks(&call.session.id, Actor::Hook)?;
     store.open_ask(
         &NewAsk {
             task_id: call.session.task_id,

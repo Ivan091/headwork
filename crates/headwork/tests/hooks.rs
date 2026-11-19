@@ -19,7 +19,7 @@ use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Role, SessionState, Slug, TaskRequest,
-    TaskState,
+    TaskState, Trigger,
 };
 use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
 use serde_json::{Value, json};
@@ -427,6 +427,123 @@ fn ask_checks_name_their_rules() {
     );
 }
 
+fn open_asks(w: &World) -> usize {
+    w.events()
+        .iter()
+        .filter(|event| event.kind == "ask-opened")
+        .count()
+        - w.events()
+            .iter()
+            .filter(|event| matches!(event.kind.as_str(), "ask-answered" | "ask-superseded"))
+            .count()
+}
+
+#[test]
+fn a_new_ask_or_a_typed_prompt_supersedes_an_abandoned_one() {
+    let mut w = world("", false);
+    w.start();
+    w.post("PushNotification", &json!({}));
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Ship it (Recommended)", "Drop it"], "Ship"),
+    );
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Merge (Recommended)", "Wait"], "Merge"),
+    );
+    assert_eq!(
+        open_asks(&w),
+        1,
+        "the abandoned ask is superseded by the next"
+    );
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "<cross-session-message from-name=\"orchestrator\">status?</cross-session-message>" }),
+    );
+    assert_eq!(
+        open_asks(&w),
+        1,
+        "a message from another session answers nothing"
+    );
+    assert_eq!(w.state(), TaskState::NeedsUser, "still waiting");
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "merge it after CI" }),
+    );
+    assert_eq!(open_asks(&w), 0, "the user typed past the dialog");
+    assert!(
+        w.store.open_ask_of(&w.session).unwrap().is_none(),
+        "no open ask"
+    );
+    assert_eq!(w.state(), TaskState::Working, "back to work");
+}
+
+#[test]
+fn an_ask_in_review_keeps_the_task_in_review() {
+    let mut w = world("", false);
+    w.start();
+    w.store
+        .transition(
+            w.task.id,
+            &Trigger::ReviewOpened { repo_allowed: true },
+            Actor::Hook,
+        )
+        .unwrap();
+    w.post("PushNotification", &json!({}));
+    w.post("SendUserFile", &json!({}));
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Good (Recommended)", "Drop it"], "Review"),
+    );
+    assert_eq!(
+        w.state(),
+        TaskState::InReview,
+        "in review while the user looks"
+    );
+    assert!(
+        w.store.open_ask_of(&w.session).unwrap().is_some(),
+        "the ask waits"
+    );
+    w.post(
+        "AskUserQuestion",
+        &json!({ "answers": "Good (Recommended)" }),
+    );
+    assert_eq!(w.state(), TaskState::InReview, "still in review");
+    assert!(
+        !w.events().iter().any(|event| event.kind == "refused"),
+        "{:?}",
+        w.events()
+    );
+}
+
+#[test]
+fn no_push_is_demanded_right_after_the_user_typed() {
+    let mut w = world("enforce = true", false);
+    w.start();
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "<cross-session-message from-name=\"orchestrator\">go</cross-session-message>" }),
+    );
+    let after_message = w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Ship it (Recommended)", "Drop it"], "Ship"),
+    );
+    assert_eq!(
+        after_message.exit, 2,
+        "a session message does not put the user at the screen"
+    );
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    let after_prompt = w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Ship it (Recommended)", "Drop it"], "Ship"),
+    );
+    assert_eq!(
+        after_prompt,
+        HookReply::default(),
+        "the user just typed here"
+    );
+}
+
 #[test]
 fn the_stop_gate_wants_an_ask_or_a_report() {
     let mut w = world("", false);
@@ -556,11 +673,7 @@ fn a_session_end_during_close_leaves_the_task_closing() {
     let mut w = world("", true);
     w.start();
     w.store
-        .transition(
-            w.task.id,
-            &headwork_core::Trigger::ForceClose,
-            Actor::Orchestrator,
-        )
+        .transition(w.task.id, &Trigger::ForceClose, Actor::Orchestrator)
         .unwrap();
     w.hook(HookEvent::SessionEnd, &json!({ "reason": "other" }));
     assert_eq!(w.state(), TaskState::Closing, "close owns the task");
