@@ -545,3 +545,24 @@ and the reason.
   checks) becomes a `trust` tool ask with a blocked state whose buttons send the dialog's own keys, so the user, not
   headwork, answers it; an answer given through the store is carried out by sending the same key. Hooks do not run
   before trust, so only sessions still `starting` are read.
+- 2026-11-19, a grid of quarters. The user found the shape from splitting the first pane over and over uneven (two
+  eighths, a quarter, a half) and wants at most four panes, a 2x2 grid, none smaller than a quarter. What wmux 2.60 can
+  do, read from its renderer code and checked on a scratch workspace: `split` always splits the workspace's first leaf
+  pane (`__wmux_splitPane` takes `splitTree`'s first leaf, whatever surface calls it), right or `--down`; `layout agents
+  --count 1 --coordinator-ratio 0.5 --anchor-pane P --workspace W` splits any pane P side by side into equal halves and
+  keeps P's surfaces in the left half (count 1 always gives one column, so never top and bottom); `layout grid` first
+  gathers every pane's surfaces into its anchor, so it stays unused. There is still no command to move a surface, to
+  resize or equalize panes, or to add a shell tab to a given pane, and a pane whose last surface closes still leaves
+  the tree, its sibling taking the space. So the only 2x2 grid those splits reach is two rows of two (one top and
+  bottom split of the whole, then each row side by side); two columns of two would need a top and bottom split of the
+  right column. The progression is therefore: one worker the whole workspace, two top and bottom halves (not side by
+  side as first asked, since that shape can never become a grid), three the top half in quarters, four the bottom half
+  too. `core::layout::place` splits only when both halves stay at least half the workspace's width and height: the
+  largest such pane, a whole workspace top and bottom, the earlier pane on a tie; otherwise the worker stacks on the
+  pane with the fewest sessions, then the largest, then the later one. The fallback for closes, since the freed space
+  cannot be kept without an empty pane (which the user rejected on 2026-11-16) and no surface can move into it: the
+  neighbour takes the half, and the next worker splits it back, which restores the grid after any single close. When
+  both panes of a row close, the other row becomes two columns; the next worker then splits the left column top and
+  bottom, the right column is not cut into strips, and later workers stack as tabs until the workspace empties and the
+  grid starts over. A `panes` above 4 acts as 4. Workspaces already shaped by hand or by older builds are read as they
+  stand: their small panes are never split further, and new workers stack on their largest least busy pane.

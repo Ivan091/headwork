@@ -111,9 +111,9 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// Spawns six tasks into a workspace named `headwork-test` with bash as the launcher: each pane runs bash on the
-/// `launch` script the repository holds, which sleeps. Four split the workspace into four panes, the fifth stacks as a
-/// tab, a closing worker's pane goes, and the sixth splits a new one. Then every worker closes, one by one, and the
-/// workspace goes with the last.
+/// `launch` script the repository holds, which sleeps. Four fill the workspace as a grid of four equal quarters, the
+/// fifth stacks as a tab, a closing worker's pane goes, and the sixth splits the half its neighbour grew into back into
+/// quarters. Then every worker closes, one by one, and the workspace goes with the last.
 #[test]
 #[ignore = "drives the real wmux"]
 #[expect(
@@ -235,7 +235,13 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
         tree.contains("headwork-test-c"),
         "the pane carries its name, model and effort: {tree}"
     );
-    assert_eq!(split.len(), 4, "four panes: {split:?}");
+    let quarter = |cells: &[(usize, f64, f64)]| {
+        cells.len() == 4
+            && cells
+                .iter()
+                .all(|(_, w, h)| (w - 0.5).abs() < 1e-3 && (h - 0.5).abs() < 1e-3)
+    };
+    assert!(quarter(&split), "a grid of four quarters: {split:?}");
     let mut tabs: Vec<usize> = split.iter().map(|(n, _, _)| *n).collect();
     tabs.sort_unstable();
     assert_eq!(tabs, [1, 1, 1, 2], "the fifth child a tab: {split:?}");
@@ -247,10 +253,10 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
         "the sixth gets a pane"
     );
     assert_ne!(refill_row.host_pane, gone.host_pane, "a new pane");
-    assert_eq!(refilled.len(), 4, "split again: {refilled:?}");
+    assert!(quarter(&refilled), "the grid again: {refilled:?}");
     assert_eq!(
         left,
-        [4, 3, 2, 1, 0],
-        "the second's pane stays for the fifth, its tab; each other close takes a pane away"
+        [3, 2, 2, 1, 0],
+        "the fourth's pane stays for the fifth, its tab; each other close takes a pane away"
     );
 }

@@ -440,7 +440,8 @@ pub enum LayoutMode {
 pub struct LayoutConfig {
     /// Panes or tabs.
     pub mode: LayoutMode,
-    /// The most panes headwork splits a workspace into before workers stack as tabs.
+    /// The most panes headwork splits a workspace into before workers stack as tabs; above 4 it acts as 4, since no pane
+    /// is cut smaller than a quarter.
     pub panes: NonZeroU32,
     /// The title of a worker's pane or tab. `{name}` is `<project>-<slug>`, `{model}` the model, `{effort}` the effort
     /// word, or `?` when it is unknown.

@@ -230,6 +230,36 @@ fn split_runs_as_the_surface_beside_it() {
 }
 
 #[test]
+fn split_pane_anchors_layout_agents_on_the_pane() {
+    let recorder = Recorder::answering(&[
+        r#"{"newPaneIds": ["pane-3"], "newPanes": [{"paneId": "pane-3", "surfaceId": "surf-4"}], "anchorPaneId": "pane-2"}"#,
+        r#"{"newPaneIds": [], "newPanes": []}"#,
+    ]);
+    let host = Wmux::new(&recorder);
+    let workspace = WorkspaceId("ws-1".to_owned());
+    let (pane, shell) = host
+        .split_pane(&workspace, &PaneId("pane-2".to_owned()))
+        .unwrap();
+    assert_eq!(
+        (pane.as_str(), shell.as_str()),
+        ("pane-3", "surf-4"),
+        "new pane"
+    );
+    assert!(
+        host.split_pane(&workspace, &PaneId("pane-2".to_owned()))
+            .is_err(),
+        "no pane opened is an error"
+    );
+    assert_eq!(
+        recorder.calls.borrow().first().map(String::as_str),
+        Some(
+            "layout agents --count 1 --coordinator-ratio 0.5 --anchor-pane pane-2 --workspace ws-1"
+        ),
+        "commands"
+    );
+}
+
+#[test]
 fn keys_blocked_states_and_closes_name_the_surface() {
     let recorder = Recorder::default();
     let host = Wmux::new(&recorder);

@@ -292,13 +292,27 @@ pub trait TerminalHost: fmt::Debug {
     fn layout(&self, workspace: &WorkspaceId) -> Result<PaneTree, HostError>;
 
     /// Splits the first pane of the workspace that holds `beside` in two, side by side or `down`, and returns the new
-    /// pane with the shell surface it opened. Other panes keep their surfaces. wmux can split no other pane, and for
-    /// a surface it does not know it splits the workspace the user looks at.
+    /// pane with the shell surface it opened. Other panes keep their surfaces. wmux's `split` reaches no other pane
+    /// ([`TerminalHost::split_pane`] does, side by side only), and for a surface it does not know it splits the
+    /// workspace the user looks at.
     ///
     /// # Errors
     ///
     /// Returns the host's failure.
     fn split(&self, beside: &SurfaceId, down: bool) -> Result<(PaneId, SurfaceId), HostError>;
+
+    /// Splits `pane` of `workspace` side by side into equal halves and returns the new right pane with the shell
+    /// surface it opened. The pane keeps its surfaces in the left half; other panes keep theirs. wmux does this for
+    /// any pane (`layout agents --count 1 --coordinator-ratio 0.5 --anchor-pane`), but only side by side.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's failure.
+    fn split_pane(
+        &self,
+        workspace: &WorkspaceId,
+        pane: &PaneId,
+    ) -> Result<(PaneId, SurfaceId), HostError>;
 
     /// Closes a pane with its surfaces.
     ///

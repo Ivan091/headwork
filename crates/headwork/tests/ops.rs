@@ -478,12 +478,21 @@ fn four_workers_split_into_four_panes_and_the_fifth_stacks_as_a_tab() {
     assert_eq!(panes.len(), 4, "four different panes: {places:?}");
     assert_eq!(
         layout_of(&w),
-        [(1, 0.25, 0.5), (1, 0.25, 0.5), (1, 0.5, 0.5), (2, 0.5, 1.0)],
-        "the first pane split three times, the fifth child a tab of the last pane"
+        [(1, 0.5, 0.5), (1, 0.5, 0.5), (1, 0.5, 0.5), (2, 0.5, 0.5)],
+        "a grid of four equal quarters, the fifth worker a tab of the last"
     );
     let calls = w.host.calls();
-    let splits = calls.iter().filter(|c| c.starts_with("split ")).count();
-    assert_eq!(splits, 3, "one split per worker after the first: {calls:?}");
+    let splits: Vec<&String> = calls.iter().filter(|c| c.starts_with("split")).collect();
+    assert_eq!(
+        splits.len(),
+        3,
+        "one split per worker after the first: {calls:?}"
+    );
+    assert!(
+        splits.first().unwrap().ends_with(" down")
+            && splits.last().unwrap().starts_with("split-pane "),
+        "top and bottom first, the bottom half split last: {splits:?}"
+    );
 }
 
 fn spawned_placeholders(w: &World) -> usize {
@@ -539,7 +548,7 @@ fn a_close_beside_a_busy_pane_leaves_no_placeholder_and_the_next_spawn_splits_ag
         w.host
             .calls()
             .iter()
-            .filter(|c| c.starts_with("split "))
+            .filter(|c| c.starts_with("split"))
             .count()
     };
     let before = splits(&w);
@@ -708,7 +717,7 @@ fn a_limit_of_two_panes_stacks_the_third() {
     }
     assert_eq!(
         layout_of(&w),
-        [(1, 0.5, 1.0), (2, 0.5, 1.0)],
+        [(1, 1.0, 0.5), (2, 1.0, 0.5)],
         "two panes, the third a tab"
     );
 }

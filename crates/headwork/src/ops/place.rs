@@ -1,9 +1,11 @@
 //! Where a worker's pane opens in its project's workspace, and how it goes when the worker closes (`[layout]`).
 //!
-//! In `panes` mode each worker gets a pane of its own, up to `layout.panes`; later workers stack as tabs. A worker
-//! takes a free pane when there is one (a fresh workspace's shell, a pane the user left), else splits the workspace's
-//! first pane, the only split wmux does; no empty pane is cut ahead of time. A closing worker's surface closes, and
-//! when it was its pane's last the pane leaves the layout and its neighbours take the space; the workspace closes once
+//! In `panes` mode each worker gets a pane of its own, up to `layout.panes` and never smaller than a quarter of the
+//! workspace, so at most a grid of two rows of two; later workers stack as tabs. A worker takes a free pane when there
+//! is one (a fresh workspace's shell, a pane the user left), else splits one in half: the first pane top and bottom or
+//! side by side (`split`), any other side by side (`split_pane`), as wmux allows; no empty pane is cut ahead of time.
+//! A closing worker's surface closes, and when it was its pane's last the pane leaves the layout and its neighbours
+//! take the space; the workspace closes once
 //! nothing in it holds a session. The choice is [`headwork_core::layout::place`]; this module reads the workspace from
 //! the host as it is now, so panes the user closed or rearranged by hand count as they stand. Workers already open
 //! are never moved, and a pane that still holds a session (another worker's tab, the orchestrator) never closes.
@@ -177,15 +179,22 @@ fn pane(store: &Store, env: &Env<'_>, workspace: &WorkspaceId) -> Result<(Target
             || stacked(None),
             |free| (into(free, replace_tab), PlaceKind::Pane),
         ),
-        Some(Placement::Split { down }) => {
+        Some(Placement::Split { cell: 0, down }) => {
             let first = cells.first();
             let anchor = first.and_then(|cell| cell.surfaces.first());
             match anchor {
-                Some(anchor) => split_beside(env.host, workspace, anchor, down)?
+                Some(anchor) => split_first(env.host, workspace, anchor, down)?
                     .map_or_else(|| stacked(first), own),
                 None => stacked(first),
             }
         }
+        Some(Placement::Split { cell, .. }) => match cells.get(cell) {
+            Some(found) => {
+                let (pane, _shell) = env.host.split_pane(workspace, &found.pane)?;
+                own(pane)
+            }
+            None => stacked(None),
+        },
         Some(Placement::Stack { cell }) => stacked(cells.get(cell)),
         None => stacked(None),
     })
@@ -194,7 +203,7 @@ fn pane(store: &Store, env: &Env<'_>, workspace: &WorkspaceId) -> Result<(Target
 /// Splits the first pane of `workspace` and returns the new pane. wmux splits in the workspace of the surface it is
 /// run from and, for a surface it does not know, in whatever workspace the user looks at; so a new pane that did not
 /// land in `workspace` is closed again and `None` returned.
-fn split_beside(
+fn split_first(
     host: &dyn TerminalHost,
     workspace: &WorkspaceId,
     anchor: &SurfaceId,
