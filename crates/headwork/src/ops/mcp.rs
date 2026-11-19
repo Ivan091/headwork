@@ -252,6 +252,22 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "helper_tab",
+        description: "Open a short-lived helper agent session (a separate program shown in wmux, such as `claude -p ...`) as a 
+                      new tab in your own workspace, never a new workspace or a split. It closes with your workspace. 
+                      In-process subagents (the Agent tool) need no tab.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "argv": { "type": "array", "items": { "type": "string" }, "description": "The command line, program first." },
+                    "cwd": { "type": "string", "description": "The folder to run in; your folder when absent." },
+                }),
+                &["argv"],
+            )
+        },
+    },
+    ToolDef {
         name: "job_status",
         description: "The registered jobs that are not over: your own for a worker, all for the orchestrator.",
         roles: BOTH,
@@ -506,6 +522,7 @@ impl<'a> Server<'a> {
                     &registration,
                 )?)
             }
+            "helper_tab" => self.helper_tab(&session, args),
             "job_status" => self.job_status(&session, role),
             "job_stop" => {
                 let task = self.own_task(&session)?;
@@ -545,6 +562,32 @@ impl<'a> Server<'a> {
             "parking": parking,
             "next": next,
         }))
+    }
+
+    fn helper_tab(&self, session: &str, args: &Value) -> Result<String> {
+        let task = self.own_task(session)?;
+        let registration = registration(&json!({
+            "label": "helper",
+            "argv": args.get("argv").cloned().unwrap_or(Value::Null),
+            "cwd": args.get("cwd").cloned().unwrap_or(Value::Null),
+        }))?;
+        if registration.argv.is_empty() {
+            bail!("`argv` is empty: name the program to run");
+        }
+        let (row, _) = self
+            .store
+            .session(session)?
+            .ok_or_else(|| anyhow!("this session is not in headwork's store"))?;
+        let workspace = row
+            .host_workspace
+            .map(headwork_adapters::host::WorkspaceId)
+            .ok_or_else(|| anyhow!("this session has no workspace recorded"))?;
+        let dir = match registration.cwd {
+            Some(cwd) => std::path::PathBuf::from(cwd),
+            None => self.env.task_dir(&task)?,
+        };
+        let surface = super::place::open_helper(&self.env, &workspace, &dir, &registration.argv)?;
+        to_text(&json!({ "surface": surface.as_str(), "workspace": workspace.as_str() }))
     }
 
     fn job_register(&mut self, session: &str, task: &Task, args: &Value) -> Result<String> {

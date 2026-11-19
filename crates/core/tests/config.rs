@@ -332,6 +332,17 @@ fn layout_takes_a_mode_and_a_pane_count() {
     .unwrap();
     assert_eq!(config.layout.mode, LayoutMode::Tabs, "tabs");
     assert_eq!(config.layout.panes.get(), 2, "two panes");
+    let config = Config::parse(
+        "[machine]
+host = \"wmux\"
+
+[layout]
+mode = \"workspaces\"
+",
+        "layout",
+    )
+    .unwrap();
+    assert_eq!(config.layout.mode, LayoutMode::Workspaces, "workspaces");
     for bad in ["mode = \"grid\"", "panes = 0", "columns = 2"] {
         let text = format!("[machine]\nhost = \"wmux\"\n\n[layout]\n{bad}\n");
         assert!(Config::parse(&text, "layout").is_err(), "{bad} is refused");

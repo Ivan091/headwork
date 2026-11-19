@@ -260,3 +260,124 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
         "the fourth's pane stays for the fifth, its tab; each other close takes a pane away"
     );
 }
+
+type Shape = Vec<(usize, f64, f64)>;
+
+fn open_two(layout: &str) -> Vec<(String, Shape)> {
+    let host = Wmux::new(Cli::locate(None));
+    host.ping().unwrap();
+    assert!(
+        host.workspaces()
+            .unwrap()
+            .iter()
+            .all(|w| w.title != "headwork-test"),
+        "a workspace named headwork-test is already open"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("demo");
+    std::fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-q", "-b", "master"]);
+    std::fs::write(main.join("launch"), "sleep 300\n").unwrap();
+    git(&main, &["add", "launch"]);
+    git(&main, &["commit", "-q", "-m", "init"]);
+    let text = format!(
+        "[machine]\nhost = \"wmux\"\n\n[layout]\n{layout}\n\n[project.headwork-test]\nmain = \"{main}\"\n\
+         worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
+         deliver = \"pr\"\nmerge = \"deliver\"\n",
+        main = main.display().to_string().replace('\\', "/"),
+        layout = layout
+    );
+    let config = Config::parse(&text, "live").unwrap();
+    let home = Home::at(Some(dir.path().join("home")))
+        .unwrap()
+        .with_claude_json(dir.path().join(".claude.json"));
+    let mut store = home.open_store().unwrap();
+    store.sync_projects(&config).unwrap();
+    let brief = dir.path().join("brief.md");
+    std::fs::write(&brief, "Sleep.\n").unwrap();
+    std::fs::write(home.root().join("idle"), "sleep 300\n").unwrap();
+    let env = Env {
+        home: &home,
+        config: &config,
+        host: &host,
+        exe: Path::new("C:/Progra~1/Git/usr/bin/bash.exe"),
+        actor: Actor::User,
+    };
+    for slug in ["a", "b"] {
+        let request = SpawnRequest {
+            request: TaskRequest {
+                project: ProjectName::new("headwork-test").unwrap(),
+                slug: Slug::new(slug).unwrap(),
+                kind: "task".to_owned(),
+                model: Some(Model::Haiku),
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief: &brief,
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+        };
+        spawn(&mut store, &env, &request).unwrap();
+    }
+    let found: Vec<_> = host
+        .workspaces()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.title.starts_with("headwork-test"))
+        .collect();
+    let out = found
+        .iter()
+        .map(|w| {
+            let shape = host
+                .layout(&w.id)
+                .unwrap()
+                .cells()
+                .into_iter()
+                .map(|cell| (cell.surfaces.len(), cell.width, cell.height))
+                .collect();
+            (w.title.clone(), shape)
+        })
+        .collect();
+    for w in &found {
+        host.close_workspace(&w.id).unwrap();
+    }
+    out
+}
+
+#[test]
+#[ignore = "drives the real wmux"]
+fn two_panes_sit_side_by_side_in_the_real_host() {
+    let found = open_two(
+        "mode = \"panes\"
+panes = 2",
+    );
+    assert_eq!(found.len(), 1, "one workspace: {found:?}");
+    let shape = &found[0].1;
+    assert_eq!(shape.len(), 2, "two panes: {shape:?}");
+    assert!(
+        shape
+            .iter()
+            .all(|(_, w, h)| (w - 0.5).abs() < 1e-3 && (h - 1.0).abs() < 1e-3),
+        "left and right halves: {shape:?}"
+    );
+}
+
+#[test]
+#[ignore = "drives the real wmux"]
+fn each_worker_gets_a_workspace_of_its_own_in_the_real_host() {
+    let found = open_two("mode = \"workspaces\"");
+    let mut titles: Vec<&str> = found.iter().map(|(t, _)| t.as_str()).collect();
+    titles.sort_unstable();
+    assert_eq!(
+        titles,
+        ["headwork-test-a", "headwork-test-b"],
+        "a workspace per task: {found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .all(|(_, shape)| shape.len() == 1 && shape[0].0 == 1),
+        "one pane with one surface each: {found:?}"
+    );
+}

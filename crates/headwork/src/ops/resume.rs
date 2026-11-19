@@ -319,7 +319,9 @@ fn open_pane(
 ) -> Result<String> {
     let main = env.main_path(task)?;
     super::trust::before_start(store, env, task)?;
-    let (workspace, fresh) = env.host.ensure_workspace(task.project().as_str(), &main)?;
+    let (workspace, fresh) = env
+        .host
+        .ensure_workspace(&place::workspace_title(env, task), &main)?;
     let mut argv = vec![
         env.exe.display().to_string(),
         "launch".to_owned(),

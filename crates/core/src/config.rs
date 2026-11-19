@@ -432,13 +432,15 @@ pub enum LayoutMode {
     Panes,
     /// Every worker is a tab, as the host places it.
     Tabs,
+    /// Every worker gets a workspace of its own, named after the task, holding one full-screen pane.
+    Workspaces,
 }
 
 /// `[layout]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LayoutConfig {
-    /// Panes or tabs.
+    /// Panes, tabs or one workspace per worker.
     pub mode: LayoutMode,
     /// The most panes headwork splits a workspace into before workers stack as tabs; above 4 it acts as 4, since no pane
     /// is cut smaller than a quarter.

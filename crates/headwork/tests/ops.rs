@@ -717,8 +717,34 @@ fn a_limit_of_two_panes_stacks_the_third() {
     }
     assert_eq!(
         layout_of(&w),
-        [(1, 1.0, 0.5), (2, 1.0, 0.5)],
-        "two panes, the third a tab"
+        [(1, 0.5, 1.0), (2, 0.5, 1.0)],
+        "two panes side by side, the third a tab"
+    );
+}
+
+#[test]
+fn workspaces_mode_gives_each_worker_a_workspace() {
+    let mut w = world_with(
+        10,
+        "builtin",
+        "
+[layout]
+mode = \"workspaces\"
+",
+    );
+    for slug in ["a", "b"] {
+        w.spawn(&format!("task-{slug}"), false);
+    }
+    let calls = w.host.calls();
+    assert!(calls.iter().all(|c| !c.starts_with("split ")), "{calls:?}");
+    let created: Vec<&String> = calls
+        .iter()
+        .filter(|c| c.starts_with("new-workspace "))
+        .collect();
+    assert_eq!(created.len(), 2, "a workspace per task: {calls:?}");
+    assert!(
+        created.iter().all(|c| c.contains("-task-")),
+        "named after the task: {created:?}"
     );
 }
 

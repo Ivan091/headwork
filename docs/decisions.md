@@ -566,3 +566,21 @@ and the reason.
   bottom, the right column is not cut into strips, and later workers stack as tabs until the workspace empties and the
   grid starts over. A `panes` above 4 acts as 4. Workspaces already shaped by hand or by older builds are read as they
   stand: their small panes are never split further, and new workers stack on their largest least busy pane.
+- 2026-11-19, two panes side by side. The user set `panes = 2` and wants a vertical divider, left and right halves, not
+  top and bottom. Columns first cannot become the 2x2 grid: wmux splits only the first pane top and bottom, so after
+  left and right the right column could be cut only into narrow strips, and a 2x2 grid is reachable only rows first.
+  So `core::layout::place` splits side by side when `max_panes` is 2 or less, and keeps rows first for 3 and 4. No
+  config key: the limit decides the direction, which leaves `panes = 4` and its grid unchanged. With two panes the
+  second worker splits the first pane side by side, later workers stack on the pane with the fewest sessions, a closed
+  worker's pane goes and the other takes the whole workspace, and the next worker splits it side by side again.
+- 2026-11-19, one workspace per worker. The user then preferred one agent per workspace, full screen, over two panes
+  side by side. `[layout] mode = "workspaces"` opens each worker in a workspace titled with the task's name
+  (`<project>-<slug>`), created fresh with one pane whose shell the worker replaces; nothing splits and nothing stacks, so
+  `core::layout::place` is not used. The session records the pane (`PlaceKind::Pane`) and its own workspace, so board,
+  tick, retitle, park and resume read it as they read any pane; resume reopens it by the same title. Release closes
+  the workspace when no other surface in it holds a session, as `panes` mode does, so a worker opened in a shared
+  project workspace before the switch still leaves that workspace to its neighbours. `panes` and `tabs` are unchanged,
+  and the side-by-side rule for `panes = 2` stays (it is small and costs nothing). A worker's own helper agent session is
+  opened by the worker MCP tool `helper_tab` as a new tab (`Target::Tab`) of the worker's recorded workspace, labelled
+  `headwork:helper`; release ignores helper surfaces when deciding whether the workspace is still busy, so the
+  workspace closes with its worker. The worker rules say to use it.
