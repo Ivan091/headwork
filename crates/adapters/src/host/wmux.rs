@@ -175,6 +175,20 @@ struct SplitAnswer {
     surface_id: String,
 }
 
+/// What `wmux layout agents` answers: the panes it opened beside the anchor, each with its shell.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LayoutAnswer {
+    new_panes: Vec<NewPane>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewPane {
+    pane_id: String,
+    surface_id: Option<String>,
+}
+
 /// Parses `wmux tree --workspace`. wmux calls a split whose parts sit side by side `horizontal` and one whose parts
 /// are stacked `vertical`.
 ///
@@ -433,6 +447,37 @@ impl<R: Runner> TerminalHost for Wmux<R> {
                 source,
             })?;
         Ok((PaneId(answer.pane_id), SurfaceId(answer.surface_id)))
+    }
+
+    fn split_pane(
+        &self,
+        workspace: &WorkspaceId,
+        pane: &PaneId,
+    ) -> Result<(PaneId, SurfaceId), HostError> {
+        let args = [
+            "layout",
+            "agents",
+            "--count",
+            "1",
+            "--coordinator-ratio",
+            "0.5",
+            "--anchor-pane",
+            pane.as_str(),
+            "--workspace",
+            workspace.as_str(),
+        ];
+        let text = self.runner.run(&args)?;
+        let answer: LayoutAnswer =
+            serde_json::from_str(&text).map_err(|source| HostError::Parse {
+                command: args.join(" "),
+                source,
+            })?;
+        answer
+            .new_panes
+            .into_iter()
+            .next()
+            .and_then(|new| Some((PaneId(new.pane_id), SurfaceId(new.surface_id?))))
+            .ok_or_else(|| HostError::Missing(format!("`{}` opened no pane", args.join(" "))))
     }
 
     fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {

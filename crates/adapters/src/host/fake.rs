@@ -1,7 +1,8 @@
 //! A terminal host in memory that records every call, for tests of spawn, close and import.
 //!
-//! Each workspace holds a [`PaneTree`]: a new workspace is one empty pane, a split halves a pane and opens a shell in
-//! the new half, and a pane whose last surface closes leaves the tree, its sibling taking its place, as in wmux.
+//! Each workspace holds a [`PaneTree`]: a new workspace is one empty pane, a split halves a pane (the first one, or any
+//! pane side by side) and opens a shell in the new half, and a pane whose last surface closes leaves the tree, its
+//! sibling taking its place, as in wmux.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -335,6 +336,44 @@ impl TerminalHost for FakeHost {
         let direction = if down { "down" } else { "right" };
         state.calls.push(format!("split {beside} {direction}"));
         Ok((pane, shell))
+    }
+
+    fn split_pane(
+        &self,
+        workspace: &WorkspaceId,
+        pane: &PaneId,
+    ) -> Result<(PaneId, SurfaceId), HostError> {
+        let mut state = self.state.borrow_mut();
+        let new = PaneId(state.id("pane"));
+        let shell = SurfaceId(state.id("surf"));
+        let tree = state
+            .trees
+            .iter_mut()
+            .find(|(ws, _)| ws == workspace)
+            .map(|(_, tree)| tree)
+            .ok_or_else(|| HostError::Missing(format!("no workspace {workspace}")))?;
+        let found = leaf_mut(tree, &|id, _| id == pane)
+            .ok_or_else(|| HostError::Missing(format!("no pane {pane}")))?;
+        let old = std::mem::replace(
+            found,
+            PaneTree::Leaf {
+                pane: PaneId(String::new()),
+                surfaces: Vec::new(),
+            },
+        );
+        *found = PaneTree::Split {
+            down: false,
+            ratio: 0.5,
+            parts: vec![
+                old,
+                PaneTree::Leaf {
+                    pane: new.clone(),
+                    surfaces: vec![shell.clone()],
+                },
+            ],
+        };
+        state.calls.push(format!("split-pane {pane} right"));
+        Ok((new, shell))
     }
 
     fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {

@@ -84,14 +84,20 @@ It only reports until `[hooks] enforce = true`. A windowless build (no console f
 ### Panes
 
 `[layout]` in `config.toml` decides where a worker opens in its project's workspace. The default, `mode = "panes"` with
-`panes = 4`, gives each worker its own pane: a worker takes a free pane when there is one, else splits the workspace's
-first pane (the only split wmux does), and a fifth stacks as a tab. No empty pane is cut ahead of time. A worker that
-closes takes its pane away, and the panes beside it take the space; the workspace closes with its last worker. A pane
-that still holds a session (a stacked worker, the orchestrator) stays. `mode = "tabs"` keeps every worker a tab.
-Workers already open are never moved (wmux cannot move a surface). `headwork board` prints each session's pane, or that
-it is a tab. Why it works this way is in `docs/decisions.md` (2026-11-14, split panes; 2026-11-16, panes close with
-their worker). Run the real check with `cargo test -p headwork --test live -- --ignored`; it opens and closes
-`headwork-test` workspaces.
+`panes = 4`, gives each worker its own pane, at most a grid of four equal quarters, two rows of two, and never a pane
+smaller than a quarter: the first worker holds the whole workspace, the second takes the bottom half, the third the top
+right quarter, the fourth the bottom right; a fifth and later stack as tabs on the pane with the fewest sessions (then
+the largest, then the later one). Rows, not columns, because wmux splits only the first pane top and bottom; any other
+pane it splits only side by side (`layout agents --anchor-pane`). A worker takes a free pane when there is one, and no
+empty pane is cut ahead of time. A worker that closes takes its pane away and the pane beside it takes the space; the
+next worker splits that half back into quarters. When both workers of a row close, the other row grows into two
+columns; then the next worker splits the left column, and the right one is never cut into narrow strips, so further
+workers stack until the workspace empties. The workspace closes with its last worker. A pane that still holds a session
+(a stacked worker, the orchestrator) stays. `mode = "tabs"` keeps every worker a tab. Workers already open are never
+moved (wmux cannot move a surface). The pure choice is `core/src/layout.rs`. `headwork board` prints each session's
+pane, or that it is a tab. Why it works this way is in `docs/decisions.md` (2026-11-14, split panes; 2026-11-16, panes
+close with their worker; 2026-11-19, a grid of quarters). Run the real check with
+`cargo test -p headwork --test live -- --ignored`; it opens and closes `headwork-test` workspaces.
 
 ### Pane titles
 
