@@ -224,6 +224,26 @@ pub struct Scope {
     pub places: Places,
     /// User-only commands the user allowed for this task in an `Allow` ask.
     pub allowed_user_only: Vec<String>,
+    /// A worker's project main checkout, which it may fast-forward with `git pull --ff-only` after a merge.
+    pub main_checkout: Option<GuardPath>,
+    /// A worker may run `headwork install`: its project is headwork itself.
+    pub may_install: bool,
+    /// Notes repositories the orchestrator may commit and push in.
+    pub orchestrator_repos: Vec<GuardPath>,
+    /// Folders inside those repositories that hold project checkouts, where the orchestrator still owns no git.
+    pub orchestrator_repo_excludes: Vec<GuardPath>,
+}
+
+impl Scope {
+    fn in_orchestrator_repo(&self, folder: &GuardPath) -> bool {
+        self.orchestrator_repos
+            .iter()
+            .any(|repo| folder.is_within(repo))
+            && !self
+                .orchestrator_repo_excludes
+                .iter()
+                .any(|excluded| folder.is_within(excluded))
+    }
 }
 
 /// Decides a tool call by the session's role.
@@ -274,27 +294,25 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
     }
 }
 
-/// Checks each simple command of a line in turn. For a worker it follows `cd` and `pushd`, so a git command sees the
-/// folder it runs in; `None` is a folder the guard cannot tell, such as after `cd -` or `popd`.
+/// Checks each simple command of a line in turn. It follows `cd` and `pushd`, so a git command sees the folder it runs
+/// in; `None` is a folder the guard cannot tell, such as after `cd -` or `popd`.
 fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decision {
     let mut cwd = Some(scope.cwd.clone());
     for command in commands(line) {
-        let decision = match role {
-            Role::Orchestrator => check_orchestrator_command(scope, &command),
-            Role::Worker => {
-                match command.program_name().as_str() {
-                    "cd" | "pushd" => {
-                        cwd = cwd.and_then(|cwd| changed_dir(&scope.places, &cwd, &command));
-                        continue;
-                    }
-                    "popd" => {
-                        cwd = None;
-                        continue;
-                    }
-                    _ => {}
-                }
-                check_worker_command(scope, &command, cwd.as_deref(), background)
+        match command.program_name().as_str() {
+            "cd" | "pushd" => {
+                cwd = cwd.and_then(|cwd| changed_dir(&scope.places, &cwd, &command));
+                continue;
             }
+            "popd" => {
+                cwd = None;
+                continue;
+            }
+            _ => {}
+        }
+        let decision = match role {
+            Role::Orchestrator => check_orchestrator_command(scope, &command, cwd.as_deref()),
+            Role::Worker => check_worker_command(scope, &command, cwd.as_deref(), background),
         };
         if decision != Decision::Allow {
             return decision;
@@ -336,7 +354,11 @@ fn user_only(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
         })
 }
 
-fn check_orchestrator_command(scope: &Scope, command: &SimpleCommand) -> Decision {
+fn check_orchestrator_command(
+    scope: &Scope,
+    command: &SimpleCommand,
+    cwd: Option<&str>,
+) -> Decision {
     if let Some(decision) = user_only(scope, command) {
         return decision;
     }
@@ -344,6 +366,8 @@ fn check_orchestrator_command(scope: &Scope, command: &SimpleCommand) -> Decisio
     if name == "git"
         && let Some((sub, _)) = git_subcommand(command)
         && ORCHESTRATOR_GIT.contains(&sub.as_str())
+        && !git_folder(scope, command, cwd)
+            .is_some_and(|folder| scope.in_orchestrator_repo(&folder))
     {
         return Decision::deny(
             RuleId::OrchestratorGit,
@@ -445,6 +469,9 @@ fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
     {
         return None;
     }
+    if sub == "install" && scope.may_install {
+        return None;
+    }
     Some(Decision::deny(
         RuleId::WorkerAdmin,
         format!(
@@ -479,8 +506,9 @@ fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
     }
 }
 
-/// A worker's git write against a folder outside its writable folders. The folder is the command's working folder
-/// with each `-C` applied in turn, as git stacks them; `--git-dir` and `--work-tree` leave it unknown and allowed.
+/// A worker's git write against a folder outside its writable folders ([`git_folder`]; an unknown folder is allowed).
+/// A fast-forward of the project's main checkout (`git pull --ff-only`) is allowed, as the ship flow does after a
+/// merge.
 fn check_git_outside(
     scope: &Scope,
     command: &SimpleCommand,
@@ -491,6 +519,32 @@ fn check_git_outside(
     if !is_git_write(sub, args) {
         return None;
     }
+    let folder = git_folder(scope, command, cwd)?;
+    if scope.writable.iter().any(|root| folder.is_within(root)) {
+        return None;
+    }
+    let fast_forward = sub == "pull" && args.iter().any(|arg| arg == "--ff-only");
+    if fast_forward
+        && scope
+            .main_checkout
+            .as_ref()
+            .is_some_and(|main| folder.is_within(main))
+    {
+        return None;
+    }
+    Some(Decision::deny(
+        RuleId::WorkerGitOutside,
+        format!(
+            "`git {sub}` would change {folder}, outside this task's folder ({}); change only your own worktree, or \
+             ask the orchestrator (session `{ORCHESTRATOR_ADDRESS}`)",
+            scope.cwd
+        ),
+    ))
+}
+
+/// The folder a git command acts on: its working folder with each `-C` applied in turn, as git stacks them. `None`
+/// when it cannot be told: an unknown working folder, or `--git-dir` and `--work-tree`.
+fn git_folder(scope: &Scope, command: &SimpleCommand, cwd: Option<&str>) -> Option<GuardPath> {
     let mut folder = scope.places.resolve(&scope.cwd, cwd?);
     let mut words = command.args().iter();
     while let Some(word) = words.next() {
@@ -506,17 +560,7 @@ fn check_git_outside(
             _ => break,
         }
     }
-    if scope.writable.iter().any(|root| folder.is_within(root)) {
-        return None;
-    }
-    Some(Decision::deny(
-        RuleId::WorkerGitOutside,
-        format!(
-            "`git {sub}` would change {folder}, outside this task's folder ({}); change only your own worktree, or \
-             ask the orchestrator (session `{ORCHESTRATOR_ADDRESS}`)",
-            scope.cwd
-        ),
-    ))
+    Some(folder)
 }
 
 /// Whether a git subcommand with these arguments changes a repository; listings and reads do not.

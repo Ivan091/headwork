@@ -636,3 +636,18 @@ and the reason.
   hook records a `user-only-allowed` event per configured pattern that command runs, and the guard skips those patterns
   for that task only. The event log holds the approvals, so no migration was needed (and none could clash with another
   branch's numbered migration).
+- 2026-11-19 Lead worktrees (second audit, `lead-worktrees`; the user chose "registered helpers"). A worker makes a helper
+  worktree with the MCP tool `worktree_add <slug>`: the project's `worktree_new` command at the folder `worktree_path`
+  gives that slug, branch = slug, recorded in `worktrees` with `helper = 1` (migration 0012) so `worktree_of` still means
+  the task's own. Helpers are writable for their task only; `finish` removes them with `worktree_remove`, else without
+  force when pristine, and a helper that holds work stays, logged `helper-worktree-refused`, never holding up the close
+  (the task's own worktree keeps its stricter rule). Subagent worktrees (`<main>/.claude/worktrees`, where Claude Code
+  puts `isolation: "worktree"` agents) are writable for every worker of the project: they are made per call and cannot be
+  registered. A worker may fast-forward its project's main checkout with `git pull --ff-only` (the ship flow's sync); any
+  other git write there stays `worker-git-outside`. The "install kind" is a project flag, `install = true`, rather than a
+  task kind, because the worker that merged a headwork change is the one that installs it; only `headwork install` is
+  lifted, every other admin command stays the orchestrator's. The orchestrator notes repository is
+  `[hooks] orchestrator_repos`: `orchestrator-git` is lifted for a git command whose folder (after `cd` and `-C`, now
+  tracked for the orchestrator too) lies inside one, except inside a project's folder there (the folder above its main
+  checkout, or the main checkout when that folder is the repository itself). Edits there still come from
+  `orchestrator_writable`. All defaults are empty, so the live config must name them.

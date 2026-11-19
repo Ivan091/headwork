@@ -319,6 +319,10 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     Ok(HookReply::context(HookEvent::UserPromptSubmit, &text))
 }
 
+/// Where Claude Code puts the worktrees of `Agent` subagents started with `isolation: "worktree"`, under the main
+/// checkout; a worker may write them for its project.
+const SUBAGENT_WORKTREES: &str = ".claude/worktrees";
+
 /// The guard's view of the calling session.
 ///
 /// # Errors
@@ -375,16 +379,27 @@ pub fn scope_for(
             }
             scope.scripts.sort();
             scope.scripts.dedup();
+            (scope.orchestrator_repos, scope.orchestrator_repo_excludes) = notes_repos(env);
         }
         Role::Worker => {
             if let Some(task) = task {
                 if let Some(dir) = task_dir(store, env, task)? {
                     writable.push(GuardPath::new(&slashed(&dir)));
                 }
+                writable.extend(
+                    store
+                        .helper_worktrees(task.id)?
+                        .iter()
+                        .map(|helper| GuardPath::new(&slashed(Path::new(&helper.path)))),
+                );
                 scope.fable_allowed = store.fable_allowed(task.id)?;
                 scope.allowed_user_only = store.user_only_allowed(task.id)?;
                 scope.task_name = Some(task.name.to_string());
                 if let Some(project) = config.project(task.project()) {
+                    let main = env.home.expand(&project.main);
+                    writable.push(GuardPath::new(&slashed(&main.join(SUBAGENT_WORKTREES))));
+                    scope.main_checkout = Some(GuardPath::new(&slashed(&main)));
+                    scope.may_install = project.install;
                     scope.read_only = project
                         .read_only_paths
                         .iter()
@@ -412,6 +427,34 @@ pub fn scope_for(
     scope.user_only = config.all_user_only();
     scope.writable = writable;
     Ok(scope)
+}
+
+/// The notes repositories the orchestrator may commit in, and the project folders inside them it may not.
+fn notes_repos(env: &HookEnv<'_>) -> (Vec<GuardPath>, Vec<GuardPath>) {
+    let repos: Vec<GuardPath> = env
+        .config
+        .hooks
+        .orchestrator_repos
+        .iter()
+        .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
+        .collect();
+    let excludes = env
+        .config
+        .projects
+        .values()
+        .map(|project| project_folder(&env.home.expand(&project.main), &repos))
+        .collect();
+    (repos, excludes)
+}
+
+/// The folder that holds a project's checkouts inside a notes repository: the folder above its main checkout, where
+/// task worktrees sit beside it, unless that is a notes repository itself; then the main checkout alone.
+fn project_folder(main: &Path, repos: &[GuardPath]) -> GuardPath {
+    let checkout = GuardPath::new(&slashed(main));
+    main.parent()
+        .map(|parent| GuardPath::new(&slashed(parent)))
+        .filter(|parent| !repos.iter().any(|repo| repo == parent))
+        .unwrap_or(checkout)
 }
 
 fn first_word(command: &str) -> Option<String> {

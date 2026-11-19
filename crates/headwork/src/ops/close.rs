@@ -378,6 +378,7 @@ fn finish_claimed(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseR
     finalize_jobs(store, env, id)?;
     let worktree = if processes_gone {
         store.end_task_sessions(id, env.actor)?;
+        super::helpers::remove_all(store, env, id)?;
         remove_worktree(store, env, id, false)?
     } else {
         WorktreeEnd::Present

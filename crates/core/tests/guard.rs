@@ -54,6 +54,110 @@ fn worker(branch: &str) -> Scope {
             temp: Some(TEMP.to_owned()),
         },
         allowed_user_only: Vec::new(),
+        main_checkout: Some(GuardPath::new(MAIN)),
+        may_install: false,
+        orchestrator_repos: Vec::new(),
+        orchestrator_repo_excludes: Vec::new(),
+    }
+}
+
+const MAIN: &str = "S:/Code/me-sim/me-sim";
+
+#[test]
+fn a_worker_may_fast_forward_its_main_checkout_and_nothing_more() {
+    let scope = worker("sand");
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("git -C S:/Code/me-sim/me-sim pull --ff-only", None),
+        (
+            "cd S:/Code/me-sim/me-sim && git pull --ff-only origin master",
+            None,
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim pull",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim merge --ff-only sand",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim reset --hard",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-studio/me-studio pull --ff-only",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("git -C S:/Code/me-sim/me-sim fetch", None),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn only_a_project_that_installs_lets_its_workers_install() {
+    let mut scope = worker("sand");
+    let install = bash("headwork install");
+    assert_eq!(
+        rule(&check_tool(&scope, &install)),
+        Some(RuleId::WorkerAdmin),
+        "not allowed"
+    );
+    scope.may_install = true;
+    assert_eq!(rule(&check_tool(&scope, &install)), None, "allowed");
+    assert_eq!(
+        rule(&check_tool(
+            &scope,
+            &bash("headwork spawn me-sim x brief.md")
+        )),
+        Some(RuleId::WorkerAdmin),
+        "install only"
+    );
+}
+
+#[test]
+fn the_orchestrator_commits_in_its_notes_repository_but_not_in_projects_inside_it() {
+    let mut scope = orchestrator();
+    scope.cwd = "S:/Code".to_owned();
+    let commit =
+        bash("git add briefs/x.md && git commit -q -m \"docs(briefs): add x\" && git push -q");
+    assert_eq!(
+        rule(&check_tool(&scope, &commit)),
+        Some(RuleId::OrchestratorGit),
+        "no repos configured"
+    );
+    scope.orchestrator_repos = vec![GuardPath::new("S:/Code")];
+    scope.orchestrator_repo_excludes = vec![GuardPath::new("S:/Code/me-sim")];
+    let table: &[(&str, Option<RuleId>)] = &[
+        (
+            "git add briefs/x.md && git commit -q -m \"docs(briefs): add x\" && git push -q",
+            None,
+        ),
+        ("git -C /s/Code commit -m x", None),
+        (
+            "cd S:/Code/me-sim/me-sim && git commit -m x",
+            Some(RuleId::OrchestratorGit),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim-sand push",
+            Some(RuleId::OrchestratorGit),
+        ),
+        (
+            "cd S:/Elsewhere && git commit -m x",
+            Some(RuleId::OrchestratorGit),
+        ),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
     }
 }
 

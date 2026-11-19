@@ -32,7 +32,7 @@ docs/                   design, research, trials, decisions
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, rules,
 rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
-job_register, job_status, job_stop, job_forget) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
+job_register, job_status, job_stop, job_forget, helper_tab, worktree_add) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
@@ -41,6 +41,12 @@ becomes `interrupted` through `ops/lost.rs`, called by the `SessionEnd` hook, `b
 A task may deliver in several pull requests: close and the tick find them through one lookup (`ops/prs.rs`: recorded
 URLs, the stored branch, the branch checked out), a later pull request takes a `merged` task back to `in_review`, and
 `finish` takes a close claim (`<home>/closing/<id>.lock`) so two finishers never run one close.
+A lead gets helper worktrees for its parts from the worker tool `worktree_add` (`ops/helpers.rs`, migration 0012): made by
+the project's `worktree_new` at `worktree_path` with the part's slug, writable for the task, removed at close (one that
+holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
+the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install`;
+`[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
+them excluded); `orchestrator_writable` gives it the edits there.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

@@ -11,6 +11,7 @@ use std::process::Command;
 use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::close::{close, reap};
+use headwork::ops::helpers::add as add_helper;
 use headwork::ops::import::{
     Sources, config_section, import, missing_projects, read_transcript, repo_of_remote, worker_name,
 };
@@ -313,6 +314,71 @@ fn close_also_deletes_the_empty_branch_a_worker_renamed_to() {
     assert!(
         !branch_exists(&w.main, "portal-pistons"),
         "the renamed branch is gone"
+    );
+}
+
+#[test]
+fn helper_worktrees_are_made_beside_the_task_and_removed_with_it() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let env = env!(w);
+    let made = add_helper(&mut w.store, &env, &task, "sand-part").unwrap();
+    let dir = w.dir.path().join("demo-sand-part");
+    assert!(dir.is_dir(), "made beside the task's own: {made:?}");
+    assert!(!made.existing, "new");
+    assert!(
+        add_helper(&mut w.store, &env, &task, "sand-part")
+            .unwrap()
+            .existing,
+        "the same again"
+    );
+    assert!(
+        add_helper(&mut w.store, &env, &task, "sand").is_err(),
+        "the task's own slug"
+    );
+    assert!(
+        add_helper(&mut w.store, &env, &task, "Not Kebab").is_err(),
+        "a bad slug"
+    );
+    assert_eq!(
+        w.store.helper_worktrees(task.id).unwrap().len(),
+        1,
+        "recorded"
+    );
+    assert_eq!(
+        w.store.worktree_of(task.id).unwrap().unwrap().branch,
+        "sand",
+        "the task's own worktree is still its own"
+    );
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(!dir.exists(), "the helper went with the task");
+    assert!(
+        w.store.helper_worktrees(task.id).unwrap().is_empty(),
+        "recorded removed"
+    );
+    assert!(
+        !branch_exists(&w.main, "sand-part"),
+        "its empty branch is gone"
+    );
+}
+
+#[test]
+fn a_helper_worktree_with_work_stays_and_never_holds_up_the_close() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let env = env!(w);
+    add_helper(&mut w.store, &env, &task, "sand-part").unwrap();
+    let dir = w.dir.path().join("demo-sand-part");
+    std::fs::write(dir.join("work.txt"), "unsaved").unwrap();
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(dir.join("work.txt").exists(), "the work stays");
+    assert!(
+        event_kinds(&w.store, &task)
+            .iter()
+            .any(|k| k == "helper-worktree-refused"),
+        "logged"
     );
 }
 

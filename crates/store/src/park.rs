@@ -805,7 +805,7 @@ impl Store {
     /// Returns the SQLite error.
     pub fn set_park_ref(&mut self, task: TaskId, reference: &str) -> Result<(), StoreError> {
         self.conn.execute(
-            "UPDATE worktrees SET park_ref = ?1 WHERE task_id = ?2",
+            "UPDATE worktrees SET park_ref = ?1 WHERE task_id = ?2 AND helper = 0",
             params![reference, task.0],
         )?;
         Ok(())

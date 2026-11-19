@@ -425,7 +425,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO worktrees (task_id, path, branch, state) VALUES (?1, ?2, ?3, 'present')
-             ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present'",
+             ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present',
+               helper = 0",
             params![task.0, path, branch],
         )?;
         let data = serde_json::json!({ "path": path, "branch": branch });
@@ -443,7 +444,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT path, branch, state FROM worktrees WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                "SELECT path, branch, state FROM worktrees WHERE task_id = ?1 AND helper = 0 ORDER BY id DESC LIMIT 1",
                 params![task.0],
                 |row| {
                     Ok(WorktreeRow {
@@ -469,7 +470,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE worktrees SET state = ?1 WHERE task_id = ?2",
+            "UPDATE worktrees SET state = ?1 WHERE task_id = ?2 AND helper = 0",
             params![state, task.0],
         )?;
         insert_event(
@@ -480,6 +481,84 @@ impl Store {
             "worktree-state",
             &serde_json::json!({ "state": state }),
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records a helper worktree a task made for a part of its work, writable for that task and removed when it
+    /// closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_helper_worktree(
+        &mut self,
+        task: TaskId,
+        path: &str,
+        branch: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO worktrees (task_id, path, branch, state, helper) VALUES (?1, ?2, ?3, 'present', 1)
+             ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present',
+               helper = 1",
+            params![task.0, path, branch],
+        )?;
+        let data = serde_json::json!({ "path": path, "branch": branch });
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            "helper-worktree-recorded",
+            &data,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A task's helper worktrees that are not removed, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn helper_worktrees(&self, task: TaskId) -> Result<Vec<WorktreeRow>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT path, branch, state FROM worktrees WHERE task_id = ?1 AND helper = 1 AND state != 'removed'
+             ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map(params![task.0], |row| {
+                Ok(WorktreeRow {
+                    path: row.get(0)?,
+                    branch: row.get(1)?,
+                    state: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Sets the state of one helper worktree of a task: `removed` or `kept`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_helper_worktree_state(
+        &mut self,
+        task: TaskId,
+        path: &str,
+        state: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE worktrees SET state = ?1 WHERE task_id = ?2 AND path = ?3 AND helper = 1",
+            params![state, task.0, path],
+        )?;
+        let data = serde_json::json!({ "path": path, "state": state });
+        insert_event(&tx, actor, Some(task), None, "helper-worktree-state", &data)?;
         tx.commit()?;
         Ok(())
     }
