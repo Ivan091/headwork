@@ -16,7 +16,8 @@ use headwork_core::config::{Delivery, PushMode, WorktreeCommand};
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::stop::{StopFacts, check_stop};
 use headwork_core::guard::{
-    DEFAULT_BRANCHES, Decision, GuardPath, Scope, ToolCall, check_tool, repo_from_url,
+    ALLOW_HEADER, DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope, SimpleCommand, ToolCall,
+    check_tool, commands, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{
@@ -298,6 +299,13 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         EVENT_PROMPT,
         &json!({ "cross_session": text.starts_with("<cross-session-message"), "from": from }),
     )?;
+    if !text.starts_with("<cross-session-message")
+        && store.supersede_session_asks(&call.session.id, Actor::Hook)? > 0
+        && let Some(task) = call.task
+        && task.state == TaskState::NeedsUser
+    {
+        lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
+    }
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
@@ -339,6 +347,10 @@ pub fn scope_for(
             .iter()
             .map(|branch| (*branch).to_owned())
             .collect(),
+        places: Places {
+            home: Some(slashed(&env.home.expand("~"))),
+            temp: Some(slashed(env.temp)),
+        },
         ..Scope::default()
     };
     match role {
@@ -352,7 +364,6 @@ pub fn scope_for(
                     .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir)))),
             );
             for project in config.projects.values() {
-                scope.user_only.extend(project.user_only.iter().cloned());
                 if let Delivery::Command(command) = &project.deliver {
                     scope.scripts.extend(first_word(command));
                 }
@@ -371,6 +382,7 @@ pub fn scope_for(
                     writable.push(GuardPath::new(&slashed(&dir)));
                 }
                 scope.fable_allowed = store.fable_allowed(task.id)?;
+                scope.allowed_user_only = store.user_only_allowed(task.id)?;
                 scope.task_name = Some(task.name.to_string());
                 if let Some(project) = config.project(task.project()) {
                     scope.read_only = project
@@ -378,7 +390,6 @@ pub fn scope_for(
                         .iter()
                         .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
                         .collect();
-                    scope.user_only.clone_from(&project.user_only);
                     scope.long_jobs.clone_from(&project.long_jobs);
                     scope.own_delivery = matches!(project.deliver, Delivery::Command(_));
                     scope.allowed_repos = project
@@ -398,6 +409,7 @@ pub fn scope_for(
             }
         }
     }
+    scope.user_only = config.all_user_only();
     scope.writable = writable;
     Ok(scope)
 }
@@ -579,6 +591,11 @@ fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<De
     let push = match push {
         PushMode::None => Precondition::NotRequired,
         PushMode::Claude
+            if store.user_prompted_within(&call.session.id, config.hooks.push_window_secs)? =>
+        {
+            Precondition::NotRequired
+        }
+        PushMode::Claude
             if store.used_tool_within(
                 &call.session.id,
                 "PushNotification",
@@ -624,6 +641,7 @@ fn open_ask(store: &mut Store, call: &Call<'_>, tool_input: &Value) -> Result<()
     } else {
         AskKind::Question
     };
+    store.supersede_session_asks(&call.session.id, Actor::Hook)?;
     store.open_ask(
         &NewAsk {
             task_id: call.session.task_id,
@@ -686,7 +704,10 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
             .get("tool_response")
             .cloned()
             .unwrap_or(Value::Null);
-        let answer = response.get("answers").cloned().unwrap_or(response);
+        let answer = response
+            .get("answers")
+            .cloned()
+            .unwrap_or_else(|| response.clone());
         let answer = answer
             .as_str()
             .map_or_else(|| answer.to_string(), str::to_owned);
@@ -695,6 +716,11 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         }
         if let Some(task) = call.task {
             lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
+            let empty = Value::Null;
+            let asked = call.input.get("tool_input").unwrap_or(&empty);
+            for pattern in allowed_patterns(call.env.config, asked, &response) {
+                store.allow_user_only(task.id, &call.session.id, &pattern, Actor::Hook)?;
+            }
         }
         if let Some(surface) = &call.session.host_surface
             && let Err(error) = call.env.host.clear_blocked(&SurfaceId(surface.clone()))
@@ -729,6 +755,39 @@ fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
         }
         _ => false,
     }
+}
+
+/// The user-only patterns an answered `Allow` ask grants: for each question headed `Allow` whose chosen answer starts
+/// with `Allow`, the configured user-only patterns that a command in backticks in the question runs.
+fn allowed_patterns(config: &Config, asked: &Value, response: &Value) -> Vec<String> {
+    let answers = response.get("answers");
+    let user_only = config.all_user_only();
+    let mut allowed: Vec<String> = questions(asked)
+        .into_iter()
+        .filter(|(_, header, _)| header.trim().eq_ignore_ascii_case(ALLOW_HEADER))
+        .filter(|(question, _, _)| {
+            answers
+                .and_then(|answers| answers.get(question))
+                .and_then(Value::as_str)
+                .is_some_and(|answer| answer.trim_start().to_lowercase().starts_with("allow"))
+        })
+        .flat_map(|(question, _, _)| {
+            let named: Vec<SimpleCommand> = question
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .flat_map(commands)
+                .collect();
+            user_only
+                .iter()
+                .filter(|pattern| named.iter().any(|command| command.runs(pattern)))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    allowed.sort();
+    allowed.dedup();
+    allowed
 }
 
 fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {

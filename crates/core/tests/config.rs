@@ -255,6 +255,22 @@ fn overlay_adds_commands() {
 }
 
 #[test]
+fn user_only_is_the_union_of_every_project() {
+    assert_eq!(
+        machine().all_user_only(),
+        [
+            "me-studio publish",
+            "scripts/publish-now.sh",
+            "scripts/publish.sh",
+            "scripts/release.sh",
+            "scripts/reupload.sh",
+            "scripts/studio-publish.sh",
+        ],
+        "sorted, each once"
+    );
+}
+
+#[test]
 fn overlay_may_not_widen() {
     let error = ProjectOverlay::parse(&fixture("widening.headwork.toml"), "overlay").unwrap_err();
     assert!(

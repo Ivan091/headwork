@@ -37,16 +37,7 @@ impl SimpleCommand {
     /// The program's base name, lower case, without `.exe` or `.cmd`.
     #[must_use]
     pub fn program_name(&self) -> String {
-        let program = self.program().replace('\\', "/");
-        let base = program
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_lowercase();
-        [".exe", ".cmd", ".bat"]
-            .iter()
-            .find_map(|ext| base.strip_suffix(ext))
-            .map_or_else(|| base.clone(), str::to_owned)
+        base_name(self.program())
     }
 
     /// The arguments after the program.
@@ -68,9 +59,10 @@ impl SimpleCommand {
 
     /// Whether the command runs a configured pattern such as `scripts/ship.sh` or `cargo run --release -p render`:
     /// its words, normalized as in [`SimpleCommand::text`], start with the pattern's words, whole. The pattern's first
-    /// word also matches a longer path ending in it, so an absolute script path counts. Only the program position
-    /// counts, so `cat scripts/publish-now.sh` does not run it; [`commands`] already makes the script argument of
-    /// `bash script.sh` the program.
+    /// word also matches a longer path ending in it, so an absolute script path counts; a first word without a slash
+    /// matches the program's base name under any folder or Windows extension, so `me-studio publish` matches
+    /// `target/release/me-studio.exe publish`. Only the program position counts, so `cat scripts/publish-now.sh` does
+    /// not run it; [`commands`] already makes the script argument of `bash script.sh` the program.
     #[must_use]
     pub fn runs(&self, pattern: &str) -> bool {
         let wanted: Vec<String> = pattern.split_whitespace().map(normalize_word).collect();
@@ -84,11 +76,28 @@ impl SimpleCommand {
                 .is_some_and(|word| {
                     word == *want
                         || (offset == 0
-                            && want.contains('/')
-                            && word.ends_with(&format!("/{want}")))
+                            && if want.contains('/') {
+                                word.ends_with(&format!("/{want}"))
+                            } else {
+                                base_name(&word) == base_name(want)
+                            })
                 })
         })
     }
+}
+
+/// A program's name without its folder or a Windows extension, lower case.
+fn base_name(program: &str) -> String {
+    let program = program.replace('\\', "/");
+    let base = program
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    [".exe", ".cmd", ".bat"]
+        .iter()
+        .find_map(|ext| base.strip_suffix(ext))
+        .map_or_else(|| base.clone(), str::to_owned)
 }
 
 fn normalize_word(word: &str) -> String {

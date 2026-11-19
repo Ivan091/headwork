@@ -3,6 +3,53 @@
 //! Slashes go forward, letters lower case, `.` and `..` are resolved, and Git Bash's `/c/` becomes `c:/`. Windows and
 //! macOS file systems are case-insensitive by default, so lower case is safe there.
 
+/// Shell spellings that name the user's home folder.
+const HOME_SPELLINGS: &[&str] = &["~", "$HOME", "${HOME}"];
+
+/// Shell spellings that name the temp folder; Git Bash mounts `/tmp` on the user's temp folder.
+const TEMP_SPELLINGS: &[&str] = &[
+    "/tmp",
+    "$TMPDIR",
+    "${TMPDIR}",
+    "$TEMP",
+    "${TEMP}",
+    "$TMP",
+    "${TMP}",
+];
+
+/// The folders that `~`, `$HOME` and `/tmp` stand for, so a path spelled with them compares like the real one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Places {
+    /// The user's home folder; `None` leaves `~` and `$HOME` unexpanded.
+    pub home: Option<String>,
+    /// The temp folder; `None` leaves `/tmp` unexpanded.
+    pub temp: Option<String>,
+}
+
+impl Places {
+    /// `path` with a leading home or temp spelling replaced by its folder.
+    #[must_use]
+    pub fn expand(&self, path: &str) -> String {
+        let replaced = [(HOME_SPELLINGS, &self.home), (TEMP_SPELLINGS, &self.temp)]
+            .into_iter()
+            .filter_map(|(spellings, folder)| folder.as_deref().map(|folder| (spellings, folder)))
+            .find_map(|(spellings, folder)| {
+                spellings.iter().find_map(|spelling| {
+                    let rest = path.strip_prefix(spelling)?;
+                    (rest.is_empty() || rest.starts_with(['/', '\\']))
+                        .then(|| format!("{}{rest}", folder.trim_end_matches(['/', '\\'])))
+                })
+            });
+        replaced.unwrap_or_else(|| path.to_owned())
+    }
+
+    /// Normalizes `path` after expanding it, joined to `cwd` first when it is relative.
+    #[must_use]
+    pub fn resolve(&self, cwd: &str, path: &str) -> GuardPath {
+        GuardPath::resolve(cwd, &self.expand(path))
+    }
+}
+
 /// A path in the guard's comparable form.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GuardPath(String);
@@ -118,6 +165,58 @@ mod tests {
             path.as_str(),
             "s:/code/me-sim/me-sim-x/cargo.toml",
             "joined"
+        );
+    }
+
+    fn places() -> Places {
+        Places {
+            home: Some("C:\\Users\\User".to_owned()),
+            temp: Some("C:/Users/User/AppData/Local/Temp/".to_owned()),
+        }
+    }
+
+    #[test]
+    fn home_and_temp_spellings_expand() {
+        let places = places();
+        let cases = [
+            ("~", "c:/users/user"),
+            ("~/.claude-x/a.md", "c:/users/user/.claude-x/a.md"),
+            ("$HOME/.claude", "c:/users/user/.claude"),
+            ("${HOME}\\.claude", "c:/users/user/.claude"),
+            ("/tmp", "c:/users/user/appdata/local/temp"),
+            (
+                "/tmp/before.txt",
+                "c:/users/user/appdata/local/temp/before.txt",
+            ),
+            ("$TMPDIR/x", "c:/users/user/appdata/local/temp/x"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(places.resolve("S:/Code", path).as_str(), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn lookalikes_stay_as_they_are() {
+        let places = places();
+        assert_eq!(
+            places.resolve("S:/Code", "~user/a").as_str(),
+            "~user/a",
+            "another user's home"
+        );
+        assert_eq!(
+            places.resolve("S:/Code", "$HOMEDIR/a").as_str(),
+            "s:/code/$homedir/a",
+            "another variable"
+        );
+        assert_eq!(
+            places.resolve("S:/Code", "/tmpx").as_str(),
+            "/tmpx",
+            "another root folder"
+        );
+        assert_eq!(
+            Places::default().resolve("S:/Code", "~/a").as_str(),
+            "~/a",
+            "no home known"
         );
     }
 

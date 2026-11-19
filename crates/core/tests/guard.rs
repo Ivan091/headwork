@@ -3,13 +3,14 @@
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::stop::{MAX_BLOCKS, StopFacts, check_stop};
 use headwork_core::guard::{
-    DEFAULT_BRANCHES, Decision, GuardPath, Scope, ToolCall, check_tool, repo_from_url,
+    DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope, ToolCall, check_tool, repo_from_url,
 };
 use headwork_core::{Role, RuleId, TaskState};
 
 const WORKTREE: &str = "S:/Code/me-sim/me-sim-sand";
 const HOME: &str = "C:/Users/User/.headwork";
 const TEMP: &str = "C:/Users/User/AppData/Local/Temp";
+const USER: &str = "C:/Users/User";
 
 fn orchestrator() -> Scope {
     Scope {
@@ -48,6 +49,11 @@ fn worker(branch: &str) -> Scope {
         fable_allowed: false,
         scripts: Vec::new(),
         task_name: Some("me-sim-sand".to_owned()),
+        places: Places {
+            home: Some(USER.to_owned()),
+            temp: Some(TEMP.to_owned()),
+        },
+        allowed_user_only: Vec::new(),
     }
 }
 
@@ -299,6 +305,80 @@ fn worker_git_outside_table() {
         ),
     ];
     let scope = worker("sand");
+    for (command, expected) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn home_and_temp_spellings_resolve() {
+    let mut scope = worker("sand");
+    scope.cwd = "C:/Users/User/.claude-monitor".to_owned();
+    scope.writable = vec![GuardPath::new(&scope.cwd), GuardPath::new(TEMP)];
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("cd ~/.claude-monitor && git commit -m x", None),
+        ("cd $HOME/.claude-monitor && git push -u origin x", None),
+        ("git -C ~/.claude-monitor commit -m x", None),
+        ("cd /tmp/scratch && git init -q", None),
+        (
+            "cd ~/.claude && git pull --ff-only",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("cd && git pull", Some(RuleId::WorkerGitOutside)),
+    ];
+    for (command, expected) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}"
+        );
+    }
+    let writes: &[(&str, Option<RuleId>)] = &[
+        ("~/.claude-monitor/SKILL.md", None),
+        ("/tmp/todo.patch", None),
+        ("~/.claude/AGENTS.md", Some(RuleId::WorkerEditOutside)),
+    ];
+    for (path, expected) in writes {
+        let call = ToolCall::Write {
+            tool: "Write",
+            path,
+        };
+        assert_eq!(rule(&check_tool(&scope, &call)), *expected, "{path}");
+    }
+}
+
+#[test]
+fn user_only_matches_a_program_by_its_base_name() {
+    let mut scope = worker("sand");
+    scope.user_only = vec![
+        "me-studio publish".to_owned(),
+        "scripts/studio-publish.sh".to_owned(),
+    ];
+    let table: &[(&str, Option<RuleId>)] = &[
+        (
+            "/s/Code/me-studio/me-studio/target/release/me-studio.exe publish --project me-sim embed",
+            Some(RuleId::UserOnly),
+        ),
+        (
+            "'S:\\Code\\me-studio\\me-studio\\target\\release\\ME-STUDIO.EXE' publish x",
+            Some(RuleId::UserOnly),
+        ),
+        ("me-studio publish plan", Some(RuleId::UserOnly)),
+        (
+            "bash S:/Code/me-studio/me-studio/scripts/studio-publish.sh me-sim upload",
+            Some(RuleId::UserOnly),
+        ),
+        (
+            "/s/Code/me-studio/me-studio/target/release/me-studio.exe analyze --json",
+            None,
+        ),
+        ("my-me-studio publish", None),
+        ("cat me-studio publish", None),
+    ];
     for (command, expected) in table {
         assert_eq!(
             rule(&check_tool(&scope, &bash(command))),

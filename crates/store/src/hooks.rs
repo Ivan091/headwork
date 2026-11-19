@@ -17,6 +17,8 @@ pub const EVENT_TOOL: &str = "tool-used";
 pub const EVENT_DENY: &str = "deny";
 /// The event of a deny that shadow mode only logged.
 pub const EVENT_WOULD_DENY: &str = "would-deny";
+/// The event that records a user-only command the user allowed for one task.
+pub const EVENT_USER_ONLY_ALLOWED: &str = "user-only-allowed";
 /// The event of a session message to an orchestrator address that a `PreToolUse` hook sent on to the live address.
 pub const EVENT_READDRESSED: &str = "readdressed";
 
@@ -238,6 +240,99 @@ impl Store {
             params![format!("-{seconds} seconds")],
             |row| row.get(0),
         )?)
+    }
+
+    /// Records that the user allowed a task to run a user-only command, answering an `Allow` ask. The event log is
+    /// the record, so no schema change is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn allow_user_only(
+        &mut self,
+        task: TaskId,
+        session: &str,
+        pattern: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        insert_event(
+            &self.conn,
+            actor,
+            Some(task),
+            Some(session),
+            EVENT_USER_ONLY_ALLOWED,
+            &serde_json::json!({ "pattern": pattern }),
+        )?;
+        Ok(())
+    }
+
+    /// The user-only commands the user allowed for a task.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn user_only_allowed(&self, task: TaskId) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT json_extract(data, '$.pattern') FROM events
+                 WHERE task_id = ?1 AND type = ?2 AND json_extract(data, '$.pattern') IS NOT NULL ORDER BY 1",
+        )?;
+        let rows = stmt.query_map(params![task.0, EVENT_USER_ONLY_ALLOWED], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether the user typed a prompt into the session within the last `seconds`; a message from another session
+    /// does not count.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn user_prompted_within(&self, session: &str, seconds: u32) -> Result<bool, StoreError> {
+        let since = format!("-{seconds} seconds");
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND type = ?2
+                 AND NOT COALESCE(json_extract(data, '$.cross_session'), 0)
+                 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
+            params![session, EVENT_PROMPT, since],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Supersedes the session's own asks that are still open, as when the user typed past a dialog instead of
+    /// answering it, or the session asks again. Asks the store raised itself (a topic, such as `trust`) stay. Returns
+    /// how many were superseded.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn supersede_session_asks(
+        &mut self,
+        session: &str,
+        actor: Actor,
+    ) -> Result<usize, StoreError> {
+        let tx = self.conn.transaction()?;
+        let open: Vec<(i64, Option<i64>)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, task_id FROM asks WHERE session_id = ?1 AND state = 'open' AND topic IS NULL ORDER BY id",
+            )?;
+            let rows = stmt.query_map(params![session], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for (id, task) in &open {
+            tx.execute(
+                "UPDATE asks SET state = 'superseded' WHERE id = ?1",
+                params![id],
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                task.map(TaskId),
+                Some(session),
+                "ask-superseded",
+                &serde_json::json!({ "ask": id }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(open.len())
     }
 
     /// What the session did since its last prompt.

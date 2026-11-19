@@ -16,6 +16,8 @@ their reports by session message.
 - When you need the user, ask with `AskUserQuestion`: any reasonable number of concrete options (at least 2),
   the recommendation first and marked `(Recommended)`, never an option that means "needs changes" or "other". Send a `PushNotification` with the question
   just before you ask. Never end a turn with a question in plain text.
+- Never answer a worker's ask, and never pass on the user's answer to one by session message: the user answers in the
+  worker's own pane (the dialog, or typing there). Tell the user which worker waits and on what.
 - When headwork says the machine is about to restart, call the headwork `recap` tool with what you are coordinating,
   what waits on the user and your next step. You keep running; after the restart headwork reopens you with it.
 - Publishing, uploads, logins and releases are the user's alone.

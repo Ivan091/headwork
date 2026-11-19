@@ -181,9 +181,10 @@ pub enum Trigger {
     /// The pane or `claude` could not be started, or `claude` exited before its session started: `spawning` →
     /// `failed`.
     LaunchFailed,
-    /// `AskUserQuestion` or a permission prompt: `working` → `needs_user`.
+    /// `AskUserQuestion` or a permission prompt: `working` → `needs_user`. In `in_review` and `merged` the task stays
+    /// where it is: the ask is about a pull request, and the asks table tells that it waits.
     AskOpened,
-    /// The answer is recorded: `needs_user` → `working`.
+    /// The answer is recorded, or the user typed past the ask: `needs_user` → `working`; `in_review` and `merged` stay.
     AskAnswered,
     /// A review is reported or a pull request opened: `working` → `in_review`, or `merged` → `in_review` when a task
     /// that delivers in several pull requests opens the next one.
@@ -357,9 +358,10 @@ impl Trigger {
             Self::SessionStarted(_) | Self::SpawnTimedOut | Self::LaunchFailed => {
                 matches!(state, S::Spawning)
             }
-            Self::AskOpened | Self::Finish(_) => matches!(state, S::Working),
+            Self::Finish(_) => matches!(state, S::Working),
             Self::ReviewOpened { .. } => matches!(state, S::Working | S::Merged),
-            Self::AskAnswered => matches!(state, S::NeedsUser),
+            Self::AskOpened => matches!(state, S::Working | S::InReview | S::Merged),
+            Self::AskAnswered => matches!(state, S::NeedsUser | S::InReview | S::Merged),
             Self::ChangesRequested | Self::Merged { .. } => matches!(state, S::InReview),
             Self::Close(_) => matches!(state, S::Merged),
             Self::Drop | Self::ForceClose => droppable(state),
@@ -436,6 +438,9 @@ impl Trigger {
             Self::Start(_) | Self::Resume { .. } => (S::Spawning, keep),
             Self::SessionStarted(_) => (resume_target(keep), None),
             Self::SpawnTimedOut | Self::LaunchFailed => (S::Failed, keep),
+            Self::AskOpened | Self::AskAnswered if matches!(from, S::InReview | S::Merged) => {
+                (from, keep)
+            }
             Self::AskOpened => (S::NeedsUser, keep),
             Self::AskAnswered | Self::ChangesRequested => (S::Working, keep),
             Self::ReviewOpened { .. } => (S::InReview, keep),

@@ -612,3 +612,27 @@ and the reason.
   (closing, removing) stays tied to `enforce`, because a rule list says nothing about it. Listed rules log `deny`
   instead of `would-deny`. `doctor` names the list in its `enforce` check, `rule test` shows the mode of the rule that
   fired, and `shadow-report` marks listed rules `[enforced]` (JSON: `enforced`, `enforce_rules`). Default empty.
+- 2026-11-19 Home and temp paths in the guard (second audit, `guard-home-and-tmp`). A claude-config worker's own
+  worktree, `~/.claude-<slug>`, counted as outside its folder because the guard treated `~` as an absolute path it never
+  expanded. The scope now carries `Places` (the user's home and the temp folder) and expands a leading `~`, `$HOME`,
+  `${HOME}`, `/tmp`, `$TMPDIR`, `$TEMP` and `$TMP` before comparing, in edits, `cd` and `git -C`. `/tmp` is the temp
+  folder because Git Bash mounts it there. `~user` and other variables stay as written.
+- 2026-11-19 Asks follow the pull request (second audit, `ask-lifecycle`). An ask in `in_review` or `merged` is a
+  question about a pull request, so `ask-opened` and `ask-answered` apply there and leave the state as it is; the asks
+  table tells that the task waits, and close already refuses while one does. Only `working` goes to `needs_user`. An ask
+  is abandoned when the user types past its dialog, which fires no `PostToolUse`: the session's next ask, or a prompt the
+  user types (not a session message), supersedes its open asks, and a task in `needs_user` goes back to `working`. Asks
+  the store raised itself (a topic such as `trust`) are left alone. The push precondition is not required within
+  `push_window_secs` of a prompt the user typed in that session, since the user is at the screen: 19 of the 38 shadow
+  `ask-push` misses came less than two minutes after one.
+- 2026-11-19 Three rule lines (second audit, `ask-and-irreversible-rules`), reviewed and approved by the user: a worker's
+  asks have one answer channel (the dialog or the user typing in its pane); a backup before an irreversible step; the
+  orchestrator never answers or relays an answer to a worker's ask.
+- 2026-11-19 User-only commands (second audit, `user-only-union`). Every session is held to the union of all projects'
+  `user_only` (`Config::all_user_only`): a me-sim worker can run me-studio's publisher as easily as its own scripts. A
+  pattern whose first word has no slash matches the program's base name under any folder or Windows extension, so
+  `me-studio publish` matches `target/release/me-studio.exe publish`. The user chose the per-task approval: the worker
+  asks with header `Allow`, naming the command in backticks; when the user picks an option starting with `Allow`, the
+  hook records a `user-only-allowed` event per configured pattern that command runs, and the guard skips those patterns
+  for that task only. The event log holds the approvals, so no migration was needed (and none could clash with another
+  branch's numbered migration).
