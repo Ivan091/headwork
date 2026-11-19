@@ -379,19 +379,7 @@ pub fn scope_for(
             }
             scope.scripts.sort();
             scope.scripts.dedup();
-            scope.orchestrator_repos = config
-                .hooks
-                .orchestrator_repos
-                .iter()
-                .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
-                .collect();
-            scope.orchestrator_repo_excludes = config
-                .projects
-                .values()
-                .map(|project| {
-                    project_folder(&env.home.expand(&project.main), &scope.orchestrator_repos)
-                })
-                .collect();
+            (scope.orchestrator_repos, scope.orchestrator_repo_excludes) = notes_repos(env);
         }
         Role::Worker => {
             if let Some(task) = task {
@@ -439,6 +427,24 @@ pub fn scope_for(
     scope.user_only = config.all_user_only();
     scope.writable = writable;
     Ok(scope)
+}
+
+/// The notes repositories the orchestrator may commit in, and the project folders inside them it may not.
+fn notes_repos(env: &HookEnv<'_>) -> (Vec<GuardPath>, Vec<GuardPath>) {
+    let repos: Vec<GuardPath> = env
+        .config
+        .hooks
+        .orchestrator_repos
+        .iter()
+        .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
+        .collect();
+    let excludes = env
+        .config
+        .projects
+        .values()
+        .map(|project| project_folder(&env.home.expand(&project.main), &repos))
+        .collect();
+    (repos, excludes)
 }
 
 /// The folder that holds a project's checkouts inside a notes repository: the folder above its main checkout, where
