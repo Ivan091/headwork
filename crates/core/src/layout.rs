@@ -9,7 +9,10 @@
 //! left) side by side or top and bottom, any other pane only side by side, and a pane whose last surface closes leaves
 //! the layout, its sibling taking its space. Two rows of two is the only grid those splits reach, so the second worker
 //! takes the bottom half, the third the top right quarter, the fourth the bottom right; later workers stack as tabs.
-//! A closing worker's pane simply goes: no empty pane is ever cut ahead of time or kept behind, and the next worker
+//! With a limit of two panes the one split is side by side, so two workers sit left and right. Columns first cannot
+//! reach a grid of quarters (wmux splits only the first pane top and bottom, so the right column would stay whole), so
+//! a larger limit keeps rows first. A closing worker's pane simply goes: no empty pane is ever cut ahead of time or
+//! kept behind, and the next worker
 //! splits the half its neighbour grew into back into quarters.
 
 use std::num::NonZeroU32;
@@ -17,6 +20,9 @@ use std::num::NonZeroU32;
 /// The smallest share of the workspace's width and of its height a pane may have: a quarter of the workspace is half
 /// its width by half its height.
 pub const QUARTER_SIDE: f64 = 0.5;
+
+/// A limit of this many panes or fewer gives side by side halves, left and right, rather than top and bottom.
+const COLUMNS_ONLY_LIMIT: u32 = 2;
 
 /// How far a measured share may fall short of [`QUARTER_SIDE`] and still count, for the rounding of the host's ratios.
 const SLACK: f64 = 1e-3;
@@ -84,7 +90,8 @@ pub enum Placement {
 ///
 /// The first free pane wins. Without one, a workspace with fewer panes than `max_panes` gets a pane split, when one
 /// can be split into two halves no smaller than a quarter: the largest such pane, a whole workspace top and bottom,
-/// the earlier pane on a tie. Otherwise the worker stacks on the pane with the fewest sessions, then the largest, then
+/// the earlier pane on a tie; with a `max_panes` of 2 or less the whole workspace splits side by side instead.
+/// Otherwise the worker stacks on the pane with the fewest sessions, then the largest, then
 /// the later one. `None` when there are no cells. A `max_panes` above 4 acts as 4, since a fifth pane would be smaller
 /// than a quarter.
 #[must_use]
@@ -97,7 +104,7 @@ pub fn place(cells: &[Cell], max_panes: NonZeroU32) -> Option<Placement> {
     }
     let count = u32::try_from(cells.len()).unwrap_or(u32::MAX);
     if count < max_panes.get()
-        && let Some(split) = best_split(cells)
+        && let Some(split) = best_split(cells, max_panes.get() > COLUMNS_ONLY_LIMIT)
     {
         return Some(split);
     }
@@ -113,10 +120,10 @@ pub fn place(cells: &[Cell], max_panes: NonZeroU32) -> Option<Placement> {
         .map(|(cell, _)| Placement::Stack { cell })
 }
 
-fn best_split(cells: &[Cell]) -> Option<Placement> {
+fn best_split(cells: &[Cell], allow_down: bool) -> Option<Placement> {
     let down = cells
         .first()
-        .filter(|first| first.splits_down())
+        .filter(|first| allow_down && first.splits_down())
         .map(|first| {
             (
                 first.area(),
@@ -150,6 +157,10 @@ mod tests {
             surfaces,
             busy,
         }
+    }
+
+    fn two() -> NonZeroU32 {
+        NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN)
     }
 
     fn four() -> NonZeroU32 {
@@ -261,6 +272,37 @@ mod tests {
         ];
         for (name, cells, want) in table {
             assert_eq!(place(cells, four()), *want, "{name}");
+        }
+    }
+
+    #[test]
+    fn two_panes_split_side_by_side() {
+        let half = cell(0.5, 1.0, 1, 1);
+        let table: &[(&str, Vec<Cell>, Option<Placement>)] = &[
+            (
+                "the second worker splits the lone pane side by side",
+                vec![cell(1.0, 1.0, 1, 1)],
+                Some(Placement::Split {
+                    cell: 0,
+                    down: false,
+                }),
+            ),
+            (
+                "the third stacks on the later column",
+                vec![half, half],
+                Some(Placement::Stack { cell: 1 }),
+            ),
+            (
+                "a column left alone is split side by side again",
+                vec![cell(1.0, 1.0, 1, 1)],
+                Some(Placement::Split {
+                    cell: 0,
+                    down: false,
+                }),
+            ),
+        ];
+        for (name, cells, want) in table {
+            assert_eq!(place(cells, two()), *want, "{name}");
         }
     }
 

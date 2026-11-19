@@ -17,6 +17,9 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   words). Send a `PushNotification` with the question just before you ask, so the phone hears it. headwork shows the
   choices as the pane's blocked state and clears it when the answer arrives; you do not run `wmux report-agent`.
 - Before a review ask (header `Review`), send what is under review with `SendUserFile`.
+- Open a helper agent session of your own (a separate program shown in wmux) with the headwork `helper_tab` tool: it
+  becomes a new tab in your own workspace, never a new workspace or a split, and closes with it. In-process subagents
+  (the `Agent` tool) need no tab.
 - Start any long-running process (a training run, a render) with the headwork `job_start` tool, never as a background
   shell, so a restart can stop it cleanly at a checkpoint and start it again. Write a short `recap` (what you are
   doing, the next step, what runs) whenever you stop for the day, and when headwork asks for one before a restart.

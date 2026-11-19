@@ -9,7 +9,9 @@
 //! nothing in it holds a session. The choice is [`headwork_core::layout::place`]; this module reads the workspace from
 //! the host as it is now, so panes the user closed or rearranged by hand count as they stand. Workers already open
 //! are never moved, and a pane that still holds a session (another worker's tab, the orchestrator) never closes.
-//! `tabs` mode adds tabs.
+//! `tabs` mode adds tabs. `workspaces` mode gives each worker a workspace of its own, titled with the task's name and
+//! holding one full-screen pane: the fresh workspace's shell is replaced, nothing splits or stacks, and the workspace
+//! closes with its worker.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -27,6 +29,12 @@ use super::{Env, label, title};
 /// Builds before 2026-11-16 started `headwork idle` there; the label lets [`release`] and spawns find and close them.
 /// It has no `/`, so the tick and import, which read `<project>/<slug>` labels, never take it for a worker.
 pub const IDLE_LABEL: &str = "headwork:free";
+
+/// The host label of a helper session a worker opens as a tab in its own workspace.
+///
+/// It has no `/`, so the tick and import never take it for a worker, and a workspace closes with its worker whatever
+/// helpers still run in it.
+pub const HELPER_LABEL: &str = "headwork:helper";
 
 /// A worker's pane to open.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +65,10 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
             PlaceKind::Tab,
         ),
         LayoutMode::Panes => pane(store, env, opening.workspace)?,
+        LayoutMode::Workspaces => (
+            tab(env.host, opening.workspace, opening.fresh)?,
+            PlaceKind::Pane,
+        ),
     };
     let started = env.host.spawn(
         opening.workspace,
@@ -99,8 +111,13 @@ pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &Surface
         let surfaces = host.surfaces(workspace)?;
         let last = match env.config.layout.mode {
             LayoutMode::Tabs => surfaces.iter().all(|s| s == surface),
-            LayoutMode::Panes => {
-                let busy = busy_on_host(host)?;
+            LayoutMode::Panes | LayoutMode::Workspaces => {
+                let mut busy = busy_on_host(host)?;
+                for program in host.panes()? {
+                    if program.label == HELPER_LABEL {
+                        busy.remove(&program.surface);
+                    }
+                }
                 !surfaces.iter().any(|s| s != surface && busy.contains(s))
             }
         };
@@ -111,6 +128,32 @@ pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &Surface
     }
     host.close_surface(surface)?;
     Ok(())
+}
+
+/// The title of the workspace a task opens in: its own name in `workspaces` mode, else its project's.
+#[must_use]
+pub(super) fn workspace_title(env: &Env<'_>, task: &Task) -> String {
+    match env.config.layout.mode {
+        LayoutMode::Workspaces => task.name.to_string(),
+        LayoutMode::Panes | LayoutMode::Tabs => task.project().as_str().to_owned(),
+    }
+}
+
+/// Opens `argv` as a new tab of the workspace a worker runs in, and returns the new surface.
+///
+/// # Errors
+///
+/// Fails when the host fails.
+pub fn open_helper(
+    env: &Env<'_>,
+    workspace: &WorkspaceId,
+    dir: &Path,
+    argv: &[String],
+) -> Result<SurfaceId> {
+    let started = env
+        .host
+        .spawn(workspace, dir, HELPER_LABEL, argv, &Target::Tab)?;
+    Ok(started.surface)
 }
 
 /// Closes the `headwork idle` placeholders still open in `workspace`. Builds before 2026-11-16 left

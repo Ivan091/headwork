@@ -99,6 +99,17 @@ pane, or that it is a tab. Why it works this way is in `docs/decisions.md` (2026
 close with their worker; 2026-11-19, a grid of quarters). Run the real check with
 `cargo test -p headwork --test live -- --ignored`; it opens and closes `headwork-test` workspaces.
 
+With `panes = 2` (or 1) the one split is side by side instead: the second worker takes the right half, left and right
+with a vertical divider, later workers stack as tabs, and a closed worker's pane gives the whole workspace to the other.
+A larger limit stays rows first because only rows first reaches the grid (`docs/decisions.md`, 2026-11-19, two panes
+side by side).
+
+`mode = "workspaces"` gives every worker a workspace of its own, titled with the task name (`<project>-<slug>`) and
+holding one full-screen pane: no splits, no stacked tabs, and the workspace closes with its worker. Workers opened
+earlier in a project workspace stay where they are. A worker opens a short-lived helper session of its own (a separate
+program in wmux, not an `Agent` subagent) with the `helper_tab` MCP tool: always a new tab in its own workspace, labelled
+`headwork:helper`, which does not keep the workspace open when the worker closes. See `docs/decisions.md` (2026-11-19, one workspace per worker).
+
 ### Pane titles
 
 Each worker's pane or tab is titled `<task name>`, from `[layout] title` (default `{name}`; `{model}` and `{effort}` also work), set

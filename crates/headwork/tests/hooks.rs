@@ -730,6 +730,7 @@ fn mcp_tools_follow_the_role() {
             "recap",
             "job_register",
             "job_start",
+            "helper_tab",
             "job_status",
             "job_stop",
             "job_forget"
