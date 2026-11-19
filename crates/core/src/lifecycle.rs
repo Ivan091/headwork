@@ -185,7 +185,8 @@ pub enum Trigger {
     AskOpened,
     /// The answer is recorded: `needs_user` → `working`.
     AskAnswered,
-    /// A review is reported or a pull request opened: `working` → `in_review`.
+    /// A review is reported or a pull request opened: `working` → `in_review`, or `merged` → `in_review` when a task
+    /// that delivers in several pull requests opens the next one.
     ReviewOpened {
         /// The pull request's repository is in the project's `allowed_repos`.
         repo_allowed: bool,
@@ -356,9 +357,8 @@ impl Trigger {
             Self::SessionStarted(_) | Self::SpawnTimedOut | Self::LaunchFailed => {
                 matches!(state, S::Spawning)
             }
-            Self::AskOpened | Self::ReviewOpened { .. } | Self::Finish(_) => {
-                matches!(state, S::Working)
-            }
+            Self::AskOpened | Self::Finish(_) => matches!(state, S::Working),
+            Self::ReviewOpened { .. } => matches!(state, S::Working | S::Merged),
             Self::AskAnswered => matches!(state, S::NeedsUser),
             Self::ChangesRequested | Self::Merged { .. } => matches!(state, S::InReview),
             Self::Close(_) => matches!(state, S::Merged),

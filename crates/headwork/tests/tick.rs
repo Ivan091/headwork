@@ -29,7 +29,7 @@ use headwork_core::{
     Actor, Config, FindingId, MachineMode, Model, PermissionMode, ProjectName, SessionState, Slug,
     TaskRequest, TaskState, Trigger,
 };
-use headwork_store::{EventFilter, NewJob, Store, Task};
+use headwork_store::{EventFilter, NewJob, PrSeen, Store, Task};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const SLEEPER_ROLE: &str = "HEADWORK_TICK_ROLE";
@@ -557,6 +557,65 @@ fn a_pull_request_of_a_foreign_repository_does_not_open_a_review() {
     assert_eq!(state(&w, &task), TaskState::Working, "refused");
 }
 
+fn second_pr(state: PrState) -> PrInfo {
+    PrInfo {
+        number: 8,
+        url: "https://github.com/acme/demo/pull/8".to_owned(),
+        ..pr(state)
+    }
+}
+
+#[test]
+fn a_later_pull_request_takes_a_merged_task_back_to_review() {
+    let mut w = world();
+    let (task, _) = working(&mut w, "sand");
+    w.git.set("sand", pr(PrState::Merged));
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Merged, "first part merged");
+    w.git.set("sand-part-two", second_pr(PrState::Open));
+    w.store
+        .record_pr(
+            task.id,
+            &PrSeen {
+                repo: "acme/demo",
+                number: 8,
+                url: "https://github.com/acme/demo/pull/8",
+                state: "open",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let report = run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::InReview,
+        "the second part is open"
+    );
+    assert_eq!(
+        rules(&report),
+        [(FindingId::PrOpened, Status::Applied)],
+        "opened"
+    );
+    w.git.set("sand-part-two", second_pr(PrState::Merged));
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Merged, "both parts merged");
+}
+
+#[test]
+fn a_renamed_branch_is_found_by_its_checked_out_name() {
+    let mut w = world();
+    let (task, _) = working(&mut w, "sand");
+    let dir = w.store.worktree_of(task.id).unwrap().unwrap().path;
+    git_in(Path::new(&dir), &["checkout", "-q", "-b", "portal-pistons"]);
+    w.git.set("portal-pistons", pr(PrState::Open));
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::InReview,
+        "found on the renamed branch"
+    );
+}
+
 fn merged(w: &mut World, slug: &str) -> Task {
     let (task, _) = working(w, slug);
     w.git.set(slug, pr(PrState::Merged));
@@ -674,6 +733,35 @@ fn a_closing_task_whose_processes_are_gone_is_finished() {
     run_tick(&mut w);
     assert_eq!(state(&w, &task), TaskState::Closed, "closed");
     assert!(!Path::new(&dir).exists(), "worktree removed");
+}
+
+#[test]
+fn a_second_finisher_leaves_a_claimed_close_alone() {
+    let mut w = world();
+    let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
+    let folder = w.home.root().join("closing");
+    std::fs::create_dir_all(&folder).unwrap();
+    let claim = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(folder.join(format!("{}.lock", task.id)))
+        .unwrap();
+    claim.try_lock().unwrap();
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Closing,
+        "another finisher holds the close"
+    );
+    assert_eq!(count(&w, "close-claimed"), 1, "logged");
+    drop(claim);
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Closed,
+        "closed once the claim is free"
+    );
 }
 
 #[test]

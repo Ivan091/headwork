@@ -301,6 +301,22 @@ fn close_keeps_a_branch_with_commits_of_its_own() {
 }
 
 #[test]
+fn close_also_deletes_the_empty_branch_a_worker_renamed_to() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let worktree = w.dir.path().join("demo-sand");
+    git(&worktree, &["checkout", "-q", "-b", "portal-pistons"]);
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(!branch_exists(&w.main, "sand"), "the stored branch is gone");
+    assert!(
+        !branch_exists(&w.main, "portal-pistons"),
+        "the renamed branch is gone"
+    );
+}
+
+#[test]
 fn spawn_reuses_a_leftover_empty_branch_but_not_one_with_work() {
     let mut w = world(10);
     git(&w.main, &["branch", "sand"]);
