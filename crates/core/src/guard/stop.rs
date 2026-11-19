@@ -31,6 +31,9 @@ pub struct StopFacts<'a> {
     pub keep: bool,
     /// The task has a registered job whose process still runs: the worker is waiting on it, not stopping silently.
     pub running_job: bool,
+    /// Since the last prompt the session started background work (a background `Bash`, `Monitor`, `Agent` or
+    /// `Workflow`) and waits for its notification to be invoked again.
+    pub waiting_background: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -60,7 +63,8 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         && !facts.asked
         && !facts.messaged
         && !facts.reported
-        && !facts.running_job;
+        && !facts.running_job
+        && !facts.waiting_background;
     if unfinished {
         return Decision::deny(
             RuleId::StopUnfinished,

@@ -1312,3 +1312,68 @@ fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
         .count();
     assert_eq!(moved, 2, "each readdress logged");
 }
+
+#[test]
+fn waiting_on_background_work_lets_the_stop_gate_through() {
+    let mut w = world("", false);
+    w.start();
+    let stop = json!({ "last_assistant_message": "Waiting for the build." });
+    let post = |w: &mut World, tool: &str, input: &Value, response: &Value| {
+        let input = json!({ "tool_name": tool, "tool_input": input, "tool_response": response });
+        w.hook(HookEvent::PostToolUse, &input)
+    };
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    post(
+        &mut w,
+        "Bash",
+        &json!({ "command": "cargo build" }),
+        &json!({}),
+    );
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(w.denies().len(), 1, "a foreground Bash is not waiting");
+    for (tool, input, response) in [
+        (
+            "Bash",
+            json!({ "command": "sleep 99", "run_in_background": true }),
+            json!({}),
+        ),
+        ("Monitor", json!({}), json!({})),
+        ("Workflow", json!({}), json!({})),
+        ("Agent", json!({ "run_in_background": true }), json!({})),
+        ("Agent", json!({}), json!({ "status": "async_launched" })),
+    ] {
+        w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "again" }));
+        post(&mut w, tool, &input, &response);
+        w.hook(HookEvent::Stop, &stop);
+        assert_eq!(w.denies().len(), 1, "{tool} {input} lets the stop through");
+    }
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "next" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        w.denies().len(),
+        2,
+        "a turn without background work is denied again"
+    );
+}
+
+#[test]
+fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
+    let mut w = world("enforce_rules = [\"stop-unfinished\"]", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    let stop = w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "Step done." }),
+    );
+    assert_eq!(stop.exit, 2, "the listed rule blocks");
+    let shadow = w.pre("Skill", &json!({ "skill": "ship" }));
+    assert_eq!(shadow, HookReply::default(), "an unlisted rule only logs");
+    assert_eq!(
+        w.denies(),
+        [
+            ("deny".to_owned(), "stop-unfinished".to_owned()),
+            ("would-deny".to_owned(), "worker-global-skill".to_owned())
+        ],
+        "events"
+    );
+}

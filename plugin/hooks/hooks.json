@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "AskUserQuestion|PushNotification|SendUserFile|SendMessage",
+        "matcher": "AskUserQuestion|PushNotification|SendUserFile|SendMessage|Bash|Monitor|Agent|Task|Workflow",
         "hooks": [{ "type": "command", "command": "\"${HEADWORK_EXE:-true}\" hook post-tool-use", "timeout": 15 }]
       }
     ],

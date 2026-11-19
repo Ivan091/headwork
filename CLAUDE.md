@@ -66,7 +66,7 @@ cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over with
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
-cargo run -p headwork -- shadow-report     # would-deny events by rule id
+cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
 cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
 
@@ -235,6 +235,13 @@ Moving the running root (a store session named `root`, launched by a hot-reload 
 the orchestrator once it starts with `headwork orchestrator`) log every would-deny in the store. On 2026-11-21 read
 `headwork shadow-report`; step 2 (`[hooks] enforce = true`, tick scheduled) waits for the user to review it. Do not
 turn enforcement on before that.
+
+`headwork shadow-report --since <when>` reads only events at or after `<when>` (an RFC 3339 time, a date `YYYY-MM-DD`
+as midnight UTC, or a span back from now such as `24h`, `7d`); text and `--json` both carry the window. `[hooks]
+enforce_rules = ["stop-unfinished", ...]` makes denies by the listed rules block even while `enforce = false` (every other
+rule stays shadow; unknown ids are a config error; the tick's closing and removing still wait for `enforce`);
+`doctor` and `shadow-report` show the list. It is empty by default. A worker that started background work (a background
+`Bash`, `Monitor`, `Agent` or `Workflow`) since its last prompt may stop: it waits for the notification.
 
 ## Code rules
 

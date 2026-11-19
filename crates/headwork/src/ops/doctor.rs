@@ -653,7 +653,21 @@ fn loaded_check(d: &Doctor<'_>) -> Check {
 }
 
 fn enforce_check(config: &Config) -> Check {
-    if config.hooks.enforce {
+    if !config.hooks.enforce && !config.hooks.enforce_rules.is_empty() {
+        let rules: Vec<&str> = config
+            .hooks
+            .enforce_rules
+            .iter()
+            .map(|rule| rule.as_str())
+            .collect();
+        Check::ok(
+            "enforce",
+            format!(
+                "hooks.enforce = false with enforce_rules: denies by {} block the call, every other rule only logs would-deny events",
+                rules.join(", ")
+            ),
+        )
+    } else if config.hooks.enforce {
         Check::ok(
             "enforce",
             "hooks.enforce = true: denies block the call; the tick closes and removes",

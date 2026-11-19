@@ -595,3 +595,20 @@ and the reason.
   worker renamed it. Two finishers no longer run one close: `finish` takes a claim, an exclusive lock on
   `<home>/closing/<task id>.lock` that the system releases when its holder dies; a second finisher logs `close-claimed`
   and leaves. A lock file rather than a store column keeps the schema unchanged and needs no staleness rule.
+- 2026-11-19, stop-unfinished waits on background work. Real logs showed the gate firing on workers that had just started a
+  background `Bash`, a `Monitor`, a background `Agent` or a `Workflow` and were waiting for its notification. The
+  `PostToolUse` hook (matcher widened to `Bash|Monitor|Agent|Task|Workflow`) now records a `tool-used` event with
+  `background: true` for those calls: `Bash` with `run_in_background`, every `Monitor` and `Workflow`, an `Agent` or
+  `Task` with `run_in_background` or whose response says `async_launched`. `turn_so_far` reports it since the last
+  prompt and `StopFacts::waiting_background` lets the stop through, like a running registered job; a plain-text question
+  is still denied. The cost is one extra hook call per `Bash` (it records nothing unless the call is background).
+- 2026-11-19, `shadow-report --since`. The window is an RFC 3339 date and time, a plain `YYYY-MM-DD` (midnight UTC), or a
+  span back from now (`90m`, `24h`, `7d`; units `s`, `m`, `h`, `d`). SQLite's own date parsing reads the absolute
+  forms (offsets included) and writes them in the store's event-time format, so no date crate is added. The report and
+  its JSON carry the window start (`since`), and the header line says "since <instant>".
+- 2026-11-19, `[hooks] enforce_rules`. A list of `RuleId`s (old spellings parse; an unknown id is a config error) whose
+  denies block the call even while `enforce = false`; every other rule stays shadow, and `enforce = true` still blocks
+  all. Only the hooks' block-or-log decision uses it (`HooksConfig::enforces`); the tick's enforcement
+  (closing, removing) stays tied to `enforce`, because a rule list says nothing about it. Listed rules log `deny`
+  instead of `would-deny`. `doctor` names the list in its `enforce` check, `rule test` shows the mode of the rule that
+  fired, and `shadow-report` marks listed rules `[enforced]` (JSON: `enforced`, `enforce_rules`). Default empty.
