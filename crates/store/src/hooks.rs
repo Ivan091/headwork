@@ -49,6 +49,10 @@ pub struct RulesVersion {
 }
 
 /// What a session did since its last prompt.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent fact the stop gate reads"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct TurnSoFar {
     /// It asked with `AskUserQuestion`.
@@ -57,6 +61,8 @@ pub struct TurnSoFar {
     pub messaged: bool,
     /// It reported `done` or `blocked` through the MCP `report` tool.
     pub reported: bool,
+    /// It started background work (a background `Bash`, `Monitor`, `Agent` or `Workflow`) and awaits its notification.
+    pub background: bool,
     /// Stops denied (or that would have been) since the prompt.
     pub stops_denied: u32,
 }
@@ -207,6 +213,33 @@ impl Store {
         )?)
     }
 
+    /// The UTC instant `when` names, as the store writes event times (`2026-11-19T10:00:00.000Z`); `None` when SQLite
+    /// does not read it as a date or date and time, with or without an offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn instant_of(&self, when: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)",
+            params![when],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The UTC instant `seconds` before now, as the store writes event times.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn instant_ago(&self, seconds: u64) -> Result<String, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?1)",
+            params![format!("-{seconds} seconds")],
+            |row| row.get(0),
+        )?)
+    }
+
     /// What the session did since its last prompt.
     ///
     /// # Errors
@@ -238,7 +271,14 @@ impl Store {
             params![session, since, crate::EVENT_REPORT],
             |row| row.get(0),
         )?;
+        let background: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND id > ?2 AND type = ?3
+                 AND json_extract(data, '$.background') = 1)",
+            params![session, since, EVENT_TOOL],
+            |row| row.get(0),
+        )?;
         Ok(TurnSoFar {
+            background,
             reported,
             asked: used("AskUserQuestion")?,
             messaged: used("SendMessage")?,

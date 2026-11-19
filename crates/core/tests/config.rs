@@ -375,3 +375,31 @@ fn the_pane_title_is_a_template_of_name_model_and_effort() {
         "custom"
     );
 }
+
+#[test]
+fn enforce_rules_name_known_rules_and_enforce_only_those() {
+    use headwork_core::RuleId;
+    let listed = "[machine]\nhost = \"wmux\"\n[hooks]\nenforce_rules = [\"stop-unfinished\", \"child-fable\"]\n";
+    let config = Config::parse(listed, "t").unwrap();
+    assert!(config.hooks.enforces(RuleId::StopUnfinished), "listed");
+    assert!(config.hooks.enforces(RuleId::WorkerFable), "old spelling");
+    assert!(
+        !config.hooks.enforces(RuleId::UserOnly),
+        "unlisted stays shadow"
+    );
+    let all = Config::parse("[machine]\nhost = \"wmux\"\n[hooks]\nenforce = true\n", "t").unwrap();
+    assert!(
+        all.hooks.enforces(RuleId::UserOnly),
+        "enforce covers every rule"
+    );
+    assert!(
+        !machine().hooks.enforces(RuleId::UserOnly),
+        "default is shadow"
+    );
+    assert!(machine().hooks.enforce_rules.is_empty(), "default is empty");
+    let unknown = Config::parse(
+        "[machine]\nhost = \"wmux\"\n[hooks]\nenforce_rules = [\"no-such-rule\"]\n",
+        "t",
+    );
+    assert!(unknown.is_err(), "unknown id");
+}

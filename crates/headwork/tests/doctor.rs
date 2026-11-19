@@ -15,6 +15,7 @@ use headwork::ops::shadow::shadow_report;
 use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::host::fake::FakeHost;
+use headwork_core::config::HooksConfig;
 use headwork_core::{Actor, Config, Role};
 use headwork_store::{EVENT_WOULD_DENY, NewSession};
 use serde_json::json;
@@ -303,7 +304,7 @@ fn the_shadow_report_groups_would_denies_by_rule() {
             )
             .unwrap();
     }
-    let report = shadow_report(&store, false).unwrap();
+    let report = shadow_report(&store, &HooksConfig::default(), None).unwrap();
     assert_eq!(report.would_deny, 3, "total");
     assert_eq!(
         report.rules[0].rule, "no_main_commit",
@@ -390,4 +391,92 @@ fn a_broken_claude_state_file_warns_without_its_contents() {
     let check = report.checks.iter().find(|c| c.id == "trust").unwrap();
     assert_eq!(check.status, Status::Warn, "{check:?}");
     assert!(!format!("{check:?}").contains("secret"), "{check:?}");
+}
+
+fn log_would_deny(store: &headwork_store::Store, rule: &str) {
+    store
+        .append_event(
+            Actor::Hook,
+            None,
+            Some("s1"),
+            EVENT_WOULD_DENY,
+            &json!({ "hook": "Stop", "tool": "", "rule": rule, "reason": "r", "input": "x" }),
+        )
+        .unwrap();
+}
+
+#[test]
+fn the_shadow_report_reads_only_the_window_since() {
+    let install = install();
+    let store = install.home.open_store().unwrap();
+    log_would_deny(&store, "stop-unfinished");
+    let hooks = HooksConfig::default();
+    let all = shadow_report(&store, &hooks, None).unwrap();
+    assert_eq!((all.would_deny, all.since), (1, None), "no window");
+    let past = shadow_report(&store, &hooks, Some("2020-01-01")).unwrap();
+    assert_eq!(past.would_deny, 1, "a plain date");
+    assert_eq!(
+        past.since.as_deref(),
+        Some("2020-01-01T00:00:00.000Z"),
+        "normalized"
+    );
+    let offset = shadow_report(&store, &hooks, Some("2020-01-01T02:00:00+02:00")).unwrap();
+    assert_eq!(
+        offset.since.as_deref(),
+        Some("2020-01-01T00:00:00.000Z"),
+        "RFC 3339 offset"
+    );
+    let recent = shadow_report(&store, &hooks, Some("24h")).unwrap();
+    assert_eq!(recent.would_deny, 1, "a relative span");
+    let future = shadow_report(&store, &hooks, Some("2999-01-01")).unwrap();
+    assert_eq!(
+        (future.events, future.would_deny),
+        (0, 0),
+        "nothing before the window"
+    );
+    assert!(
+        shadow_report(&store, &hooks, Some("lately")).is_err(),
+        "not a time"
+    );
+}
+
+#[test]
+fn the_shadow_report_marks_the_rules_that_enforce() {
+    let install = install();
+    let store = install.home.open_store().unwrap();
+    log_would_deny(&store, "stop-unfinished");
+    log_would_deny(&store, "child-edit-outside");
+    let hooks = Config::parse(
+        "[machine]\nhost = \"wmux\"\n[hooks]\nenforce_rules = [\"worker-edit-outside\"]\n",
+        "t",
+    )
+    .unwrap()
+    .hooks;
+    let report = shadow_report(&store, &hooks, None).unwrap();
+    let enforced: Vec<(&str, bool)> = report
+        .rules
+        .iter()
+        .map(|rule| (rule.rule.as_str(), rule.enforced))
+        .collect();
+    assert_eq!(
+        enforced,
+        [("stop-unfinished", false), ("worker-edit-outside", true)],
+        "old spelling reads as the new rule"
+    );
+    assert_eq!(report.enforce_rules, ["worker-edit-outside"], "listed");
+}
+
+#[test]
+fn doctor_names_the_rules_that_enforce() {
+    let install = install();
+    let config = install.home.root().join("config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    write(
+        &config,
+        &format!("{text}\n[hooks]\nenforce_rules = [\"stop-unfinished\"]\n"),
+    );
+    let report = run(&install, &FakeProbe::default());
+    let check = report.checks.iter().find(|c| c.id == "enforce").unwrap();
+    assert_eq!(check.status, Status::Ok, "{check:?}");
+    assert!(check.detail.contains("stop-unfinished"), "{check:?}");
 }

@@ -660,6 +660,16 @@ fn open_ask(store: &mut Store, call: &Call<'_>, tool_input: &Value) -> Result<()
 
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
+    if starts_background_work(tool, call) {
+        store.append_event(
+            Actor::Hook,
+            call.session.task_id,
+            Some(&call.session.id),
+            EVENT_TOOL,
+            &json!({ "tool": tool, "background": true }),
+        )?;
+        return Ok(HookReply::default());
+    }
     if !TRACKED_TOOLS.contains(&tool) {
         return Ok(HookReply::default());
     }
@@ -695,6 +705,32 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     Ok(HookReply::default())
 }
 
+/// What a background `Agent` call's response holds: its status, or the text the harness shows the model.
+const ASYNC_AGENT_MARKS: &[&str] = &["async_launched", "Async agent launched"];
+
+/// Whether the call just started work that runs on and notifies the session when it ends: a `Bash` with
+/// `run_in_background`, a `Monitor`, a `Workflow`, or an `Agent` the model or the harness runs in the background.
+fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
+    let requested = call
+        .input
+        .get("tool_input")
+        .and_then(|input| input.get("run_in_background"))
+        .and_then(Value::as_bool)
+        .unwrap_or_default();
+    match tool {
+        "Bash" => requested,
+        "Monitor" | "Workflow" => true,
+        "Agent" | "Task" => {
+            requested
+                || call.input.get("tool_response").is_some_and(|response| {
+                    let text = response.to_string();
+                    ASYNC_AGENT_MARKS.iter().any(|mark| text.contains(mark))
+                })
+        }
+        _ => false,
+    }
+}
+
 fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
     let turn = store.turn_so_far(&call.session.id)?;
     let transcript_message = if call.text("last_assistant_message").is_none() {
@@ -718,6 +754,7 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
             Some(task) => super::jobs::has_running_job(store, task.id)?,
             None => false,
         },
+        waiting_background: turn.background,
         last_message,
     };
     let decision = check_stop(&facts);
@@ -773,7 +810,7 @@ fn decide(
     let Some(verdict) = decision.verdict() else {
         return Ok(HookReply::default());
     };
-    let enforce = call.env.config.hooks.enforce;
+    let enforce = call.env.config.hooks.enforces(verdict.rule);
     store.append_event(
         Actor::Hook,
         call.session.task_id,

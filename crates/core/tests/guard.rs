@@ -591,6 +591,7 @@ fn stop_table() {
         reported: false,
         keep: false,
         running_job: false,
+        waiting_background: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -684,6 +685,39 @@ fn stop_table() {
 }
 
 #[test]
+fn stop_while_waiting_on_background_work() {
+    let waiting = StopFacts {
+        role: Role::Worker,
+        task: Some(TaskState::Working),
+        blocked_in_row: 0,
+        asked: false,
+        messaged: false,
+        reported: false,
+        keep: false,
+        running_job: false,
+        waiting_background: true,
+        last_message: Some("The build runs in the background."),
+    };
+    assert_eq!(stop(waiting), None, "waiting on background work");
+    assert_eq!(
+        stop(StopFacts {
+            last_message: Some("Waiting for the build, ok?"),
+            ..waiting
+        }),
+        Some(RuleId::StopPlainQuestion),
+        "background work does not excuse a plain question"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            waiting_background: false,
+            ..waiting
+        }),
+        Some(RuleId::StopUnfinished),
+        "without it the stop is unfinished"
+    );
+}
+
+#[test]
 fn stop_while_a_job_runs() {
     let waiting = StopFacts {
         role: Role::Worker,
@@ -694,6 +728,7 @@ fn stop_while_a_job_runs() {
         reported: false,
         keep: false,
         running_job: true,
+        waiting_background: false,
         last_message: Some("Training runs; I will look at the next checkpoint."),
     };
     assert_eq!(stop(waiting), None, "waiting on its own running job");

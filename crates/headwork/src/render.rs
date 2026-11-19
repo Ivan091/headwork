@@ -436,9 +436,13 @@ pub(crate) fn shadowed(report: &ShadowReport) -> String {
     } else {
         "shadow"
     };
+    let window = report
+        .since
+        .as_ref()
+        .map_or_else(String::new, |since| format!(" since {since}"));
     let _ = writeln!(
         text,
-        "{mode}: {} events from {} sessions over {} days ({}), {} would-deny",
+        "{mode}: {} events{window} from {} sessions over {} days ({}), {} would-deny",
         report.events,
         report.sessions,
         report.days.len(),
@@ -451,8 +455,9 @@ pub(crate) fn shadowed(report: &ShadowReport) -> String {
     for rule in &report.rules {
         let _ = writeln!(
             text,
-            "\n{} x{}  {}\n  tools: {}\n  tasks: {}",
+            "\n{}{} x{}  {}\n  tools: {}\n  tasks: {}",
             rule.rule,
+            if rule.enforced { " [enforced]" } else { "" },
             rule.count,
             rule.reason,
             rule.tools.join(", "),

@@ -226,6 +226,10 @@ enum Command {
     },
     /// The would-deny events the hooks logged in shadow mode, by rule id.
     ShadowReport {
+        /// Only events at or after this time: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now
+        /// such as `90m`, `24h`, `7d`.
+        #[arg(long)]
+        since: Option<String>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -530,7 +534,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         }
         Command::Recap { name } => recap_command(&store, &name, out),
         Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
-        Command::ShadowReport { json } => shadow_command(&store, &ctx, json, out),
+        Command::ShadowReport { since, json } => {
+            shadow_command(&store, &ctx, since.as_deref(), json, out)
+        }
         Command::Launch { .. }
         | Command::Park { .. }
         | Command::Resume { .. }
@@ -1171,11 +1177,11 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
             background: probe.background,
         },
     );
-    let mode = if config.hooks.enforce {
-        "enforced"
-    } else {
-        "shadow"
+    let enforced = match &decision {
+        Decision::Deny(verdict) => config.hooks.enforces(verdict.rule),
+        Decision::Allow => config.hooks.enforce,
     };
+    let mode = if enforced { "enforced" } else { "shadow" };
     if json {
         json_out(
             out,
@@ -1289,10 +1295,11 @@ fn doctor_command(
 fn shadow_command(
     store: &Store,
     ctx: &Ctx<'_>,
+    since: Option<&str>,
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    let report = shadow_report(store, ctx.config.hooks.enforce)?;
+    let report = shadow_report(store, &ctx.config.hooks, since)?;
     if json {
         json_out(out, &report)?;
     } else {

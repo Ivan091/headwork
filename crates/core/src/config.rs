@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::MergePolicy;
 use crate::names::ProjectName;
-use crate::vocabulary::Model;
+use crate::vocabulary::{Model, RuleId};
 
 /// Placeholders a command template may use.
 pub const PLACEHOLDERS: &[&str] = &["slug", "branch", "main", "worktree", "out", "temp"];
@@ -392,6 +392,9 @@ impl Default for ModelsConfig {
 pub struct HooksConfig {
     /// Denies block the call. Off is shadow mode: every hook decides and logs what it would deny, and allows.
     pub enforce: bool,
+    /// Rules whose denies block the call even while `enforce` is off; every other rule stays in shadow mode. With
+    /// `enforce` on every rule blocks and this list changes nothing.
+    pub enforce_rules: Vec<RuleId>,
     /// The plugin folder the launcher passes to `claude --plugin-dir`; none starts sessions without the plugin, and
     /// the launcher then reports the session as started itself.
     pub plugin_dir: Option<String>,
@@ -407,10 +410,19 @@ pub struct HooksConfig {
     pub file_window_secs: u32,
 }
 
+impl HooksConfig {
+    /// Whether a deny by this rule blocks the call: everything with `enforce`, else only the listed rules.
+    #[must_use]
+    pub fn enforces(&self, rule: RuleId) -> bool {
+        self.enforce || self.enforce_rules.contains(&rule)
+    }
+}
+
 impl Default for HooksConfig {
     fn default() -> Self {
         Self {
             enforce: false,
+            enforce_rules: Vec::new(),
             plugin_dir: None,
             writable: vec![
                 "~/.claude/projects".to_owned(),
