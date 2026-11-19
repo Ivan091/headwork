@@ -404,6 +404,9 @@ pub struct HooksConfig {
     /// deprecated spelling.
     #[serde(alias = "root_writable")]
     pub orchestrator_writable: Vec<String>,
+    /// Notes repositories the orchestrator may commit and push in, such as the folder it runs in when that holds only
+    /// briefs and notes; give it write access with `orchestrator_writable` too.
+    pub orchestrator_repos: Vec<String>,
     /// A push notification counts for an ask within this many seconds.
     pub push_window_secs: u32,
     /// A sent file counts for a review ask within this many seconds.
@@ -429,6 +432,7 @@ impl Default for HooksConfig {
                 "~/.claude/plans".to_owned(),
             ],
             orchestrator_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
+            orchestrator_repos: Vec::new(),
             push_window_secs: 120,
             file_window_secs: 300,
         }
@@ -548,6 +552,10 @@ pub struct ProjectConfig {
     /// Narrows the models.
     #[serde(default)]
     pub models: Option<ProjectModels>,
+    /// Workers of this project may run `headwork install` after their pull request merged: the project is headwork
+    /// itself.
+    #[serde(default)]
+    pub install: bool,
 }
 
 /// `review` of a project.

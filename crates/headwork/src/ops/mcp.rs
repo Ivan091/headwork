@@ -268,6 +268,23 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "worktree_add",
+        description: "Make a helper worktree for one part of your task, beside your own, with the project's worktree \
+                      command: its slug is also its branch. It is writable for you, and headwork removes it when your \
+                      task closes (one that still holds work stays for the user). Use it for parts you or your \
+                      subagents build separately; never make worktrees by hand. Calling it again with the same slug \
+                      returns the same one.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "slug": { "type": "string", "description": "A kebab-case name for the part, such as `press-shapes`." },
+                }),
+                &["slug"],
+            )
+        },
+    },
+    ToolDef {
         name: "job_status",
         description: "The registered jobs that are not over: your own for a worker, all for the orchestrator.",
         roles: BOTH,
@@ -523,6 +540,11 @@ impl<'a> Server<'a> {
                 )?)
             }
             "helper_tab" => self.helper_tab(&session, args),
+            "worktree_add" => {
+                let task = self.own_task(&session)?;
+                let slug = text(args, "slug")?;
+                to_text(&super::helpers::add(self.store, &self.env, &task, &slug)?)
+            }
             "job_status" => self.job_status(&session, role),
             "job_stop" => {
                 let task = self.own_task(&session)?;

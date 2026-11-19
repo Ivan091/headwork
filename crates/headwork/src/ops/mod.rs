@@ -3,6 +3,7 @@
 pub mod close;
 pub mod doctor;
 pub mod effort;
+pub mod helpers;
 pub mod hook;
 pub mod import;
 pub mod install;
@@ -78,14 +79,23 @@ impl Env<'_> {
     ///
     /// Fails when the project left the config or its `worktree_path` template is bad.
     pub fn task_dir(&self, task: &Task) -> Result<PathBuf> {
-        let main = self.main_path(task)?;
         if task.in_main {
-            return Ok(main);
+            return self.main_path(task);
         }
-        let main_text = slashed(&main);
+        self.worktree_dir(task, task.slug().as_str())
+    }
+
+    /// The folder the project's `worktree_path` gives a worktree whose slug and branch are `slug`: the task's own, or a
+    /// helper worktree it makes for a part of its work.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the project is not configured or the template is bad.
+    pub fn worktree_dir(&self, task: &Task, slug: &str) -> Result<PathBuf> {
+        let main_text = slashed(&self.main_path(task)?);
         let vars = TaskVars {
-            slug: task.slug().as_str(),
-            branch: task.slug().as_str(),
+            slug,
+            branch: slug,
             main: &main_text,
             worktree: "",
         };

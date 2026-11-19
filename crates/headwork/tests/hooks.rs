@@ -293,6 +293,43 @@ fn shadow_mode_logs_what_it_would_deny_and_allows() {
 }
 
 #[test]
+fn a_worker_writes_its_helper_worktrees_and_subagent_worktrees_but_not_others() {
+    let mut w = world("", false);
+    w.start();
+    let helper = w.dir.path().join("demo-sand-part");
+    std::fs::create_dir(&helper).unwrap();
+    let helper_text = helper.display().to_string().replace('\\', "/");
+    w.store
+        .record_helper_worktree(w.task.id, &helper_text, "sand-part", Actor::Worker)
+        .unwrap();
+    let subagent = w
+        .dir
+        .path()
+        .join("demo")
+        .join(".claude")
+        .join("worktrees")
+        .join("agent-1")
+        .join("a.rs");
+    let other = w.dir.path().join("demo-other").join("a.rs");
+    for path in [helper.join("a.rs"), subagent] {
+        w.pre(
+            "Write",
+            &json!({ "file_path": path.display().to_string(), "content": "x" }),
+        );
+    }
+    assert!(w.denies().is_empty(), "both writable: {:?}", w.denies());
+    w.pre(
+        "Write",
+        &json!({ "file_path": other.display().to_string(), "content": "x" }),
+    );
+    assert_eq!(
+        w.denies(),
+        [("would-deny".to_owned(), "worker-edit-outside".to_owned())],
+        "another folder of the project is not"
+    );
+}
+
+#[test]
 fn a_worker_closes_only_itself_and_writes_git_only_in_its_folders() {
     let mut w = world("", false);
     w.start();
@@ -894,6 +931,7 @@ fn mcp_tools_follow_the_role() {
             "job_register",
             "job_start",
             "helper_tab",
+            "worktree_add",
             "job_status",
             "job_stop",
             "job_forget"
