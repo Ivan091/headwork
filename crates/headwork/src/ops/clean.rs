@@ -20,7 +20,7 @@ use serde::Serialize;
 use super::{Env, slashed};
 
 /// The folder, inside a main checkout, where Claude Code puts its agents' worktrees.
-pub const AGENT_WORKTREES: &str = ".claude/worktrees/";
+pub const AGENT_WORKTREES: &str = ".claude/worktrees";
 
 /// What `clean` is asked to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -228,9 +228,8 @@ fn clean_project(
 /// Whether `path` is a Claude Code agent worktree inside the main checkout.
 #[must_use]
 pub fn is_agent_worktree(main: &Path, path: &Path) -> bool {
-    let norm = |p: &Path| slashed(p).trim_end_matches('/').to_lowercase();
-    let prefix = format!("{}/{AGENT_WORKTREES}", norm(main));
-    norm(path).starts_with(&prefix)
+    path.parent()
+        .is_some_and(|parent| same_path(parent, &main.join(AGENT_WORKTREES)))
 }
 
 struct Recorded<'a> {

@@ -17,6 +17,7 @@ use headwork::ops::clean::{
 use headwork::ops::close::close;
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::host::fake::FakeHost;
+use headwork_adapters::worktree::same_path;
 use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest, TaskState,
 };
@@ -26,7 +27,8 @@ const EXE: &str = "S:/bin/headwork.exe";
 const DEAD_PID: u32 = 999_999;
 
 struct World {
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
+    root: PathBuf,
     main: PathBuf,
     home: Home,
     config: Config,
@@ -73,7 +75,9 @@ fn branch_exists(main: &Path, branch: &str) -> bool {
 
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let main = dir.path().join("demo");
+    let long = std::fs::canonicalize(dir.path()).unwrap();
+    let root = PathBuf::from(long.display().to_string().trim_start_matches(r"\\?\"));
+    let main = root.join("demo");
     std::fs::create_dir(&main).unwrap();
     git(&main, &["init", "-q", "-b", "master"]);
     git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
@@ -84,15 +88,16 @@ fn world() -> World {
          deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
-    let home = Home::at(Some(dir.path().join("home")))
+    let home = Home::at(Some(root.join("home")))
         .unwrap()
-        .with_claude_json(dir.path().join(".claude.json"));
+        .with_claude_json(root.join(".claude.json"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
-    let brief = dir.path().join("brief.md");
+    let brief = root.join("brief.md");
     std::fs::write(&brief, "# Task\n").unwrap();
     World {
-        dir,
+        _dir: dir,
+        root,
         main,
         home,
         config,
@@ -143,7 +148,7 @@ fn closed_with_worktree(w: &mut World, slug: &str) -> PathBuf {
     let env = env!(w);
     let report = close(&mut w.store, &env, task.id, None).unwrap();
     assert_eq!(report.state, TaskState::Closed, "{report:?}");
-    let worktree = w.dir.path().join(format!("demo-{slug}"));
+    let worktree = w.root.join(format!("demo-{slug}"));
     assert!(worktree.is_dir(), "kept");
     worktree
 }
@@ -158,7 +163,7 @@ fn entry<'a>(report: &'a CleanReport, path: &Path) -> &'a WorktreeClean {
     report.projects[0]
         .worktrees
         .iter()
-        .find(|worktree| worktree.path.eq_ignore_ascii_case(&wanted))
+        .find(|worktree| same_path(Path::new(&worktree.path), path))
         .unwrap_or_else(|| panic!("{wanted} not in {report:?}"))
 }
 
@@ -216,7 +221,7 @@ fn a_dirty_worktree_and_a_live_tasks_worktree_are_left_with_their_reasons() {
     let dirty = closed_with_worktree(&mut w, "sand");
     std::fs::write(dirty.join("work.txt"), "unsaved").unwrap();
     spawn_task(&mut w, "rock", false);
-    let live = w.dir.path().join("demo-rock");
+    let live = w.root.join("demo-rock");
     let report = run(&mut w, false, false);
     assert!(
         left_reason(entry(&report, &dirty)).contains("uncommitted"),
@@ -233,7 +238,7 @@ fn a_dirty_worktree_and_a_live_tasks_worktree_are_left_with_their_reasons() {
 #[test]
 fn a_worktree_no_task_owns_is_listed_and_left() {
     let mut w = world();
-    let other = w.dir.path().join("demo-by-hand");
+    let other = w.root.join("demo-by-hand");
     let text = other.display().to_string().replace('\\', "/");
     git(&w.main, &["worktree", "add", "-q", "--detach", &text]);
     let report = run(&mut w, false, false);
