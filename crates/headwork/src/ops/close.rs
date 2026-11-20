@@ -81,6 +81,75 @@ pub fn close(
     end_closing(store, env, id, own_session)
 }
 
+/// Finishes a task stuck in `closing` whose pull requests are all merged and that runs no job.
+///
+/// The close runs once more, and a worktree the remove command still refuses is recorded `kept` instead of blocking,
+/// left on disk for `headwork clean` or the user, never deleted. A pane or a process that is still there keeps
+/// refusing. Only the orchestrator or the user forces.
+///
+/// # Errors
+///
+/// Fails, changing nothing, when the actor is a worker, the task is not `closing`, a pull request of it is not merged
+/// or none is found, or a job of it runs; also when the store or the git host fails.
+pub fn close_forced(
+    store: &mut Store,
+    env: &Env<'_>,
+    git: &dyn GitHost,
+    id: TaskId,
+) -> Result<CloseReport> {
+    if env.actor == Actor::Worker {
+        bail!("a worker does not force-close a task: ask the orchestrator");
+    }
+    let task = store.task(id)?;
+    if task.state != TaskState::Closing {
+        bail!(
+            "`force` is for a task stuck in closing; {} is {}: close it without `force`",
+            task.name,
+            task.state
+        );
+    }
+    let found = super::prs::lookup(store, env, git, &task)?;
+    if found.seen.is_empty() {
+        bail!(
+            "`force` closes only a task whose pull requests are all merged, and {} has none: close it without `force`",
+            task.name
+        );
+    }
+    if let Some(pr) = found
+        .seen
+        .iter()
+        .find(|pr| pr.state != headwork_adapters::git::PrState::Merged)
+    {
+        bail!(
+            "`force` closes only a task whose pull requests are all merged; {} is {}",
+            pr.url,
+            pr.state.as_str()
+        );
+    }
+    if let Some(job) = store
+        .open_jobs(Some(id))?
+        .iter()
+        .find(|job| super::jobs::liveness(job).is_none_or(|now| now.is_alive()))
+    {
+        bail!(
+            "`force` closes only a task with no live job; job {} (`{}`) still runs: stop it first",
+            job.id,
+            job.label
+        );
+    }
+    store.append_event(
+        env.actor,
+        Some(id),
+        None,
+        "force-finish",
+        &serde_json::json!({ "prs": found.seen.iter().map(|pr| pr.url.as_str()).collect::<Vec<_>>() }),
+    )?;
+    let Some(_claim) = claim_close(env, id)? else {
+        return report(store, id, Some(ANOTHER_FINISHER.to_owned()));
+    };
+    finish_claimed(store, env, id, true)
+}
+
 /// Closes a worker's own task through the checked path.
 ///
 /// A merged pull request moves it through `in_review` and
@@ -309,7 +378,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseRepor
         )?;
         return report(store, id, Some(ANOTHER_FINISHER.to_owned()));
     };
-    finish_claimed(store, env, id)
+    finish_claimed(store, env, id, false)
 }
 
 /// What a finisher reports when another one already runs the same close.
@@ -337,7 +406,12 @@ fn claim_close(env: &Env<'_>, id: TaskId) -> Result<Option<std::fs::File>> {
     }
 }
 
-fn finish_claimed(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseReport> {
+fn finish_claimed(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    force: bool,
+) -> Result<CloseReport> {
     let task = store.task(id)?;
     match task.state {
         TaskState::Closed => return report(store, id, None),
@@ -379,7 +453,12 @@ fn finish_claimed(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseR
     let worktree = if processes_gone {
         store.end_task_sessions(id, env.actor)?;
         super::helpers::remove_all(store, env, id)?;
-        remove_worktree(store, env, id, false)?
+        let end = remove_worktree(store, env, id, false)?;
+        if force && end == WorktreeEnd::Present {
+            keep_worktree(store, env, id)?
+        } else {
+            end
+        }
     } else {
         WorktreeEnd::Present
     };
@@ -393,6 +472,20 @@ fn finish_claimed(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseR
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Records a worktree the remove command refused as `kept`, for a forced close: it stays on disk for `headwork clean`
+/// or the user.
+fn keep_worktree(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<WorktreeEnd> {
+    store.set_worktree_state(id, "kept", env.actor)?;
+    store.append_event(
+        env.actor,
+        Some(id),
+        None,
+        "worktree-kept",
+        &serde_json::json!({ "reason": "forced close: left on disk for `headwork clean` or the user" }),
+    )?;
+    Ok(WorktreeEnd::Kept)
 }
 
 /// Ends the task's open jobs: a closed task owns nothing, so a job still running is stopped and every open job is

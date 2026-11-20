@@ -56,6 +56,27 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
     ))
 }
 
+fn seconds(value: Option<i64>) -> Result<Option<u64>, StoreError> {
+    value
+        .map(|n| u64::try_from(n).map_err(|_| StoreError::OutOfRange(n)))
+        .transpose()
+}
+
+/// A session that ended, as `reap` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedSession {
+    /// Its Remote Control name: the task's name, or the orchestrator's.
+    pub name: String,
+    /// The launcher process.
+    pub launcher_pid: Option<u32>,
+    /// The `claude` process.
+    pub claude_pid: Option<u32>,
+    /// When it started, in seconds since the unix epoch.
+    pub started: Option<u64>,
+    /// When it ended, in seconds since the unix epoch.
+    pub ended: Option<u64>,
+}
+
 fn pid(value: Option<i64>) -> Result<Option<u32>, StoreError> {
     value
         .map(|n| u32::try_from(n).map_err(|_| StoreError::OutOfRange(n)))
@@ -152,6 +173,41 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|(id, claude, launcher)| Ok((id, pid(claude)?, pid(launcher)?)))
+            .collect()
+    }
+
+    /// Every session that ended or was found gone, oldest first, with its processes and times, for `reap`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn ended_sessions(&self) -> Result<Vec<EndedSession>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT rc_name, launcher_pid, claude_pid, CAST(strftime('%s', started_at) AS INTEGER),
+                    CAST(strftime('%s', ended_at) AS INTEGER)
+             FROM sessions WHERE state IN ('ended', 'gone') ORDER BY started_at, rowid",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(name, launcher, claude, started, ended)| {
+                Ok(EndedSession {
+                    name,
+                    launcher_pid: pid(launcher)?,
+                    claude_pid: pid(claude)?,
+                    started: seconds(started)?,
+                    ended: seconds(ended)?,
+                })
+            })
             .collect()
     }
 

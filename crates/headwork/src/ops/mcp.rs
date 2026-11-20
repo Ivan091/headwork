@@ -17,7 +17,7 @@ use headwork_core::{
 use headwork_store::{NewPr, NewRecap, Store, StoreError, Task};
 use serde_json::{Value, json};
 
-use super::close::{begin_own_close, close, end_closing};
+use super::close::{begin_own_close, close, close_forced, end_closing};
 use super::jobs::{self, Registration};
 use super::rules;
 use super::spawn::{SpawnRequest, pump, spawn};
@@ -136,9 +136,24 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "close",
-        description: "Close a task without dropping it: a keep task, or one stuck after done.",
+        description: concat!(
+            "Close a task without dropping it: a keep task, or one stuck after done. `force` finishes a task stuck in ",
+            "closing whose pull requests are all merged and that has no live job: a worktree the remove command refuses ",
+            "is then kept on disk instead of blocking the close. It is refused for any other task.",
+        ),
         roles: ORCHESTRATOR,
-        schema: || object(json!({ "name": { "type": "string" } }), &["name"]),
+        schema: || {
+            object(
+                json!({
+                    "name": { "type": "string" },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Finish a task stuck in closing whose pull requests are all merged and that has no live job.",
+                    },
+                }),
+                &["name"],
+            )
+        },
     },
     ToolDef {
         name: "queue",
@@ -166,6 +181,21 @@ const TOOLS: &[ToolDef] = &[
                     "dry_run": { "type": "boolean", "description": "Report the plan and change nothing." },
                     "gc": { "type": "boolean", "description": "Also run `git gc` where the main checkout is quiet." },
                 }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
+        name: "reap",
+        description: concat!(
+            "End what ended sessions left running (the processes their launcher and claude started) and orphaned tail ",
+            "and bash idle for over 10 minutes; never claude, me-studio, headwork or a registered job, nor what they ",
+            "started. Lists what it ended and what it left. Use it for orphan processes instead of handing kills to the user.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({ "dry_run": { "type": "boolean", "description": "Report what would be ended and end nothing." } }),
                 &[],
             )
         },
@@ -542,6 +572,15 @@ impl<'a> Server<'a> {
                 };
                 to_text(&super::clean::clean(self.store, &self.env, options)?)
             }
+            "reap" => {
+                let options = super::reap::ReapOptions {
+                    dry_run: args
+                        .get("dry_run")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                };
+                to_text(&super::reap::reap(self.store, &self.env, options)?)
+            }
             "rules" => to_text(&self.store.active_rules()?),
             "rule_add" => self.rule_add(args),
             "rule_retire" => self.rule_retire(args),
@@ -857,7 +896,11 @@ impl<'a> Server<'a> {
 
     fn close_task(&mut self, args: &Value) -> Result<String> {
         let task = self.named(args)?;
-        let report = close(self.store, &self.env, task.id, None)?;
+        let report = if args.get("force").and_then(Value::as_bool).unwrap_or(false) {
+            close_forced(self.store, &self.env, self.git, task.id)?
+        } else {
+            close(self.store, &self.env, task.id, None)?
+        };
         pump(self.store, &self.env)?;
         to_text(&report)
     }

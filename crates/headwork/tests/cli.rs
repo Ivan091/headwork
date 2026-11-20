@@ -263,3 +263,22 @@ fn root_is_a_hidden_alias_of_orchestrator() {
     assert!(stdout(&old).contains("--name <NAME>"), "{}", stdout(&old));
     assert_eq!(stdout(&old), stdout(&new), "the same command");
 }
+
+#[test]
+fn reap_dry_run_ends_nothing_and_reports_its_plan() {
+    let home = home_with_fixture();
+    let output = headwork(home.path(), &["reap", "--dry-run", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(json["dry_run"], true, "dry run");
+    let ended = json["ended"].as_array().unwrap();
+    assert!(
+        ended.iter().all(|p| p["outcome"]["outcome"] == "would_end"),
+        "nothing ended: {json}"
+    );
+    let text = stdout(&headwork(home.path(), &["reap", "--dry-run"]));
+    assert!(
+        text.starts_with("nothing to reap") || text.starts_with("would end"),
+        "{text}"
+    );
+}

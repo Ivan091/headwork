@@ -7,13 +7,16 @@ use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::import::ImportReport;
 use headwork::ops::install::InstallReport;
 use headwork::ops::park::{ParkReport, RecapSource};
+use headwork::ops::reap::{Outcome as ReapOutcome, ReapReport};
 use headwork::ops::reload::{self, Freshness, SessionBuild};
 use headwork::ops::resume::{ResumeReport, TaskOutcome};
+use headwork::ops::schedule::{Change, ScheduleReport};
 use headwork::ops::shadow::ShadowReport;
 use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::tick::TickReport;
 use headwork_core::PlaceKind;
+use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
@@ -520,6 +523,82 @@ pub(crate) fn cleaned(report: &CleanReport) -> String {
             };
             let _ = writeln!(text, "  {line}");
         }
+    }
+    text
+}
+
+/// What `reap` ended, or would end, and the leftovers it left running.
+#[must_use]
+pub(crate) fn reaped(report: &ReapReport) -> String {
+    let mut text = String::new();
+    let verb = if report.dry_run { "would end" } else { "ended" };
+    if report.ended.is_empty() {
+        let _ = writeln!(text, "nothing to reap");
+    } else {
+        let _ = writeln!(text, "{verb} {} processes", report.ended.len());
+    }
+    for reaped in &report.ended {
+        let why = match &reaped.why {
+            ReapReason::Session { name } => format!("left by {name}"),
+            ReapReason::Orphan => "orphaned and idle".to_owned(),
+        };
+        let outcome = match &reaped.outcome {
+            ReapOutcome::WouldEnd | ReapOutcome::Ended => String::new(),
+            ReapOutcome::Gone => " (already gone)".to_owned(),
+            ReapOutcome::Failed { error } => format!(" (failed: {error})"),
+        };
+        let _ = writeln!(
+            text,
+            "  {:>6} {:<16} {why}{outcome}",
+            reaped.pid, reaped.image
+        );
+    }
+    if !report.spared.is_empty() {
+        let _ = writeln!(text, "left running:");
+    }
+    for spared in &report.spared {
+        let why = match &spared.why {
+            Spare::Protected {
+                session: Some(name),
+            } => {
+                format!(
+                    "left by {name}, but is, runs under or started claude, me-studio, headwork or a job"
+                )
+            }
+            Spare::Protected { session: None } => {
+                "orphaned, but is, runs under or started claude, me-studio, headwork or a job"
+                    .to_owned()
+            }
+            Spare::RunsOthers => "orphaned shell running other programs".to_owned(),
+            Spare::Busy => "orphaned shell, not idle for 10 minutes".to_owned(),
+        };
+        let _ = writeln!(text, "  {:>6} {:<16} {why}", spared.pid, spared.image);
+    }
+    if !report.shells_judged {
+        let _ = writeln!(
+            text,
+            "orphaned shells not judged: Git Bash's process list (`ps -el`) could not be read"
+        );
+    }
+    text
+}
+
+/// What `tick --install` or `--uninstall` did.
+#[must_use]
+pub(crate) fn scheduled(report: &ScheduleReport) -> String {
+    let what = match report.change {
+        Change::Created => "created",
+        Change::Replaced => "replaced",
+        Change::Removed => "removed",
+        Change::Absent => "was not there; nothing removed",
+    };
+    let mut text = format!("scheduled task \"{}\" {what}\n", report.task);
+    if let Some(command) = &report.command {
+        let _ = writeln!(
+            text,
+            "  every {} minutes, current user: {command}",
+            headwork::ops::schedule::EVERY_MINUTES
+        );
     }
     text
 }

@@ -31,7 +31,7 @@ pub const BUILD_TOOLS: &[&str] = &[
 const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
 
 /// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user. A
-/// worker may run only `close` of its own task among them.
+/// worker may run only `close` of its own task and `reap --dry-run` among them.
 pub const ADMIN_COMMANDS: &[&str] = &[
     "spawn",
     "queue",
@@ -48,6 +48,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "finish",
     "exited",
     "install",
+    "reap",
 ];
 
 /// Git subcommands that change a repository, its index or its working tree whatever their arguments.
@@ -470,6 +471,9 @@ fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
         return None;
     }
     if sub == "install" && scope.may_install {
+        return None;
+    }
+    if sub == "reap" && args.iter().any(|arg| arg == "--dry-run") {
         return None;
     }
     Some(Decision::deny(

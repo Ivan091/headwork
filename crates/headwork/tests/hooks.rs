@@ -988,6 +988,7 @@ fn mcp_tools_follow_the_role() {
             "close",
             "queue",
             "clean",
+            "reap",
             "rules",
             "rule_add",
             "rule_retire",

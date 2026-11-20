@@ -194,3 +194,27 @@ fn identify_names_a_running_process_and_nothing_once_it_ended() {
     assert_eq!(identify(pid), None, "gone");
     assert_eq!(liveness(pid, Some(&found), &argv), Liveness::Gone, "gone");
 }
+
+#[test]
+fn git_bash_ps_links_each_shell_to_its_git_bash_parent() {
+    let text = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+    50013       1   50013      37324  ?         197609 09:16:04 /usr/bin/bash
+S   50014   50013   50013      45556  ?         197609 09:16:04 /usr/bin/bash
+    50097   50014   50013      52564  ?         197609 09:16:04 /s/Code/me-sim/runs/bin/cars-rl-gpu
+    50200   49999   50200      11111  ?         197609 09:16:04 /usr/bin/tail
+";
+    let parents = headwork_adapters::proc::parse_git_bash_ps(text);
+    assert_eq!(
+        parents.get(&37324),
+        Some(&None),
+        "a parent outside Git Bash"
+    );
+    assert_eq!(
+        parents.get(&45556),
+        Some(&Some(37324)),
+        "a status letter first"
+    );
+    assert_eq!(parents.get(&52564), Some(&Some(45556)), "a Windows program");
+    assert_eq!(parents.get(&11111), Some(&None), "a parent that ended");
+    assert_eq!(parents.len(), 4, "the header is skipped: {parents:?}");
+}

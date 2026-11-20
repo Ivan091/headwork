@@ -989,3 +989,99 @@ fn forgetting_a_job_touches_no_process() {
     other.kill().unwrap();
     other.wait().unwrap();
 }
+
+fn merged_pr(state: headwork_adapters::git::PrState) -> headwork_adapters::git::PrInfo {
+    headwork_adapters::git::PrInfo {
+        repo: "acme/demo".to_owned(),
+        number: 7,
+        url: "https://github.com/acme/demo/pull/7".to_owned(),
+        state,
+    }
+}
+
+#[test]
+fn force_finishes_a_stuck_close_by_keeping_the_refused_worktree() {
+    use headwork::ops::close::close_forced;
+    use headwork_adapters::git::{FakeGit, PrState};
+    let mut w = world_removing(10, "echo not merged into master >&2; exit 1");
+    let (task, _) = spawn_task(&mut w, "worked", false, false);
+    let dir = w.dir.path().join("demo-worked");
+    git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
+    let env = env!(w);
+    let git_host = FakeGit::new();
+    let refused = close_forced(&mut w.store, &env, &git_host, task.id).unwrap_err();
+    assert!(
+        refused.to_string().contains("stuck in closing"),
+        "{refused}"
+    );
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "stuck: {report:?}");
+    let none = close_forced(&mut w.store, &env, &git_host, task.id).unwrap_err();
+    assert!(none.to_string().contains("has none"), "{none}");
+    git_host.set("worked", merged_pr(PrState::Open));
+    let open = close_forced(&mut w.store, &env, &git_host, task.id).unwrap_err();
+    assert!(open.to_string().contains("is open"), "{open}");
+    assert_eq!(
+        w.store.task(task.id).unwrap().state,
+        TaskState::Closing,
+        "unchanged"
+    );
+    git_host.set("worked", merged_pr(PrState::Merged));
+    let report = close_forced(&mut w.store, &env, &git_host, task.id).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(dir.exists(), "the worktree stays on disk");
+    let row = w.store.worktree_of(task.id).unwrap().unwrap();
+    assert_eq!(row.state, "kept", "recorded kept");
+    let kinds = event_kinds(&w.store, &task);
+    for kind in ["force-finish", "worktree-kept"] {
+        assert!(kinds.iter().any(|k| k == kind), "{kind} in {kinds:?}");
+    }
+}
+
+#[test]
+fn force_is_refused_while_a_job_runs_or_for_a_worker() {
+    use headwork::ops::close::close_forced;
+    use headwork_adapters::git::{FakeGit, PrState};
+    let mut w = world_removing(10, "echo not merged into master >&2; exit 1");
+    let (task, _) = spawn_task(&mut w, "worked", false, false);
+    let dir = w.dir.path().join("demo-worked");
+    git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
+    let env = env!(w);
+    close(&mut w.store, &env, task.id, None).unwrap();
+    let argv = vec!["train".to_owned()];
+    w.store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: None,
+                project: "demo",
+                label: "training",
+                park_policy: ParkPolicy::Rerun,
+                argv: &argv,
+                cwd: ".",
+                pid: None,
+                identity: None,
+                checkpoint_path: None,
+                heavy: false,
+                restart: true,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let git_host = FakeGit::new();
+    git_host.set("worked", merged_pr(PrState::Merged));
+    let job = close_forced(&mut w.store, &env, &git_host, task.id).unwrap_err();
+    assert!(job.to_string().contains("no live job"), "{job}");
+    let worker = Env {
+        actor: Actor::Worker,
+        ..env!(w)
+    };
+    let refused = close_forced(&mut w.store, &worker, &git_host, task.id).unwrap_err();
+    assert!(refused.to_string().contains("worker"), "{refused}");
+    assert_eq!(
+        w.store.task(task.id).unwrap().state,
+        TaskState::Closing,
+        "unchanged"
+    );
+}

@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
 use headwork::ops::clean::{CleanOptions, clean};
-use headwork::ops::close::{CloseReport, close, close_own, finish_after, reap};
+use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
@@ -24,6 +24,7 @@ use headwork::ops::launch::{
 };
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
+use headwork::ops::reap::{ReapOptions, reap as reap_processes};
 use headwork::ops::relay::Relay;
 use headwork::ops::reload;
 use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
@@ -86,6 +87,10 @@ enum Command {
     Close {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`.
         name: String,
+        /// Finish a task stuck in `closing` whose pull requests are all merged and that has no live job; a worktree the
+        /// remove command refuses is kept on disk instead of blocking.
+        #[arg(long)]
+        force: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -106,8 +111,15 @@ enum Command {
         json: bool,
     },
     /// Reconcile the store with reality: panes, processes, pull requests, worktrees, disks, runaway files, stuck
-    /// sessions and asks. Meant to run every minute from a scheduler.
+    /// sessions and asks. Meant to run every few minutes from a scheduler.
     Tick {
+        /// Create (or replace) the Windows scheduled task "headwork tick", every 5 minutes for the current user, and run
+        /// no tick. Only after the user's `Allow` tap.
+        #[arg(long, conflicts_with = "uninstall")]
+        install: bool,
+        /// Remove the Windows scheduled task "headwork tick", and run no tick.
+        #[arg(long)]
+        uninstall: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -234,6 +246,17 @@ enum Command {
         /// Also run plain `git gc` in each main checkout where no main-only job or task runs.
         #[arg(long)]
         gc: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// End what ended sessions left running (the processes their launcher and `claude` started) and orphaned `tail`
+    /// and `bash` idle for over 10 minutes. Never `claude`, `me-studio`, `headwork` or a registered job, nor what they
+    /// started.
+    Reap {
+        /// Print what would be ended and end nothing.
+        #[arg(long)]
+        dry_run: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -429,6 +452,11 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Install { dir, json } => return install_command(&dir, json, out),
+        Command::Tick {
+            install,
+            uninstall,
+            json,
+        } if install || uninstall => return schedule_command(install, json, out),
         Command::Rule {
             action:
                 RuleAction::Test {
@@ -522,7 +550,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Retitle { .. }
         | Command::Recap { .. }
         | Command::ShadowReport { .. }
-        | Command::Clean { .. }) => other,
+        | Command::Clean { .. }
+        | Command::Reap { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -541,8 +570,10 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
-        Command::Close { name, json } => close_command(&mut store, &ctx, &name, json, out),
-        Command::Tick { json } => tick_command(&mut store, &ctx, json, out),
+        Command::Close { name, force, json } => {
+            close_command(&mut store, &ctx, &name, force, json, out)
+        }
+        Command::Tick { json, .. } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
         Command::Job {
             action: JobAction::Forget { id, reason },
@@ -558,6 +589,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         }
         Command::Clean { dry_run, gc, json } => {
             clean_command(&mut store, &ctx, CleanOptions { dry_run, gc }, json, out)
+        }
+        Command::Reap { dry_run, json } => {
+            reap_command(&mut store, &ctx, ReapOptions { dry_run }, json, out)
         }
         Command::Launch { .. }
         | Command::Park { .. }
@@ -888,6 +922,7 @@ fn close_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
     name: &str,
+    force: bool,
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
@@ -901,7 +936,9 @@ fn close_command(
         None => false,
     };
     let report: CloseReport = ctx.with_actor(actor, |env| {
-        let report = if actor == Actor::Worker && own_task {
+        let report = if force {
+            close_forced(store, env, &Gh::default(), task.id)?
+        } else if actor == Actor::Worker && own_task {
             close_own(
                 store,
                 env,
@@ -1273,6 +1310,24 @@ fn tick_command(
     Ok(ExitCode::SUCCESS)
 }
 
+fn schedule_command(install: bool, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::schedule::{self, Schtasks};
+    let report = if install {
+        let home = Home::locate()?;
+        let installed = home.expand("~/.local/bin/headwork.exe");
+        let current = std::env::current_exe().context("finding the headwork program")?;
+        schedule::install(&Schtasks, &schedule::program(&installed, &current))?
+    } else {
+        schedule::uninstall(&Schtasks)?
+    };
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::scheduled(&report).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn launch_command(home: &Home, task: i64, flags: (bool, bool, bool)) -> Result<ExitCode> {
     let (resume, fresh, crash) = flags;
     let mode = match (resume, fresh) {
@@ -1328,6 +1383,27 @@ fn clean_command(
         json_out(out, &report)?;
     } else {
         out.write_all(render::cleaned(&report).as_bytes())?;
+    }
+    Ok(if report.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn reap_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    options: ReapOptions,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let actor = Identity::from_env().actor();
+    let report = ctx.with_actor(actor, |env| reap_processes(store, env, options))?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::reaped(&report).as_bytes())?;
     }
     Ok(if report.failed() {
         ExitCode::FAILURE
