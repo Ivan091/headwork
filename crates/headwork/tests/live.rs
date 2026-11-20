@@ -173,6 +173,7 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
             brief: &brief,
             depends_on: None,
             permission_mode: PermissionMode::Auto,
+            allow_ask: &[],
         };
         spawn(store, &env, &request).unwrap().0
     };
@@ -317,6 +318,7 @@ fn open_two(layout: &str) -> Vec<(String, Shape)> {
             brief: &brief,
             depends_on: None,
             permission_mode: PermissionMode::Auto,
+            allow_ask: &[],
         };
         spawn(&mut store, &env, &request).unwrap();
     }

@@ -2,12 +2,17 @@
 //!
 //! The brief holds the task only; the worker rules reach the session through the plugin's hooks. Without the plugin
 //! configured, the rendered worker rules are appended to the brief instead.
+//!
+//! A spawn with `--allow-ask` commands appends the worker's first action, the `Allow` ask for them, to the brief. A
+//! brief or allow-ask that names a user-only command under a kind that is not main-only is refused before the task
+//! exists (`headwork_core::user_go`).
 
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use headwork_core::config::TaskVars;
 use headwork_core::lifecycle::Trigger;
+use headwork_core::user_go::{self, GoFacts};
 use headwork_core::{PermissionMode, Role, TaskName, TaskRequest};
 use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
@@ -27,6 +32,8 @@ pub struct SpawnRequest<'a> {
     pub depends_on: Option<TaskId>,
     /// The permission mode its sessions start in.
     pub permission_mode: PermissionMode,
+    /// User-only commands the user asked a worker to run: the worker's first action is the `Allow` ask for them.
+    pub allow_ask: &'a [String],
 }
 
 /// What happened to one queued task when the queue was run.
@@ -63,7 +70,8 @@ pub struct Pumped {
 ///
 /// # Errors
 ///
-/// Fails when the brief cannot be read or written, the admission guard refuses, or the store fails.
+/// Fails when the brief cannot be read or written, the user-only check or the admission guard refuses, or the store
+/// fails.
 pub fn spawn(
     store: &mut Store,
     env: &Env<'_>,
@@ -73,6 +81,17 @@ pub fn spawn(
         .with_context(|| format!("reading the brief {}", new.brief.display()))?;
     let name = TaskName::new(new.request.project.clone(), new.request.slug.clone());
     let brief_path = env.home.brief_path(&name);
+    let asks = match env.config.project(&new.request.project) {
+        Some(project) => user_go::check_go(&GoFacts {
+            project: &new.request.project,
+            main_only: &project.main_only,
+            user_only: &env.config.all_user_only(),
+            kind: &new.request.kind,
+            brief: &brief,
+            allow_ask: new.allow_ask,
+        })?,
+        None => Vec::new(),
+    };
     let mut request = new.request.clone();
     if request.effort.is_none() {
         let model = request.model.unwrap_or(env.config.models.default);
@@ -93,6 +112,20 @@ pub fn spawn(
         },
         env.actor,
     )?;
+    if !asks.is_empty() {
+        let commands: Vec<&str> = asks.iter().map(user_go::AllowAsk::command).collect();
+        store.append_event(
+            env.actor,
+            Some(task.id),
+            None,
+            "allow-ask",
+            &serde_json::json!({ "commands": commands }),
+        )?;
+    }
+    let brief = match user_go::first_action(&name, &asks) {
+        section if section.is_empty() => brief,
+        section => format!("{}\n\n{section}", brief.trim_end()),
+    };
     if let Some(parent) = brief_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;

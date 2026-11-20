@@ -149,6 +149,7 @@ impl World {
             brief: &self.brief,
             depends_on: None,
             permission_mode: PermissionMode::Auto,
+            allow_ask: &[],
         };
         let env = env!(self);
         let task = spawn(&mut self.store, &env, &request).unwrap().0;
@@ -400,6 +401,7 @@ fn spawn_park_resume_round_trip() {
                 brief: &w.brief,
                 depends_on: None,
                 permission_mode: PermissionMode::Auto,
+                allow_ask: &[],
             },
         )
     };

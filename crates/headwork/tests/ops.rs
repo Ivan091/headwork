@@ -110,6 +110,7 @@ fn request<'a>(brief: &'a Path, slug: &str, in_main: bool) -> SpawnRequest<'a> {
         brief,
         depends_on: None,
         permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
     }
 }
 
@@ -909,5 +910,139 @@ fn a_state_file_that_cannot_be_read_is_logged_and_the_spawn_goes_on() {
         std::fs::read_to_string(w.home.claude_json()).unwrap(),
         "{ not json",
         "untouched"
+    );
+}
+
+fn try_spawn(
+    w: &mut World,
+    brief: &str,
+    slug: &str,
+    in_main: bool,
+    allow_ask: &[String],
+) -> anyhow::Result<(headwork_store::Task, Vec<headwork::ops::spawn::Pumped>)> {
+    std::fs::write(&w.brief, brief)?;
+    let mut request = request(&w.brief, slug, in_main);
+    request.allow_ask = allow_ask;
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    spawn(&mut w.store, &env, &request)
+}
+
+const PUBLISH: &str = "user_only = [\"scripts/publish.sh\"]";
+
+#[test]
+fn an_allow_ask_becomes_the_workers_first_action() {
+    let mut w = world_with(10, "builtin", PUBLISH);
+    let allow = ["scripts/publish.sh --video wheel".to_owned()];
+    let (task, _) = try_spawn(
+        &mut w,
+        "# Task\n\nRepair the thumbnail.\n",
+        "upload",
+        true,
+        &allow,
+    )
+    .unwrap();
+    let brief = std::fs::read_to_string(w.home.brief_path(&task.name)).unwrap();
+    assert!(
+        brief.starts_with("# Task\n\nRepair the thumbnail.\n\n## First action"),
+        "appended: {brief}"
+    );
+    assert!(
+        brief.contains("question \"Allow demo-upload to run `scripts/publish.sh --video wheel`?\""),
+        "the ask names the command: {brief}"
+    );
+    let events = w
+        .store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 50,
+        })
+        .unwrap();
+    let logged = events.iter().find(|e| e.kind == "allow-ask").unwrap();
+    assert_eq!(
+        logged.data["commands"][0], "scripts/publish.sh --video wheel",
+        "the commands are in the log"
+    );
+    assert!(
+        w.store.user_only_allowed(task.id).unwrap().is_empty(),
+        "nothing is allowed before the user's tap"
+    );
+}
+
+#[test]
+fn a_worktree_brief_naming_a_user_only_command_is_refused() {
+    let mut w = world_with(10, "builtin", PUBLISH);
+    let error = try_spawn(
+        &mut w,
+        "Then run `scripts/publish.sh --all`.\n",
+        "sand",
+        false,
+        &[],
+    )
+    .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("`scripts/publish.sh`"),
+        "names the command: {text}"
+    );
+    assert!(
+        text.contains("`--kind probe --main`"),
+        "names the main-only kind: {text}"
+    );
+    assert!(
+        w.store.find_task("demo-sand").unwrap().is_none(),
+        "no task was made"
+    );
+    let allow = ["scripts/publish.sh --all".to_owned()];
+    let error = try_spawn(&mut w, "Upload it.\n", "sand", false, &allow).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("not main-only"),
+        "an allow-ask too"
+    );
+    let (task, _) = try_spawn(
+        &mut w,
+        "Never run publishing yourself.\n",
+        "sand",
+        false,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(task.state, TaskState::Spawning, "prose names no command");
+}
+
+#[test]
+fn an_allow_ask_for_an_ordinary_command_is_refused() {
+    let mut w = world_with(10, "builtin", PUBLISH);
+    let allow = ["scripts/deploy.sh".to_owned()];
+    let error = try_spawn(&mut w, "Deploy.\n", "upload", true, &allow).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("runs none of them"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn the_main_checkout_refusal_names_the_main_only_kinds() {
+    let mut w = world(10, "builtin");
+    let mut request = request(&w.brief, "sand", true);
+    request.request.kind = "publish".to_owned();
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    let error = spawn(&mut w.store, &env, &request).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("kind `publish` is not main-only")
+            && text.contains("the main-only kinds are `probe`"),
+        "{text}"
     );
 }

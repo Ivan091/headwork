@@ -58,7 +58,7 @@ bash scripts/check.sh                      # the full gate; must pass before eve
 cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks, sessions (pane or tab), states, asks
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
-cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M]   # a task in its own pane, or queued
+cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
 cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, effort) of live sessions
