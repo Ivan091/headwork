@@ -216,6 +216,147 @@ impl Worktrees {
         Ok(parse_porcelain(&output))
     }
 
+    /// The worktrees git knows for the main checkout, with their branches and locks, the main checkout first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn entries(&self) -> Result<Vec<WorktreeEntry>, WorktreeError> {
+        let output = self.output(
+            Command::new("git").args(["worktree", "list", "--porcelain"]),
+            "git worktree list",
+        )?;
+        Ok(parse_entries(&output))
+    }
+
+    /// Whether the worktree at `path` holds uncommitted changes or untracked files.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot read it.
+    pub fn is_dirty(&self, path: &Path) -> Result<bool, WorktreeError> {
+        let output = self.output(
+            Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(["status", "--porcelain"]),
+            "git status --porcelain",
+        )?;
+        Ok(!output.trim().is_empty())
+    }
+
+    /// Whether the main checkout's `HEAD` contains `revision`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot run.
+    pub fn is_merged(&self, revision: &str) -> Result<bool, WorktreeError> {
+        self.succeeds(&["merge-base", "--is-ancestor", revision, "HEAD"])
+    }
+
+    /// Whether every commit `branch` holds beyond the main checkout's `HEAD` has a commit of the same subject in
+    /// `HEAD`, as a squash merge or a re-applied commit leaves it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn is_superseded(&self, branch: &str) -> Result<bool, WorktreeError> {
+        let range = format!("HEAD..{branch}");
+        let own = self.output(
+            Command::new("git").args(["log", "--format=%s", &range]),
+            "git log HEAD..<branch>",
+        )?;
+        let own: Vec<&str> = own.lines().filter(|line| !line.trim().is_empty()).collect();
+        if own.is_empty() {
+            return Ok(true);
+        }
+        let landed = self.output(
+            Command::new("git").args(["log", "--format=%s", "HEAD"]),
+            "git log HEAD",
+        )?;
+        let landed: std::collections::HashSet<&str> = landed.lines().collect();
+        Ok(own.iter().all(|subject| landed.contains(subject)))
+    }
+
+    /// Whether `branch` tracks a remote branch that no longer exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn upstream_gone(&self, branch: &str) -> Result<bool, WorktreeError> {
+        let reference = format!("refs/heads/{branch}");
+        let output = self.output(
+            Command::new("git").args(["for-each-ref", "--format=%(upstream:track)", &reference]),
+            "git for-each-ref",
+        )?;
+        Ok(output.trim() == "[gone]")
+    }
+
+    /// Unlocks the worktree at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn unlock(&self, path: &str) -> Result<(), WorktreeError> {
+        self.git(&["worktree", "unlock", path])
+    }
+
+    /// Removes the worktree at `path` without force: git refuses one with changes or untracked files.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git refuses or fails.
+    pub fn remove_path(&self, path: &str) -> Result<(), WorktreeError> {
+        self.git(&["worktree", "remove", path])
+    }
+
+    /// Forgets the worktrees whose folder is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn prune(&self) -> Result<(), WorktreeError> {
+        self.git(&["worktree", "prune"])
+    }
+
+    /// Deletes `branch` with `git branch -d`, which refuses one `HEAD` does not contain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git refuses or fails.
+    pub fn delete_merged_branch(&self, branch: &str) -> Result<(), WorktreeError> {
+        self.git(&["branch", "-d", branch])
+    }
+
+    /// Runs plain `git gc` in the main checkout, with git's default prune window, and with no timeout of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn gc(&self) -> Result<(), WorktreeError> {
+        let shown = "git gc";
+        let output = Command::new("git")
+            .args(["gc", "--quiet"])
+            .current_dir(&self.main)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|source| WorktreeError::Run {
+                program: "git".to_owned(),
+                source,
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(WorktreeError::Failed {
+            command: shown.to_owned(),
+            output: format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            ),
+        })
+    }
+
     /// Whether git counts `path` as a worktree of the main checkout, after forgetting the ones whose folder is gone.
     ///
     /// # Errors
@@ -314,6 +455,57 @@ pub fn parse_porcelain(text: &str) -> Vec<(PathBuf, Option<String>)> {
             (line.strip_prefix("branch "), current.as_mut())
         {
             *slot = Some(branch.trim_start_matches("refs/heads/").to_owned());
+        }
+    }
+    out.extend(current);
+    out
+}
+
+/// One worktree as `git worktree list --porcelain` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeEntry {
+    /// The folder.
+    pub path: PathBuf,
+    /// The branch checked out; absent when detached.
+    pub branch: Option<String>,
+    /// The commit checked out.
+    pub head: Option<String>,
+    /// The lock's reason, when locked (empty for a lock without one).
+    pub locked: Option<String>,
+    /// Git found its folder gone.
+    pub prunable: bool,
+}
+
+/// Parses `git worktree list --porcelain` into entries.
+#[must_use]
+pub fn parse_entries(text: &str) -> Vec<WorktreeEntry> {
+    let mut out = Vec::new();
+    let mut current: Option<WorktreeEntry> = None;
+    for line in text.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            out.extend(current.take());
+            current = Some(WorktreeEntry {
+                path: PathBuf::from(path),
+                branch: None,
+                head: None,
+                locked: None,
+                prunable: false,
+            });
+            continue;
+        }
+        let Some(entry) = current.as_mut() else {
+            continue;
+        };
+        if let Some(branch) = line.strip_prefix("branch ") {
+            entry.branch = Some(branch.trim_start_matches("refs/heads/").to_owned());
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            entry.head = Some(head.to_owned());
+        } else if line == "locked" {
+            entry.locked = Some(String::new());
+        } else if let Some(reason) = line.strip_prefix("locked ") {
+            entry.locked = Some(reason.to_owned());
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            entry.prunable = true;
         }
     }
     out.extend(current);

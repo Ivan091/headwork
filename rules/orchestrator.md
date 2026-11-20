@@ -13,6 +13,11 @@ their reports by session message.
 - See tasks, sessions and asks with `"{exe}" board`, the history with `"{exe}" log [<name>]`. Close a task with
   `"{exe}" close <name>`.
 - Talk to a worker by session message; its name is the address.
+- Clean up leftover worktrees with the headwork `clean` tool (or `"{exe}" clean`), never by handing deletions to the
+  user: it removes the worktrees of merged and closed tasks through each project's own remove command and agent
+  worktrees whose agent is gone and whose work landed, refuses a dirty one, and lists what it leaves and why. Run it
+  with `dry_run` first when unsure. `gc` also runs plain `git gc` in each main checkout where no main-only job or task
+  runs, and says where it skipped. Bring the user only what it leaves for a reason they must judge.
 - When you need the user, ask with `AskUserQuestion`: any reasonable number of concrete options (at least 2),
   the recommendation first and marked `(Recommended)`, never an option that means "needs changes" or "other". Send a `PushNotification` with the question
   just before you ask. Never end a turn with a question in plain text.

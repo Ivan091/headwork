@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
+use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
@@ -220,6 +221,19 @@ enum Command {
         /// The Claude config folder.
         #[arg(long)]
         claude_dir: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the worktrees of merged and closed tasks through the project's own remove command, and Claude Code
+    /// agent worktrees in main checkouts whose agent is gone and whose work landed; list the ones left and why.
+    Clean {
+        /// Print the plan and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also run plain `git gc` in each main checkout where no main-only job or task runs.
+        #[arg(long)]
+        gc: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -507,7 +521,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Job { .. }
         | Command::Retitle { .. }
         | Command::Recap { .. }
-        | Command::ShadowReport { .. }) => other,
+        | Command::ShadowReport { .. }
+        | Command::Clean { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -540,6 +555,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
         Command::ShadowReport { since, json } => {
             shadow_command(&store, &ctx, since.as_deref(), json, out)
+        }
+        Command::Clean { dry_run, gc, json } => {
+            clean_command(&mut store, &ctx, CleanOptions { dry_run, gc }, json, out)
         }
         Command::Launch { .. }
         | Command::Park { .. }
@@ -1294,6 +1312,27 @@ fn doctor_command(
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    })
+}
+
+fn clean_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    options: CleanOptions,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let actor = Identity::from_env().actor();
+    let report = ctx.with_actor(actor, |env| clean(store, env, options))?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        out.write_all(render::cleaned(&report).as_bytes())?;
+    }
+    Ok(if report.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     })
 }
 

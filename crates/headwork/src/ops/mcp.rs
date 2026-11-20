@@ -152,6 +152,25 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "clean",
+        description: concat!(
+            "Remove the worktrees of merged and closed tasks (through each project's own remove command, never a dirty ",
+            "one) and Claude Code agent worktrees whose agent is gone and whose work landed; list the ones left and why. ",
+            "`gc` also runs plain `git gc` in each main checkout where no main-only job or task runs. Use it for cleanup ",
+            "instead of handing deletions to the user.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "dry_run": { "type": "boolean", "description": "Report the plan and change nothing." },
+                    "gc": { "type": "boolean", "description": "Also run `git gc` where the main checkout is quiet." },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "rules",
         description: "The rules added at run time that are still active.",
         roles: ORCHESTRATOR,
@@ -515,6 +534,14 @@ impl<'a> Server<'a> {
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
             "queue" => self.queue(args),
+            "clean" => {
+                let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
+                let options = super::clean::CleanOptions {
+                    dry_run: flag("dry_run"),
+                    gc: flag("gc"),
+                };
+                to_text(&super::clean::clean(self.store, &self.env, options)?)
+            }
             "rules" => to_text(&self.store.active_rules()?),
             "rule_add" => self.rule_add(args),
             "rule_retire" => self.rule_retire(args),

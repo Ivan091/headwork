@@ -2,6 +2,7 @@
 
 use std::fmt::Write;
 
+use headwork::ops::clean::{CleanReport, GcOutcome, Outcome as CleanOutcome};
 use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::import::ImportReport;
 use headwork::ops::install::InstallReport;
@@ -469,6 +470,56 @@ pub(crate) fn shadowed(report: &ShadowReport) -> String {
     }
     if report.rules.is_empty() {
         text.push_str("no rule would have denied anything\n");
+    }
+    text
+}
+
+/// What `clean` did, or would do, per project.
+#[must_use]
+pub(crate) fn cleaned(report: &CleanReport) -> String {
+    let mut text = String::new();
+    if report.dry_run {
+        text.push_str("dry run: nothing changed\n");
+    }
+    for project in &report.projects {
+        let _ = writeln!(text, "\n{} ({})", project.project, project.main);
+        if let Some(error) = &project.error {
+            let _ = writeln!(text, "  cannot read: {error}");
+        }
+        if project.error.is_none() && project.worktrees.is_empty() {
+            text.push_str("  no other worktrees\n");
+        }
+        for worktree in &project.worktrees {
+            let what = match &worktree.outcome {
+                CleanOutcome::WouldRemove => "would remove".to_owned(),
+                CleanOutcome::Removed => "removed".to_owned(),
+                CleanOutcome::WouldPrune => "would forget (folder gone)".to_owned(),
+                CleanOutcome::Pruned => "forgot (folder gone)".to_owned(),
+                CleanOutcome::Left { reason } => format!("left: {reason}"),
+                CleanOutcome::Failed { error } => format!("FAILED: {error}"),
+            };
+            let branch = worktree
+                .branch
+                .as_deref()
+                .map_or_else(String::new, |branch| format!(" [{branch}]"));
+            let _ = writeln!(
+                text,
+                "  {}{branch} ({})\n    {what}",
+                worktree.path, worktree.owner
+            );
+            if let Some(note) = &worktree.note {
+                let _ = writeln!(text, "    {note}");
+            }
+        }
+        if let Some(gc) = &project.gc {
+            let line = match gc {
+                GcOutcome::WouldRun => "git gc: would run".to_owned(),
+                GcOutcome::Ran => "git gc: ran".to_owned(),
+                GcOutcome::Skipped { reason } => format!("git gc: skipped, {reason}"),
+                GcOutcome::Failed { error } => format!("git gc: FAILED: {error}"),
+            };
+            let _ = writeln!(text, "  {line}");
+        }
     }
     text
 }
