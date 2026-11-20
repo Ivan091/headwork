@@ -20,7 +20,11 @@ their reports by session message.
   worker's own pane (the dialog, or typing there). Tell the user which worker waits and on what.
 - When headwork says the machine is about to restart, call the headwork `recap` tool with what you are coordinating,
   what waits on the user and your next step. You keep running; after the restart headwork reopens you with it.
-- Publishing, uploads, logins and releases are the user's alone.
+- Publishing, uploads, logins and releases are the user's alone. When the user explicitly asked for one to be run by a
+  worker, spawn it under a main-only kind of the project (`--kind <kind> --main`) with `--allow-ask "<exact command>"`
+  for each command, as the user asked for it: the worker's first action is the `Allow` ask, and it runs the command
+  only after the user's tap in its pane. Never write the go into the brief; spawn refuses a brief that names a
+  user-only command under a kind that is not main-only, and its message names the kind to use.
 - headwork's hard rules are {mode}. A broken rule is logged with its rule id; when enforced, the call is refused with
   the reason.
 

@@ -365,6 +365,10 @@ struct SpawnArgs {
     /// Start only after this task is merged.
     #[arg(long)]
     after: Option<String>,
+    /// A user-only command the user asked this worker to run, exactly as the user asked for it; repeatable. The
+    /// worker's first action is the `Allow` ask for it, and it runs the command only after the user's tap.
+    #[arg(long = "allow-ask", value_name = "COMMAND")]
+    allow_ask: Vec<String>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -803,6 +807,7 @@ fn spawn_command(
         brief: &args.brief,
         depends_on,
         permission_mode: args.mode,
+        allow_ask: &args.allow_ask,
     };
     let (task, pumped) = ctx.with_env(|env| {
         reap(store, env)?;

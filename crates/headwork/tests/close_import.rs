@@ -116,6 +116,7 @@ fn spawn_task(w: &mut World, slug: &str, in_main: bool, keep: bool) -> (Task, Ve
         brief: &w.brief,
         depends_on: None,
         permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
     };
     let env = env!(w);
     spawn(&mut w.store, &env, &request).unwrap()

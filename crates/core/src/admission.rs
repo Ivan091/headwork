@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::names::{ProjectName, Slug};
+use crate::user_go::quoted_list;
 use crate::vocabulary::{Effort, MachineMode, Model};
 
 /// A request for a new task.
@@ -55,14 +56,28 @@ pub enum AdmissionRefusal {
     #[error("kind `{0}` is main-only and must run in the main checkout")]
     MainOnlyKind(String),
     /// A worktree kind asked for the main checkout.
-    #[error("kind `{0}` is not main-only and must run in a worktree")]
-    NotMainOnlyKind(String),
+    #[error("kind `{kind}` is not main-only and must run in a worktree; {}", main_only_kinds(.main_only))]
+    NotMainOnlyKind {
+        /// The kind asked for.
+        kind: String,
+        /// The project's main-only kinds.
+        main_only: Vec<String>,
+    },
     /// The model is not allowed for the project.
     #[error("model `{0}` is not allowed for this project")]
     ModelNotAllowed(Model),
     /// The machine is not in normal mode.
     #[error("the machine is `{0}`; new tasks wait until it is normal")]
     MachineMode(MachineMode),
+}
+
+/// The main-only kinds a refusal offers instead.
+fn main_only_kinds(kinds: &[String]) -> String {
+    if kinds.is_empty() {
+        "the project has no main-only kind".to_owned()
+    } else {
+        format!("the main-only kinds are {}", quoted_list(kinds))
+    }
 }
 
 /// Decides whether a task may be created.
@@ -94,7 +109,12 @@ pub fn admit(
     }
     match (project.is_main_only(&request.kind), request.in_main) {
         (true, false) => return Err(AdmissionRefusal::MainOnlyKind(request.kind.clone())),
-        (false, true) => return Err(AdmissionRefusal::NotMainOnlyKind(request.kind.clone())),
+        (false, true) => {
+            return Err(AdmissionRefusal::NotMainOnlyKind {
+                kind: request.kind.clone(),
+                main_only: project.main_only.clone(),
+            });
+        }
         (true, true) | (false, false) => {}
     }
     let model = request.model.unwrap_or(config.models.default);

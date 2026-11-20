@@ -147,6 +147,7 @@ fn spawn_task(w: &mut World, slug: &str) -> Task {
         brief: &w.brief,
         depends_on: None,
         permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
     };
     let env = Env {
         home: &w.home,

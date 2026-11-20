@@ -109,6 +109,15 @@ const TOOLS: &[ToolDef] = &[
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
                     "depends_on": { "type": "string", "description": "Name of a task that must be merged first." },
+                    "allow_ask": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": concat!(
+                            "User-only commands the user explicitly asked this worker to run, each exactly as the user ",
+                            "asked. The worker's first action is the `Allow` ask for them; it runs a command only after ",
+                            "the user's tap. The kind must be main-only.",
+                        ),
+                    },
                 }),
                 &["project", "slug", "brief"],
             )
@@ -756,6 +765,19 @@ impl<'a> Server<'a> {
             ),
             None => None,
         };
+        let allow_ask: Vec<String> = match args.get("allow_ask") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .context("`allow_ask` holds commands as strings")
+                })
+                .collect::<Result<_>>()?,
+            Some(Value::String(command)) => vec![command.clone()],
+            Some(_) => bail!("`allow_ask` is a list of commands"),
+        };
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -773,6 +795,7 @@ impl<'a> Server<'a> {
             brief: &file,
             depends_on,
             permission_mode: PermissionMode::Auto,
+            allow_ask: &allow_ask,
         };
         reap(self.store, &self.env)?;
         let result = spawn(self.store, &self.env, &request);

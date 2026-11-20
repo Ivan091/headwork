@@ -651,3 +651,15 @@ and the reason.
   tracked for the orchestrator too) lies inside one, except inside a project's folder there (the folder above its main
   checkout, or the main checkout when that folder is the repository itself). Edits there still come from
   `orchestrator_writable`. All defaults are empty, so the live config must name them.
+- 2026-11-20 The user's go carried to a worker (`spawn --allow-ask`, approval-friction plan HW1). The flag (repeatable,
+  at most four, as `AskUserQuestion` holds four questions; MCP `allow_ask`) takes user-only commands exactly as the user
+  asked for them. Spawn appends a "First action: the user's go" section to the brief with the `Allow` ask pre-filled
+  (one question per command, options "Allow it (Recommended)" and "Do not allow it") and logs an `allow-ask` event; the
+  grant itself is unchanged, the user's pick in the worker's own pane through the `PostToolUse` hook. The section lives
+  in the brief, not in a new table, so no migration is needed and a resumed worker keeps it. An allow-ask that runs no
+  user-only command, is blank, spans lines or holds a backtick is refused. A spawn whose brief (commands in backticks or
+  fenced code blocks; plain prose names nothing) or allow-asks name a user-only command must have a main-only kind;
+  otherwise it is refused before the task exists, naming the main-only kinds whose name the pattern holds (`release`
+  for `scripts/release.sh`), else all of them. A brief that only warns against such a command in backticks is refused
+  too: the worker rules already keep those commands the user's, so the brief should leave them out. The refusal of a
+  worktree kind asked for the main checkout now names the project's main-only kinds as well.

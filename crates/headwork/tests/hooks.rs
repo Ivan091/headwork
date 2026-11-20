@@ -97,6 +97,7 @@ fn world(hooks: &str, keep: bool) -> World {
         brief: &brief,
         depends_on: None,
         permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
     };
     let env = Env {
         home: &home,
@@ -629,6 +630,44 @@ fn an_allow_ask_lets_one_task_run_a_user_only_command() {
         ["scripts/publish.sh"],
         "recorded once, as the configured pattern"
     );
+}
+
+#[test]
+fn the_first_action_ask_of_a_spawn_grants_its_command() {
+    let mut w = world("enforce = true", false);
+    w.start();
+    let question = "Allow demo-sand to run `scripts/publish.sh --all`?";
+    let asked = json!({ "questions": [{
+        "question": question,
+        "header": "Allow",
+        "options": [
+            { "label": "Allow it (Recommended)", "description": "d" },
+            { "label": "Do not allow it", "description": "d" },
+        ],
+        "multiSelect": false,
+    }] });
+    let publish = json!({ "command": "scripts/publish.sh --all" });
+    for (answer, allowed) in [("Do not allow it", false), ("Allow it (Recommended)", true)] {
+        w.post("PushNotification", &json!({}));
+        assert_eq!(
+            w.pre("AskUserQuestion", &asked),
+            HookReply::default(),
+            "the rendered ask passes the ask checks"
+        );
+        w.hook(
+            HookEvent::PostToolUse,
+            &json!({
+                "tool_name": "AskUserQuestion",
+                "tool_input": asked,
+                "tool_response": { "answers": { question: answer } },
+            }),
+        );
+        assert_eq!(
+            w.pre("Bash", &publish).exit == 0,
+            allowed,
+            "after {answer:?}"
+        );
+    }
 }
 
 #[test]
