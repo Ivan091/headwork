@@ -540,6 +540,32 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every worktree recorded for a task, its own and helpers, in any state, newest first: the task, the row, and
+    /// whether it is a helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn recorded_worktrees(&self) -> Result<Vec<(TaskId, WorktreeRow, bool)>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT task_id, path, branch, state, helper FROM worktrees ORDER BY id DESC",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    TaskId(row.get(0)?),
+                    WorktreeRow {
+                        path: row.get(1)?,
+                        branch: row.get(2)?,
+                        state: row.get(3)?,
+                    },
+                    row.get::<_, i64>(4)? != 0,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Sets the state of one helper worktree of a task: `removed` or `kept`.
     ///
     /// # Errors

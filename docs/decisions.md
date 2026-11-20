@@ -663,3 +663,14 @@ and the reason.
   for `scripts/release.sh`), else all of them. A brief that only warns against such a command in backticks is refused
   too: the worker rules already keep those commands the user's, so the brief should leave them out. The refusal of a
   worktree kind asked for the main checkout now names the project's main-only kinds as well.
+- 2026-11-20, `headwork clean` (plan HW3, case B): a task's leftover worktree goes when the task is `closed`, or
+  `merged` with its session ended, and the tree is clean; the project's own remove command still decides (me-sim's
+  refuses unmerged work), and a worktree recorded `kept` at close is removed too once it is clean, since a dirty tree
+  was the reason to keep it. A Claude Code agent worktree in a main checkout goes when its lock names a dead agent pid
+  (any other lock is left), the tree is clean, and its branch is merged into the main checkout's `HEAD` (then deleted
+  with `git branch -d`), superseded (every commit beyond `HEAD` has a commit of the same subject in `HEAD`, as a squash
+  or re-applied commit leaves it) or gone upstream; the last two keep the branch, so nothing committed is lost. One
+  whose folder is gone is unlocked and pruned. Worktrees no task owns (`_master-check`) are listed and left. `--gc` is
+  plain `git gc` (default prune window) and is skipped while a registered job of the project runs in the main checkout
+  or a main-only task of it is live. The orchestrator gets it as the MCP tool `clean` and its rules tell it to use that
+  instead of handing deletions to the user.

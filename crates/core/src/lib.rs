@@ -3,6 +3,7 @@
 //! Nothing here performs I/O; the store and the binary feed it data and act on its decisions.
 
 pub mod admission;
+pub mod clean;
 pub mod config;
 pub mod guard;
 pub mod layout;

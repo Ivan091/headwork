@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail, ensure};
 use headwork_core::Slug;
 use headwork_core::config::TaskVars;
-use headwork_store::{Store, Task, TaskId};
+use headwork_store::{Store, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
 use super::{Env, slashed};
@@ -91,28 +91,7 @@ pub fn remove_all(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<Vec<Pa
             left.push(dir);
             continue;
         }
-        if !dir.exists() {
-            store.set_helper_worktree_state(id, &helper.path, "removed", env.actor)?;
-            continue;
-        }
-        let main = slashed(&env.main_path(&task)?);
-        let vars = TaskVars {
-            slug: &helper.branch,
-            branch: &helper.branch,
-            main: &main,
-            worktree: &helper.path,
-        };
-        let worktrees = env.worktrees(&task)?;
-        let error = match worktrees.remove(&env.project(&task)?.worktree_remove, &vars) {
-            Ok(()) if !dir.exists() => None,
-            Ok(()) => Some("the remove command left the folder in place".to_owned()),
-            Err(error) => Some(error.to_string()),
-        };
-        let removed = error.is_none() || (worktrees.remove_if_pristine(&vars)? && !dir.exists());
-        if removed {
-            store.set_helper_worktree_state(id, &helper.path, "removed", env.actor)?;
-            drop(worktrees.delete_empty_branch(&helper.branch));
-        } else {
+        if let Some(error) = remove_one(store, env, &task, &helper)? {
             store.append_event(
                 env.actor,
                 Some(id),
@@ -124,6 +103,45 @@ pub fn remove_all(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<Vec<Pa
         }
     }
     Ok(left)
+}
+
+/// Removes one helper worktree of `task` with the project's remove command, or without force when it holds no work,
+/// and records it removed. Returns why it stays, when it does.
+///
+/// # Errors
+///
+/// Fails when the store fails, the project left the config, or git cannot run.
+pub fn remove_one(
+    store: &mut Store,
+    env: &Env<'_>,
+    task: &Task,
+    helper: &WorktreeRow,
+) -> Result<Option<String>> {
+    let dir = PathBuf::from(&helper.path);
+    if !dir.exists() {
+        store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
+        return Ok(None);
+    }
+    let main = slashed(&env.main_path(task)?);
+    let vars = TaskVars {
+        slug: &helper.branch,
+        branch: &helper.branch,
+        main: &main,
+        worktree: &helper.path,
+    };
+    let worktrees = env.worktrees(task)?;
+    let error = match worktrees.remove(&env.project(task)?.worktree_remove, &vars) {
+        Ok(()) if !dir.exists() => None,
+        Ok(()) => Some("the remove command left the folder in place".to_owned()),
+        Err(error) => Some(error.to_string()),
+    };
+    let removed = error.is_none() || (worktrees.remove_if_pristine(&vars)? && !dir.exists());
+    if !removed {
+        return Ok(error);
+    }
+    store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
+    drop(worktrees.delete_empty_branch(&helper.branch));
+    Ok(None)
 }
 
 fn same(recorded: &str, dir: &Path) -> bool {

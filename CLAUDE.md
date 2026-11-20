@@ -30,7 +30,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, rules,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, clean, rules,
 rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -47,6 +47,12 @@ holds work stays and is logged). Workers may also write `<main>/.claude/worktree
 the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install`;
 `[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
 them excluded); `orchestrator_writable` gives it the edits there.
+`headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
+ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
+checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with
+`git branch -d`), superseded by commits of the same subjects, or gone upstream (branch kept). It never touches a dirty
+tree, a live task's, a running agent's or one no task owns; it lists each with the reason. `--gc` runs plain `git gc`
+in a main checkout only when no registered job runs there and no main-only task is live.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -72,6 +78,7 @@ cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over with
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
+cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts
 cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
 cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
