@@ -191,6 +191,112 @@ pub fn liveness(pid: u32, recorded: Option<&ProcessIdentity>, argv: &[String]) -
     headwork_core::process::judge(recorded, argv, identify(pid))
 }
 
+/// Every running process as `headwork reap` judges them, and whether Git Bash's process list was read.
+///
+/// A Git Bash process gets its Git Bash parent (see [`git_bash_parents`]); every other process, and a Git Bash
+/// process whose Git Bash parent is not a Git Bash process, keeps the parent the system recorded.
+#[must_use]
+pub fn snapshot() -> (Vec<headwork_core::reap::Proc>, bool) {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let shells = git_bash_parents();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cpu(),
+    );
+    let procs = system
+        .processes()
+        .values()
+        .map(|process| {
+            let pid = process.pid().as_u32();
+            let recorded = process.parent().map(sysinfo::Pid::as_u32);
+            headwork_core::reap::Proc {
+                pid,
+                parent: shells
+                    .as_ref()
+                    .and_then(|shells| shells.get(&pid).copied().flatten())
+                    .or(recorded),
+                image: process.name().to_string_lossy().into_owned(),
+                started: process.start_time(),
+                cpu_ms: process.accumulated_cpu_time(),
+            }
+        })
+        .collect();
+    (procs, shells.is_some())
+}
+
+/// Where Git Bash's `ps` may be when it is not on `PATH`, as for a scheduled task.
+const GIT_BASH_PS: [&str; 3] = [
+    "ps",
+    "C:/Program Files/Git/usr/bin/ps.exe",
+    "C:/Program Files (x86)/Git/usr/bin/ps.exe",
+];
+
+/// Git Bash's own parent links, by Windows pid; `None` when Git Bash's `ps` cannot be run.
+///
+/// Each Git Bash process maps to the Windows pid of its Git Bash parent, or to `None` when that parent is not a Git
+/// Bash process (it started from a Windows program, or its parent ended).
+///
+/// Git Bash's `fork` and `exec` start a shell from a Windows process that exits at once, so the parent Windows
+/// records is gone while the shell's real parent still runs.
+///
+/// Elsewhere the system's parents are right, and the map is empty.
+#[must_use]
+pub fn git_bash_parents() -> Option<std::collections::HashMap<u32, Option<u32>>> {
+    if !cfg!(windows) {
+        return Some(std::collections::HashMap::new());
+    }
+    GIT_BASH_PS.iter().find_map(|program| {
+        let output = Command::new(program).arg("-el").output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| parse_git_bash_ps(&String::from_utf8_lossy(&output.stdout)))
+    })
+}
+
+/// Reads `ps -el` of Git Bash: `PID PPID PGID WINPID TTY UID STIME COMMAND`, a line perhaps led by a status letter.
+#[must_use]
+pub fn parse_git_bash_ps(text: &str) -> std::collections::HashMap<u32, Option<u32>> {
+    let rows: Vec<(u32, u32, u32)> = text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().peekable();
+            if fields.peek()?.parse::<u32>().is_err() {
+                fields.next();
+            }
+            let own = fields.next()?.parse().ok()?;
+            let parent = fields.next()?.parse().ok()?;
+            let _group: u32 = fields.next()?.parse().ok()?;
+            let windows = fields.next()?.parse().ok()?;
+            Some((own, parent, windows))
+        })
+        .collect();
+    let windows: std::collections::HashMap<u32, u32> = rows
+        .iter()
+        .map(|&(own, _, windows)| (own, windows))
+        .collect();
+    rows.iter()
+        .map(|&(_, parent, own)| (own, windows.get(&parent).copied()))
+        .collect()
+}
+
+/// Ends the one process `pid`, not its descendants, and only while it is still the process `expected` names; a pid
+/// another program took since is left alone.
+///
+/// Returns `false` when it no longer ran, or ran as another program.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Tool`] when the system tool cannot run.
+pub fn kill_one(pid: u32, expected: &ProcessIdentity) -> Result<bool, ProcError> {
+    if !headwork_core::process::judge(Some(expected), &[], identify(pid)).is_alive() {
+        return Ok(false);
+    }
+    imp::kill_one(pid)
+}
+
 /// The ids of the processes running a program image, such as `claude.exe` on Windows or `claude` elsewhere.
 ///
 /// # Errors
@@ -294,6 +400,18 @@ mod imp {
         Ok(status.code() != Some(TASKKILL_NOT_FOUND) && status.success())
     }
 
+    pub(super) fn kill_one(pid: u32) -> Result<bool, ProcError> {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output()
+            .map_err(|source| ProcError::Tool {
+                tool: "taskkill",
+                source,
+            })?
+            .status;
+        Ok(status.code() != Some(TASKKILL_NOT_FOUND) && status.success())
+    }
+
     pub(super) fn is_alive(pid: u32) -> Result<bool, ProcError> {
         let output = Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
@@ -375,6 +493,17 @@ mod imp {
 
     pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
         signal_group(pid, "-KILL")
+    }
+
+    pub(super) fn kill_one(pid: u32) -> Result<bool, ProcError> {
+        Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output()
+            .map(|output| output.status.success())
+            .map_err(|source| ProcError::Tool {
+                tool: "kill",
+                source,
+            })
     }
 
     pub(super) fn pids_named(image: &str) -> Result<Vec<u32>, ProcError> {

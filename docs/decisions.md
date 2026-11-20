@@ -674,3 +674,29 @@ and the reason.
   plain `git gc` (default prune window) and is skipped while a registered job of the project runs in the main checkout
   or a main-only task of it is live. The orchestrator gets it as the MCP tool `clean` and its rules tell it to use that
   instead of handing deletions to the user.
+- 2026-11-20 `headwork reap` (approval-friction plan HW2). A Job Object of another process cannot be asked for its
+  members (and `unsafe` is forbidden), so a session's tree is rebuilt from parent links and start times: a process
+  belongs to an ended session when its parent is the session's launcher or `claude` and it started while the session
+  ran, or when it descends from one that does; a launcher or `claude` still running counts only if it started within
+  two minutes of the session's start (pid reuse). Leftovers wait 60 s after the session's end so a closing launcher can
+  finish. `claude`, `me-studio`, `headwork` (launchers, finishers, MCP servers) and every registered job whose recorded
+  identity still matches are never ended, nor what they started, nor what started them. Each process is ended alone
+  (`taskkill /F` without `/T`) after its image and start time are checked again. Orphans: a `tail` or `bash` whose
+  parent is gone, together with everything it started, all of them `tail` or `bash`, each running for over 10 minutes
+  and having used under 1 % of a core over its life ("idle"; Windows keeps no last-activity time). Git Bash's `fork` and
+  `exec` start shells from a Windows process that exits at once, so the Windows parent of most Git Bash shells is gone;
+  the first dry run on this machine chose the car-training `rl-run.sh` wrappers. The snapshot therefore takes each Git
+  Bash process's parent from Git Bash's own `ps -el` (MSYS pid, ppid, winpid), and when that list cannot be read no
+  shell is judged orphaned. Registered jobs are never reaped, even of closed tasks: `close` already ends those.
+- 2026-11-20 `close --force` (HW4) only finishes a task already in `closing` whose pull requests (found as close finds
+  them) are all merged and that has no live job; with none found it is refused, so a task without pull requests closes
+  only the ordinary way. It runs the close once more and records a worktree the remove command still refuses as `kept`
+  (event `worktree-kept`), left on disk for `headwork clean` or the user: never a forced removal, which could lose
+  uncommitted files. A pane or process still there keeps refusing.
+- 2026-11-20 `tick --install` (HW5) runs `schtasks /Create /SC MINUTE /MO 5 /TN "headwork tick" /TR "\"<exe>\" tick" /F`
+  without `/RU`, so the task is the current user's, runs while they are logged on, and needs no admin; `/F` makes a
+  second install replace the first. `<exe>` is the installed `~/.local/bin/headwork.exe` when present (hot reload swaps
+  it in place), else the running program. A console window still flashes at each run: `conhost --headless` did not
+  run a program reliably when tried from a session, and a windowless build is a separate change. Neither the binary nor
+  the guard can tell an `Allow` tap of the orchestrator (asks are stored per task), so "only after the user's go" is
+  in the injected rules; for workers `tick` stays an orchestrator command.

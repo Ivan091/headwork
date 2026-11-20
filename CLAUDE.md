@@ -30,7 +30,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, clean, rules,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, clean, reap, rules,
 rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -53,6 +53,12 @@ checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose br
 `git branch -d`), superseded by commits of the same subjects, or gone upstream (branch kept). It never touches a dirty
 tree, a live task's, a running agent's or one no task owns; it lists each with the reason. `--gc` runs plain `git gc`
 in a main checkout only when no registered job runs there and no main-only task is live.
+`headwork reap` (`ops/reap.rs`, pure decisions in `core/src/reap.rs`) ends what ended sessions left running (the
+processes their launcher and `claude` started, rebuilt from parent links and start times) and orphaned `tail` and
+`bash` idle for over 10 minutes, never `claude`, `me-studio`, `headwork` or a registered job, nor what they started or
+what started them; Git Bash shells take their parents from Git Bash's `ps -el`. The orchestrator's `close` takes
+`force` for a task stuck in `closing` whose pull requests are all merged and that has no live job (`close_forced` in
+`ops/close.rs`): a worktree the remove command refuses is recorded `kept` instead of blocking.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -66,11 +72,13 @@ cargo run -p headwork -- board             # projects, tasks, sessions (pane or 
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
-cargo run -p headwork -- close <name>      # close a task: pane, process tree, worktree, verified
+cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged, no job
 cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, effort) of live sessions
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children (workers), projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
+cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" (after the user's Allow tap)
+cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- jobs              # the registered long-running jobs
@@ -88,12 +96,11 @@ repository's own `target/` on S:; C: has little free space.
 
 ### Scheduling the tick
 
-`headwork tick` is idempotent and takes `tick.lock`, so a scheduler may call it every minute. Nothing installs it. On
-Windows the user would run:
-
-```bash
-schtasks /Create /SC MINUTE /MO 1 /TN "headwork tick" /TR "\"S:\Code\headwork\headwork\target\release\headwork.exe\" tick"
-```
+`headwork tick` is idempotent and takes `tick.lock`, so a scheduler may call it every few minutes. `headwork tick
+--install` creates (or replaces) the one Windows scheduled task "headwork tick": every 5 minutes, the current user,
+no admin, running the installed `~/.local/bin/headwork.exe tick`; `headwork tick --uninstall` removes it
+(`ops/schedule.rs`). Sessions run either only after the user's `Allow` tap naming that command; nothing installs it
+silently.
 
 It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
 

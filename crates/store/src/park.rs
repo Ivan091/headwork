@@ -650,6 +650,19 @@ impl Store {
         rows.map(|raw| into_job(raw?)).collect()
     }
 
+    /// Every job that recorded a process, in any state, oldest first: `reap` never ends one that still runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn jobs_with_pid(&self) -> Result<Vec<JobRow>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM jobs WHERE pid IS NOT NULL ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], read_job)?;
+        rows.map(|raw| into_job(raw?)).collect()
+    }
+
     /// Moves a job to a state with a note, and logs it.
     ///
     /// # Errors

@@ -323,6 +323,11 @@ fn worker_admin_table() {
         ("headwork resume", Some(RuleId::WorkerAdmin)),
         ("headwork import", Some(RuleId::WorkerAdmin)),
         ("headwork tick", Some(RuleId::WorkerAdmin)),
+        ("headwork tick --install", Some(RuleId::WorkerAdmin)),
+        ("headwork reap", Some(RuleId::WorkerAdmin)),
+        ("headwork reap --json", Some(RuleId::WorkerAdmin)),
+        ("headwork reap --dry-run", None),
+        ("headwork.exe reap --dry-run --json", None),
         ("headwork root", Some(RuleId::WorkerAdmin)),
         ("headwork.exe queue --order a,b", Some(RuleId::WorkerAdmin)),
         (
