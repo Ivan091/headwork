@@ -1283,6 +1283,29 @@ fn a_trust_prompt_after_the_launcher_started_claude_is_seen_too() {
         [(FindingId::TrustPrompt, Status::Standing)],
         "a launched session whose task still spawns can wait at the dialog"
     );
+    w.store
+        .transition(
+            task.id,
+            &Trigger::SessionStarted(SessionFacts {
+                session_matches: true,
+                launcher_alive: true,
+            }),
+            Actor::Hook,
+        )
+        .unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.store.topic_ask(task.id, "trust").unwrap().is_none(),
+        "answered in the pane: the session started, so the ask is retired"
+    );
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c == &format!("unblocked {surface}")),
+        "blocked state cleared: {:?}",
+        w.host.calls()
+    );
 }
 
 #[test]
