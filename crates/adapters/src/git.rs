@@ -79,7 +79,8 @@ pub trait GitHost: fmt::Debug {
     /// Returns [`GitHostError`] when the host cannot answer; a branch without a pull request is `Ok(None)`.
     fn pr_for_branch(&self, dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError>;
 
-    /// The pull request at `url`, as it stands now.
+    /// The pull request at `url`, as it stands now; the URL's host (github.com or a GitHub Enterprise one) picks where
+    /// to ask.
     ///
     /// # Errors
     ///
@@ -178,7 +179,8 @@ pub fn parse_pr(text: &str) -> Result<PrInfo, serde_json::Error> {
     })
 }
 
-/// `owner/name` of a pull request URL such as `https://github.com/owner/name/pull/7`.
+/// `owner/name` of a pull request URL on any host, such as `https://github.com/owner/name/pull/7` or a GitHub
+/// Enterprise one, `https://ghe.example.com/owner/name/pull/7`.
 #[must_use]
 pub fn repo_of_url(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -215,5 +217,34 @@ impl GitHost for FakeGit {
 
     fn pr_by_url(&self, url: &str) -> Result<Option<PrInfo>, GitHostError> {
         Ok(self.prs.borrow().values().find(|pr| pr.url == url).cloned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests")]
+
+    use super::*;
+
+    #[test]
+    fn a_pull_request_of_any_host_keeps_its_url_and_names_its_repository() {
+        for url in [
+            "https://github.com/owner/name/pull/7",
+            "https://ghe.example.com/owner/name/pull/7",
+        ] {
+            assert_eq!(repo_of_url(url), "owner/name", "{url}");
+            let pr =
+                parse_pr(&format!(r#"{{"number":7,"state":"MERGED","url":"{url}"}}"#)).unwrap();
+            assert_eq!(
+                pr,
+                PrInfo {
+                    repo: "owner/name".to_owned(),
+                    number: 7,
+                    url: url.to_owned(),
+                    state: PrState::Merged,
+                },
+                "{url}"
+            );
+        }
     }
 }

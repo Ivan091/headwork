@@ -1072,7 +1072,11 @@ fn mcp_report_schema_is_golden() {
                 "status": { "type": "string", "enum": ["progress", "review", "blocked", "done"] },
                 "summary": { "type": "string" },
                 "links": { "type": "array", "items": { "type": "string" } },
-                "pr": { "type": "string", "description": "A GitHub pull request URL, for status review." },
+                "pr": {
+                    "type": "string",
+                    "description": "The pull request URL, https://<host>/<owner>/<repo>/pull/<n> on github.com or a GitHub \
+                                    Enterprise host; for status review.",
+                },
             },
             "required": ["status", "summary"],
         }),
@@ -1387,6 +1391,43 @@ fn done_after_a_pull_request_closed_unmerged_returns_to_working_and_finishes() {
             "finish"
         ],
         "the recorded pull request is checked by its URL"
+    );
+}
+
+#[test]
+fn an_enterprise_host_pull_request_is_recorded_and_seen_merged_by_its_url() {
+    let url = "https://ghe.example.com/Ivan091/demo/pull/5";
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "report",
+        &json!({ "status": "review", "summary": "please review", "pr": url }),
+    );
+    assert!(!is_error && text.contains("in_review"), "{text}");
+    let board = w.store.board(false).unwrap();
+    assert_eq!(
+        board.tasks[0].pr.clone().unwrap().url,
+        url,
+        "the host is kept"
+    );
+    w.post("SendMessage", &json!({}));
+    w.prs.set(
+        "renamed-branch",
+        PrInfo {
+            url: url.to_owned(),
+            ..pr(PrState::Merged)
+        },
+    );
+    let (is_error, text) = w.tool(identity, "done", &json!({}));
+    assert!(!is_error, "{text}");
+    assert_eq!(w.state(), TaskState::Closing, "closing");
+    let moves: Vec<String> = w.transitions().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        moves,
+        ["session-started", "review-opened", "merged", "close"],
+        "the merge is seen through the recorded enterprise URL"
     );
 }
 

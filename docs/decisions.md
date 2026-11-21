@@ -759,3 +759,8 @@ and the reason.
   installed by `tick --install` after the user's `Allow` tap like the Windows task. It is planned in the follow-up task
   `headwork-macos-launchd-tick`, which also gives `tick --install` its macOS words; until then `tick --install` and
   `--uninstall` refuse on macOS and change nothing.
+- 2026-11-21 A reported pull request URL may be on any host, `https://<host>/<owner>/<repo>/pull/<n>`, so workers of
+  projects on a GitHub Enterprise host can record theirs. The URL is stored whole, host included, and `<owner>/<repo>`
+  alone is checked against `allowed_repos`, which names no host. `gh pr view <url>` takes the host from the URL, so the
+  git host adapter passes no `--hostname` or `GH_HOST`; `gh` only has to be logged in to that host. Checked read-only
+  against a merged pull request on such a host: `gh pr view` answered `MERGED` from a folder outside any repository.
