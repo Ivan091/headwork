@@ -434,8 +434,16 @@ struct SpawnArgs {
     json: bool,
 }
 
+/// The arguments with `orchestrator` added when only the program name was given, so a bare `headwork` runs the orchestrator.
+fn with_default_command(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    if args.len() == 1 {
+        args.push("orchestrator".into());
+    }
+    args
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(with_default_command(std::env::args_os().collect()));
     let mut out = io::stdout().lock();
     match run(cli, &mut out) {
         Ok(code) => code,
@@ -1572,4 +1580,25 @@ fn orchestrator_command(home: &Home, start: &OrchestratorStart) -> Result<ExitCo
     let code = launch_orchestrator(home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+#[cfg(test)]
+mod default_command_tests {
+    use super::with_default_command;
+
+    #[test]
+    fn bare_invocation_runs_the_orchestrator() {
+        let args = with_default_command(vec!["headwork".into()]);
+        assert_eq!(
+            args,
+            ["headwork", "orchestrator"],
+            "bare headwork gets the orchestrator command"
+        );
+    }
+
+    #[test]
+    fn explicit_arguments_are_untouched() {
+        let args = with_default_command(vec!["headwork".into(), "board".into()]);
+        assert_eq!(args, ["headwork", "board"], "an explicit command stays");
+    }
 }

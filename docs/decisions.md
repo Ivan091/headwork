@@ -886,3 +886,4 @@ and the reason.
 - 2026-11-21 The orchestrator's agent defaults to `orchestrator`; `root` only when `~/.claude/agents/root.md` exists and no
   `orchestrator.md` is in `~/.claude/agents` or the launch folder's `.claude/agents`. The agent file may live in the project
   (`~/Work/.claude/agents`), so the old "else `root`" fallback made a bare `headwork orchestrator` fail there.
+- 2026-11-21 Bare `headwork`. With no arguments the binary runs `headwork orchestrator` with its defaults, instead of printing the usage. `--help` and `--version` are unchanged.
