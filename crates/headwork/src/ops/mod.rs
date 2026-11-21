@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
+use headwork_adapters::host::cmux::{Cli as CmuxCli, Cmux};
 use headwork_adapters::host::wmux::{Cli as WmuxCli, Wmux};
 use headwork_adapters::worktree::Worktrees;
 use headwork_core::config::{HostKind, ProjectConfig, TaskVars};
@@ -126,13 +127,15 @@ impl Env<'_> {
 ///
 /// # Errors
 ///
-/// Fails for a host this build does not drive yet.
+/// Never fails today; a host this build cannot drive would.
 pub fn host_for(config: &Config) -> Result<Box<dyn TerminalHost>> {
     match config.machine.host {
         HostKind::Wmux => Ok(Box::new(Wmux::new(WmuxCli::locate(
             config.machine.host_bin.as_deref().map(Path::new),
         )))),
-        HostKind::Cmux => anyhow::bail!("the cmux host arrives in milestone 8"),
+        HostKind::Cmux => Ok(Box::new(Cmux::new(CmuxCli::locate(
+            config.machine.host_bin.as_deref().map(Path::new),
+        )))),
     }
 }
 
