@@ -31,8 +31,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 - Open a helper agent session of your own (a separate program shown in wmux) with the headwork `helper_tab` tool: it
   becomes a new tab in your own workspace, never a new workspace or a split, and closes with it. In-process subagents
   (the `Agent` tool) need no tab.
-- Processes an ended session left running (a stray `tail.exe` or `bash.exe`) are ended by the orchestrator's `reap`:
-  `headwork reap --dry-run` shows what it would end; ask the orchestrator to reap, never run `taskkill` on them, and
+- Processes an ended session left running ({stray}) are ended by the orchestrator's `reap`:
+  `headwork reap --dry-run` shows what it would end; ask the orchestrator to reap, never run {kill} on them, and
   never hand the kill to the user. Never run `headwork tick --install` or `--uninstall` unless the user allowed that
   exact command in an `Allow` ask in your pane.
 - Start any long-running process (a training run, a render) with the headwork `job_start` tool, never as a background

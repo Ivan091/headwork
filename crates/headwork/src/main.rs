@@ -37,7 +37,8 @@ use headwork_adapters::git::Gh;
 use headwork_core::guard::{ToolCall, check_tool};
 use headwork_core::watch::Limits;
 use headwork_core::{
-    Actor, Config, Decision, Effort, Model, PermissionMode, ProjectName, Role, Slug, TaskRequest,
+    Actor, Config, Decision, Effort, Model, PermissionMode, Platform, ProjectName, Role, Slug,
+    TaskRequest,
 };
 use headwork_store::{EventFilter, Store, TaskId};
 
@@ -113,12 +114,9 @@ enum Command {
     /// Reconcile the store with reality: panes, processes, pull requests, worktrees, disks, runaway files, stuck
     /// sessions and asks. Meant to run every few minutes from a scheduler.
     Tick {
-        /// Create (or replace) the Windows scheduled task "headwork tick", every 5 minutes for the current user, and run
-        /// no tick. Only after the user's `Allow` tap.
-        #[arg(long, conflicts_with = "uninstall")]
+        #[arg(long, conflicts_with = "uninstall", help = Platform::current().tick_install_help())]
         install: bool,
-        /// Remove the Windows scheduled task "headwork tick", and run no tick.
-        #[arg(long)]
+        #[arg(long, help = Platform::current().tick_uninstall_help())]
         uninstall: bool,
         /// Print JSON instead of text.
         #[arg(long)]

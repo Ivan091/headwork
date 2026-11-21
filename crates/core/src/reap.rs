@@ -1,11 +1,11 @@
 //! What `headwork reap` ends: pure decisions over a snapshot of the machine's processes.
 //!
 //! Two kinds of leftovers are ended. The processes a session's launcher and `claude` left behind once the session
-//! ended (what its Job Object held), found by their parent links and start times, because a Job Object of another
+//! ended (what its Job Object or process group held), found by their parent links and start times, because a Job Object of another
 //! process cannot be asked for its members. And `tail` and `bash` whose parent is gone and which have been idle for
 //! [`IDLE_AFTER_S`]: the log tails and shells of sessions that died without a job.
 //!
-//! Git Bash's `fork` and `exec` leave a shell's Windows parent pointing at a process that already exited, so the
+//! On Windows, Git Bash's `fork` and `exec` leave a shell's Windows parent pointing at a process that already exited, so the
 //! snapshot links each Git Bash process to its parent through Git Bash's own process list. When that list cannot be
 //! read, no shell is judged orphaned.
 //!
@@ -44,7 +44,7 @@ pub struct Proc {
     /// The id of the process that started it: for a Git Bash process its Git Bash parent, else the parent the system
     /// recorded. That process may be gone, and its id reused.
     pub parent: Option<u32>,
-    /// The program image, such as `bash.exe`.
+    /// The program image, such as `bash.exe` on Windows or `bash` elsewhere.
     pub image: String,
     /// When it started, in seconds since the unix epoch.
     pub started: u64,

@@ -13,13 +13,15 @@ use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
-use headwork::ops::rules::{CLOSING_HEADING, RuleFiles};
+use headwork::ops::rules::{
+    CLOSING_HEADING, ORCHESTRATOR_RULES, RuleFiles, WORKER_RULES, platform_words,
+};
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, ProjectName, Role, SessionState, Slug, TaskRequest,
-    TaskState, Trigger,
+    Actor, Config, Model, PermissionMode, Platform, ProjectName, Role, SessionState, Slug,
+    TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
 use serde_json::{Value, json};
@@ -229,10 +231,48 @@ fn session_start_marks_the_task_working_and_injects_the_rules() {
         "{text}"
     );
     assert!(text.contains("in shadow mode"), "{text}");
+    assert!(
+        text.contains(Platform::current().stray_shells()),
+        "this OS's words: {text}"
+    );
+    assert!(!text.contains("{stray}"), "placeholders filled: {text}");
     assert_eq!(w.state(), TaskState::Working, "after");
     let session = w.store.hook_session(&w.session).unwrap().unwrap();
     assert_eq!(session.rules_seen, 1, "rules seen");
     assert_eq!(session.state, SessionState::Live, "live");
+}
+
+#[test]
+fn the_built_in_rules_name_the_programs_of_their_platform() {
+    for rules in [ORCHESTRATOR_RULES, WORKER_RULES] {
+        let windows = platform_words(rules, Platform::Windows);
+        assert!(windows.contains("`tail.exe` or `bash.exe`"), "{windows}");
+        assert!(windows.contains("`taskkill`"), "{windows}");
+        for platform in [Platform::MacOs, Platform::Unix] {
+            let text = platform_words(rules, platform);
+            assert!(text.contains("`tail` or `bash`"), "{text}");
+            assert!(text.contains("process-group kill"), "{text}");
+            for word in [
+                "taskkill",
+                "tail.exe",
+                "bash.exe",
+                "schtasks",
+                "scheduled task",
+                "{stray}",
+                "{kill}",
+                "{tick_install}",
+            ] {
+                assert!(!text.contains(word), "{platform:?} {word}: {text}");
+            }
+        }
+    }
+    let windows = platform_words(ORCHESTRATOR_RULES, Platform::Windows);
+    assert!(
+        windows.contains("creates the Windows scheduled task \"headwork tick\""),
+        "{windows}"
+    );
+    let mac = platform_words(ORCHESTRATOR_RULES, Platform::MacOs);
+    assert!(mac.contains("has no scheduler for it yet"), "{mac}");
 }
 
 #[test]

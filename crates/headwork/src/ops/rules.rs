@@ -5,6 +5,7 @@
 //! fall back to `root.md` and `child.md` there, their names before 2026-11-14, then to the copies built into the binary
 //! from the repository's `rules/`. Placeholders such as `{name}` and `{close}` are filled per session, and
 //! `{orchestrator}` with the orchestrator's address, which is part of the hash so a new address reaches every session.
+//! `{stray}`, `{kill}` and `{tick_install}` take the words of the OS headwork runs on ([`Platform`]).
 //! A keep task's rules lose their "Closing yourself" section.
 
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
 use headwork_core::config::Delivery;
-use headwork_core::{Config, Role};
+use headwork_core::{Config, Platform, Role};
 use headwork_store::{AddedRule, Store, Task};
 
 use super::slashed;
@@ -245,6 +246,7 @@ fn fill(text: &str, config: &Config, exe: &Path, card: Option<&Card<'_>>) -> Str
     let mut out = text
         .replace(&slot("exe"), &exe_text)
         .replace(&slot("mode"), mode);
+    out = platform_words(&out, Platform::current());
     if let Some(card) = card {
         let task = card.task;
         let name = task.name.to_string();
@@ -265,6 +267,14 @@ fn fill(text: &str, config: &Config, exe: &Path, card: Option<&Card<'_>>) -> Str
             .replace(&slot("close"), &format!("\"{exe_text}\" close {name}"));
     }
     out
+}
+
+/// Fills the placeholders that name system programs with `platform`'s words.
+#[must_use]
+pub fn platform_words(text: &str, platform: Platform) -> String {
+    text.replace(&slot("stray"), platform.stray_shells())
+        .replace(&slot("kill"), platform.kill_tools())
+        .replace(&slot("tick_install"), platform.tick_install())
 }
 
 /// FNV-1a, 64 bits: enough to notice a changed file.

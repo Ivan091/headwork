@@ -9,6 +9,7 @@ pub mod guard;
 pub mod layout;
 pub mod lifecycle;
 pub mod names;
+pub mod platform;
 pub mod process;
 pub mod reap;
 pub mod user_go;
@@ -23,6 +24,7 @@ pub use names::{
     LEGACY_ORCHESTRATOR_ADDRESS, NameError, ORCHESTRATOR_ADDRESS, ProjectName, Slug, TaskName,
     is_orchestrator_address, orchestrator_address,
 };
+pub use platform::Platform;
 pub use vocabulary::{
     Actor, AskKind, AskState, Effort, FindingId, JobState, MachineMode, Model, PermissionMode,
     PlaceKind, RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
