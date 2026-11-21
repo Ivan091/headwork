@@ -234,7 +234,11 @@ const TOOLS: &[ToolDef] = &[
                     "status": { "type": "string", "enum": STATUSES },
                     "summary": { "type": "string" },
                     "links": { "type": "array", "items": { "type": "string" } },
-                    "pr": { "type": "string", "description": "A GitHub pull request URL, for status review." },
+                    "pr": {
+                        "type": "string",
+                        "description": "The pull request URL, https://<host>/<owner>/<repo>/pull/<n> on github.com or a GitHub \
+                                        Enterprise host; for status review.",
+                    },
                 }),
                 &["status", "summary"],
             )
@@ -1086,20 +1090,28 @@ fn to_text(value: &impl serde::Serialize) -> Result<String> {
 }
 
 /// `owner/name` and the number of a GitHub pull request URL.
+const PR_URL_SHAPE: &str = "`pr` must be a https://<host>/<owner>/<repo>/pull/<n> URL, on github.com or a GitHub Enterprise host";
+
+/// The pull request at `url`, `https://<host>/<owner>/<repo>/pull/<n>` on any host: github.com or a GitHub
+/// Enterprise one such as `ghe.example.com`. The URL is kept whole, host included; `repo` is `<owner>/<repo>`.
 fn parse_pr(url: &str) -> Result<NewPr> {
     let rest = url
-        .strip_prefix("https://github.com/")
-        .ok_or_else(|| anyhow!("`pr` must be a https://github.com/<owner>/<repo>/pull/<n> URL"))?;
+        .strip_prefix("https://")
+        .ok_or_else(|| anyhow!(PR_URL_SHAPE))?;
     let mut parts = rest.trim_end_matches('/').split('/');
-    let (Some(owner), Some(name), Some("pull"), Some(number), None) = (
+    let (Some(host), Some(owner), Some(name), Some("pull"), Some(number), None) = (
+        parts.next(),
         parts.next(),
         parts.next(),
         parts.next(),
         parts.next(),
         parts.next(),
     ) else {
-        bail!("`pr` must be a https://github.com/<owner>/<repo>/pull/<n> URL");
+        bail!(PR_URL_SHAPE);
     };
+    if [host, owner, name].iter().any(|part| part.is_empty()) {
+        bail!(PR_URL_SHAPE);
+    }
     Ok(NewPr {
         repo: format!("{owner}/{name}"),
         number: number
@@ -1151,4 +1163,53 @@ fn registration(args: &Value) -> Result<Registration> {
         restart: args.get("restart").and_then(Value::as_bool),
         heavy: flag(args, "heavy"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests")]
+
+    use super::parse_pr;
+
+    #[test]
+    fn a_pull_request_url_parses_on_any_host() {
+        let cases = [
+            (
+                "https://github.com/Ivan091/demo/pull/12",
+                "Ivan091/demo",
+                12,
+            ),
+            (
+                "https://ghe.example.com/team/config/pull/3",
+                "team/config",
+                3,
+            ),
+            (
+                "https://ghe.example.com/team/config/pull/3/",
+                "team/config",
+                3,
+            ),
+        ];
+        for (url, repo, number) in cases {
+            let pr = parse_pr(url).unwrap();
+            assert_eq!((pr.repo.as_str(), pr.number), (repo, number), "{url}");
+            assert_eq!(pr.url, url, "the URL is kept whole, host included");
+        }
+    }
+
+    #[test]
+    fn anything_else_is_refused() {
+        for url in [
+            "http://github.com/o/r/pull/1",
+            "github.com/o/r/pull/1",
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/pull/1/files",
+            "https://github.com/o/pull/1",
+            "https:///o/r/pull/1",
+            "https://ghe.example.com//r/pull/1",
+            "https://ghe.example.com/o/r/pull/x",
+        ] {
+            assert!(parse_pr(url).is_err(), "{url}");
+        }
+    }
 }
