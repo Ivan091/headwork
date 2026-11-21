@@ -55,6 +55,11 @@ impl Recorder {
         self
     }
 
+    fn then_answering(self, text: &str) -> Self {
+        self.answers.borrow_mut().push_back(Ok(text.to_owned()));
+        self
+    }
+
     fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
     }
@@ -362,6 +367,21 @@ fn close_pane_closes_its_surfaces_and_kill_tolerates_a_closed_one() {
     assert!(
         host(&gone).kill_agent(&AgentId("S-0".to_owned())).is_ok(),
         "already gone"
+    );
+}
+
+#[test]
+fn kill_closes_the_workspace_of_a_last_surface() {
+    let recorder = Recorder::default()
+        .then_failing("Error: invalid_state: Cannot close the last surface")
+        .then_answering(&fixture("tree.json"));
+    host(&recorder)
+        .kill_agent(&AgentId(LOWER.to_owned()))
+        .unwrap();
+    assert_eq!(
+        recorder.calls().get(2).unwrap(),
+        &format!(r#"rpc workspace.close {{"force":true,"workspace_id":"{WORKSPACE}"}}"#),
+        "the workspace goes with its last surface"
     );
 }
 

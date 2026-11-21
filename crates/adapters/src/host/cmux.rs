@@ -87,6 +87,9 @@ const LABEL_VAR: &str = "HEADWORK_HOST_LABEL";
 /// What cmux prints for a handle that does not exist.
 const NOT_FOUND: &str = "not_found";
 
+/// What cmux prints when asked to close a workspace's only surface, which only closing the workspace does.
+const LAST_SURFACE: &str = "Cannot close the last surface";
+
 /// The sidebar status key of a surface's blocked state.
 fn status_key(surface: &SurfaceId) -> String {
     format!("headwork-{surface}")
@@ -794,7 +797,14 @@ impl<R: Runner> TerminalHost for Cmux<R> {
     }
 
     fn kill_agent(&self, agent: &AgentId) -> Result<(), HostError> {
-        tolerate_missing(self.close_surface(&SurfaceId(agent.as_str().to_owned())))
+        let surface = SurfaceId(agent.as_str().to_owned());
+        match self.close_surface(&surface) {
+            Err(HostError::Failed { message, .. }) if message.contains(LAST_SURFACE) => {
+                let workspace = WorkspaceId(self.holding(&surface)?.id);
+                tolerate_missing(self.close_workspace(&workspace))
+            }
+            other => tolerate_missing(other),
+        }
     }
 
     fn show_blocked(
