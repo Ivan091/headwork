@@ -86,3 +86,46 @@ With `automation.socketControlMode = "automation"` ("also accepts other apps run
 Automation, or `"automation": { "socketControlMode": "automation" }` in `~/.config/cmux/cmux.json`) the same job got
 `{"pong": true}`. The launchd tick (`headwork tick --install`, `ops/launchd.rs`) needs that mode; `password` mode would
 also do but puts a secret in the plist, and `allowAll`/full open access accepts any local process.
+
+## Workspace groups
+
+Tried on 2026-11-21 (cmux 0.65.2) with throwaway groups and workspaces named `headwork-test…`, all removed afterwards,
+for the lead plan (`docs/leads.md`). headwork does not use groups: the user chose tabs in one workspace per task. This
+records what cmux offers in case that changes.
+
+cmux has collapsible sidebar groups of workspaces (`cmux workspace-group …`, socket `workspace.group.*`, capabilities
+`workspace.groups.v1`, `workspace.group_create.v1`, `workspace.create_in_group.v1`, `workspace.group_actions.v1`).
+Groups belong to one window (`list` answers with its `window_id`). There are no folders or nested groups.
+
+| Operation | Call | Result |
+|---|---|---|
+| list | `rpc workspace.group.list {}` | `groups`: `id`, `ref` (`workspace_group:N`), `name`, `anchor_workspace_id`, `anchor_workspace_provenance` (`generated` or `user`), `member_workspace_ids` in sidebar order, `is_collapsed`, `is_pinned`, `custom_color`, `icon_symbol`, `external_id`, `idempotency_key`; newest group first **[V]** |
+| create | `rpc workspace.group.create {name, cwd, focus:false, idempotency_key}` | makes the group with a generated anchor workspace (a shell, titled with the group's name); the same key again answers `created: false` with the same group, a key whose group is gone makes a new one **[V]** |
+| create from workspaces | `cmux workspace-group create --name N --from <ws>,… --json` | the first workspace becomes the anchor (`user`); the socket key for `--from` was not found (`workspace_ids`, `from`, `member_workspace_ids` are ignored) **[V]** |
+| new workspace in a group | `rpc workspace.create {title, cwd, focus:false, group_id, group_placement:"end"}` | answers `group_id`; without `group_placement` it goes after the current or to the top **[V]**. `workspace.group.new_workspace {group_id}` ignores `title` (the workspace is called `Terminal`) **[V]** |
+| add, move between groups | `rpc workspace.group.add {group_id, workspace_id}` | a workspace in another group leaves it **[V]** |
+| remove | `rpc workspace.group.remove {workspace_id}` | **[V]** |
+| rename | `rpc workspace.group.rename {group_id, name}` | renames a generated anchor's workspace too, not a `user` anchor **[V]** |
+| collapse, expand, pin, colour, icon | `collapse`, `expand`, `pin`, `unpin`, `set_color {hex}`, `set_icon {symbol}` with `group_id` | a collapsed group stays collapsed when a workspace is added **[V]** |
+| order | `cmux workspace-group move <group> --to-index 0` (also `--before`, `--after`) | **[V]** |
+| anchor | `rpc workspace.group.set_anchor {group_id, workspace_id}` | provenance becomes `user` **[V]** |
+| dissolve | `ungroup <group> [--remove-generated-anchor]`, `delete <group>` | members stay as plain workspaces **[V]** |
+| delete with workspaces | `rpc workspace.group.delete {group_id, close_workspaces:true}` | closes every member, answers `closed_workspace_count` **[V]** |
+| focus | `workspace.group.focus` | selects the anchor; takes focus, so not tried |
+
+None of the calls tried moved the user's selected workspace. Lifecycle, all **[V]**:
+
+- Closing the anchor promotes the next member; closing the last member removes the group.
+- A group with a generated anchor dissolves, closing that anchor, as soon as its last other member closes or is removed.
+  A `user` anchor alone keeps its group.
+- `system.tree` does not show group membership; only `workspace.group.list` does.
+- Whether groups survive a cmux restart was not tried.
+
+## Tabs in one workspace
+
+What the lead plan uses, tried the same day: `surface.create {workspace_id, initial_command, focus:false}` twice on a
+fresh workspace put both programs as tabs in its one pane, and the workspace's selected tab stayed the shell. `tab.action
+rename` titled one, and `surface.close {force:true}` on another left the rest. The user's view did not move **[V]**.
+
+`surface.create` with a `workspace_id` that does not exist does not fail: it opens the surface in the caller's
+workspace **[V]**. The adapter should compare the `workspace_id` in the answer with the one it asked for.

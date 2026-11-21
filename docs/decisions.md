@@ -806,3 +806,6 @@ and the reason.
   the `Allow` tap stays in the rules. `doctor` adds check `tick-agent` on macOS: `launchctl print
   gui/<uid>/com.headwork.tick` says loaded or not, with the last tick's age; not loaded warns only when enforcing.
   Other unix systems still refuse. `tick.log` is not rotated yet.
+- 2026-11-21 Leads (plan, `docs/leads.md`): a task's lead, parts and helpers share one workspace as tabs, not a cmux
+  workspace group, by the user's choice: tabs work the same on wmux, which has no groups, and need no trait change.
+  The user talks to the leads; the orchestrator dispatches and gives one-line status.
