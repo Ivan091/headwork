@@ -297,7 +297,7 @@ enum Command {
         /// The session and Remote Control name; workers message it. A session brought back keeps its own name.
         #[arg(long, default_value = headwork_core::ORCHESTRATOR_ADDRESS)]
         name: String,
-        /// The agent definition; `orchestrator` when `~/.claude/agents/orchestrator.md` exists, else `root`.
+        /// The agent definition; `orchestrator`, or `root` when only `~/.claude/agents/root.md` exists.
         #[arg(long)]
         agent: Option<String>,
         /// The model; claude's own default (the user's settings) when absent.

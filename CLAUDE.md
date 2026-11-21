@@ -240,7 +240,7 @@ The binary, `~/.headwork` and the PATH copy can stay; remove them with `rm -r ~/
 
 **The orchestrator as a store session:** `headwork orchestrator` starts `claude --agent <agent> --remote-control
 orchestrator -n orchestrator` here, records it as the store's orchestrator session and gives it its identity. `--name`
-changes the name; the agent is `orchestrator` once `~/.claude/agents/orchestrator.md` exists, else `root`, and
+changes the name; the agent is `orchestrator` (user or launch-folder `.claude/agents`), `root` only when just `~/.claude/agents/root.md` exists, and
 `--agent` overrides both.
 
 **Root and children became orchestrator and workers (2026-11-14).** The coordinating session was called the root and the

@@ -832,19 +832,27 @@ fn a_spawn_without_an_effort_stores_the_level_the_settings_give_its_model() {
 }
 
 #[test]
-fn the_orchestrator_runs_its_agent_file_once_it_exists() {
+fn the_orchestrator_agent_is_orchestrator_unless_only_root_exists() {
     let claude = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        orchestrator_agent(claude.path()),
-        "root",
-        "the old agent until then"
+        orchestrator_agent(claude.path(), dir.path()),
+        "orchestrator",
+        "nothing defined"
     );
     std::fs::create_dir(claude.path().join("agents")).unwrap();
-    std::fs::write(claude.path().join("agents/orchestrator.md"), "x").unwrap();
+    std::fs::write(claude.path().join("agents/root.md"), "x").unwrap();
     assert_eq!(
-        orchestrator_agent(claude.path()),
+        orchestrator_agent(claude.path(), dir.path()),
+        "root",
+        "only the old agent"
+    );
+    std::fs::create_dir_all(dir.path().join(".claude/agents")).unwrap();
+    std::fs::write(dir.path().join(".claude/agents/orchestrator.md"), "x").unwrap();
+    assert_eq!(
+        orchestrator_agent(claude.path(), dir.path()),
         "orchestrator",
-        "the new agent"
+        "the project's agent"
     );
 }
 
