@@ -712,6 +712,38 @@ fn a_merged_grace_waits_for_a_running_job() {
 }
 
 #[test]
+fn a_merged_grace_waits_for_a_leads_close_go() {
+    let mut w = world_extra(true, 10, "\n[leads]\nenabled = true\n");
+    let task = merged(&mut w, "sand");
+    assert!(task.shape.is_lead(), "a lead");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    reported(&w, &task, &session.id);
+    w.limits.merged_grace = 0;
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &task),
+        TaskState::Merged,
+        "no go from the user yet"
+    );
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            Some(&session.id),
+            "close-go",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report)[0],
+        (FindingId::MergedGrace, Status::Applied),
+        "closing after the go"
+    );
+    assert_ne!(state(&w, &task), TaskState::Merged, "left merged");
+}
+
+#[test]
 fn a_merged_grace_waits_for_its_time() {
     let mut w = world_with(true, 10);
     let task = merged(&mut w, "sand");
