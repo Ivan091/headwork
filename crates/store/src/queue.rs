@@ -1,6 +1,9 @@
 //! The queue order, and tasks adopted from a setup that ran before headwork.
 
-use headwork_core::{Actor, Config, Model, PermissionMode, ProjectName, Role, Slug, TaskName};
+use headwork_core::{
+    Actor, Config, Model, PermissionMode, ProjectName, QueueEntry, QueueKey, Role, Slug, TaskName,
+    queue_order,
+};
 use rusqlite::params;
 
 use crate::queries::{insert_event, load_task, upsert_project};
@@ -41,20 +44,41 @@ pub struct AdoptTask {
 }
 
 impl Store {
-    /// The queued tasks, in queue order: ranked ones first by rank, then the rest oldest first.
+    /// The queued tasks, in queue order: ranked ones first by rank, then the rest oldest first; a part waits at its
+    /// lead's place, right behind the lead, ahead of tasks queued after the lead ([`queue_order`]).
     ///
     /// # Errors
     ///
     /// Returns a read error.
     pub fn queued(&self) -> Result<Vec<TaskId>, StoreError> {
-        Ok(self
+        let entries = self
             .conn
             .prepare(
-                "SELECT id FROM tasks WHERE state = 'queued'
-                 ORDER BY queue_rank IS NULL, queue_rank, queued_at, id",
+                "SELECT t.id, t.queue_rank, t.queued_at, l.id, l.queue_rank, l.queued_at
+                 FROM tasks t LEFT JOIN tasks l ON l.id = t.parent_id WHERE t.state = 'queued'",
             )?
-            .query_map([], |row| row.get(0).map(TaskId))?
-            .collect::<Result<_, _>>()?)
+            .query_map([], |row| {
+                let id = TaskId(row.get(0)?);
+                let lead = row.get::<_, Option<i64>>(3)?.map(TaskId);
+                Ok(QueueEntry {
+                    id,
+                    key: QueueKey {
+                        rank: row.get(1)?,
+                        queued_at: row.get(2)?,
+                        id,
+                    },
+                    lead: match lead {
+                        Some(lead) => Some(QueueKey {
+                            rank: row.get(4)?,
+                            queued_at: row.get(5)?,
+                            id: lead,
+                        }),
+                        None => None,
+                    },
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(queue_order(entries))
     }
 
     /// The tasks in one state, oldest first.

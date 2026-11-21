@@ -13,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use headwork_core::config::TaskVars;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::user_go::{self, GoFacts};
-use headwork_core::{PermissionMode, Role, TaskName, TaskRequest};
+use headwork_core::{PermissionMode, Role, TaskName, TaskRequest, TaskShape};
 use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
@@ -109,6 +109,11 @@ pub fn spawn(
             brief_path: slashed(&brief_path),
             depends_on: new.depends_on,
             permission_mode: new.permission_mode,
+            shape: if env.config.leads.enabled {
+                TaskShape::Lead
+            } else {
+                TaskShape::Plain
+            },
         },
         env.actor,
     )?;

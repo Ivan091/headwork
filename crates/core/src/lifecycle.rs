@@ -4,6 +4,7 @@
 //! the guard needs, and returns the [`Step`] to record or the [`Refusal`] that explains why not. It has no I/O; the
 //! store gathers the facts and writes the result.
 
+use crate::lead::PartSlots;
 use crate::vocabulary::{MachineMode, TaskState};
 
 /// The parts of a task the lifecycle reads.
@@ -52,6 +53,8 @@ pub struct StartFacts {
     pub project_cap: Option<u32>,
     /// The task's kind is main-only and another live task of the project already runs that kind.
     pub main_only_kind_busy: bool,
+    /// For a part, its lead's part slots; none for a lead or a plain task.
+    pub part_slots: Option<PartSlots>,
     /// The dependency's state.
     pub dependency: Dependency,
     /// The Fable approval.
@@ -108,6 +111,8 @@ pub struct CloseFacts {
     pub running_job: bool,
     /// The worker sent its report to the orchestrator.
     pub report_sent: bool,
+    /// Parts of the task, a lead, that are not closed yet.
+    pub live_parts: u32,
 }
 
 /// Where the task's pull request stands when its worker finishes.
@@ -132,6 +137,8 @@ pub struct FinishFacts {
     pub running_job: bool,
     /// The worker sent its report to the orchestrator.
     pub report_sent: bool,
+    /// Parts of the task, a lead, that are not closed yet.
+    pub live_parts: u32,
     /// The task's pull request.
     pub pr: PrEnd,
 }
@@ -291,6 +298,18 @@ pub enum Refusal {
     ProjectCapReached {
         /// The project's cap.
         cap: u32,
+    },
+    /// The part's lead already runs `max_parts` parts.
+    #[error("its lead already runs {max} parts, the most `[leads] max_parts` allows")]
+    PartCapReached {
+        /// `[leads] max_parts`.
+        max: u32,
+    },
+    /// A lead may not finish while a part of it is not closed (`lead-parts-live`).
+    #[error("lead-parts-live: {live} part(s) of this lead are not closed yet; close them first")]
+    LeadPartsLive {
+        /// The parts not closed yet.
+        live: u32,
     },
     /// Another task of the same main-only kind runs in the project.
     #[error("another task of this main-only kind already runs in the project's main checkout")]
@@ -531,6 +550,13 @@ pub const fn check_start(facts: &StartFacts) -> Result<(), Refusal> {
     {
         return Err(Refusal::ProjectCapReached { cap });
     }
+    if let Some(slots) = facts.part_slots
+        && !slots.has_room()
+    {
+        return Err(Refusal::PartCapReached {
+            max: slots.max_parts,
+        });
+    }
     if facts.main_only_kind_busy {
         return Err(Refusal::MainOnlyKindBusy);
     }
@@ -553,6 +579,11 @@ const fn check_close(keep: bool, facts: CloseFacts) -> Result<(), Refusal> {
     if facts.running_job {
         return Err(Refusal::RunningJob);
     }
+    if facts.live_parts > 0 {
+        return Err(Refusal::LeadPartsLive {
+            live: facts.live_parts,
+        });
+    }
     if !facts.report_sent {
         return Err(Refusal::ReportMissing);
     }
@@ -568,6 +599,11 @@ const fn check_finish(keep: bool, facts: FinishFacts) -> Result<(), Refusal> {
     }
     if facts.running_job {
         return Err(Refusal::RunningJob);
+    }
+    if facts.live_parts > 0 {
+        return Err(Refusal::LeadPartsLive {
+            live: facts.live_parts,
+        });
     }
     if !facts.report_sent {
         return Err(Refusal::ReportMissing);

@@ -925,8 +925,7 @@ impl<'a> Server<'a> {
     fn drop_task(&mut self, args: &Value) -> Result<String> {
         let task = self.named(args)?;
         let words = text(args, "user_words")?;
-        self.store
-            .transition(task.id, &Trigger::Drop, self.env.actor)?;
+        self.store.drop_task(task.id, self.env.actor)?;
         self.store.append_event(
             self.env.actor,
             Some(task.id),

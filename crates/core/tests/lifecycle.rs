@@ -9,7 +9,7 @@ use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, Dependency, FableGate, FinishFacts, MergePolicy,
     MergeSource, ParkedFacts, PrEnd, SessionFacts, StartFacts, WorktreeEnd,
 };
-use headwork_core::{MachineMode, Refusal, TaskSnapshot, TaskState, Trigger, apply};
+use headwork_core::{MachineMode, PartSlots, Refusal, TaskSnapshot, TaskState, Trigger, apply};
 use proptest::prelude::*;
 
 use TaskState as S;
@@ -20,6 +20,7 @@ const FREE: StartFacts = StartFacts {
     project_live: 1,
     project_cap: Some(3),
     main_only_kind_busy: false,
+    part_slots: None,
     dependency: Dependency::Merged,
     fable: FableGate::NotNeeded,
     machine: MachineMode::Normal,
@@ -35,12 +36,14 @@ const READY: CloseFacts = CloseFacts {
     open_ask: false,
     running_job: false,
     report_sent: true,
+    live_parts: 0,
 };
 
 const FINISHED: FinishFacts = FinishFacts {
     open_ask: false,
     running_job: false,
     report_sent: true,
+    live_parts: 0,
     pr: PrEnd::None,
 };
 
@@ -243,6 +246,40 @@ fn start_guards() {
         Refusal::MachineMode(MachineMode::Parking),
         "parking"
     );
+    assert_eq!(
+        refused_start(StartFacts {
+            part_slots: Some(PartSlots {
+                live: 2,
+                max_parts: 2,
+            }),
+            ..FREE
+        }),
+        Refusal::PartCapReached { max: 2 },
+        "a part beyond its lead's max_parts waits"
+    );
+    let part_fits = StartFacts {
+        part_slots: Some(PartSlots {
+            live: 1,
+            max_parts: 2,
+        }),
+        ..FREE
+    };
+    assert!(
+        apply(&task(S::Queued), &Trigger::Start(part_fits)).is_ok(),
+        "a part within max_parts starts"
+    );
+    assert_eq!(
+        refused_start(StartFacts {
+            live_workers: 10,
+            part_slots: Some(PartSlots {
+                live: 0,
+                max_parts: 2,
+            }),
+            ..FREE
+        }),
+        Refusal::NoFreeSlot { max: 10 },
+        "a part still takes a machine slot"
+    );
     let uncapped = StartFacts {
         project_cap: None,
         project_live: 50,
@@ -348,6 +385,13 @@ fn close_guards() {
             },
             Refusal::ReportMissing,
         ),
+        (
+            CloseFacts {
+                live_parts: 2,
+                ..READY
+            },
+            Refusal::LeadPartsLive { live: 2 },
+        ),
     ];
     for (facts, refusal) in cases {
         assert_eq!(
@@ -399,6 +443,13 @@ fn finish_guards() {
                 ..FINISHED
             },
             Refusal::ReportMissing,
+        ),
+        (
+            FinishFacts {
+                live_parts: 1,
+                ..FINISHED
+            },
+            Refusal::LeadPartsLive { live: 1 },
         ),
         (
             FinishFacts {
@@ -638,6 +689,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
         0..5_u32,
         proptest::option::of(1..4_u32),
         any::<bool>(),
+        proptest::option::of((0..4_u32, 1..4_u32)),
         dependency,
         fable,
         machine_mode(),
@@ -648,6 +700,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
                 project_live,
                 project_cap,
                 main_only_kind_busy,
+                part_slots,
                 dependency,
                 fable,
                 machine,
@@ -657,6 +710,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
                 project_live,
                 project_cap,
                 main_only_kind_busy,
+                part_slots: part_slots.map(|(live, max_parts)| PartSlots { live, max_parts }),
                 dependency,
                 fable,
                 machine,
@@ -703,26 +757,33 @@ fn trigger() -> impl Strategy<Value = Trigger> {
         Just(Trigger::ChangesRequested),
         (merge_source, merge_policy)
             .prop_map(|(source, policy)| Trigger::Merged { source, policy }),
-        (cause, any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
-            |(cause, open_ask, running_job, report_sent)| {
+        (cause, any::<bool>(), any::<bool>(), any::<bool>(), 0..3_u32).prop_map(
+            |(cause, open_ask, running_job, report_sent, live_parts)| {
                 Trigger::Close(CloseFacts {
                     cause,
                     open_ask,
                     running_job,
                     report_sent,
+                    live_parts,
                 })
             }
         ),
-        (any::<bool>(), any::<bool>(), any::<bool>(), pr_end()).prop_map(
-            |(open_ask, running_job, report_sent, pr)| {
+        (
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+            0..3_u32,
+            pr_end()
+        )
+            .prop_map(|(open_ask, running_job, report_sent, live_parts, pr)| {
                 Trigger::Finish(FinishFacts {
                     open_ask,
                     running_job,
                     report_sent,
+                    live_parts,
                     pr,
                 })
-            }
-        ),
+            }),
         Just(Trigger::Drop),
         Just(Trigger::BeginClosing),
         (any::<bool>(), any::<bool>(), worktree_end()).prop_map(
@@ -754,6 +815,8 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
                 && f.live_workers < f.max_workers
                 && f.project_cap.is_none_or(|cap| f.project_live < cap)
                 && !f.main_only_kind_busy
+                && f.part_slots
+                    .is_none_or(|slots| slots.live < slots.max_parts)
                 && f.dependency != Dependency::Waiting
                 && f.fable != FableGate::Waiting
         }
@@ -762,11 +825,14 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
         Trigger::Merged { source, policy } => {
             !(source == MergeSource::Worker && policy == MergePolicy::Human)
         }
-        Trigger::Close(f) => !task.keep && !f.open_ask && !f.running_job && f.report_sent,
+        Trigger::Close(f) => {
+            !task.keep && !f.open_ask && !f.running_job && f.live_parts == 0 && f.report_sent
+        }
         Trigger::Finish(f) => {
             !task.keep
                 && !f.open_ask
                 && !f.running_job
+                && f.live_parts == 0
                 && f.report_sent
                 && matches!(f.pr, PrEnd::None | PrEnd::Closed)
         }

@@ -1,10 +1,10 @@
 //! Reads and writes of tasks, sessions, asks, projects and events.
 
-use headwork_core::lifecycle::{Dependency, FableGate, StartFacts};
+use headwork_core::lifecycle::{Dependency, FableGate, StartFacts, droppable};
 use headwork_core::{
-    Actor, AskKind, AskState, Config, Effort, MachineMode, PermissionMode, ProjectConfig,
-    ProjectName, Role, SessionState, Slug, Step, TaskName, TaskRequest, TaskState, Trigger, admit,
-    apply,
+    Actor, AskKind, AskState, Config, Effort, MachineMode, PartSlots, PermissionMode,
+    ProjectConfig, ProjectName, Refusal, Role, SessionState, Slug, Step, TaskName, TaskRequest,
+    TaskShape, TaskState, Trigger, admit, apply,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -19,7 +19,7 @@ pub const FABLE_ALLOW: &str = "Allow Fable";
 const FABLE_DECLINE: &str = "Use Opus instead";
 
 const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
-                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort";
+                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort, parent_id, lead";
 
 /// A task to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,8 @@ pub struct NewTask {
     pub depends_on: Option<TaskId>,
     /// The permission mode its sessions start in.
     pub permission_mode: PermissionMode,
+    /// A lead, a part of a lead, or neither.
+    pub shape: TaskShape<TaskId>,
 }
 
 /// A session to record.
@@ -95,6 +97,8 @@ struct RawTask {
     updated_at: String,
     permission_mode: String,
     effort: Option<String>,
+    parent_id: Option<i64>,
+    lead: bool,
 }
 
 impl RawTask {
@@ -117,6 +121,8 @@ impl RawTask {
             updated_at: row.get(14)?,
             permission_mode: row.get(15)?,
             effort: row.get(16)?,
+            parent_id: row.get(17)?,
+            lead: row.get(18)?,
         })
     }
 
@@ -136,6 +142,7 @@ impl RawTask {
             keep: self.keep,
             in_main: self.in_main,
             depends_on: self.depends_on.map(TaskId),
+            shape: TaskShape::from_columns(self.parent_id.map(TaskId), self.lead)?,
             fable_ask: self.fable_ask.map(AskId),
             brief_path: self.brief_path,
             last_report: self.last_report,
@@ -158,6 +165,55 @@ pub(crate) fn insert_event(
         params![actor.as_str(), task.map(|id| id.0), session, kind, data.to_string()],
     )?;
     Ok(())
+}
+
+fn parts_of(conn: &Connection, lead: TaskId) -> Result<Vec<TaskId>, StoreError> {
+    Ok(conn
+        .prepare("SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id")?
+        .query_map(params![lead.0], |row| row.get(0).map(TaskId))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Applies a trigger inside a transaction and logs the transition; a refusal comes back with the task, unlogged,
+/// for the caller to log once the transaction is rolled back.
+fn apply_in(
+    tx: &Transaction<'_>,
+    id: TaskId,
+    trigger: &Trigger,
+    actor: Actor,
+) -> Result<Result<Step, (Task, Refusal)>, StoreError> {
+    let task = load_task(tx, id)?;
+    match apply(&task.snapshot(), trigger) {
+        Ok(step) => {
+            tx.execute(
+                &format!("UPDATE tasks SET state = ?1, state_before_park = ?2, updated_at = {NOW} WHERE id = ?3"),
+                params![step.to.as_str(), step.state_before_park.map(TaskState::as_str), id.0],
+            )?;
+            let data =
+                serde_json::json!({ "trigger": trigger.name(), "from": step.from, "to": step.to });
+            insert_event(tx, actor, Some(id), None, "transition", &data)?;
+            Ok(Ok(step))
+        }
+        Err(refusal) => Ok(Err((task, refusal))),
+    }
+}
+
+/// Logs a refused transition and returns the error to give back.
+fn log_refusal(
+    conn: &Connection,
+    task: &Task,
+    trigger: &Trigger,
+    actor: Actor,
+    refusal: Refusal,
+) -> Result<StoreError, StoreError> {
+    let data = serde_json::json!({
+        "trigger": trigger.name(), "state": task.state, "reason": refusal.to_string(),
+    });
+    insert_event(conn, actor, Some(task.id), None, "refused", &data)?;
+    Ok(StoreError::Refused {
+        task: task.name.to_string(),
+        refusal,
+    })
 }
 
 pub(crate) fn load_task(conn: &Connection, id: TaskId) -> Result<Task, StoreError> {
@@ -206,6 +262,8 @@ pub(crate) fn upsert_project(
 }
 
 struct LiveTask {
+    id: i64,
+    parent_id: Option<i64>,
     project: String,
     kind: String,
     state: TaskState,
@@ -221,7 +279,7 @@ impl LiveTask {
 
 fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
     let mut statement = conn.prepare(
-        "SELECT t.project, t.kind, t.state, t.in_main,
+        "SELECT t.id, t.parent_id, t.project, t.kind, t.state, t.in_main,
                 COALESCE((SELECT s.state IN ('ended', 'gone') FROM sessions s WHERE s.task_id = t.id
                           ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 1)
          FROM tasks t WHERE t.state <> 'closed'",
@@ -229,24 +287,29 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
     let rows = statement
         .query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get(1)?,
+                (row.get(0)?, row.get(1)?),
                 row.get::<_, String>(2)?,
                 row.get(3)?,
-                row.get(4)?,
+                row.get::<_, String>(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
-        .map(|(project, kind, state, in_main, session_over)| {
-            Ok(LiveTask {
-                project,
-                kind,
-                state: state.parse()?,
-                in_main,
-                session_over,
-            })
-        })
+        .map(
+            |((id, parent_id), project, kind, state, in_main, session_over)| {
+                Ok(LiveTask {
+                    id,
+                    parent_id,
+                    project,
+                    kind,
+                    state: state.parse()?,
+                    in_main,
+                    session_over,
+                })
+            },
+        )
         .collect()
 }
 
@@ -256,6 +319,27 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
 const DELIVERED: &str = "state IN ('closing', 'closed')
     AND EXISTS (SELECT 1 FROM prs WHERE task_id = ?1)
     AND NOT EXISTS (SELECT 1 FROM prs WHERE task_id = ?1 AND state <> 'merged')";
+
+/// Checks that a new part may go under `lead`: a live lead of the same project.
+fn check_lead(conn: &Connection, lead: TaskId, project: &ProjectName) -> Result<(), StoreError> {
+    let task = load_task(conn, lead)?;
+    let refuse = |reason| StoreError::NotALead {
+        lead: task.name.to_string(),
+        reason,
+    };
+    if !task.shape.is_lead() {
+        return Err(refuse("it is not a lead"));
+    }
+    if task.project() != project {
+        return Err(refuse(
+            "a part runs in its lead's project; another project's work is a new task",
+        ));
+    }
+    if !droppable(task.state) {
+        return Err(refuse("the lead is closing or over"));
+    }
+    Ok(())
+}
 
 fn count(n: usize) -> Result<u32, StoreError> {
     u32::try_from(n).map_err(|_| StoreError::OutOfRange(i64::MAX))
@@ -326,14 +410,17 @@ impl Store {
             |row| row.get(0),
         )?;
         let admitted = admit(config, request, name_taken, machine_mode(&tx)?)?;
+        if let TaskShape::Part { parent } = new.shape {
+            check_lead(&tx, parent, &request.project)?;
+        }
         if let Some(project) = config.project(&request.project) {
             upsert_project(&tx, &request.project, project)?;
         }
         tx.execute(
             &format!(
                 "INSERT INTO tasks (project, slug, kind, state, model, keep, in_main, depends_on, brief_path, queued_at,
-                     updated_at, permission_mode, effort)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9, ?10)"
+                     updated_at, permission_mode, effort, parent_id, lead)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9, ?10, ?11, ?12)"
             ),
             params![
                 request.project.as_str(),
@@ -346,6 +433,8 @@ impl Store {
                 new.brief_path,
                 new.permission_mode.as_str(),
                 request.effort.map(Effort::as_str),
+                new.shape.parent().map(|id| id.0),
+                new.shape.is_lead(),
             ],
         )?;
         let id = TaskId(tx.last_insert_rowid());
@@ -366,7 +455,7 @@ impl Store {
         }
         let data = serde_json::json!({
             "name": name.to_string(), "kind": request.kind, "model": admitted.model, "effort": admitted.effort, "in_main": request.in_main,
-            "keep": request.keep,
+            "keep": request.keep, "shape": new.shape,
         });
         insert_event(&tx, actor, Some(id), None, "task-created", &data)?;
         tx.commit()?;
@@ -448,6 +537,21 @@ impl Store {
                     })
                     .count()
                     > 0,
+            part_slots: match task.shape {
+                TaskShape::Part { parent } => Some(PartSlots {
+                    live: count(
+                        live.iter()
+                            .filter(|other| {
+                                other.parent_id == Some(parent.0)
+                                    && other.id != id.0
+                                    && other.holds_slot()
+                            })
+                            .count(),
+                    )?,
+                    max_parts: config.leads.max_parts.get(),
+                }),
+                TaskShape::Lead | TaskShape::Plain => None,
+            },
             dependency: self.dependency(task.depends_on)?,
             fable: self.fable_gate(&task)?,
             machine: machine_mode(&self.conn)?,
@@ -527,30 +631,87 @@ impl Store {
         actor: Actor,
     ) -> Result<Step, StoreError> {
         let tx = self.conn.transaction()?;
-        let task = load_task(&tx, id)?;
-        match apply(&task.snapshot(), trigger) {
+        match apply_in(&tx, id, trigger, actor)? {
             Ok(step) => {
-                tx.execute(
-                    &format!("UPDATE tasks SET state = ?1, state_before_park = ?2, updated_at = {NOW} WHERE id = ?3"),
-                    params![step.to.as_str(), step.state_before_park.map(TaskState::as_str), id.0],
-                )?;
-                let data = serde_json::json!({ "trigger": trigger.name(), "from": step.from, "to": step.to });
-                insert_event(&tx, actor, Some(id), None, "transition", &data)?;
                 tx.commit()?;
                 Ok(step)
             }
-            Err(refusal) => {
+            Err((task, refusal)) => {
                 drop(tx);
-                let data = serde_json::json!({
-                    "trigger": trigger.name(), "state": task.state, "reason": refusal.to_string(),
-                });
-                insert_event(&self.conn, actor, Some(id), None, "refused", &data)?;
-                Err(StoreError::Refused {
-                    task: task.name.to_string(),
-                    refusal,
-                })
+                Err(log_refusal(&self.conn, &task, trigger, actor, refusal)?)
             }
         }
+    }
+
+    /// Drops a task, and for a lead every part of it that may still be dropped, in one transaction: a lead's drop
+    /// cascades to its live parts. Returns the parts dropped, oldest first; each still has to be closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Refused`] when the task itself may not be dropped, changing nothing, or a read or write
+    /// error.
+    pub fn drop_task(&mut self, id: TaskId, actor: Actor) -> Result<Vec<TaskId>, StoreError> {
+        let tx = self.conn.transaction()?;
+        let task = match apply_in(&tx, id, &Trigger::Drop, actor)? {
+            Ok(_) => load_task(&tx, id)?,
+            Err((task, refusal)) => {
+                drop(tx);
+                return Err(log_refusal(
+                    &self.conn,
+                    &task,
+                    &Trigger::Drop,
+                    actor,
+                    refusal,
+                )?);
+            }
+        };
+        let mut dropped = Vec::new();
+        if task.shape.is_lead() {
+            for part in parts_of(&tx, id)? {
+                if droppable(load_task(&tx, part)?.state) {
+                    apply_in(&tx, part, &Trigger::Drop, actor)?.map_err(|(part, refusal)| {
+                        StoreError::Refused {
+                            task: part.name.to_string(),
+                            refusal,
+                        }
+                    })?;
+                    insert_event(
+                        &tx,
+                        actor,
+                        Some(part),
+                        None,
+                        "drop-cascade",
+                        &serde_json::json!({ "lead": task.name.to_string() }),
+                    )?;
+                    dropped.push(part);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(dropped)
+    }
+
+    /// The parts of a lead, oldest first, closed ones included.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn parts(&self, lead: TaskId) -> Result<Vec<TaskId>, StoreError> {
+        parts_of(&self.conn, lead)
+    }
+
+    /// How many parts of a lead are not closed yet: while any is, the lead may not finish (`lead-parts-live`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_parts(&self, lead: TaskId) -> Result<u32, StoreError> {
+        let live: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE parent_id = ?1 AND state <> 'closed'",
+            params![lead.0],
+            |row| row.get(0),
+        )?;
+        u32::try_from(live).map_err(|_| StoreError::OutOfRange(live))
     }
 
     /// Records a new session in `starting`.

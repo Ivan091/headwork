@@ -474,3 +474,47 @@ fn extra_writable_paths_name_their_task_kinds() {
         "unknown keys refused"
     );
 }
+
+#[test]
+fn leads_are_off_by_default_with_two_parts_titled_by_the_part() {
+    let config = Config::parse("[machine]\nhost = \"cmux\"\n", "minimal").unwrap();
+    assert!(
+        !config.leads.enabled,
+        "off until placement and part_spawn exist"
+    );
+    assert_eq!(config.leads.max_parts.get(), 2, "two parts per lead");
+    assert_eq!(config.leads.part_title, "{part}", "the part's own slug");
+    let config = Config::parse(
+        "[machine]\nhost = \"cmux\"\n\n[leads]\nenabled = true\nmax_parts = 3\npart_title = \"{part} {model}\"\n",
+        "leads",
+    )
+    .unwrap();
+    assert!(config.leads.enabled, "enabled");
+    assert_eq!(config.leads.max_parts.get(), 3, "three parts");
+    assert_eq!(config.leads.part_title, "{part} {model}", "title");
+}
+
+#[test]
+fn leads_refuse_unknown_keys_zero_parts_and_bad_titles() {
+    for bad in ["max_parts = 0", "parts = 2", "enabled = \"yes\""] {
+        let text = format!("[machine]\nhost = \"cmux\"\n\n[leads]\n{bad}\n");
+        let error = Config::parse(&text, "leads").unwrap_err();
+        assert!(matches!(error, ConfigError::Parse { .. }), "{bad}: {error}");
+    }
+    let cases = [
+        ("{slug}", TemplateProblem::Unknown("slug".to_owned())),
+        ("{part", TemplateProblem::Unclosed),
+    ];
+    for (title, problem) in cases {
+        let text = format!("[machine]\nhost = \"cmux\"\n\n[leads]\npart_title = \"{title}\"\n");
+        let error = Config::parse(&text, "leads").unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::PartTitle(found) if *found == problem),
+            "{title}: {error}"
+        );
+    }
+    for title in ["{part}", "{name}", "{model} {effort}", "plain"] {
+        let text = format!("[machine]\nhost = \"cmux\"\n\n[leads]\npart_title = \"{title}\"\n");
+        assert!(Config::parse(&text, "leads").is_ok(), "{title} is fine");
+    }
+}

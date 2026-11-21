@@ -813,3 +813,20 @@ and the reason.
   leads start their own parts; parts count globally with `max_parts = 2` per lead; every top-level task is a lead; a
   lead's close waits for its parts; other projects go through the orchestrator; a part's tab shows only the part.
 - 2026-11-21 cmux landed-workspace check: `spawn`, `split` and `split_pane` compare the answer's `workspace_id` (else the tree's) with the asked one; a mismatch force-closes the new surface and fails naming both ids (`docs/cmux.md`, "Tabs in one workspace").
+- 2026-11-21 Leads, milestone L1 (store and core). Migration 0013 adds `tasks.parent_id`, `tasks.lead` and the
+  `tasks_parent` index, nothing else: every existing row reads as `TaskShape::Plain`. `core/src/lead.rs` holds
+  `TaskShape` (`Lead`, `Part { parent }`, `Plain`), built only by `from_columns`, which refuses a parent together with
+  `lead = 1`; a stored row like that fails to load (`StoreError::BadShape`) instead of guessing. A part is created only
+  under a live lead (not closing or over) of its own project; a part is never a lead, so parts start no parts.
+  `[leads] enabled` defaults to **false** in L1, although `docs/leads.md` shows it on: with it on, `spawn` records new
+  top-level tasks as leads, but nothing places them or starts parts until L2 and L3, so doctor lists it under
+  `unenforced-keys`. L3 (or the user) turns it on. A part "is live" for its lead's close until it is `closed`: dropped,
+  failed and closing parts still hold a worktree or a tab, so the lead's `done` and the tick's merged-grace close are
+  refused with `lead-parts-live` until each part is closed (a lifecycle refusal, not a hook rule id, so
+  `enforce_rules` does not name it). For `max_parts` a part counts its siblings that hold a worker slot, the same
+  measure as `max_workers`; a refused part stays queued, and `pump` starts the tasks behind it that fit. The queue
+  order is pure (`queue_order`): a part sorts by its lead's (rank, queued time, id), right behind the lead and after its
+  older siblings, so it is ahead of every task queued after the lead. Drop cascades in one store transaction
+  (`Store::drop_task`): the lead and its droppable parts go to `dropped`, each part logged `drop-cascade`; the
+  orchestrator's `close` of a lead (forced or by drop) closes its parts that are not closing or closed first, then the
+  lead. `part_spawn`, placement, the tick findings and the tree board are L2 to L4.

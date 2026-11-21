@@ -7,6 +7,7 @@ pub mod clean;
 pub mod config;
 pub mod guard;
 pub mod layout;
+pub mod lead;
 pub mod lifecycle;
 pub mod names;
 pub mod platform;
@@ -17,8 +18,11 @@ pub mod vocabulary;
 pub mod watch;
 
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
-pub use config::{Config, ConfigError, LayoutConfig, LayoutMode, ProjectConfig, ProjectOverlay};
+pub use config::{
+    Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
+};
 pub use guard::{Decision, Verdict};
+pub use lead::{PartSlots, QueueEntry, QueueKey, ShapeError, TaskShape, queue_order};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
 pub use names::{
     LEGACY_ORCHESTRATOR_ADDRESS, NameError, ORCHESTRATOR_ADDRESS, ProjectName, Slug, TaskName,

@@ -72,6 +72,9 @@ pub fn close(
         );
     }
     let before = store.task(id)?;
+    if before.shape.is_lead() {
+        close_parts(store, env, id)?;
+    }
     if !matches!(before.state, TaskState::Closing | TaskState::Closed) {
         super::recap::note(
             store,
@@ -83,6 +86,20 @@ pub fn close(
     }
     begin_closing(store, env, id)?;
     end_closing(store, env, id, own_session)
+}
+
+/// Closes every part of a lead that is not closing or closed yet, before the lead itself: the orchestrator's close of
+/// a lead, and a lead's drop, end its parts first.
+fn close_parts(store: &mut Store, env: &Env<'_>, lead: TaskId) -> Result<()> {
+    for part in store.parts(lead)? {
+        if !matches!(
+            store.task(part)?.state,
+            TaskState::Closing | TaskState::Closed
+        ) {
+            close(store, env, part, None)?;
+        }
+    }
+    Ok(())
 }
 
 /// Finishes a task stuck in `closing` whose pull requests are all merged, or that was dropped and has none, and that
@@ -247,6 +264,7 @@ fn own_steps(
         open_ask: store.has_waiting_ask(id)?,
         running_job: super::jobs::has_running_job(store, id)?,
         report_sent: store.report_sent(id)?,
+        live_parts: store.live_parts(id)?,
         pr,
     };
     let close = Trigger::Close(CloseFacts {
@@ -254,6 +272,7 @@ fn own_steps(
         open_ask: facts.open_ask,
         running_job: facts.running_job,
         report_sent: facts.report_sent,
+        live_parts: facts.live_parts,
     });
     let project = env.project(task)?;
     let merged = Trigger::Merged {
