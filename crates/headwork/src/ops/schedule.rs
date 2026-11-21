@@ -1,5 +1,7 @@
-//! `tick --install` and `tick --uninstall`: the one Windows scheduled task that runs `headwork tick`. Elsewhere they
-//! refuse for now ([`Platform::no_scheduler`]).
+//! `tick --install` and `tick --uninstall` on Windows: the one scheduled task that runs `headwork tick`.
+//!
+//! macOS has a launch agent instead ([`super::launchd`]); elsewhere they refuse
+//! ([`headwork_core::Platform::no_scheduler`]).
 //!
 //! The task is fixed: named [`TASK_NAME`], every [`EVERY_MINUTES`] minutes, for the current user only while they are
 //! logged on, so creating it needs no admin rights. It runs the installed `headwork` (`~/.local/bin`), which hot reload
@@ -9,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use headwork_core::Platform;
 use serde::Serialize;
 
 /// The scheduled task's name.
@@ -59,9 +60,6 @@ pub struct Schtasks;
 
 impl Scheduler for Schtasks {
     fn schtasks(&self, args: &[String]) -> Result<(bool, String)> {
-        if let Some(reason) = Platform::current().no_scheduler() {
-            bail!("{reason}");
-        }
         let output = Command::new("schtasks")
             .args(args)
             .output()

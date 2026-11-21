@@ -592,7 +592,11 @@ pub(crate) fn scheduled(report: &ScheduleReport) -> String {
         Change::Removed => "removed",
         Change::Absent => "was not there; nothing removed",
     };
-    let mut text = format!("scheduled task \"{}\" {what}\n", report.task);
+    let mut text = format!(
+        "{} \"{}\" {what}\n",
+        headwork_core::Platform::current().scheduler_entry(),
+        report.task
+    );
     if let Some(command) = &report.command {
         let _ = writeln!(
             text,

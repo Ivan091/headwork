@@ -32,7 +32,7 @@ pub trait Runner: std::fmt::Debug {
 }
 
 /// Where the cmux app keeps its command line.
-const BUNDLED_CLI: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
+pub const BUNDLED_CLI: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
 
 /// The real cmux command line.
 #[derive(Debug, Clone, PartialEq, Eq)]

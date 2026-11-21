@@ -791,3 +791,19 @@ and the reason.
 - 2026-11-21 `reap` judges orphaned idle `tail` and `bash` on Windows only: on macOS every `launchd` job has parent 1
   and looked orphaned, so a printer daemon's `run_service.sh` would have been killed. On unix a leftover is only taken
   when an ended session's folder ties it to that session.
+||||||| parent of 9cd3d07 (feat(tick): run the macOS tick from a launchd launch agent)
+- 2026-11-21 The macOS tick is built (`ops/launchd.rs`): `tick --install` writes
+  `~/Library/LaunchAgents/com.headwork.tick.plist` (label `com.headwork.tick`, `ProgramArguments` the installed
+  `~/.local/bin/headwork` and `tick`, `StartInterval` 300, stdout and stderr appended to `<home>/tick.log`) and loads it
+  with `launchctl bootstrap gui/<uid>`; a loaded agent is booted out first, and a loaded agent or a written plist makes
+  the report `replaced`. `bootstrap` is tried up to five times a second apart, since launchd finishes a `bootout` a moment
+  later. `--uninstall` boots out `gui/<uid>/com.headwork.tick` when loaded and deletes the plist when written; neither
+  there is `absent`. launchd starts jobs with an almost empty environment, so the plist sets `PATH` (the folders of
+  headwork, `git`, `gh`, `cmux`, `claude` as found at install time and the bundled cmux CLI, then
+  `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), `HOME`, and `HEADWORK_HOME` (so a home other than
+  `~/.headwork` reaches the tick too). A launchd job is not a cmux descendant, so cmux's socket must be in `automation`
+  mode (tested, `docs/cmux.md`, "Outside a cmux terminal"); the user switched this Mac to it. The hook's guard has no
+  user-only pattern for `schtasks`, so `launchctl` gets none either: `headwork tick` stays a `worker-admin` command and
+  the `Allow` tap stays in the rules. `doctor` adds check `tick-agent` on macOS: `launchctl print
+  gui/<uid>/com.headwork.tick` says loaded or not, with the last tick's age; not loaded warns only when enforcing.
+  Other unix systems still refuse. `tick.log` is not rotated yet.

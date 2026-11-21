@@ -13,7 +13,7 @@ use headwork_adapters::disk::Disks;
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::trust::Trust;
 use headwork_adapters::{proc, shell};
-use headwork_core::{Actor, Config};
+use headwork_core::{Actor, Config, Platform};
 use headwork_store::{EVENT_WOULD_DENY, EventFilter, MIGRATIONS, Store};
 use serde::Serialize;
 use serde_json::Value;
@@ -169,6 +169,8 @@ pub struct Doctor<'a> {
     pub disks: &'a dyn Disks,
     /// The terminal host.
     pub host: HostFactory,
+    /// The operating system, which decides the tick scheduler checked.
+    pub platform: Platform,
 }
 
 /// Runs every check.
@@ -221,6 +223,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.extend(store_checks(d, store));
         let enforce = config.as_ref().is_ok_and(|config| config.hooks.enforce);
         checks.push(tick_check(store, enforce));
+        if d.platform == Platform::MacOs {
+            checks.push(tick_agent_check(d.probe, store, enforce));
+        }
     }
     DoctorReport { checks }
 }
@@ -773,6 +778,41 @@ fn tick_check(store: &Store, enforce: bool) -> Check {
                 "{when}; nothing schedules it in shadow mode, which is expected until enforcement is turned on"
             ),
         ),
+    }
+}
+
+/// Whether the launch agent that runs the tick on macOS is loaded, and when the last tick ran.
+fn tick_agent_check(probe: &dyn Probe, store: &Store, enforce: bool) -> Check {
+    let label = super::launchd::LABEL;
+    let when = match store.last_tick_age_s() {
+        Ok(Some(age)) => format!("the last tick ran {} min ago", age / 60),
+        Ok(None) => "no tick has run".to_owned(),
+        Err(error) => format!("the last tick is unknown: {error}"),
+    };
+    let Some(uid) = probe
+        .run("id", &["-u"])
+        .map(|text| text.trim().to_owned())
+        .filter(|uid| !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()))
+    else {
+        return Check::warn(
+            "tick-agent",
+            format!("`id -u` gave no user id; {when}"),
+            "check the account",
+        );
+    };
+    let service = format!("gui/{uid}/{label}");
+    if probe.run("launchctl", &["print", &service]).is_some() {
+        return Check::ok("tick-agent", format!("{service} is loaded; {when}"));
+    }
+    let detail = format!("{service} is not loaded; {when}");
+    if enforce {
+        Check::warn(
+            "tick-agent",
+            detail,
+            "run `headwork tick --install` after the user's `Allow` tap (CLAUDE.md, Scheduling the tick)",
+        )
+    } else {
+        Check::ok("tick-agent", format!("{detail}; not needed in shadow mode"))
     }
 }
 

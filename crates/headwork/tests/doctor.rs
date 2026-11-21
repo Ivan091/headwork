@@ -16,7 +16,7 @@ use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::config::HooksConfig;
-use headwork_core::{Actor, Config, Role};
+use headwork_core::{Actor, Config, Platform, Role};
 use headwork_store::{EVENT_WOULD_DENY, NewSession};
 use serde_json::json;
 
@@ -26,6 +26,7 @@ const GIB: u64 = 1024 * 1024 * 1024;
 struct FakeProbe {
     missing: Vec<&'static str>,
     claude: Vec<u32>,
+    agent_loaded: bool,
 }
 
 impl Probe for FakeProbe {
@@ -35,6 +36,9 @@ impl Probe for FakeProbe {
         }
         Some(match (program, args.first().copied()) {
             ("gh", _) => "Logged in to github.com account someone".to_owned(),
+            ("id", _) => "501\n".to_owned(),
+            ("launchctl", _) if !self.agent_loaded => return None,
+            ("launchctl", _) => format!("{} = {{\n\tstate = not running\n}}", args[1]),
             ("claude", Some("plugin")) => "headwork@headwork enabled".to_owned(),
             _ => "2.1.325 (Claude Code)".to_owned(),
         })
@@ -125,6 +129,10 @@ fn install() -> Install {
 }
 
 fn run(install: &Install, probe: &FakeProbe) -> DoctorReport {
+    run_on(install, probe, Platform::Windows)
+}
+
+fn run_on(install: &Install, probe: &FakeProbe, platform: Platform) -> DoctorReport {
     let exe = std::env::current_exe().unwrap();
     doctor(&Doctor {
         home: &install.home,
@@ -133,6 +141,7 @@ fn run(install: &Install, probe: &FakeProbe) -> DoctorReport {
         probe,
         disks: &install.disks,
         host: fake_host,
+        platform,
     })
 }
 
@@ -193,6 +202,7 @@ fn gh_and_claude_missing_fail_and_a_missing_path_entry_warns() {
     let probe = FakeProbe {
         missing: vec!["gh", "claude", "headwork"],
         claude: Vec::new(),
+        ..FakeProbe::default()
     };
     let report = run(&install, &probe);
     assert_eq!(status(&report, "gh"), Status::Fail, "gh");
@@ -251,6 +261,58 @@ fn a_missing_tick_warns_only_when_enforcing() {
     assert_eq!(status(&report, "tick"), Status::Ok, "a tick just ran");
 }
 
+fn detail(report: &DoctorReport, id: &str) -> String {
+    report
+        .checks
+        .iter()
+        .find(|check| check.id == id)
+        .unwrap_or_else(|| panic!("no check `{id}` in {:?}", report.checks))
+        .detail
+        .clone()
+}
+
+#[test]
+fn macos_reports_the_tick_agent_and_the_last_tick() {
+    let install = install();
+    let windows = run(&install, &FakeProbe::default());
+    assert!(
+        windows.checks.iter().all(|check| check.id != "tick-agent"),
+        "no launch agent on Windows"
+    );
+    let unloaded = run_on(&install, &FakeProbe::default(), Platform::MacOs);
+    assert_eq!(status(&unloaded, "tick-agent"), Status::Ok, "shadow mode");
+    let text = detail(&unloaded, "tick-agent");
+    assert!(
+        text.contains("gui/501/com.headwork.tick is not loaded"),
+        "{text}"
+    );
+    assert!(text.contains("no tick has run"), "{text}");
+    install.home.open_store().unwrap().record_tick().unwrap();
+    let loaded = FakeProbe {
+        agent_loaded: true,
+        ..FakeProbe::default()
+    };
+    let report = run_on(&install, &loaded, Platform::MacOs);
+    assert_eq!(status(&report, "tick-agent"), Status::Ok, "loaded");
+    let text = detail(&report, "tick-agent");
+    assert!(
+        text.contains("is loaded; the last tick ran 0 min ago"),
+        "{text}"
+    );
+    let config = install.home.root().join("config.toml");
+    let config_text = std::fs::read_to_string(&config).unwrap();
+    write(
+        &config,
+        &format!("{config_text}\n[hooks]\nenforce = true\n"),
+    );
+    let report = run_on(&install, &FakeProbe::default(), Platform::MacOs);
+    assert_eq!(
+        status(&report, "tick-agent"),
+        Status::Warn,
+        "enforcing, not loaded"
+    );
+}
+
 #[test]
 fn an_orchestrator_session_in_the_store_satisfies_the_orchestrator_check() {
     let install = install();
@@ -274,6 +336,7 @@ fn an_orchestrator_session_in_the_store_satisfies_the_orchestrator_check() {
     let probe = FakeProbe {
         missing: Vec::new(),
         claude: vec![11, 99],
+        ..FakeProbe::default()
     };
     let report = run(&install, &probe);
     assert_eq!(status(&report, "orchestrator"), Status::Ok, "root");

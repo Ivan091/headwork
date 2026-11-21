@@ -11,6 +11,7 @@ pub mod import;
 pub mod install;
 pub mod jobs;
 pub mod launch;
+pub mod launchd;
 pub mod lost;
 pub mod mcp;
 pub mod park;

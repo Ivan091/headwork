@@ -272,7 +272,12 @@ fn the_built_in_rules_name_the_programs_of_their_platform() {
         "{windows}"
     );
     let mac = platform_words(ORCHESTRATOR_RULES, Platform::MacOs);
-    assert!(mac.contains("has no scheduler for it yet"), "{mac}");
+    assert!(
+        mac.contains("loads the launchd agent `com.headwork.tick`"),
+        "{mac}"
+    );
+    let unix = platform_words(ORCHESTRATOR_RULES, Platform::Unix);
+    assert!(unix.contains("has no scheduler for it yet"), "{unix}");
 }
 
 #[test]

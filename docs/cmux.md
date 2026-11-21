@@ -76,6 +76,13 @@ workers whose `Bash` ran `sleep` with `run_in_background`, `nohup sleep … &` a
 
 ## Outside a cmux terminal
 
-The socket's default mode is `cmuxOnly` ("only the bundled cmux CLI may connect"), and the adapter always goes through
-that CLI. A scheduled tick under launchd was not tried: there is no launchd schedule yet (see the macOS tick in
-`docs/decisions.md`, 2026-11-21: a LaunchAgent, planned in the follow-up `headwork-macos-launchd-tick`).
+The socket's default mode is `cmuxOnly` ("only processes started in cmux terminals"), and the adapter always goes
+through the bundled CLI. From a cmux terminal even `env -i HOME=$HOME USER=$USER PATH=/usr/bin:/bin <bundled cmux> rpc
+system.ping '{}'` answers pong, because the process still descends from cmux. A launchd job does not: tried on
+2026-11-21 with a throwaway LaunchAgent (parent pid 1, `PATH=/usr/bin:/bin`) running the bundled CLI's `rpc
+system.ping`, `cmuxOnly` answered `Access denied - only processes started inside cmux can connect`.
+
+With `automation.socketControlMode = "automation"` ("also accepts other apps running as this Mac user"; cmux Settings,
+Automation, or `"automation": { "socketControlMode": "automation" }` in `~/.config/cmux/cmux.json`) the same job got
+`{"pong": true}`. The launchd tick (`headwork tick --install`, `ops/launchd.rs`) needs that mode; `password` mode would
+also do but puts a secret in the plist, and `allowAll`/full open access accepts any local process.
