@@ -1,0 +1,59 @@
+{
+  "surfaces": [
+    {
+      "focused": false,
+      "id": "95868C00-DC5A-489D-9684-8A0BC78C66B2",
+      "index": 0,
+      "index_in_pane": 0,
+      "initial_command": "'/bin/zsh' -lc '_cmux_previous_shim='\"'\"''\"'\"'\nfor _cmux_candidate_shim in \"${CMUX_CLAUDE_WRAPPER_SHIM_ROOT:-}\" \"${CMUX_AGENT_COMMAND_SHIM_ROOT:-}\"; do\n    if [ -n \"$_cmux_candidate_shim\" ] && [ \"$_cmux_candidate_shim\" != \"$_cmux_previous_shim\" ] && /bin/sh -c '\"'\"'_cmux_root=$1\ncase \"$_cmux_root\" in /*) ;; *) exit 1 ;; esac\nwhile [ \"$_cmux_root\" != / ] && [ \"${_cmux_root%/}\" != \"$_cmux_root\" ]; do _cmux_root=${_cmux_root%/}; done\n[ -d \"$_cmux_root\" ] && [ ! -L \"$_cmux_root\" ] || exit 1\n_cmux_uid=$(/usr/bin/id -u) || exit 1\n_cmux_meta() {\n    _cmux_info=$(/usr/bin/stat -f '\"'\"'\"'\"'\"'\"'\"'\"'%HT:%u:%Mp%Lp'\"'\"'\"'\"'\"'\"'\"'\"' -- \"$1\" 2>/dev/null) || _cmux_info=$(/usr/bin/stat -c '\"'\"'\"'\"'\"'\"'\"'\"'%F:%u:%a'\"'\"'\"'\"'\"'\"'\"'\"' -- \"$1\" 2>/dev/null) || return 1\n    _cmux_kind=${_cmux_info%%:*}\n    _cmux_info=${_cmux_info#*:}\n    _cmux_owner=${_cmux_info%%:*}\n    _cmux_mode=${_cmux_info#*:}\n    case \"$_cmux_mode\" in '\"'\"'\"'\"'\"'\"'\"'\"''\"'\"'\"'\"'\"'\"'\"'\"'|*[!0-7]*) return 1 ;; esac\n    _cmux_mode=$((0$_cmux_mode))\n}\n_cmux_chain_safe() {\n    _cmux_current=$1\n    while :; do\n        _cmux_meta \"$_cmux_current\" || return 1\n        [ \"$_cmux_owner\" = \"$_cmux_uid\" ] || [ \"$_cmux_owner\" = 0 ] || return 1\n        case \"$_cmux_kind\" in\n            Directory|directory) [ $((_cmux_mode & 0022)) -eq 0 ] || [ $((_cmux_mode & 01000)) -ne 0 ] || return 1 ;;\n            '\"'\"'\"'\"'\"'\"'\"'\"'Symbolic Link'\"'\"'\"'\"'\"'\"'\"'\"'|'\"'\"'\"'\"'\"'\"'\"'\"'symbolic link'\"'\"'\"'\"'\"'\"'\"'\"') ;;\n            *) return 1 ;;\n        esac\n        [ \"$_cmux_current\" = / ] && return 0\n        _cmux_current=${_cmux_current%/*}\n        [ -n \"$_cmux_current\" ] || _cmux_current=/\n    done\n}\n_cmux_meta \"$_cmux_root\" || exit 1\n[ \"$_cmux_owner\" = \"$_cmux_uid\" ] && [ $((_cmux_mode & 0022)) -eq 0 ] || exit 1\n_cmux_chain_safe \"$_cmux_root\" || exit 1\n_cmux_resolved=$(CDPATH='\"'\"'\"'\"'\"'\"'\"'\"''\"'\"'\"'\"'\"'\"'\"'\"' command cd -P \"$_cmux_root\" >/dev/null && /bin/pwd -P) || exit 1\n_cmux_chain_safe \"$_cmux_resolved\"'\"'\"' cmux \"$_cmux_candidate_shim\"; then\n        PATH=\"$_cmux_candidate_shim${PATH:+:$PATH}\"; export PATH\n        _cmux_previous_shim=$_cmux_candidate_shim\n    fi\ndone\nunset _cmux_previous_shim _cmux_candidate_shim\nsleep 900'",
+      "pane_id": "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+      "pane_ref": "pane:1000140005",
+      "ref": "surface:1000140006",
+      "render_health": "not_started",
+      "requested_working_directory": "/tmp",
+      "resume_binding": null,
+      "selected_in_pane": true,
+      "title": "Terminal",
+      "tmux_start_command": null,
+      "type": "terminal"
+    },
+    {
+      "focused": false,
+      "id": "7800EA2C-9108-4295-BC77-AECA4724B2C8",
+      "index": 1,
+      "index_in_pane": 1,
+      "initial_command": "/usr/bin/env HEADWORK_HOST_LABEL='demo/sand' \"PATH=${PATH%%:*}:\"'/opt/homebrew/bin:/usr/bin:/bin' '/bin/sh' '-c' 'echo \"P=$PATH\"; echo \"L=$HEADWORK_HOST_LABEL\"; echo \"0=$0\"; command -v claude git; sleep 904' 'it'\\''s'",
+      "pane_id": "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+      "pane_ref": "pane:1000140005",
+      "ref": "surface:1000140012",
+      "render_health": "not_started",
+      "requested_working_directory": "/tmp",
+      "resume_binding": null,
+      "selected_in_pane": false,
+      "title": "Terminal",
+      "tmux_start_command": null,
+      "type": "terminal"
+    },
+    {
+      "focused": true,
+      "id": "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045",
+      "index": 5,
+      "index_in_pane": 0,
+      "initial_command": null,
+      "pane_id": "C127F88D-4A0F-4914-AF10-944F9540E12A",
+      "pane_ref": "pane:1000140006",
+      "ref": "surface:1000140008",
+      "render_health": "not_started",
+      "requested_working_directory": "/tmp",
+      "resume_binding": null,
+      "selected_in_pane": true,
+      "title": "hw renamed",
+      "tmux_start_command": null,
+      "type": "terminal"
+    }
+  ],
+  "window_id": "E6F179B9-590B-47F9-92B5-1EB001BA76D0",
+  "window_ref": "window:1000140000",
+  "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+  "workspace_ref": "workspace:1000140005"
+}

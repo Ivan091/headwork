@@ -1,0 +1,59 @@
+{
+  "limit": 100,
+  "sessions": [
+    {
+      "agent": "claude",
+      "agent_display_name": "Claude Code",
+      "cwd": "/tmp",
+      "pid": 4019,
+      "runtime_status": "idle",
+      "store_path": "/Users/me/.cmuxterm/claude-hook-sessions.json",
+      "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+      "session_id": "0d439313-b93d-46bd-9765-f9f66414d535",
+      "surface_id": "7800EA2C-9108-4295-BC77-AECA4724B2C8",
+      "agent_lifecycle": "running",
+      "active_for_surface": true
+    },
+    {
+      "agent": "claude",
+      "agent_display_name": "Claude Code",
+      "cwd": "/tmp",
+      "pid": 4019,
+      "runtime_status": "idle",
+      "store_path": "/Users/me/.cmuxterm/claude-hook-sessions.json",
+      "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+      "session_id": "5a1f0c2e-8f3b-4c55-9d0e-2b7f6c1a9e44",
+      "surface_id": "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045",
+      "agent_lifecycle": "needsInput",
+      "active_for_surface": true
+    },
+    {
+      "agent": "claude",
+      "agent_display_name": "Claude Code",
+      "cwd": "/tmp",
+      "pid": 4019,
+      "runtime_status": "idle",
+      "store_path": "/Users/me/.cmuxterm/claude-hook-sessions.json",
+      "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+      "session_id": "11111111-2222-4333-8444-555555555555",
+      "surface_id": "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045",
+      "agent_lifecycle": "idle",
+      "active_for_surface": false
+    },
+    {
+      "agent": "claude",
+      "agent_display_name": "Claude Code",
+      "cwd": "/tmp",
+      "pid": 4019,
+      "runtime_status": "idle",
+      "store_path": "/Users/me/.cmuxterm/claude-hook-sessions.json",
+      "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+      "session_id": "99999999-2222-4333-8444-555555555555",
+      "surface_id": "DEADBEEF-0000-4000-8000-000000000000",
+      "agent_lifecycle": "idle",
+      "active_for_surface": true
+    }
+  ],
+  "state_dir": "/Users/me/.cmuxterm",
+  "total_matches": 4
+}

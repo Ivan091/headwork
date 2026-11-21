@@ -1,0 +1,198 @@
+{
+  "active" : {
+    "is_browser_surface" : false,
+    "pane_id" : "50194D32-88F9-4390-81B6-FBB766E84CF0",
+    "pane_ref" : "pane:1000140002",
+    "surface_id" : "CC58DDDC-A61F-467F-9A59-FC7569579101",
+    "surface_ref" : "surface:1000140003",
+    "surface_type" : "terminal",
+    "tab_id" : "CC58DDDC-A61F-467F-9A59-FC7569579101",
+    "tab_ref" : "tab:1000140003",
+    "window_id" : "E6F179B9-590B-47F9-92B5-1EB001BA76D0",
+    "window_ref" : "window:1000140000",
+    "workspace_id" : "43219E61-458B-49EC-AB17-D71C354F6616",
+    "workspace_ref" : "workspace:1000140002"
+  },
+  "caller" : null,
+  "windows" : [
+    {
+      "id" : "E6F179B9-590B-47F9-92B5-1EB001BA76D0",
+      "index" : 0,
+      "key" : true,
+      "ref" : "window:1000140000",
+      "selected_workspace_id" : "43219E61-458B-49EC-AB17-D71C354F6616",
+      "selected_workspace_ref" : "workspace:1000140002",
+      "visible" : true,
+      "workspace_count" : 1,
+      "workspaces" : [
+        {
+          "description" : null,
+          "id" : "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9",
+          "index" : 0,
+          "layout" : {
+            "children" : [
+              {
+                "pane" : {
+                  "id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "ref" : "pane:1000140005"
+                }
+              },
+              {
+                "pane" : {
+                  "id" : "C127F88D-4A0F-4914-AF10-944F9540E12A",
+                  "ref" : "pane:1000140006"
+                }
+              }
+            ],
+            "direction" : "vertical",
+            "split" : 0.5
+          },
+          "panes" : [
+            {
+              "focused" : false,
+              "id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+              "index" : 0,
+              "ref" : "pane:1000140005",
+              "selected_surface_id" : "95868C00-DC5A-489D-9684-8A0BC78C66B2",
+              "selected_surface_ref" : "surface:1000140006",
+              "surface_count" : 5,
+              "surface_ids" : [
+                "95868C00-DC5A-489D-9684-8A0BC78C66B2",
+                "7800EA2C-9108-4295-BC77-AECA4724B2C8",
+                "C374D03F-F143-465C-BEF3-FD5EBCF17325",
+                "93681A43-E09F-476B-BF58-5368FEE96599",
+                "00AE5E37-9C9C-481C-8ADF-9592B0DA40C5"
+              ],
+              "surface_refs" : [
+                "surface:1000140006",
+                "surface:1000140012",
+                "surface:1000140011",
+                "surface:1000140010",
+                "surface:1000140007"
+              ],
+              "surfaces" : [
+                {
+                  "focused" : false,
+                  "id" : "95868C00-DC5A-489D-9684-8A0BC78C66B2",
+                  "index" : 0,
+                  "index_in_pane" : 0,
+                  "pane_id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "pane_ref" : "pane:1000140005",
+                  "ref" : "surface:1000140006",
+                  "render_health" : "not_started",
+                  "selected" : true,
+                  "selected_in_pane" : true,
+                  "title" : "Terminal",
+                  "tty" : null,
+                  "type" : "terminal",
+                  "url" : null
+                },
+                {
+                  "focused" : false,
+                  "id" : "7800EA2C-9108-4295-BC77-AECA4724B2C8",
+                  "index" : 1,
+                  "index_in_pane" : 1,
+                  "pane_id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "pane_ref" : "pane:1000140005",
+                  "ref" : "surface:1000140012",
+                  "render_health" : "not_started",
+                  "selected" : false,
+                  "selected_in_pane" : false,
+                  "title" : "Terminal",
+                  "tty" : null,
+                  "type" : "terminal",
+                  "url" : null
+                },
+                {
+                  "focused" : false,
+                  "id" : "C374D03F-F143-465C-BEF3-FD5EBCF17325",
+                  "index" : 2,
+                  "index_in_pane" : 2,
+                  "pane_id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "pane_ref" : "pane:1000140005",
+                  "ref" : "surface:1000140011",
+                  "render_health" : "not_started",
+                  "selected" : false,
+                  "selected_in_pane" : false,
+                  "title" : "Terminal",
+                  "tty" : null,
+                  "type" : "terminal",
+                  "url" : null
+                },
+                {
+                  "focused" : false,
+                  "id" : "93681A43-E09F-476B-BF58-5368FEE96599",
+                  "index" : 3,
+                  "index_in_pane" : 3,
+                  "pane_id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "pane_ref" : "pane:1000140005",
+                  "ref" : "surface:1000140010",
+                  "render_health" : "not_started",
+                  "selected" : false,
+                  "selected_in_pane" : false,
+                  "title" : "Terminal",
+                  "tty" : null,
+                  "type" : "terminal",
+                  "url" : null
+                },
+                {
+                  "focused" : false,
+                  "id" : "00AE5E37-9C9C-481C-8ADF-9592B0DA40C5",
+                  "index" : 4,
+                  "index_in_pane" : 4,
+                  "pane_id" : "2A620EEB-7BCC-4224-AE37-9CC58B65A47D",
+                  "pane_ref" : "pane:1000140005",
+                  "ref" : "surface:1000140007",
+                  "render_health" : "shell_exited",
+                  "selected" : false,
+                  "selected_in_pane" : false,
+                  "title" : "Terminal",
+                  "tty" : null,
+                  "type" : "terminal",
+                  "url" : null
+                }
+              ]
+            },
+            {
+              "focused" : true,
+              "id" : "C127F88D-4A0F-4914-AF10-944F9540E12A",
+              "index" : 1,
+              "ref" : "pane:1000140006",
+              "selected_surface_id" : "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045",
+              "selected_surface_ref" : "surface:1000140008",
+              "surface_count" : 1,
+              "surface_ids" : [
+                "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045"
+              ],
+              "surface_refs" : [
+                "surface:1000140008"
+              ],
+              "surfaces" : [
+                {
+                  "focused" : true,
+                  "id" : "07F2921B-3BC2-44F9-B0A1-3FA2B32E7045",
+                  "index" : 5,
+                  "index_in_pane" : 0,
+                  "pane_id" : "C127F88D-4A0F-4914-AF10-944F9540E12A",
+                  "pane_ref" : "pane:1000140006",
+                  "ref" : "surface:1000140008",
+                  "render_health" : "not_started",
+                  "selected" : true,
+                  "selected_in_pane" : true,
+                  "title" : "hw renamed",
+                  "tty" : "ttys006",
+                  "type" : "terminal",
+                  "url" : null
+                }
+              ]
+            }
+          ],
+          "pinned" : false,
+          "ref" : "workspace:1000140005",
+          "selected" : false,
+          "title" : "hw-probe"
+        }
+      ]
+    }
+  ]
+}

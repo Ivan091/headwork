@@ -1,8 +1,9 @@
 //! The terminal host (design section 4.1): workspaces, panes, screens, keys, blocked states and notifications.
 //!
-//! [`TerminalHost`] is all the rest of headwork sees. [`wmux::Wmux`] drives wmux on Windows; [`fake::FakeHost`]
-//! records calls for tests.
+//! [`TerminalHost`] is all the rest of headwork sees. [`wmux::Wmux`] drives wmux on Windows, [`cmux::Cmux`] drives cmux
+//! on macOS; [`fake::FakeHost`] records calls for tests.
 
+pub mod cmux;
 pub mod fake;
 pub mod wmux;
 
