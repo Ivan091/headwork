@@ -723,3 +723,19 @@ and the reason.
   background-wait change (PR #38, merged 21:22 UTC, installed 21:42 UTC); four started background work that change
   recognises, and two (`me-sim-audit-master-check` 20:40, `me-studio-audit-reactions` 21:04) were `ship.sh` runs in
   the foreground that hit the 600 s timeout, which it did not, and which this change does.
+- 2026-11-21 The cmux host (`host/cmux.rs`, table in `docs/cmux.md`) speaks to cmux through `cmux rpc`, the CLI's
+  passthrough to the v2 socket API, instead of the text commands: JSON both ways, UUIDs that stay valid, and no draft
+  guard, which refuses keys while a Claude dialog is open. cmux keeps no list of the programs it started, so the label
+  rides in the surface's initial command as `HEADWORK_HOST_LABEL=<label>` and `panes` reads it back from
+  `surface.list`; a surface closes with its program, so every program found runs and `pid` stays unknown. States come
+  from cmux's own Claude hook records (`cmux sessions list`), which carry the session id headwork started `claude`
+  with. Closing passes `force`, since headwork's close means close.
+- 2026-11-21 cmux has no blocked state with buttons. `show_blocked` puts the question and its keys ("Trust it? (1 Trust
+  the folder · 2 Do not trust it)") in a sidebar status of the surface's workspace (key `headwork-<surface>`, bell
+  icon, orange, top priority) and sends a cmux notification for the surface; the user answers by typing the key in the
+  pane, and `clear_blocked` removes the status. A rename of the tab was not used: the title is the task name, and
+  `retitle` and every tick would overwrite it.
+- 2026-11-21 A program cmux starts gets cmux's environment, whose `PATH` holds only system folders, and cmux refuses to
+  set `PATH` through `startup_environment`. The adapter therefore runs the program through
+  `/usr/bin/env "PATH=${PATH%%:*}:<caller PATH>"`, keeping the surface's own shim folder in front so `claude` goes
+  through cmux's wrapper and its hooks.

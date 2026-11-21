@@ -17,7 +17,7 @@ Cargo.toml              workspace: shared package settings, dependencies, lints,
 crates/
   core/                 headwork-core: lifecycle state machine, guards, config model; pure, no I/O
   store/                headwork-store: SQLite (rusqlite, bundled), numbered migrations, queries
-  adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, fake), the git host (gh,
+  adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, cmux, fake), the git host (gh,
                         fake), disks, the claude
                         runtime, worktrees
   headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick, install) over a small
@@ -93,6 +93,8 @@ cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged
 cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
 cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
+
+On macOS the terminal host is cmux: `[machine] host = "cmux"`; `docs/cmux.md` maps every host operation to its cmux call.
 
 The binary reads `$HEADWORK_HOME` (default `~/.headwork`): `config.toml` and `state.db`. Build output stays in the
 repository's own `target/` on S:; C: has little free space.
