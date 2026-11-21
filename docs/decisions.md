@@ -791,7 +791,6 @@ and the reason.
 - 2026-11-21 `reap` judges orphaned idle `tail` and `bash` on Windows only: on macOS every `launchd` job has parent 1
   and looked orphaned, so a printer daemon's `run_service.sh` would have been killed. On unix a leftover is only taken
   when an ended session's folder ties it to that session.
-||||||| parent of 9cd3d07 (feat(tick): run the macOS tick from a launchd launch agent)
 - 2026-11-21 The macOS tick is built (`ops/launchd.rs`): `tick --install` writes
   `~/Library/LaunchAgents/com.headwork.tick.plist` (label `com.headwork.tick`, `ProgramArguments` the installed
   `~/.local/bin/headwork` and `tick`, `StartInterval` 300, stdout and stderr appended to `<home>/tick.log`) and loads it
