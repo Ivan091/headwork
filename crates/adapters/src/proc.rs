@@ -194,17 +194,20 @@ pub fn liveness(pid: u32, recorded: Option<&ProcessIdentity>, argv: &[String]) -
 /// Every running process as `headwork reap` judges them, and whether Git Bash's process list was read.
 ///
 /// A Git Bash process gets its Git Bash parent (see [`git_bash_parents`]); every other process, and a Git Bash
-/// process whose Git Bash parent is not a Git Bash process, keeps the parent the system recorded.
+/// process whose Git Bash parent is not a Git Bash process, keeps the parent the system recorded. On unix each process
+/// carries its working folder, by which `reap` knows an adopted orphan's task.
 #[must_use]
 pub fn snapshot() -> (Vec<headwork_core::reap::Proc>, bool) {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let shells = git_bash_parents();
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_cpu(),
-    );
+    let kind = ProcessRefreshKind::nothing().with_cpu();
+    let kind = if cfg!(unix) {
+        kind.with_cwd(UpdateKind::Always)
+    } else {
+        kind
+    };
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     let procs = system
         .processes()
         .values()
@@ -220,6 +223,7 @@ pub fn snapshot() -> (Vec<headwork_core::reap::Proc>, bool) {
                 image: process.name().to_string_lossy().into_owned(),
                 started: process.start_time(),
                 cpu_ms: process.accumulated_cpu_time(),
+                cwd: process.cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
             }
         })
         .collect();

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use headwork_adapters::proc::{self, ProcessIdentity};
 use headwork_core::reap::{EndedSession, Facts, Reason, Spare, Verdict, plan};
-use headwork_store::Store;
+use headwork_store::{Store, TaskId};
 use serde::Serialize;
 
 use super::Env;
@@ -80,12 +80,83 @@ impl ReapReport {
 ///
 /// Fails when the store fails.
 pub fn reap(store: &mut Store, env: &Env<'_>, options: ReapOptions) -> Result<ReapReport> {
-    let now = SystemTime::now()
+    let now = now();
+    let sessions = ended_sessions(store, |_| true)?;
+    let jobs = live_jobs(store)?;
+    let (procs, shells_known) = proc::snapshot();
+    let decided = plan(&Facts {
+        now,
+        procs: &procs,
+        sessions: &sessions,
+        jobs: &jobs,
+        shells_known,
+        parents_kept: cfg!(windows),
+    });
+    let ended = end(store, env, None, decided.end, options.dry_run)?;
+    Ok(ReapReport {
+        dry_run: options.dry_run,
+        ended,
+        spared: decided.spare,
+        shells_judged: shells_known,
+    })
+}
+
+/// Ends what the sessions of a closing task left running once its tree is gone, without waiting for them to settle.
+///
+/// On unix a `nohup cmd &` from a `Bash` call runs in a session of its own, outlives the tree and is found by its
+/// working folder (see [`headwork_core::reap`]).
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn end_task_leftovers(
+    store: &mut Store,
+    env: &Env<'_>,
+    task: TaskId,
+    name: &str,
+) -> Result<Vec<Reaped>> {
+    let sessions: Vec<EndedSession> = ended_sessions(store, |row| row.name == name)?
+        .into_iter()
+        .map(|session| EndedSession {
+            ended: None,
+            ..session
+        })
+        .collect();
+    if sessions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let jobs = live_jobs(store)?;
+    let (procs, shells_known) = proc::snapshot();
+    let decided = plan(&Facts {
+        now: now(),
+        procs: &procs,
+        sessions: &sessions,
+        jobs: &jobs,
+        shells_known,
+        parents_kept: cfg!(windows),
+    });
+    let leftovers = decided
+        .end
+        .into_iter()
+        .filter(|verdict| matches!(verdict.why, Reason::Session { .. }))
+        .collect();
+    end(store, env, Some(task), leftovers, false)
+}
+
+fn now() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let sessions: Vec<EndedSession> = store
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+fn ended_sessions(
+    store: &Store,
+    keep: impl Fn(&headwork_store::EndedSession) -> bool,
+) -> Result<Vec<EndedSession>> {
+    Ok(store
         .ended_sessions()?
         .into_iter()
+        .filter(|row| keep(row))
         .filter_map(|row| {
             Some(EndedSession {
                 name: row.name,
@@ -95,26 +166,48 @@ pub fn reap(store: &mut Store, env: &Env<'_>, options: ReapOptions) -> Result<Re
                     .collect(),
                 started: row.started?,
                 ended: row.ended,
+                folders: with_resolved(row.folders),
             })
         })
+        .collect())
+}
+
+/// The folders as recorded and as the system resolves them (`/tmp` is `/private/tmp` on macOS), since a process
+/// reports its working folder resolved.
+fn with_resolved(folders: Vec<String>) -> Vec<String> {
+    let resolved: Vec<String> = folders
+        .iter()
+        .filter_map(|folder| std::fs::canonicalize(folder).ok())
+        .map(|path| path.to_string_lossy().into_owned())
         .collect();
-    let jobs: Vec<u32> = store
+    let mut all = folders;
+    for folder in resolved {
+        if !all.contains(&folder) {
+            all.push(folder);
+        }
+    }
+    all
+}
+
+fn live_jobs(store: &Store) -> Result<Vec<u32>> {
+    Ok(store
         .jobs_with_pid()?
         .iter()
         .filter(|job| super::jobs::liveness(job).is_some_and(|now| now.is_alive()))
         .filter_map(|job| job.pid)
-        .collect();
-    let (procs, shells_known) = proc::snapshot();
-    let decided = plan(&Facts {
-        now,
-        procs: &procs,
-        sessions: &sessions,
-        jobs: &jobs,
-        shells_known,
-    });
-    let mut ended = Vec::with_capacity(decided.end.len());
-    for verdict in decided.end {
-        let outcome = if options.dry_run {
+        .collect())
+}
+
+fn end(
+    store: &Store,
+    env: &Env<'_>,
+    task: Option<TaskId>,
+    chosen: Vec<Verdict<Reason>>,
+    dry_run: bool,
+) -> Result<Vec<Reaped>> {
+    let mut ended = Vec::with_capacity(chosen.len());
+    for verdict in chosen {
+        let outcome = if dry_run {
             Outcome::WouldEnd
         } else {
             let identity = ProcessIdentity {
@@ -132,7 +225,7 @@ pub fn reap(store: &mut Store, env: &Env<'_>, options: ReapOptions) -> Result<Re
         if matches!(outcome, Outcome::Ended | Outcome::Failed { .. }) {
             store.append_event(
                 env.actor,
-                None,
+                task,
                 None,
                 "reaped",
                 &serde_json::json!({
@@ -150,10 +243,5 @@ pub fn reap(store: &mut Store, env: &Env<'_>, options: ReapOptions) -> Result<Re
             outcome,
         });
     }
-    Ok(ReapReport {
-        dry_run: options.dry_run,
-        ended,
-        spared: decided.spare,
-        shells_judged: shells_known,
-    })
+    Ok(ended)
 }

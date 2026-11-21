@@ -75,6 +75,8 @@ pub struct EndedSession {
     pub started: Option<u64>,
     /// When it ended, in seconds since the unix epoch.
     pub ended: Option<u64>,
+    /// The worktree folders of its task, the task's own and its helpers'; none for a main-only task or the orchestrator.
+    pub folders: Vec<String>,
 }
 
 fn pid(value: Option<i64>) -> Result<Option<u32>, StoreError> {
@@ -184,7 +186,7 @@ impl Store {
     pub fn ended_sessions(&self) -> Result<Vec<EndedSession>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT rc_name, launcher_pid, claude_pid, CAST(strftime('%s', started_at) AS INTEGER),
-                    CAST(strftime('%s', ended_at) AS INTEGER)
+                    CAST(strftime('%s', ended_at) AS INTEGER), task_id
              FROM sessions WHERE state IN ('ended', 'gone') ORDER BY started_at, rowid",
         )?;
         let rows = statement
@@ -195,17 +197,28 @@ impl Store {
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let mut folders = self
+            .conn
+            .prepare("SELECT path FROM worktrees WHERE task_id = ?1 ORDER BY id")?;
         rows.into_iter()
-            .map(|(name, launcher, claude, started, ended)| {
+            .map(|(name, launcher, claude, started, ended, task)| {
+                let folders = match task {
+                    Some(task) => folders
+                        .query_map(params![task], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => Vec::new(),
+                };
                 Ok(EndedSession {
                     name,
                     launcher_pid: pid(launcher)?,
                     claude_pid: pid(claude)?,
                     started: seconds(started)?,
                     ended: seconds(ended)?,
+                    folders,
                 })
             })
             .collect()

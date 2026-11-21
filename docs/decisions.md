@@ -784,3 +784,10 @@ and the reason.
   a running server sees an edited `max_workers` at its next call instead of the value it started with. A config that no
   longer parses keeps the last good one in use rather than failing every tool call. Watching the file was not needed:
   one read and parse per request costs well under a millisecond against the hook budget.
+- 2026-11-21 On unix a process `launchd` adopted counts as an ended session's when it runs in one of the task's
+  worktrees and started while the session ran: `claude` starts each `Bash` command as a session of its own, so a
+  `nohup cmd &` loses its parent link and escapes every process group kill, and macOS does not show its environment.
+  Main checkouts are shared and never used this way.
+- 2026-11-21 `reap` judges orphaned idle `tail` and `bash` on Windows only: on macOS every `launchd` job has parent 1
+  and looked orphaned, so a printer daemon's `run_service.sh` would have been killed. On unix a leftover is only taken
+  when an ended session's folder ties it to that session.

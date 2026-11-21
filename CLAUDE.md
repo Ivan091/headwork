@@ -57,9 +57,10 @@ checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose br
 tree, a live task's, a running agent's or one no task owns; it lists each with the reason. `--gc` runs plain `git gc`
 in a main checkout only when no registered job runs there and no main-only task is live.
 `headwork reap` (`ops/reap.rs`, pure decisions in `core/src/reap.rs`) ends what ended sessions left running (the
-processes their launcher and `claude` started, rebuilt from parent links and start times) and orphaned `tail` and
-`bash` idle for over 10 minutes, never `claude`, `me-studio`, `headwork` or a registered job, nor what they started or
-what started them; Git Bash shells take their parents from Git Bash's `ps -el`. The orchestrator's `close` takes
+processes their launcher and `claude` started, rebuilt from parent links and start times; on unix also those `launchd`
+adopted that run in the task's worktrees, which `close` ends at once) and, on Windows only, orphaned `tail` and
+`bash` idle for over 10 minutes (on unix every `launchd` job looks orphaned), never `claude`, `me-studio`, `headwork`
+or a registered job, nor what they started or what started them; Git Bash shells take their parents from Git Bash's `ps -el`. The orchestrator's `close` takes
 `force` for a task stuck in `closing` whose pull requests are all merged and that has no live job (`close_forced` in
 `ops/close.rs`), and for a dropped task with none: a worktree the remove command refuses is recorded `kept` instead of
 blocking. A closing task whose session ended frees its worker slot. Asks the tick raises have no dialog: `headwork

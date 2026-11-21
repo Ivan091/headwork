@@ -35,6 +35,10 @@ const LAUNCHER_GRACE: Duration = Duration::from_secs(60);
 /// How long the last checks wait for processes to vanish.
 const PROCESS_GRACE: Duration = Duration::from_secs(10);
 
+/// How long a finisher retries a held close claim: a child another thread forked while the claim was held shares the
+/// lock until it starts its program, so a claim just released can still look held for a moment.
+const CLAIM_WAIT: Duration = Duration::from_secs(2);
+
 /// Where a close ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloseReport {
@@ -399,11 +403,17 @@ fn claim_close(env: &Env<'_>, id: TaskId) -> Result<Option<std::fs::File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(error)) => {
-            Err(error).with_context(|| format!("locking {}", path.display()))
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < CLAIM_WAIT => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).with_context(|| format!("locking {}", path.display()));
+            }
         }
     }
 }
@@ -454,6 +464,7 @@ fn finish_claimed(
     finalize_jobs(store, env, id)?;
     let worktree = if processes_gone {
         store.end_task_sessions(id, env.actor)?;
+        super::reap::end_task_leftovers(store, env, id, &task.name.to_string())?;
         super::helpers::remove_all(store, env, id)?;
         let end = remove_worktree(store, env, id, false)?;
         if force && end == WorktreeEnd::Present {

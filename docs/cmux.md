@@ -31,7 +31,7 @@ headwork worker exercised end to end.
 | `rename_surface` | `rpc tab.action {action:"rename", surface_id, title}` **[V]** | an OSC title from the program does not replace it |
 | `close_surface` | `rpc surface.close {surface_id, force:true}` **[V]** | without `force` cmux refuses a surface whose program runs (`confirmation_required`) |
 | `close_workspace` | `rpc workspace.close {workspace_id, force:true}` **[V]** | same |
-| `kill_agent` | `close_surface`; an already closed one is fine | closing the terminal hangs up its program |
+| `kill_agent` | `close_surface`; an already closed one is fine; a workspace's last surface, which cmux refuses to close (`invalid_state: Cannot close the last surface`), goes with `close_workspace` **[V]** | see "What a close ends" |
 | `show_blocked` | `cmux set-status headwork-<surface> "<question> (1 … · 2 …)" --workspace W --icon bell.fill --color #FF9500 --priority 100`, then `rpc notification.create_for_surface` **[V]** | no buttons: see `docs/decisions.md` (2026-11-21) |
 | `clear_blocked` | `cmux clear-status headwork-<surface> --workspace W` **[V]** | nothing to do once the surface is gone |
 | `notify` | `rpc notification.create {title:"headwork", body}` | |
@@ -54,6 +54,25 @@ hooks and keeps headwork's `--session-id`); the caller's `PATH` (without other s
 
 A program that exits within Ghostty's abnormal-exit window (about 250 ms) leaves the surface open with "Ghostty failed
 to launch the requested command"; such a surface still counts as running in `panes`.
+
+## What a close ends
+
+Tried on 2026-11-21 (cmux 0.65.2, Claude Code 2.1.311, macOS 26) with a throwaway surface and with real headwork
+workers whose `Bash` ran `sleep` with `run_in_background`, `nohup sleep … &` and `(sleep … &)`:
+
+- `surface.close` or `workspace.close` with `force` sends `SIGHUP` to the surface's foreground process group, and
+  `SIGKILL` to that group about 11 seconds later. A plain child ends; a `nohup` child or one that ignores `SIGHUP`
+  outlives the hangup but not the later kill.
+- A process in a session of its own (`setsid`) survives both, adopted by `launchd`.
+- `claude` starts every `Bash` command as a session of its own. Its `run_in_background` commands stay its children
+  and end with it (and with `kill_tree`). A `nohup cmd &` or `(cmd &)` from a `Bash` call is adopted by `launchd` in
+  that command's session: neither the hangup, nor the launcher's kill of `claude`'s process group, nor `kill_tree` by
+  parent links reaches it. Its environment cannot be read back either (macOS shows none for `/bin` programs).
+- What it keeps is its working folder, the task's worktree. So `close` ends, once the tree is gone and before it removes
+  the worktree, every process adopted by `launchd` that runs in one of the task's worktrees and started while its
+  session ran; `reap` ends the same for every ended session after its settle time, which covers a surface the user
+  closed (`core/src/reap.rs`). A main-only task has no folder of its own, so its detached processes stay; the worker
+  rules send long-running work through `job_start`, which is never ended this way.
 
 ## Outside a cmux terminal
 
