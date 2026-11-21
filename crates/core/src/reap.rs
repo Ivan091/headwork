@@ -2,8 +2,13 @@
 //!
 //! Two kinds of leftovers are ended. The processes a session's launcher and `claude` left behind once the session
 //! ended (what its Job Object or process group held), found by their parent links and start times, because a Job Object of another
-//! process cannot be asked for its members. And `tail` and `bash` whose parent is gone and which have been idle for
-//! [`IDLE_AFTER_S`]: the log tails and shells of sessions that died without a job.
+//! process cannot be asked for its members. And, on Windows, `tail` and `bash` whose parent is gone and which have been
+//! idle for [`IDLE_AFTER_S`]: the log tails and shells of sessions that died without a job.
+//!
+//! On unix a process whose parent ended is adopted by `launchd` or `init` ([`ADOPTER_PID`]), so its parent link is
+//! lost. `claude` starts each `Bash` command as a session of its own, so a `nohup cmd &` there outlives the hangup and
+//! the process group kill that end the session, and is adopted. Such a process still counts as the session's when it
+//! runs in one of the task's own folders ([`EndedSession::folders`]) and started while the session ran.
 //!
 //! On Windows, Git Bash's `fork` and `exec` leave a shell's Windows parent pointing at a process that already exited, so the
 //! snapshot links each Git Bash process to its parent through Git Bash's own process list. When that list cannot be
@@ -30,6 +35,9 @@ pub const SETTLE_S: u64 = 60;
 /// How far, in seconds, a session's launcher or `claude` may have started from the session's recorded start.
 pub const ROOT_START_WINDOW_S: u64 = 120;
 
+/// The process that adopts orphans on unix: `launchd` on macOS, `init` elsewhere.
+pub const ADOPTER_PID: u32 = 1;
+
 /// Programs never ended, with everything they started and everything that started them.
 pub const PROTECTED_IMAGES: [&str; 3] = ["claude", "me-studio", "headwork"];
 
@@ -50,6 +58,8 @@ pub struct Proc {
     pub started: u64,
     /// The CPU time it used, in milliseconds.
     pub cpu_ms: u64,
+    /// Its working folder, when the system tells it; read on unix only, where the parent link of an orphan is lost.
+    pub cwd: Option<String>,
 }
 
 /// A session that ended, with the processes that held its tree.
@@ -63,6 +73,9 @@ pub struct EndedSession {
     pub started: u64,
     /// When it ended, in seconds since the unix epoch; absent when it was found gone without an end.
     pub ended: Option<u64>,
+    /// The folders only its task uses (its worktree and helper worktrees, never a main checkout), each as recorded and
+    /// as the system resolves it.
+    pub folders: Vec<String>,
 }
 
 /// Everything `reap` decides on.
@@ -79,6 +92,10 @@ pub struct Facts<'a> {
     /// Git Bash's process list was read, so the parents of its shells are known; without it no shell counts as
     /// orphaned.
     pub shells_known: bool,
+    /// The system keeps a process's parent id after the parent ends, as Windows does, so a missing parent marks an
+    /// orphan. On unix every `launchd` job looks orphaned (a system daemon running a `bash` script included), so no
+    /// shell counts as orphaned there and only an ended session's folders tie an adopted process to it.
+    pub parents_kept: bool,
 }
 
 /// Why a process is ended.
@@ -138,6 +155,15 @@ pub fn stem(image: &str) -> String {
     let name = name.to_ascii_lowercase();
     name.strip_suffix(".exe")
         .map_or_else(|| name.clone(), str::to_owned)
+}
+
+/// Whether `path` is `folder` or lies under it.
+fn inside(path: &str, folder: &str) -> bool {
+    let folder = folder.trim_end_matches(['/', '\\']);
+    !folder.is_empty()
+        && path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
 }
 
 struct Tree<'a> {
@@ -239,6 +265,21 @@ impl<'a> Tree<'a> {
                 self.descendants(pid, &mut members);
             }
         }
+        let adopted: Vec<u32> = self
+            .by_pid
+            .values()
+            .filter(|p| {
+                p.parent == Some(ADOPTER_PID)
+                    && (from..=until).contains(&p.started)
+                    && p.cwd
+                        .as_deref()
+                        .is_some_and(|cwd| session.folders.iter().any(|folder| inside(cwd, folder)))
+            })
+            .map(|p| p.pid)
+            .collect();
+        for pid in adopted {
+            self.descendants(pid, &mut members);
+        }
         members
     }
 
@@ -294,7 +335,7 @@ pub fn plan(facts: &Facts<'_>) -> Plan {
     let orphan_roots: Vec<&Proc> = facts
         .procs
         .iter()
-        .filter(|_| facts.shells_known)
+        .filter(|_| facts.shells_known && facts.parents_kept)
         .filter(|p| ORPHAN_IMAGES.contains(&stem(&p.image).as_str()) && tree.parent(p).is_none())
         .filter(|p| !taken.contains(&p.pid) && !protected.contains(&p.pid))
         .collect();
@@ -347,6 +388,7 @@ mod tests {
             image: image.to_owned(),
             started,
             cpu_ms: 0,
+            cwd: None,
         }
     }
 
@@ -356,6 +398,7 @@ mod tests {
             roots: roots.to_vec(),
             started,
             ended,
+            folders: Vec::new(),
         }
     }
 
@@ -391,6 +434,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         };
         let plan = plan(&facts);
         assert_eq!(ended(&plan), vec![12, 11, 10], "{plan:?}");
@@ -409,6 +453,112 @@ mod tests {
     }
 
     #[test]
+    fn adopted_processes_in_the_tasks_folders_are_the_sessions() {
+        let worktree = "/Users/me/.worktrees/headwork/probe";
+        let at = |pid, parent, image, started, cwd: &str| Proc {
+            cwd: Some(cwd.to_owned()),
+            ..p(pid, parent, image, started)
+        };
+        let procs = [
+            p(1, None, "launchd", 1),
+            at(20, Some(1), "sleep", 50_100, worktree),
+            at(21, Some(20), "cargo", 50_200, "/elsewhere"),
+            at(
+                22,
+                Some(1),
+                "sleep",
+                50_300,
+                "/Users/me/.worktrees/headwork/probe/crates",
+            ),
+            at(
+                23,
+                Some(1),
+                "sleep",
+                50_300,
+                "/Users/me/.worktrees/headwork/probe-two",
+            ),
+            at(24, Some(1), "sleep", 40_000, worktree),
+            at(25, Some(1), "sleep", 70_000, worktree),
+            at(26, Some(1), "headwork", 50_400, worktree),
+            at(27, Some(1), "node", 50_500, worktree),
+            at(28, Some(9), "sleep", 50_600, worktree),
+        ];
+        let sessions = [EndedSession {
+            folders: vec![format!("{worktree}/")],
+            ..session(&[2, 3], 50_000, Some(60_000))
+        }];
+        let plan = plan(&Facts {
+            now: NOW,
+            procs: &procs,
+            sessions: &sessions,
+            jobs: &[27],
+            shells_known: true,
+            parents_kept: false,
+        });
+        assert_eq!(ended(&plan), vec![22, 21, 20], "{plan:?}");
+        let spared: Vec<u32> = plan.spare.iter().map(|v| v.pid).collect();
+        assert_eq!(spared, vec![26, 27], "headwork and a job are spared");
+    }
+
+    #[test]
+    fn a_launchd_daemon_running_bash_is_no_orphan_on_unix() {
+        let old = NOW - IDLE_AFTER_S - 100;
+        let daemon = Proc {
+            cwd: Some(
+                "/Library/Application Support/Vasion/PrinterInstallerClient/service_interface"
+                    .to_owned(),
+            ),
+            ..p(547, Some(ADOPTER_PID), "bash", old)
+        };
+        let unparented = p(548, None, "tail", old);
+        let procs = [daemon, unparented];
+        let facts = Facts {
+            now: NOW,
+            procs: &procs,
+            sessions: &[],
+            jobs: &[],
+            shells_known: true,
+            parents_kept: false,
+        };
+        let plan = plan(&facts);
+        assert!(plan.end.is_empty(), "{plan:?}");
+        assert!(plan.spare.is_empty(), "not even looked at: {plan:?}");
+        let windows = super::plan(&Facts {
+            parents_kept: true,
+            ..facts
+        });
+        assert_eq!(
+            ended(&windows),
+            vec![548, 547],
+            "where parents are kept they are orphans"
+        );
+    }
+
+    #[test]
+    fn adoption_needs_a_folder_of_the_task() {
+        let procs = [
+            p(1, None, "launchd", 1),
+            Proc {
+                cwd: Some("/Users/me/repo".to_owned()),
+                ..p(20, Some(1), "sleep", 50_100)
+            },
+        ];
+        let sessions = [session(&[2], 50_000, Some(60_000))];
+        let plan = plan(&Facts {
+            now: NOW,
+            procs: &procs,
+            sessions: &sessions,
+            jobs: &[],
+            shells_known: true,
+            parents_kept: true,
+        });
+        assert!(
+            plan.end.is_empty(),
+            "a main-only task has no folder of its own: {plan:?}"
+        );
+    }
+
+    #[test]
     fn a_reused_root_pid_keeps_its_own_children() {
         let procs = [
             p(1, None, "explorer.exe", 80_000),
@@ -421,6 +571,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         });
         assert!(plan.end.is_empty(), "{plan:?}");
     }
@@ -446,6 +597,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[21],
             shells_known: true,
+            parents_kept: true,
         });
         assert_eq!(ended(&plan), vec![50], "{plan:?}");
         let spared: Vec<u32> = plan.spare.iter().map(|v| v.pid).collect();
@@ -465,6 +617,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         });
         assert_eq!(ended(&plan), vec![2, 1], "{plan:?}");
         let late = [p(1, None, "node.exe", 50_000 + ROOT_START_WINDOW_S + 1)];
@@ -474,6 +627,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         });
         assert!(plan.end.is_empty(), "{plan:?}");
     }
@@ -506,6 +660,7 @@ mod tests {
             sessions: &[],
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         });
         assert_eq!(ended(&plan), vec![11, 60, 10, 12], "{plan:?}");
         let blind = super::plan(&Facts {
@@ -514,6 +669,7 @@ mod tests {
             sessions: &[],
             jobs: &[],
             shells_known: false,
+            parents_kept: true,
         });
         assert_eq!(
             blind,
@@ -549,6 +705,7 @@ mod tests {
             sessions: &[],
             jobs: &[4852],
             shells_known: true,
+            parents_kept: true,
         });
         assert_eq!(plan, Plan::default(), "{plan:?}");
     }
@@ -566,6 +723,7 @@ mod tests {
             sessions: &sessions,
             jobs: &[],
             shells_known: true,
+            parents_kept: true,
         });
         assert_eq!(ended(&plan), vec![10], "{plan:?}");
     }

@@ -747,6 +747,38 @@ fn launcher_records_place_pids_exit_and_worktree() {
     }
 }
 
+#[test]
+fn an_ended_session_carries_its_tasks_folders() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    store.start_task(&config, task.id, Actor::Tick).unwrap();
+    let id = "0b6c1d2e-0000-4000-8000-000000000003";
+    let session = NewSession {
+        id: id.to_owned(),
+        task_id: Some(task.id),
+        role: Role::Worker,
+        rc_name: "me-sim-sand".to_owned(),
+        host: "wmux".to_owned(),
+        host_workspace: None,
+        host_surface: None,
+    };
+    store.record_session(&session, Actor::User).unwrap();
+    store
+        .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
+        .unwrap();
+    store.session_launched(id, 100, 101, "job").unwrap();
+    store.session_ended(id, Some(0)).unwrap();
+    let ended = store.ended_sessions().unwrap();
+    assert_eq!(
+        ended
+            .iter()
+            .map(|s| (s.name.as_str(), s.folders.clone()))
+            .collect::<Vec<_>>(),
+        [("me-sim-sand", vec!["S:/w/sand".to_owned()])],
+        "the task's worktree"
+    );
+}
+
 fn hook_world() -> (Store, Task, String) {
     let (mut store, config) = store();
     let task = create(&mut store, &config, "me-sim", "sand");

@@ -454,6 +454,7 @@ fn finish_claimed(
     finalize_jobs(store, env, id)?;
     let worktree = if processes_gone {
         store.end_task_sessions(id, env.actor)?;
+        super::reap::end_task_leftovers(store, env, id, &task.name.to_string())?;
         super::helpers::remove_all(store, env, id)?;
         let end = remove_worktree(store, env, id, false)?;
         if force && end == WorktreeEnd::Present {
