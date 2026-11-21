@@ -386,6 +386,10 @@ text_enum!(
         AskStale => "ask-stale",
         /// A starting session stopped at Claude Code's folder trust prompt and the user is asked.
         TrustPrompt => "trust-prompt",
+        /// A part is still open while its lead is closed, closing, dropped or failed.
+        OrphanPart => "orphan-part",
+        /// A part's tab runs outside its lead's workspace (the user moved it).
+        StrayTab => "stray-tab",
         /// The tick could not look at something it checks, such as the git host or a volume.
         TickError => "tick-error",
     }

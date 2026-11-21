@@ -63,6 +63,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// One line per top-level task, rolled up from its parts: working, needs you, in review, finished, failed.
+    Status {
+        /// Include closed tasks.
+        #[arg(long)]
+        all: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the event log, all of it or one task's.
     Log {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`.
@@ -556,6 +565,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             json,
         } => return import_command(projects_conf, claude_dir, dry_run, json, out),
         other @ (Command::Board { .. }
+        | Command::Status { .. }
         | Command::Log { .. }
         | Command::Spawn(_)
         | Command::Queue { .. }
@@ -584,6 +594,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     };
     match command {
         Command::Board { all, json } => board(&mut store, &ctx, all, json, out),
+        Command::Status { all, json } => status_command(&mut store, &ctx, all, json, out),
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
@@ -802,6 +813,23 @@ fn board(
         json_out(out, &board)?;
     } else {
         out.write_all(render::board(&board, ctx.config.machine.max_workers.get()).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn status_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    all: bool,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
+    let lines = headwork::ops::status::status(store, all)?;
+    if json {
+        json_out(out, &lines)?;
+    } else {
+        out.write_all(render::statuses(&lines).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }

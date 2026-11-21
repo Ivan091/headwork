@@ -186,6 +186,22 @@ impl FakeHost {
             .for_each(|pane| pane.running = false);
     }
 
+    /// Moves a surface into the first pane of the workspace titled `workspace` (created when missing), as a user who
+    /// drags a tab elsewhere; its program keeps running and the pane list follows it.
+    pub fn move_surface(&self, surface: &SurfaceId, workspace: &str) {
+        let (ws, _) = self
+            .ensure_workspace(workspace, Path::new("."))
+            .unwrap_or_else(|_| (WorkspaceId(String::new()), false));
+        let mut state = self.state.borrow_mut();
+        state.remove_surface(surface);
+        state.add_to_first_pane(&ws, surface.clone());
+        state
+            .panes
+            .iter_mut()
+            .filter(|pane| &pane.surface == surface)
+            .for_each(|pane| pane.workspace = Some(ws.clone()));
+    }
+
     /// Makes every later split land outside the workspace it was meant for, as wmux does when it does not know the
     /// surface it is run from: the new pane then belongs to a workspace no one listed.
     pub fn stray_splits(&self) {

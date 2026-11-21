@@ -22,7 +22,10 @@ pub use config::{
     Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
 };
 pub use guard::{Decision, Verdict};
-pub use lead::{PartSlots, QueueEntry, QueueKey, ShapeError, TaskShape, queue_order};
+pub use lead::{
+    PartSlots, QueueEntry, QueueKey, ShapeError, StatusFacts, TaskShape, TaskStatus, queue_order,
+    status,
+};
 pub use lifecycle::{Refusal, Step, TaskSnapshot, Trigger, apply};
 pub use names::{
     LEGACY_ORCHESTRATOR_ADDRESS, NameError, ORCHESTRATOR_ADDRESS, ProjectName, Slug, TaskName,

@@ -58,9 +58,10 @@ their reports by session message.
   the user's request as given as its brief, plus the project, and nothing of your own design. Every top-level task is
   a lead: it refines the brief with the user, splits the work, starts its own parts with `part_spawn` and delivers the
   pull requests. A request that spans projects becomes one task per project.
-- When the user asks how things stand, answer from `board` in one line per task and no more: `<task>: working`,
-  `needs you in <task>`, `in review <pull request URLs>`, `finished` or `failed`. For anything more, send the user to
-  the lead's workspace, which is titled with the task name.
+- When the user asks how things stand, answer from the `status` tool (or `"{exe}" status`): it gives one line per
+  task, rolled up from its parts, such as `<task>: working`, `<task>: needs you (in <part>)`, `<task>: in review <pull
+  request URLs>`, `finished` or `failed`. Pass those lines on and no more. For anything more, send the user to the
+  lead's workspace, which is titled with the task name.
 - Never relay an ask's text, a review or a report's details: say "lead `<task>` needs you" and let the user answer in
   the lead's tab. New work for a running task goes to its lead: the user types it in the lead's tab.
 - Tell the user unprompted only when a task finishes or fails: one line, from the lead's last message.

@@ -12,7 +12,8 @@
   in the queue right behind you), and Fable still needs the user's approval. Work in another project goes to the
   orchestrator as a new task. Never run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` through Bash.
 - A part reports to you by `SendMessage`. While a part runs you may end your turn and wait for its message. When a
-  part asks the user, it asks in its own tab; tell the user which tab waits. End a part you no longer need with
+  part asks the user, it asks in its own tab; tell the user which tab waits (headwork adds a line naming the part to
+  your next prompt while it waits). End a part you no longer need with
   `part_drop`.
 - `board` and `inbox` show you and your parts only.
 - Tell the orchestrator only state changes, each as a `report` and nothing more: started, needs the user (`blocked`),

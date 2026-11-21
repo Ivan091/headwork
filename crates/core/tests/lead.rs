@@ -2,7 +2,10 @@
 
 use std::cmp::Ordering;
 
-use headwork_core::{QueueEntry, QueueKey, ShapeError, TaskShape, queue_order};
+use headwork_core::{
+    QueueEntry, QueueKey, ShapeError, StatusFacts, TaskShape, TaskState, TaskStatus, queue_order,
+    status,
+};
 use proptest::prelude::*;
 
 /// `parent_id`, `lead`, and the shape they make.
@@ -201,4 +204,154 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn a_part_is_orphaned_only_while_open_under_a_lead_that_is_gone() {
+    use headwork_core::TaskState::{
+        Closed, Closing, Dropped, Failed, InReview, Merged, NeedsUser, Working,
+    };
+    use headwork_core::lead::orphaned;
+    let table = [
+        (Working, Working, false, "both running"),
+        (Working, Merged, false, "lead merged, waiting for the part"),
+        (Working, Closed, true, "lead closed"),
+        (NeedsUser, Dropped, true, "lead dropped"),
+        (InReview, Failed, true, "lead failed"),
+        (Working, Closing, true, "lead closing"),
+        (
+            Dropped,
+            Dropped,
+            true,
+            "dropped with its lead, not closed yet",
+        ),
+        (Closing, Closed, false, "part closing"),
+        (Closed, Closed, false, "both closed"),
+    ];
+    for (part, lead, want, why) in table {
+        assert_eq!(orphaned(part, lead), want, "{why}");
+    }
+}
+
+const fn facts(state: TaskState) -> StatusFacts {
+    StatusFacts {
+        state,
+        asking: false,
+        dropped: false,
+    }
+}
+
+const fn asking(state: TaskState) -> StatusFacts {
+    StatusFacts {
+        state,
+        asking: true,
+        dropped: false,
+    }
+}
+
+type StatusCase = (StatusFacts, Vec<StatusFacts>, TaskStatus, &'static str);
+
+fn check_statuses(table: Vec<StatusCase>) {
+    for (task, parts, want, why) in table {
+        assert_eq!(status(task, &parts), want, "{why}");
+    }
+}
+
+#[test]
+fn an_open_task_is_working_queued_or_needs_you() {
+    use TaskState::{NeedsUser, Queued, Spawning, Working};
+    check_statuses(vec![
+        (
+            facts(Working),
+            vec![],
+            TaskStatus::Working,
+            "plain, working",
+        ),
+        (facts(Spawning), vec![], TaskStatus::Working, "starting"),
+        (facts(Queued), vec![], TaskStatus::Queued, "queued"),
+        (
+            facts(NeedsUser),
+            vec![],
+            TaskStatus::NeedsYou,
+            "the lead asks",
+        ),
+        (
+            asking(Working),
+            vec![],
+            TaskStatus::NeedsYou,
+            "a tick's ask",
+        ),
+        (
+            facts(Working),
+            vec![facts(NeedsUser)],
+            TaskStatus::NeedsYou,
+            "a part asks",
+        ),
+    ]);
+    assert_eq!(TaskStatus::NeedsYou.to_string(), "needs you", "the words");
+}
+
+#[test]
+fn a_review_and_a_merge_roll_up_from_the_parts() {
+    use TaskState::{Closed, Closing, InReview, Merged, Working};
+    check_statuses(vec![
+        (
+            facts(InReview),
+            vec![facts(Working)],
+            TaskStatus::InReview,
+            "lead in review",
+        ),
+        (
+            facts(InReview),
+            vec![asking(Working)],
+            TaskStatus::NeedsYou,
+            "a part's ask first",
+        ),
+        (
+            facts(Merged),
+            vec![facts(Working)],
+            TaskStatus::Working,
+            "a part still runs",
+        ),
+        (
+            facts(Merged),
+            vec![facts(Closed)],
+            TaskStatus::Finished,
+            "parts closed",
+        ),
+        (
+            facts(Closing),
+            vec![asking(Closed)],
+            TaskStatus::Finished,
+            "a closed part's ask",
+        ),
+    ]);
+}
+
+#[test]
+fn the_leads_end_decides_first() {
+    use TaskState::{Closed, Dropped, Failed, Interrupted, NeedsUser, Parked};
+    let dropped = StatusFacts {
+        state: Closed,
+        asking: false,
+        dropped: true,
+    };
+    check_statuses(vec![
+        (dropped, vec![], TaskStatus::Dropped, "closed after a drop"),
+        (
+            facts(Dropped),
+            vec![facts(NeedsUser)],
+            TaskStatus::Dropped,
+            "dropped",
+        ),
+        (facts(Failed), vec![], TaskStatus::Failed, "failed"),
+        (
+            facts(Interrupted),
+            vec![facts(Parked)],
+            TaskStatus::Interrupted,
+            "interrupted",
+        ),
+        (facts(Closed), vec![], TaskStatus::Finished, "closed"),
+        (facts(Parked), vec![], TaskStatus::Parked, "parked"),
+    ]);
 }

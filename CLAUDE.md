@@ -30,7 +30,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, answer, queue, clean, reap, rules,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, inbox, spawn, drop, close, answer, queue, clean, reap, rules,
 rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -73,6 +73,9 @@ L2 places them (`ops/place.rs`): a lead gets a workspace of its own titled with 
 says, its parts and helpers open as tabs of the lead's workspace (by recorded id, then by title; a part is refused when
 it is gone), a part's tab is titled by `[leads] part_title`, its release closes only its tab, and resume brings each
 lead back before its parts.
+L4 adds the tick findings `orphan-part` (a part open while its lead is over or failed) and `stray-tab` (a part's tab
+outside its lead's workspace), a line in a lead's next prompt per part waiting on the user, the tree `board`, and
+`status` (`ops/status.rs`, roll-up in `core/src/lead.rs`), a CLI command and an orchestrator MCP tool.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -82,7 +85,8 @@ Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`
 ```bash
 bash scripts/check.sh                      # the full gate; must pass before every pull request
 cargo test -p headwork-core                # one crate
-cargo run -p headwork -- board             # projects, tasks, sessions (pane or tab), states, asks
+cargo run -p headwork -- board             # projects, tasks (parts indented under their lead), sessions (pane or tab), states, asks
+cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits

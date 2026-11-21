@@ -1036,6 +1036,7 @@ fn mcp_tools_follow_the_role() {
         root,
         [
             "board",
+            "status",
             "inbox",
             "spawn",
             "drop",
@@ -2203,4 +2204,47 @@ fn the_orchestrator_rules_dispatch() {
     assert!(!text.contains("Briefing a lead"), "{text}");
     assert!(text.contains("Never relay an ask's text"), "{text}");
     assert!(text.contains("finishes or fails"), "{text}");
+}
+
+#[test]
+fn a_lead_hears_on_its_next_prompt_which_part_waits_for_the_user() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let part = w.part("review");
+    let prompt = json!({ "prompt": "how is it going" });
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "no part waits"
+    );
+    let ask = headwork_store::NewAsk {
+        task_id: Some(part.id),
+        session_id: None,
+        kind: headwork_core::AskKind::Review,
+        question: "Ship it?".to_owned(),
+        options: vec!["Ship it".to_owned(), "Drop it".to_owned()],
+    };
+    w.store.open_ask(&ask, Actor::Hook).unwrap();
+    let text = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(
+        text.contains("part `demo-sand-review` waits for the user in its tab"),
+        "{text}"
+    );
+    let (is_error, status) = w.tool(orchestrator_identity(), "status", &json!({}));
+    assert!(!is_error, "{status}");
+    assert!(
+        status.contains("\"line\": \"demo-sand: needs you (in demo-sand-review)\""),
+        "rolled up into the lead's line: {status}"
+    );
+    assert!(status.contains("\"status\": \"needs-you\""), "{status}");
+    assert!(
+        w.tool_names(orchestrator_identity())
+            .contains(&"status".to_owned()),
+        "the orchestrator's tool"
+    );
+    assert!(
+        !w.tool_names(worker_identity(&w))
+            .contains(&"status".to_owned()),
+        "not a worker's"
+    );
 }

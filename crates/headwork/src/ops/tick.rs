@@ -162,6 +162,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.pull_requests()?;
     run.merged_grace()?;
     run.closing()?;
+    run.parts()?;
     run.disks()?;
     run.runaway()?;
     run.stuck()?;
@@ -483,7 +484,7 @@ impl<'b> Run<'_, 'b> {
                 let Some(session) = self.store.session_of(id)? else {
                     continue;
                 };
-                let Some(cause) = self.lost_cause(&session)? else {
+                let Some(cause) = self.lost_cause(id, &session)? else {
                     continue;
                 };
                 if !lost::mark(self.store, self.env(), id, &session, cause)? {
@@ -499,16 +500,18 @@ impl<'b> Run<'_, 'b> {
         Ok(())
     }
 
-    fn lost_cause(&self, session: &SessionRow) -> Result<Option<LostCause>> {
+    fn lost_cause(&self, id: TaskId, session: &SessionRow) -> Result<Option<LostCause>> {
         if let Some(cause) = lost::local_cause(session)? {
             return Ok(Some(cause));
         }
         if self.report.host_up
             && let Some(surface) = session.host_surface.as_deref()
         {
+            let part = self.store.task(id)?.shape.is_part();
             let workspace = session
                 .host_workspace
                 .as_deref()
+                .filter(|_| !part)
                 .map(|w| WorkspaceId(w.to_owned()));
             let surface = SurfaceId(surface.to_owned());
             if !surface_present(self.env().host, workspace.as_ref(), &surface)? {
@@ -706,7 +709,13 @@ impl<'b> Run<'_, 'b> {
     fn closing(&mut self) -> Result<()> {
         let actor = self.actor();
         if self.enforce {
-            for id in self.store.tasks_in(TaskState::Dropped)? {
+            let dropped = self.store.tasks_in(TaskState::Dropped)?;
+            let mut parts_first = Vec::with_capacity(dropped.len());
+            for id in dropped {
+                parts_first.push((!self.store.task(id)?.shape.is_part(), id));
+            }
+            parts_first.sort();
+            for (_, id) in parts_first {
                 if self
                     .store
                     .transition(id, &Trigger::BeginClosing, actor)
@@ -763,6 +772,77 @@ impl<'b> Run<'_, 'b> {
             self.ask_about_worktree(id)?;
         }
         Ok(())
+    }
+
+    /// Parts that lost their lead (`orphan-part`) and parts whose tab the user moved out of the lead's workspace
+    /// (`stray-tab`). Both are reported, never acted on: headwork does not move a tab back.
+    fn parts(&mut self) -> Result<()> {
+        for state in TaskState::ALL {
+            if matches!(state, TaskState::Closing | TaskState::Closed) {
+                continue;
+            }
+            for id in self.store.tasks_in(*state)? {
+                let part = self.store.task(id)?;
+                let TaskShape::Part { parent } = part.shape else {
+                    continue;
+                };
+                let lead = self.store.task(parent)?;
+                if headwork_core::lead::orphaned(part.state, lead.state) {
+                    self.standing(
+                        &format!("orphan-part:{}", part.name),
+                        FindingId::OrphanPart,
+                        Some(id),
+                        Status::Standing,
+                        &serde_json::json!({ "lead": lead.name.to_string(), "lead_state": lead.state }),
+                        Some(&format!(
+                            "Part {} is still open while its lead {} is {}: close or drop it",
+                            part.name, lead.name, lead.state
+                        )),
+                    )?;
+                }
+                if self.report.host_up && RUNNING.contains(&part.state) {
+                    self.stray_tab(&part, parent)?;
+                }
+            }
+        }
+        self.sweep(FindingId::OrphanPart)?;
+        self.sweep(FindingId::StrayTab)
+    }
+
+    fn stray_tab(&mut self, part: &Task, lead: TaskId) -> Result<()> {
+        let Some(surface) = self
+            .store
+            .session_of(part.id)?
+            .and_then(|session| session.host_surface)
+            .map(SurfaceId)
+        else {
+            return Ok(());
+        };
+        let Ok(workspace) = super::place::lead_workspace(self.store, self.env(), lead) else {
+            return Ok(());
+        };
+        let host = self.env().host;
+        if host.surfaces(&workspace)?.contains(&surface) || !surface_present(host, None, &surface)?
+        {
+            return Ok(());
+        }
+        let lead_name = self.name(lead)?;
+        self.standing(
+            &format!("stray-tab:{}", part.name),
+            FindingId::StrayTab,
+            Some(part.id),
+            Status::Standing,
+            &serde_json::json!({
+                "surface": surface.as_str(),
+                "lead": lead_name,
+                "workspace": workspace.as_str(),
+            }),
+            Some(&format!(
+                "The tab of part {} is outside its lead's workspace {lead_name}; headwork does not move it back",
+                part.name
+            )),
+        )
+        .map(drop)
     }
 
     fn ask_about_worktree(&mut self, id: TaskId) -> Result<()> {
