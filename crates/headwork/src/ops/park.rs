@@ -13,8 +13,8 @@ use headwork_adapters::host::{Key, SurfaceId};
 use headwork_adapters::proc;
 use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{ParkedFacts, Trigger};
-use headwork_core::{JobState, MachineMode, RecapKind, SessionState, TaskState};
-use headwork_store::{JobRow, NewRecap, SessionRow, Store, Task};
+use headwork_core::{JobState, MachineMode, RecapKind, SessionState, TaskShape, TaskState};
+use headwork_store::{JobRow, NewRecap, SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
 use super::close::{close_pane, wait_until};
@@ -394,7 +394,7 @@ fn finish_session(
         &facts,
     )?;
     let snapshot = snapshot_worktree(store, env, &task)?;
-    let problem = stop_session(store, env, target.session.as_ref())?;
+    let problem = stop_session(store, env, task.shape, target.session.as_ref())?;
     store.transition(
         task.id,
         &Trigger::Parked(ParkedFacts {
@@ -438,12 +438,14 @@ fn ref_exists(dir: &Path, reference: &str) -> bool {
 fn stop_session(
     store: &mut Store,
     env: &Env<'_>,
+    shape: TaskShape<TaskId>,
     session: Option<&SessionRow>,
 ) -> Result<Option<String>> {
     let Some(session) = session else {
         return Ok(None);
     };
-    let mut problem = (!close_pane(env, session)?).then(|| "the pane is still open".to_owned());
+    let mut problem =
+        (!close_pane(env, shape, session)?).then(|| "the pane is still open".to_owned());
     let pids: Vec<u32> = [session.claude_pid, session.launcher_pid]
         .into_iter()
         .flatten()

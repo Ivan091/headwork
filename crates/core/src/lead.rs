@@ -149,3 +149,13 @@ pub fn queue_order<P: Ord + Copy>(mut entries: Vec<QueueEntry<P>>) -> Vec<P> {
     entries.sort_by(QueueEntry::compare);
     entries.into_iter().map(|entry| entry.id).collect()
 }
+
+/// What a part's tab shows for `{part}`: its slug after its lead's slug and a `-`, or its whole slug when it does not
+/// start that way.
+#[must_use]
+pub fn part_label<'a>(slug: &'a str, lead_slug: &str) -> &'a str {
+    slug.strip_prefix(lead_slug)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(slug)
+}

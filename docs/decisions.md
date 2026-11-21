@@ -848,3 +848,19 @@ and the reason.
   became "Dispatching". The stop gate lets a lead stop while a part is not closed (`waiting_part`, the same measure as
   `lead-parts-live`). `[leads] enabled` stays off by default until L2's placement is merged: parts would otherwise open
   in the project's panes instead of the lead's workspace.
+- 2026-11-21 Leads, milestone L2 (placement). Placement follows the task's shape, not `[leads] enabled`: a task stored
+  as a lead opens like `workspaces` mode whatever `[layout] mode` says (its own workspace titled with its name, the
+  fresh shell replaced, `PlaceKind::Pane`), a part opens with `Target::Tab` (`PlaceKind::Tab`) and a plain task keeps
+  `[layout] mode`. A part's workspace is its lead's newest session's `host_workspace` when the host still lists it, else
+  the open workspace titled with the lead's name (`place::lead_workspace`); with neither the part's start fails
+  (`launch-error` naming the lead, task `failed`) instead of opening a workspace of its own. `helper_tab` of a lead or a
+  part resolves the same way; a plain worker's helper keeps its recorded workspace. `place::release` takes the shape: a
+  part closes only its tab; a lead's workspace closes when no other surface holds a session (helpers do not count),
+  also in `tabs` mode. A part's tab title is `[leads] part_title` with `{part}` = its slug after `<lead-slug>-` (the
+  whole slug when it does not start that way); `rc_name` stays the full task name. Retitle and the tick use the same
+  title, so part tabs are covered. Resume orders the tasks it brings back leads (and plain tasks) first in age order,
+  then parts by lead and creation (task id); a part whose lead is not back afterwards (any state that holds no slot,
+  e.g. failed or skipped at logon) is `skipped` and stays where it was. The cmux landed-workspace check came with #54
+  and is relied on as is. The live check is `a_lead_gets_a_workspace_and_its_part_a_tab_in_the_real_cmux` in
+  `tests/live.rs`; cmux lists a closed workspace for a moment, so it polls for the close. `[leads] enabled` stays off here as
+  well: turning it on changes every new task, and is left to the user.

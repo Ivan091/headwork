@@ -3,9 +3,14 @@
 //! wmux keeps a title set with `rename-surface` apart from the one a program sets by escape sequence, so Claude's own
 //! title never replaces it. It is set when a pane opens (spawn and resume), re-asserted on every tick in case the
 //! user renamed or wmux restored a surface, and `headwork retitle` sets it for sessions started before this existed.
+//!
+//! A lead's part is a tab in its lead's workspace, whose title already names the task, so its tab follows
+//! `[leads] part_title` instead (default `{part}`, the part's slug after its lead's).
 
 use anyhow::Result;
 use headwork_adapters::host::SurfaceId;
+use headwork_core::TaskShape;
+use headwork_core::lead::part_label;
 use headwork_store::{Store, Task};
 use serde::Serialize;
 
@@ -22,23 +27,39 @@ pub struct Retitled {
     pub title: String,
 }
 
-/// The title of a task's pane.
-#[must_use]
-pub fn title_of(env: &Env<'_>, task: &Task) -> String {
-    env.config.layout.title_for(
-        &task.name.to_string(),
-        task.model.as_str(),
-        Some(effort::of_task(env.home, env.config, task).as_str()),
-    )
+/// The title of a task's pane: `[layout] title`, or `[leads] part_title` for a lead's part.
+///
+/// # Errors
+///
+/// Fails when the store cannot read a part's lead.
+pub fn title_of(store: &Store, env: &Env<'_>, task: &Task) -> Result<String> {
+    let name = task.name.to_string();
+    let effort = effort::of_task(env.home, env.config, task);
+    Ok(match task.shape {
+        TaskShape::Part { parent } => {
+            let lead = store.task(parent)?;
+            env.config.leads.title_for(
+                part_label(task.slug().as_str(), lead.slug().as_str()),
+                &name,
+                task.model.as_str(),
+                Some(effort.as_str()),
+            )
+        }
+        TaskShape::Lead | TaskShape::Plain => {
+            env.config
+                .layout
+                .title_for(&name, task.model.as_str(), Some(effort.as_str()))
+        }
+    })
 }
 
 /// Gives a task's surface its title.
 ///
 /// # Errors
 ///
-/// Returns the host's failure.
-pub fn set(env: &Env<'_>, task: &Task, surface: &SurfaceId) -> Result<String> {
-    let title = title_of(env, task);
+/// Returns the host's or the store's failure.
+pub fn set(store: &Store, env: &Env<'_>, task: &Task, surface: &SurfaceId) -> Result<String> {
+    let title = title_of(store, env, task)?;
     env.host.rename_surface(surface, &title)?;
     Ok(title)
 }
@@ -60,7 +81,7 @@ pub fn retitle(
             continue;
         }
         let task = store.task(id)?;
-        match set(env, &task, &SurfaceId(surface.clone())) {
+        match set(store, env, &task, &SurfaceId(surface.clone())) {
             Ok(title) => done.push(Retitled {
                 name: task.name.to_string(),
                 surface,

@@ -663,6 +663,22 @@ pub struct LeadsConfig {
     pub part_title: String,
 }
 
+impl LeadsConfig {
+    /// A part's tab title: `part_title` with its placeholders filled in.
+    #[must_use]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the placeholders are the config template's own, not format arguments"
+    )]
+    pub fn title_for(&self, part: &str, name: &str, model: &str, effort: Option<&str>) -> String {
+        self.part_title
+            .replace("{part}", part)
+            .replace("{name}", name)
+            .replace("{model}", model)
+            .replace("{effort}", effort.unwrap_or("?"))
+    }
+}
+
 impl Default for LeadsConfig {
     fn default() -> Self {
         Self {

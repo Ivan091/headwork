@@ -69,6 +69,10 @@ Leads (`docs/leads.md`) start with L1: a task's shape (`core/src/lead.rs`: `Lead
 `tasks.parent_id` and `tasks.lead`, migration 0013), `[leads]` (`enabled`, off for now; `max_parts`; `part_title`), a
 part waiting behind its lead in the queue and for `max_parts` at start, a lead's `done` refused while a part is not
 closed (`lead-parts-live`), and a lead's drop or close ending its parts first (`Store::drop_task`, `ops/close.rs`).
+L2 places them (`ops/place.rs`): a lead gets a workspace of its own titled with its name whatever `[layout] mode`
+says, its parts and helpers open as tabs of the lead's workspace (by recorded id, then by title; a part is refused when
+it is gone), a part's tab is titled by `[leads] part_title`, its release closes only its tab, and resume brings each
+lead back before its parts.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

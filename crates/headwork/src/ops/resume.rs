@@ -5,6 +5,9 @@
 //! session whose conversation is gone starts fresh from its brief and recap. Jobs that asked to be restarted run
 //! again, and a summary for the orchestrator is written to `recaps/<park-id>.md`.
 //!
+//! A lead comes back before its parts (`docs/leads.md`, section 4), so its workspace is open again when each part
+//! becomes a tab in it, in the order the parts were made; a part whose lead did not come back waits for it.
+//!
 //! Resume is run by hand, or by whatever the user schedules at logon (`--logon`, which honours
 //! `machine.resume_after_crash`); headwork installs nothing itself.
 
@@ -149,19 +152,15 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
     )?;
 
     let mut tasks = Vec::new();
-    let mut ids: Vec<(headwork_store::TaskId, bool)> = store
-        .tasks_by_age(TaskState::Parked)?
-        .into_iter()
-        .map(|id| (id, false))
-        .collect();
-    ids.extend(
-        store
-            .tasks_by_age(TaskState::Interrupted)?
-            .into_iter()
-            .map(|id| (id, true)),
-    );
-    for (id, crash) in ids {
-        let task = store.task(id)?;
+    for (task, crash) in to_resume(store)? {
+        if let Some(reason) = waiting_for_lead(store, &task)? {
+            tasks.push(ResumedTask {
+                name: task.name.to_string(),
+                outcome: TaskOutcome::Skipped { reason },
+                open_question: None,
+            });
+            continue;
+        }
         if crash && opts.logon && env.config.machine.resume_after_crash != CrashResume::Always {
             tasks.push(ResumedTask {
                 name: task.name.to_string(),
@@ -223,6 +222,42 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
             .filter(|p| matches!(p.outcome, spawn::Outcome::Started { .. }))
             .count(),
     })
+}
+
+/// The parked tasks, then the interrupted ones (`true`), each oldest first, with every part moved behind the leads
+/// and plain tasks, grouped by its lead in the order the parts were made.
+fn to_resume(store: &Store) -> Result<Vec<(Task, bool)>> {
+    let mut ids: Vec<(headwork_store::TaskId, bool)> = store
+        .tasks_by_age(TaskState::Parked)?
+        .into_iter()
+        .map(|id| (id, false))
+        .collect();
+    ids.extend(
+        store
+            .tasks_by_age(TaskState::Interrupted)?
+            .into_iter()
+            .map(|id| (id, true)),
+    );
+    let mut queue = Vec::with_capacity(ids.len());
+    for (id, crash) in ids {
+        queue.push((store.task(id)?, crash));
+    }
+    queue.sort_by_key(|(task, _)| task.shape.parent().map(|lead| (lead, task.id)));
+    Ok(queue)
+}
+
+/// Why a part waits instead of resuming: its lead is not back.
+fn waiting_for_lead(store: &Store, task: &Task) -> Result<Option<String>> {
+    let Some(parent) = task.shape.parent() else {
+        return Ok(None);
+    };
+    let lead = store.task(parent)?;
+    Ok((!lead.state.takes_slot()).then(|| {
+        format!(
+            "its lead {} is {}, not back; the part resumes with its lead",
+            lead.name, lead.state
+        )
+    }))
 }
 
 fn resume_task(
@@ -319,9 +354,7 @@ fn open_pane(
 ) -> Result<String> {
     let main = env.main_path(task)?;
     super::trust::before_start(store, env, task)?;
-    let (workspace, fresh) = env
-        .host
-        .ensure_workspace(&place::workspace_title(env, task), &main)?;
+    let (workspace, fresh) = place::workspace_for(store, env, task, &main)?;
     let mut argv = vec![
         env.exe.display().to_string(),
         "launch".to_owned(),

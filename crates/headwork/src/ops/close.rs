@@ -22,7 +22,7 @@ use headwork_core::guard::DEFAULT_BRANCHES;
 use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, FinishFacts, MergeSource, PrEnd, Trigger, WorktreeEnd,
 };
-use headwork_core::{Actor, JobState, SessionState, TaskState};
+use headwork_core::{Actor, JobState, SessionState, TaskShape, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
@@ -492,7 +492,7 @@ fn finish_claimed(
     let session = store.session_of(id)?;
     let mut pane_gone = true;
     if let Some(session) = &session {
-        pane_gone = close_pane(env, session)?;
+        pane_gone = close_pane(env, task.shape, session)?;
         for pid in [session.claude_pid, session.launcher_pid]
             .into_iter()
             .flatten()
@@ -571,7 +571,11 @@ fn finalize_jobs(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
 
 /// Closes the session's pane, or its workspace when the pane is the last thing in it, then ends the host's program.
 /// Returns whether the pane is gone.
-pub(super) fn close_pane(env: &Env<'_>, session: &SessionRow) -> Result<bool> {
+pub(super) fn close_pane(
+    env: &Env<'_>,
+    shape: TaskShape<TaskId>,
+    session: &SessionRow,
+) -> Result<bool> {
     let host = env.host;
     let Some(surface) = session
         .host_surface
@@ -585,7 +589,7 @@ pub(super) fn close_pane(env: &Env<'_>, session: &SessionRow) -> Result<bool> {
         .as_deref()
         .map(|w| WorkspaceId(w.to_owned()));
     if surface_present(host, workspace.as_ref(), &surface)? {
-        close_surface_or_workspace(env, workspace.as_ref(), &surface)?;
+        close_surface_or_workspace(env, shape, workspace.as_ref(), &surface)?;
     }
     for pane in host.panes()? {
         if pane.surface == surface && pane.running {
@@ -611,17 +615,18 @@ pub(super) fn surface_present(
 }
 
 /// Closes a session's surface, or its workspace when nothing else there holds a session; a pane left empty goes with
-/// it (see [`super::place::release`]).
+/// it, and a lead's part closes only its tab (see [`super::place::release`]).
 ///
 /// # Errors
 ///
 /// Returns the host's failure.
 pub fn close_surface_or_workspace(
     env: &Env<'_>,
+    shape: TaskShape<TaskId>,
     workspace: Option<&WorkspaceId>,
     surface: &SurfaceId,
 ) -> Result<()> {
-    super::place::release(env, workspace, surface)
+    super::place::release(env, shape, workspace, surface)
 }
 
 pub(super) fn remove_worktree(
@@ -812,7 +817,13 @@ pub fn hand_off(
             .host_workspace
             .as_deref()
             .map(|w| WorkspaceId(w.to_owned()));
-        close_surface_or_workspace(env, workspace.as_ref(), &SurfaceId(surface.to_owned()))?;
+        let shape = store.task(id).map_or(TaskShape::Plain, |task| task.shape);
+        close_surface_or_workspace(
+            env,
+            shape,
+            workspace.as_ref(),
+            &SurfaceId(surface.to_owned()),
+        )?;
     }
     started?;
     Ok(())
