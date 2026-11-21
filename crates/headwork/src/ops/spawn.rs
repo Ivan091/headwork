@@ -77,6 +77,26 @@ pub fn spawn(
     env: &Env<'_>,
     new: &SpawnRequest<'_>,
 ) -> Result<(Task, Vec<Pumped>)> {
+    let shape = if env.config.leads.enabled {
+        TaskShape::Lead
+    } else {
+        TaskShape::Plain
+    };
+    spawn_shaped(store, env, new, shape)
+}
+
+/// Creates the task in the given shape, copies its brief, and runs the queue: [`spawn`] for a top-level task, a lead's
+/// `part_spawn` for a part.
+///
+/// # Errors
+///
+/// As [`spawn`]; the store also refuses a part whose lead is not a live lead of the same project.
+pub fn spawn_shaped(
+    store: &mut Store,
+    env: &Env<'_>,
+    new: &SpawnRequest<'_>,
+    shape: TaskShape<TaskId>,
+) -> Result<(Task, Vec<Pumped>)> {
     let brief = std::fs::read_to_string(new.brief)
         .with_context(|| format!("reading the brief {}", new.brief.display()))?;
     let name = TaskName::new(new.request.project.clone(), new.request.slug.clone());
@@ -109,11 +129,7 @@ pub fn spawn(
             brief_path: slashed(&brief_path),
             depends_on: new.depends_on,
             permission_mode: new.permission_mode,
-            shape: if env.config.leads.enabled {
-                TaskShape::Lead
-            } else {
-                TaskShape::Plain
-            },
+            shape,
         },
         env.actor,
     )?;
@@ -139,6 +155,10 @@ pub fn spawn(
         brief
     } else {
         let dir = env.task_dir(&task)?;
+        let parent = shape
+            .parent()
+            .map(|lead| store.task(lead).map(|lead| lead.name.to_string()))
+            .transpose()?;
         let rules = rules::current(store, env.home, env.config, env.host)?.render(
             Role::Worker,
             env.config,
@@ -146,6 +166,7 @@ pub fn spawn(
             Some(&Card {
                 task: &task,
                 dir: &dir,
+                parent: parent.as_deref(),
             }),
         );
         format!("{}\n\n{rules}", brief.trim_end())

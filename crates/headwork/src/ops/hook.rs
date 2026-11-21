@@ -257,10 +257,16 @@ fn rules_for(store: &mut Store, call: &Call<'_>) -> Result<(String, i64)> {
         .map(|task| task_dir(store, env, task))
         .transpose()?
         .flatten();
-    let card = call
+    let parent = call
         .task
-        .zip(dir.as_deref())
-        .map(|(task, dir)| Card { task, dir });
+        .and_then(|task| task.shape.parent())
+        .map(|lead| store.task(lead).map(|lead| lead.name.to_string()))
+        .transpose()?;
+    let card = call.task.zip(dir.as_deref()).map(|(task, dir)| Card {
+        task,
+        dir,
+        parent: parent.as_deref(),
+    });
     let text = files.render(call.session.role, env.config, env.exe, card.as_ref());
     Ok((text, version))
 }
@@ -900,6 +906,10 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
             None => false,
         },
         waiting_background: turn.background,
+        waiting_part: match call.task {
+            Some(task) if task.shape.is_lead() => store.live_parts(task.id)? > 0,
+            Some(_) | None => false,
+        },
         last_message,
     };
     let decision = check_stop(&facts);

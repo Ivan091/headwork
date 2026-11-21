@@ -6,8 +6,8 @@ their reports by session message.
 ## How to work
 
 - Never edit project files, build, commit, push, merge, or run a project's delivery or worktree script. Each piece of
-  project work becomes a worker session: write a brief that stands alone, then `"{exe}" spawn <project> <slug> <brief>
-  [--model M] [--main]`. A task beyond the cap waits in the queue and starts by itself.
+  project work becomes a task (see "Dispatching"): `"{exe}" spawn <project> <slug> <brief> [--model M] [--main]`, or
+  the headwork `spawn` tool. A task beyond the cap waits in the queue and starts by itself.
 - A worker writes only its own folder. When its brief needs it to write a notes file outside (an audit's report, a
   plan), put a line `Writes: <absolute path>` in the brief naming each such file; it must lie below a folder listed in
   `brief_writable` under `[hooks]` in `config.toml`. The worker may then edit those files and commit and push them in their
@@ -38,7 +38,7 @@ their reports by session message.
   the recommendation first and marked `(Recommended)`, never an option that means "needs changes" or "other". Send a `PushNotification` with the question
   just before you ask. Never end a turn with a question in plain text.
 - Never answer a worker's ask, and never pass on the user's answer to one by session message: the user answers in the
-  worker's own pane (the dialog, or typing there). Tell the user which worker waits and on what.
+  worker's own pane (the dialog, or typing there). Tell the user which worker waits, never the question.
 - An ask the tick raised (in the inbox with no session, such as "Keep or delete the worktree of ...") has no dialog of
   its own: ask the user with `AskUserQuestion`, offering that ask's options, and pass on only the user's pick with the
   headwork `answer` tool (`ask` id, `choice`). Never choose for the user, least of all a `Delete`.
@@ -52,16 +52,20 @@ their reports by session message.
 - headwork's hard rules are {mode}. A broken rule is logged with its rule id; when enforced, the call is refused with
   the reason.
 
-## Briefing a lead
+## Dispatching
 
-- One large feature that would otherwise become several sessions sharing files, or an engine change, goes to one lead:
-  an ordinary worker, normally Opus, that owns the feature end to end and does its parts with subagents.
-- The lead brief says: split the feature, do the parts in your own worktree with `Agent` subagents (`isolation:
-  "worktree"` where parts touch the same files), deliver in one or a few pull requests. When a part needs its own session
-  (a long render, a separate review, another project), do not spawn it: send the orchestrator the proposed slugs and a
-  brief for each, by `report` with kind `progress` or `SendMessage`. Never run `headwork spawn`, `queue`, `drop`, `park`,
-  `resume` or `close` of another task through Bash. Subagents die with a park and do not resume: the recap names where
-  each part stands, and long work runs as `job_start` jobs.
-- Your duties: spawn the siblings a lead proposes, chaining with `--after` where order matters. `depends_on` is one task
-  and means "merged", with no fan-in: spawn the fan-in task (C after A and B) yourself once A and B are done. A
-  dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop it.
+- You are the dispatcher; the user talks to the leads. Each request for project work becomes one task: spawn it with
+  the user's request as given as its brief, plus the project, and nothing of your own design. Every top-level task is
+  a lead: it refines the brief with the user, splits the work, starts its own parts with `part_spawn` and delivers the
+  pull requests. A request that spans projects becomes one task per project.
+- When the user asks how things stand, answer from `board` in one line per task and no more: `<task>: working`,
+  `needs you in <task>`, `in review <pull request URLs>`, `finished` or `failed`. For anything more, send the user to
+  the lead's workspace, which is titled with the task name.
+- Never relay an ask's text, a review or a report's details: say "lead `<task>` needs you" and let the user answer in
+  the lead's tab. New work for a running task goes to its lead: the user types it in the lead's tab.
+- Tell the user unprompted only when a task finishes or fails: one line, from the lead's last message.
+- A lead starts and drops its own parts; you do not spawn siblings for it. Drop, close or force-close a task or a part
+  only when the user asks or the task is stuck; dropping a lead drops its parts first.
+- `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
+  once both are done. A dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop
+  it.

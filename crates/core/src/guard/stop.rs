@@ -34,6 +34,8 @@ pub struct StopFacts<'a> {
     /// Since the last prompt the session started background work (a background `Bash`, `Monitor`, `Agent` or
     /// `Workflow`) and waits for its notification to be invoked again.
     pub waiting_background: bool,
+    /// The task is a lead with a part that is not closed: it may stop and wait for the part's message.
+    pub waiting_part: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -64,7 +66,8 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         && !facts.messaged
         && !facts.reported
         && !facts.running_job
-        && !facts.waiting_background;
+        && !facts.waiting_background
+        && !facts.waiting_part;
     if unfinished {
         return Decision::deny(
             RuleId::StopUnfinished,

@@ -7,13 +7,17 @@
 //! `{orchestrator}` with the orchestrator's address, which is part of the hash so a new address reaches every session.
 //! `{stray}`, `{kill}` and `{tick_install}` take the words of the OS headwork runs on ([`Platform`]).
 //! A keep task's rules lose their "Closing yourself" section.
+//!
+//! Leads (`docs/leads.md`): a lead's rules are `worker.md` and `lead.md`; a lead's and a part's `worker.md` lose the
+//! "When your brief makes you a lead" section, which is the convention for plain workers. `{parent}` is where the
+//! worker reports: its lead's address for a part, the orchestrator's for a lead or a plain worker.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
 use headwork_core::config::Delivery;
-use headwork_core::{Config, Platform, Role};
+use headwork_core::{Config, Platform, Role, TaskShape};
 use headwork_store::{AddedRule, Store, Task};
 
 use super::slashed;
@@ -23,9 +27,14 @@ use crate::home::Home;
 pub const ORCHESTRATOR_RULES: &str = include_str!("../../../../rules/orchestrator.md");
 /// The built-in `worker.md`.
 pub const WORKER_RULES: &str = include_str!("../../../../rules/worker.md");
+/// The built-in `lead.md`, added to a lead's worker rules.
+pub const LEAD_RULES: &str = include_str!("../../../../rules/lead.md");
 
 /// The heading of the section a keep task's rules leave out.
 pub const CLOSING_HEADING: &str = "## Closing yourself";
+
+/// The heading of `worker.md`'s section for a plain worker that leads by convention; a lead and a part leave it out.
+pub const PLAIN_LEAD_HEADING: &str = "## When your brief makes you a lead";
 
 /// The most `additionalContext` a hook may return before Claude moves it to a file.
 pub const CONTEXT_LIMIT: usize = 10_000;
@@ -37,6 +46,7 @@ pub struct RuleFiles {
     global: Option<String>,
     orchestrator: String,
     worker: String,
+    lead: String,
     address: String,
     projects: Vec<(String, String)>,
     added: Vec<AddedRule>,
@@ -50,6 +60,8 @@ pub struct Card<'a> {
     pub task: &'a Task,
     /// Its folder: the worktree, or the main checkout.
     pub dir: &'a Path,
+    /// For a part, its lead's address (the lead's task name); `None` reports to the orchestrator.
+    pub parent: Option<&'a str>,
 }
 
 impl RuleFiles {
@@ -82,6 +94,7 @@ impl RuleFiles {
             Some(text) => text,
             None => read("child.md")?.unwrap_or_else(|| WORKER_RULES.to_owned()),
         };
+        let lead = read("lead.md")?.unwrap_or_else(|| LEAD_RULES.to_owned());
         let mut projects = Vec::new();
         for name in config.projects.keys() {
             if let Some(text) = read(&format!("{name}.md"))? {
@@ -89,7 +102,7 @@ impl RuleFiles {
             }
         }
         let mut all = format!(
-            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{address}",
+            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{lead}\u{0}{address}",
             global.as_deref().unwrap_or_default()
         );
         for (name, text) in &projects {
@@ -103,6 +116,7 @@ impl RuleFiles {
             global,
             orchestrator,
             worker,
+            lead,
             address: address.to_owned(),
             projects,
             added: added.to_vec(),
@@ -134,11 +148,19 @@ impl RuleFiles {
             Role::Orchestrator => parts.push(self.orchestrator.clone()),
             Role::Worker => {
                 let keep = card.is_some_and(|card| card.task.keep);
-                parts.push(if keep {
+                let shape = card.map_or(TaskShape::Plain, |card| card.task.shape);
+                let mut worker = if keep {
                     without_closing(&self.worker)
                 } else {
                     self.worker.clone()
-                });
+                };
+                if !matches!(shape, TaskShape::Plain) {
+                    worker = without_section(&worker, PLAIN_LEAD_HEADING);
+                }
+                parts.push(worker);
+                if shape.is_lead() {
+                    parts.push(self.lead.clone());
+                }
                 if let Some(card) = card
                     && let Some((_, text)) = self
                         .projects
@@ -161,7 +183,9 @@ impl RuleFiles {
                 added.join("\n")
             ));
         }
+        let parent = card.and_then(|card| card.parent).unwrap_or(&self.address);
         let text = fill(&parts.join("\n\n"), config, exe, card)
+            .replace(&slot("parent"), parent)
             .replace(&slot("orchestrator"), &self.address);
         if text.len() <= CONTEXT_LIMIT {
             return text;
@@ -217,10 +241,16 @@ pub fn orchestrator_address(store: &Store, host: &dyn TerminalHost) -> Result<St
 /// Drops the "Closing yourself" section, up to the next heading of the same level or the end.
 #[must_use]
 pub fn without_closing(text: &str) -> String {
+    without_section(text, CLOSING_HEADING)
+}
+
+/// Drops the `## ` section headed `heading`, up to the next heading of the same level or the end.
+#[must_use]
+pub fn without_section(text: &str, heading: &str) -> String {
     let mut out = Vec::new();
     let mut skipping = false;
     for line in text.lines() {
-        if line.trim_end() == CLOSING_HEADING {
+        if line.trim_end() == heading {
             skipping = true;
             continue;
         }

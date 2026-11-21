@@ -71,6 +71,36 @@ pub fn close(
              and ask the orchestrator to close anything else"
         );
     }
+    close_now(store, env, id, own_session)
+}
+
+/// Closes a part its lead dropped, for the lead's `part_drop`: the one close a worker may run on another task.
+///
+/// # Errors
+///
+/// Fails when the task is not a part of `lead`, is not dropped, or the close fails.
+pub fn close_dropped_part(
+    store: &mut Store,
+    env: &Env<'_>,
+    lead: TaskId,
+    part: TaskId,
+) -> Result<CloseReport> {
+    let task = store.task(part)?;
+    if task.shape.parent() != Some(lead) {
+        bail!("{} is not a part of this lead", task.name);
+    }
+    if task.state != TaskState::Dropped {
+        bail!("{} is {}, not dropped", task.name, task.state);
+    }
+    close_now(store, env, part, None)
+}
+
+fn close_now(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    own_session: Option<&str>,
+) -> Result<CloseReport> {
     let before = store.task(id)?;
     if before.shape.is_lead() {
         close_parts(store, env, id)?;

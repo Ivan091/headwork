@@ -40,8 +40,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   doing, the next step, what runs) whenever you stop for the day, and when headwork asks for one before a restart.
 - Never end a turn with a question in plain text, and never stop silently while the task is unfinished: carry on, ask,
   or report.
-- When the task is done, send a short report to the orchestrator, the session named `{orchestrator}`, with
-  `SendMessage`: what was built, test results, pull request links.
+- When the task is done, send a short report to the session named `{parent}` with `SendMessage`: what was built,
+  test results, pull request links.
 - headwork's hard rules are {mode}. A broken rule is logged with its rule id; when enforced, the call is refused with
   the reason.
 
@@ -52,11 +52,11 @@ or run `{close}`. Both take the checked path and close the task only when:
 
 - every pull request of the task is merged, or was closed unmerged by the user, or the task has none. Report each pull
   request with `report` (status `review`, its `pr` URL) as you open it, so headwork finds it on any branch;
-- your report reached `{orchestrator}` by `SendMessage`;
+- your report reached `{parent}` by `SendMessage`;
 - no question or review waits on the user, and no job of yours still runs.
 
 Otherwise the close is refused with the reason and the task stays as it was: finish what is missing, or, when you are
-stuck, tell `{orchestrator}`. A task the user dropped closes too. The close ends this pane, so run nothing after it.
+stuck, tell `{parent}`. A task the user dropped closes too. The close ends this pane, so run nothing after it.
 Never close another task: force-closing is for the user and the orchestrator.
 
 ## When your brief makes you a lead
