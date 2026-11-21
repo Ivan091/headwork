@@ -739,3 +739,7 @@ and the reason.
   set `PATH` through `startup_environment`. The adapter therefore runs the program through
   `/usr/bin/env "PATH=${PATH%%:*}:<caller PATH>"`, keeping the surface's own shim folder in front so `claude` goes
   through cmux's wrapper and its hooks.
+- 2026-11-21 No CI on GitHub: the user removed the workflow, Windows job included, and `scripts/check.sh` run locally is
+  the only gate. A trial macOS job (PR #47) got a runner in 30 s and passed in under 2 minutes, but on this private
+  repository about 400 runs a month at the 10x macOS multiplier add ~8000 billed minutes to Windows' ~4400. The
+  gate's CI-only skips (no master ref, no comment checker) went with it.

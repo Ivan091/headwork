@@ -29,8 +29,6 @@ bash scripts/test-attribution.sh
 base=$(git rev-parse --verify -q origin/master || git rev-parse --verify -q master || true)
 if [[ -n "$base" ]]; then
   git log --format=%B "$base..HEAD" | scripts/no-ai-attribution.sh "a commit message on this branch"
-elif [[ -n "${CI:-}" ]]; then
-  printf 'skipped: no master ref on this runner\n'
 else
   printf 'no master ref to compare against\n'
   exit 1
@@ -43,8 +41,6 @@ if [[ -f "$checker" ]]; then
   if (( ${#files[@]} )); then
     node "$checker" "${files[@]}"
   fi
-elif [[ -n "${CI:-}" ]]; then
-  printf 'skipped: the no-comments checker is not installed on CI runners\n'
 else
   printf 'the no-comments checker is missing at %s\n' "$checker"
   exit 1
