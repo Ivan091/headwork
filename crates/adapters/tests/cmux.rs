@@ -290,8 +290,9 @@ fn spawn_writes_the_label_and_path_into_the_initial_command() {
 
 #[test]
 fn spawn_into_a_pane_replaces_its_active_tab() {
-    let created = r#"{"surface_id": "S-3", "pane_id": "C127F88D-4A0F-4914-AF10-944F9540E12A"}"#;
-    let recorder = Recorder::answering(&[&fixture("tree.json"), created, "{}"]);
+    let created =
+        format!(r#"{{"surface_id": "S-3", "pane_id": "{BOTTOM}", "workspace_id": "{WORKSPACE}"}}"#);
+    let recorder = Recorder::answering(&[&fixture("tree.json"), &created, "{}"]);
     let target = Target::Pane {
         pane: PaneId(BOTTOM.to_owned()),
         replace_tab: true,
@@ -322,7 +323,7 @@ fn spawn_into_a_pane_replaces_its_active_tab() {
 
 #[test]
 fn split_cuts_the_first_pane_and_split_pane_any_pane() {
-    let split = r#"{"surface_id": "S-9", "pane_id": "P-9"}"#;
+    let split = r#"{"surface_id": "S-9", "pane_id": "P-9", "workspace_id": "926F5E33-D23F-459B-8FE7-FC1EFB7F5FF9"}"#;
     let recorder = Recorder::answering(&[&fixture("tree.json"), split]);
     let (pane, surface) = host(&recorder)
         .split(&SurfaceId(LOWER.to_owned()), true)
@@ -349,6 +350,74 @@ fn split_cuts_the_first_pane_and_split_pane_any_pane() {
             r#"rpc surface.split {{"direction":"right","focus":false,"surface_id":"{LOWER}"}}"#
         ),
         "side by side"
+    );
+}
+
+fn spawn_tab(recorder: &Recorder) -> Result<(), HostError> {
+    host(recorder)
+        .spawn(
+            &workspace(),
+            Path::new("/tmp"),
+            "demo/mist",
+            &["claude".to_owned()],
+            &Target::Tab,
+        )
+        .map(drop)
+}
+
+#[test]
+fn spawn_in_another_workspace_closes_the_surface_and_fails() {
+    let created = r#"{"surface_id": "S-5", "workspace_id": "ORCHESTRATOR"}"#;
+    let recorder = Recorder::answering(&[created, "{}"]);
+    let error = spawn_tab(&recorder).unwrap_err().to_string();
+    assert!(
+        error.contains("ORCHESTRATOR") && error.contains(WORKSPACE),
+        "{error}"
+    );
+    assert_eq!(
+        recorder.calls().get(1).unwrap(),
+        r#"rpc surface.close {"force":true,"surface_id":"S-5"}"#,
+        "the stray surface closes"
+    );
+}
+
+#[test]
+fn spawn_without_a_workspace_in_the_answer_reads_it_back_from_the_tree() {
+    let created = format!(r#"{{"surface_id": "{LOWER}"}}"#);
+    let recorder = Recorder::answering(&[&created, &fixture("tree.json")]);
+    spawn_tab(&recorder).unwrap();
+    assert_eq!(recorder.calls().len(), 2, "create, then the tree");
+
+    let stray = Recorder::answering(&[r#"{"surface_id": "S-6"}"#, &fixture("tree.json")]);
+    assert!(
+        spawn_tab(&stray).is_err(),
+        "a surface the tree does not hold cannot be verified"
+    );
+}
+
+#[test]
+fn a_split_that_lands_elsewhere_is_closed_and_fails() {
+    let split = r#"{"surface_id": "S-9", "pane_id": "P-9", "workspace_id": "ORCHESTRATOR"}"#;
+    let recorder = Recorder::answering(&[&fixture("tree.json"), split, "{}"]);
+    let error = host(&recorder)
+        .split(&SurfaceId(LOWER.to_owned()), true)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("ORCHESTRATOR") && error.contains(WORKSPACE),
+        "{error}"
+    );
+    assert_eq!(
+        recorder.calls().get(2).unwrap(),
+        r#"rpc surface.close {"force":true,"surface_id":"S-9"}"#,
+        "closed"
+    );
+    let beside = Recorder::answering(&[&fixture("tree.json"), split, "{}"]);
+    assert!(
+        host(&beside)
+            .split_pane(&workspace(), &PaneId(BOTTOM.to_owned()))
+            .is_err(),
+        "split_pane checks too"
     );
 }
 

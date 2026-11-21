@@ -812,3 +812,4 @@ and the reason.
 - 2026-11-21 Leads, the user's answers (`docs/leads.md`, section 7): status when asked plus a line on finish or failure;
   leads start their own parts; parts count globally with `max_parts = 2` per lead; every top-level task is a lead; a
   lead's close waits for its parts; other projects go through the orchestrator; a part's tab shows only the part.
+- 2026-11-21 cmux landed-workspace check: `spawn`, `split` and `split_pane` compare the answer's `workspace_id` (else the tree's) with the asked one; a mismatch force-closes the new surface and fails naming both ids (`docs/cmux.md`, "Tabs in one workspace").

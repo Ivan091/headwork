@@ -128,4 +128,7 @@ fresh workspace put both programs as tabs in its one pane, and the workspace's s
 rename` titled one, and `surface.close {force:true}` on another left the rest. The user's view did not move **[V]**.
 
 `surface.create` with a `workspace_id` that does not exist does not fail: it opens the surface in the caller's
-workspace **[V]**. The adapter should compare the `workspace_id` in the answer with the one it asked for.
+workspace **[V]**. The adapter compares the `workspace_id` in the answer (read back from `system.tree` when the answer
+lacks it) with the one it asked for, in `spawn`, `split` and `split_pane`. On a mismatch it closes the new surface with
+`surface.close {force:true}` and fails with a `HostError` naming both workspace ids; a surface the tree cannot place
+fails too.
