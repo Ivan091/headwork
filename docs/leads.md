@@ -163,7 +163,8 @@ fit waits in the queue right behind its lead's `queue_rank`, ahead of tasks queu
 before new tasks start. The lead holds its own slot while it waits for its parts.
 
 **Names.** A part's slug is `<lead-slug>-<part>` (`lead-groups-plan-review`), so its task name, worktree and branch show
-whose it is, and the live-name uniqueness check stays as it is. Its tab shows only `<part>` (section 2).
+whose it is, and the live-name uniqueness check stays as it is. Its tab shows only `<part>` (section 2); its address
+(`-n` name, `SendMessage` target) stays the full `<project>-<lead-slug>-<part>`.
 
 **Rules and grants.**
 
@@ -192,7 +193,14 @@ line when the task finishes or fails. This is the "task x is finished successful
 4. Every top-level task is a lead.
 5. A lead's close is refused while a part runs; only the orchestrator's forced close ends the parts first.
 6. Parts in another project go through the orchestrator as a new task.
-7. A part's tab shows only the part (`review`), not the full task name.
+7. A part's tab shows only the part (`review`), not the full task name; its session address stays the full name.
+
+## Known issue, today
+
+The cmux adapter's `spawn` trusts `surface.create`, which opens a surface in the caller's workspace when the
+`workspace_id` it is given does not exist (`docs/cmux.md`, "Tabs in one workspace"). A worker's pane could then open in
+the orchestrator's workspace. The fix (compare the answer's `workspace_id`, close the surface and fail on a mismatch)
+does not wait for leads: it is a small fix of its own, and L2 relies on it.
 
 ## 8. Milestones (worker-days, one worker each)
 
