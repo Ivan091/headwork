@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
+use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
@@ -40,7 +41,7 @@ use headwork_core::{
     Actor, Config, Decision, Effort, Model, PermissionMode, Platform, ProjectName, Role, Slug,
     TaskRequest,
 };
-use headwork_store::{EventFilter, Store, TaskId};
+use headwork_store::{AskId, EventFilter, Store, TaskId};
 
 /// Manages Claude Code sessions with hard rules in code.
 #[derive(Debug, Parser)]
@@ -92,6 +93,17 @@ enum Command {
         /// remove command refuses is kept on disk instead of blocking.
         #[arg(long)]
         force: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Answer an ask the tick raised (one no session's dialog takes, such as keeping or deleting a closing task's
+    /// worktree) with one of its options, and carry the answer out.
+    Answer {
+        /// The ask's id, as `board` and the inbox show it.
+        ask: i64,
+        /// The option: its number from 1, or its whole text.
+        choice: String,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -547,6 +559,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Spawn(_)
         | Command::Queue { .. }
         | Command::Close { .. }
+        | Command::Answer { .. }
         | Command::Tick { .. }
         | Command::Jobs { .. }
         | Command::Job { .. }
@@ -575,6 +588,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, force, json } => {
             close_command(&mut store, &ctx, &name, force, json, out)
+        }
+        Command::Answer { ask, choice, json } => {
+            answer_command(&mut store, &ctx, AskId(ask), &choice, json, out)
         }
         Command::Tick { json, .. } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
@@ -968,6 +984,36 @@ fn close_command(
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn answer_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    ask: AskId,
+    choice: &str,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let actor = Identity::from_env().actor();
+    let report = ctx.with_actor(actor, |env| {
+        let report = answer(store, env, ask, choice)?;
+        pump(store, env)?;
+        Ok(report)
+    })?;
+    if json {
+        json_out(out, &report)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let task = report.task.as_deref().unwrap_or("no task");
+    writeln!(out, "ask {} ({task}): {}", report.ask, report.answer)?;
+    match &report.close {
+        None => {}
+        Some(close) => match &close.pending {
+            None => writeln!(out, "{} {}", close.name, close.state)?,
+            Some(pending) => writeln!(out, "{} {}: {pending}", close.name, close.state)?,
+        },
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn finish_command(home: &Home, task: TaskId, wait_pid: u32) -> Result<ExitCode> {

@@ -580,6 +580,48 @@ fn board_shows_sessions_asks_and_states() {
 }
 
 #[test]
+fn a_closing_task_whose_session_ended_frees_its_slot() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    store.start_task(&config, task.id, Actor::Tick).unwrap();
+    let session = NewSession {
+        id: "0b6c1d2e-0000-4000-8000-0000000000f1".to_owned(),
+        task_id: Some(task.id),
+        role: Role::Worker,
+        rc_name: "me-sim-sand".to_owned(),
+        host: "wmux".to_owned(),
+        host_workspace: Some("ws-1".to_owned()),
+        host_surface: Some("surface:7".to_owned()),
+    };
+    store.record_session(&session, Actor::Tick).unwrap();
+    store
+        .set_session_state(&session.id, SessionState::Live, Actor::Hook)
+        .unwrap();
+    store
+        .transition(task.id, &Trigger::SessionStarted(LIVE), Actor::Hook)
+        .unwrap();
+    store
+        .transition(task.id, &Trigger::Drop, Actor::Orchestrator)
+        .unwrap();
+    store
+        .transition(task.id, &Trigger::BeginClosing, Actor::Orchestrator)
+        .unwrap();
+    assert_eq!(
+        store.board(false).unwrap().live_workers,
+        1,
+        "closing with its session live holds the slot"
+    );
+    store
+        .set_session_state(&session.id, SessionState::Ended, Actor::Hook)
+        .unwrap();
+    assert_eq!(
+        store.board(false).unwrap().live_workers,
+        0,
+        "closing with its session ended frees the slot"
+    );
+}
+
+#[test]
 fn parking_blocks_new_tasks() {
     let (mut store, config) = store();
     store

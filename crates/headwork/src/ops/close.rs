@@ -81,7 +81,8 @@ pub fn close(
     end_closing(store, env, id, own_session)
 }
 
-/// Finishes a task stuck in `closing` whose pull requests are all merged and that runs no job.
+/// Finishes a task stuck in `closing` whose pull requests are all merged, or that was dropped and has none, and that
+/// runs no job.
 ///
 /// The close runs once more, and a worktree the remove command still refuses is recorded `kept` instead of blocking,
 /// left on disk for `headwork clean` or the user, never deleted. A pane or a process that is still there keeps
@@ -89,8 +90,8 @@ pub fn close(
 ///
 /// # Errors
 ///
-/// Fails, changing nothing, when the actor is a worker, the task is not `closing`, a pull request of it is not merged
-/// or none is found, or a job of it runs; also when the store or the git host fails.
+/// Fails, changing nothing, when the actor is a worker, the task is not `closing`, a pull request of it is not merged,
+/// none is found and the task was not dropped, or a job of it runs; also when the store or the git host fails.
 pub fn close_forced(
     store: &mut Store,
     env: &Env<'_>,
@@ -109,9 +110,10 @@ pub fn close_forced(
         );
     }
     let found = super::prs::lookup(store, env, git, &task)?;
-    if found.seen.is_empty() {
+    if found.seen.is_empty() && !store.was_dropped(id)? {
         bail!(
-            "`force` closes only a task whose pull requests are all merged, and {} has none: close it without `force`",
+            "`force` closes only a task whose pull requests are all merged, or a dropped one with none, and {} has none \
+             and was not dropped: close it without `force`",
             task.name
         );
     }
@@ -478,6 +480,12 @@ fn finish_claimed(
 /// or the user.
 fn keep_worktree(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<WorktreeEnd> {
     store.set_worktree_state(id, "kept", env.actor)?;
+    if let Some(ask) = store
+        .topic_ask(id, super::tick::WORKTREE_TOPIC)?
+        .filter(|ask| ask.state.is_waiting())
+    {
+        store.supersede_ask(ask.id, id, env.actor)?;
+    }
     store.append_event(
         env.actor,
         Some(id),

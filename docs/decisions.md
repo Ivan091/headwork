@@ -764,3 +764,15 @@ and the reason.
   alone is checked against `allowed_repos`, which names no host. `gh pr view <url>` takes the host from the URL, so the
   git host adapter passes no `--hostname` or `GH_HOST`; `gh` only has to be logged in to that host. Checked read-only
   against a merged pull request on such a host: `gh pr view` answered `MERGED` from a folder outside any repository.
+- 2026-11-21 A task in `closing` whose newest session is over (ended, gone, or never started) frees its worker slot
+  (`TaskState::holds_slot`): nothing of it runs, it only waits on its worktree. A closing task whose session still runs
+  keeps the slot until its processes are gone. Seen when two dropped tasks with dirty worktrees held two of four slots.
+- 2026-11-21 Asks the tick raises (no session, such as the `worktree` ask) are answered by id: `headwork answer <id>
+  <choice>` for the user, the orchestrator tool `answer` for the orchestrator, which asks the user with its own dialog
+  and passes on only the pick. `choice` is an option's number or its whole text (a prefix such as `Delete` names
+  nothing), the `ask-answered` event records who answered, and a worktree answer is carried out at once and the close
+  finished. Asks of a session's own dialog stay answered there only; workers cannot answer by id. Not shown on the host
+  as a blocked state: the stuck task's pane is gone, and a button would delete changes on one stray click.
+- 2026-11-21 `close --force` also finishes a dropped task with no pull request, keeping a worktree the remove command
+  refuses (and superseding its waiting `worktree` ask): dropping already gave the task up, and keeping deletes nothing.
+  A task that was not dropped and has no pull request is still refused, since its pull request may just not be found.

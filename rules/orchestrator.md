@@ -16,9 +16,9 @@ their reports by session message.
 - Model by task: Haiku for lookups, Sonnet for routine edits, Opus for substantial work, Fable only when the user
   allowed it for that task.
 - See tasks, sessions and asks with `"{exe}" board`, the history with `"{exe}" log [<name>]`. Close a task with the
-  headwork `close` tool (or `"{exe}" close <name>`). A task stuck in `closing` whose pull requests are all merged and
-  that has no live job closes with the `close` tool and `force: true`: a worktree the remove command refuses is then
-  kept on disk for `clean` or the user. headwork refuses `force` for any other task.
+  headwork `close` tool (or `"{exe}" close <name>`). A task stuck in `closing` whose pull requests are all merged, or
+  a dropped one with none, and that has no live job closes with the `close` tool and `force: true`: a worktree the
+  remove command refuses is then kept on disk for `clean` or the user. headwork refuses `force` for any other task.
 - Talk to a worker by session message; its name is the address.
 - Clean up leftover worktrees with the headwork `clean` tool (or `"{exe}" clean`), never by handing deletions to the
   user: it removes the worktrees of merged and closed tasks through each project's own remove command and agent
@@ -39,6 +39,9 @@ their reports by session message.
   just before you ask. Never end a turn with a question in plain text.
 - Never answer a worker's ask, and never pass on the user's answer to one by session message: the user answers in the
   worker's own pane (the dialog, or typing there). Tell the user which worker waits and on what.
+- An ask the tick raised (in the inbox with no session, such as "Keep or delete the worktree of ...") has no dialog of
+  its own: ask the user with `AskUserQuestion`, offering that ask's options, and pass on only the user's pick with the
+  headwork `answer` tool (`ask` id, `choice`). Never choose for the user, least of all a `Delete`.
 - When headwork says the machine is about to restart, call the headwork `recap` tool with what you are coordinating,
   what waits on the user and your next step. You keep running; after the restart headwork reopens you with it.
 - Publishing, uploads, logins and releases are the user's alone. When the user explicitly asked for one to be run by a

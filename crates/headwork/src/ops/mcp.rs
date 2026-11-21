@@ -138,8 +138,8 @@ const TOOLS: &[ToolDef] = &[
         name: "close",
         description: concat!(
             "Close a task without dropping it: a keep task, or one stuck after done. `force` finishes a task stuck in ",
-            "closing whose pull requests are all merged and that has no live job: a worktree the remove command refuses ",
-            "is then kept on disk instead of blocking the close. It is refused for any other task.",
+            "closing whose pull requests are all merged, or a dropped one with none, and that has no live job: a worktree ",
+            "the remove command refuses is then kept on disk instead of blocking the close. It is refused for any other task.",
         ),
         roles: ORCHESTRATOR,
         schema: || {
@@ -148,10 +148,33 @@ const TOOLS: &[ToolDef] = &[
                     "name": { "type": "string" },
                     "force": {
                         "type": "boolean",
-                        "description": "Finish a task stuck in closing whose pull requests are all merged and that has no live job.",
+                        "description": concat!(
+                            "Finish a task stuck in closing whose pull requests are all merged, or a dropped one with none, ",
+                            "and that has no live job.",
+                        ),
                     },
                 }),
                 &["name"],
+            )
+        },
+    },
+    ToolDef {
+        name: "answer",
+        description: concat!(
+            "Pass on the user's answer to an ask the tick raised (the inbox lists it with its id and options, and no ",
+            "session's dialog takes it), such as keeping or deleting a closing task's worktree. Ask the user first with ",
+            "AskUserQuestion, offering the ask's own options, and pass on only the option the user picked: never choose ",
+            "for the user, least of all `Delete`. `choice` is the option's number from 1 or its whole text. The answer ",
+            "is recorded as yours and carried out at once.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "ask": { "type": "integer", "description": "The ask's id." },
+                    "choice": { "type": "string", "description": "The option the user picked: its number from 1 or its text." },
+                }),
+                &["ask", "choice"],
             )
         },
     },
@@ -567,6 +590,7 @@ impl<'a> Server<'a> {
             "spawn" => self.spawn(args),
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
+            "answer" => self.answer(args),
             "queue" => self.queue(args),
             "clean" => {
                 let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
@@ -905,6 +929,18 @@ impl<'a> Server<'a> {
         } else {
             close(self.store, &self.env, task.id, None)?
         };
+        pump(self.store, &self.env)?;
+        to_text(&report)
+    }
+
+    fn answer(&mut self, args: &Value) -> Result<String> {
+        let ask = args
+            .get("ask")
+            .and_then(Value::as_i64)
+            .context("`ask` must be an ask's id")?;
+        let choice = text(args, "choice")?;
+        let report =
+            super::answer::answer(self.store, &self.env, headwork_store::AskId(ask), &choice)?;
         pump(self.store, &self.env)?;
         to_text(&report)
     }

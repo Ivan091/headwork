@@ -73,7 +73,76 @@ pub struct TopicAsk {
     pub answer: Option<String>,
 }
 
+/// One ask by its id, with what decides who may answer it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAsk {
+    /// The row id.
+    pub id: AskId,
+    /// The task, if any.
+    pub task: Option<TaskId>,
+    /// The session whose dialog asked it; none for an ask the tick raised.
+    pub session: Option<String>,
+    /// The topic of a tick ask, such as `worktree`.
+    pub topic: Option<String>,
+    /// The question.
+    pub question: String,
+    /// The options, in order.
+    pub options: Vec<String>,
+    /// Where it is.
+    pub state: AskState,
+}
+
 impl Store {
+    /// Whether the task was ever dropped, by the orchestrator or the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn was_dropped(&self, task: TaskId) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND type = 'transition'
+                            AND json_extract(data, '$.to') = 'dropped')",
+            params![task.0],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The ask with this id.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn ask(&self, id: AskId) -> Result<Option<StoredAsk>, StoreError> {
+        type Raw = (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+        );
+        let raw: Option<Raw> = self
+            .conn
+            .query_row(
+                "SELECT task_id, session_id, topic, question, options, state FROM asks WHERE id = ?1",
+                params![id.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .optional()?;
+        raw.map(|(task, session, topic, question, options, state)| {
+            Ok(StoredAsk {
+                id,
+                task: task.map(TaskId),
+                session,
+                topic,
+                question,
+                options: serde_json::from_str(&options)?,
+                state: state.parse()?,
+            })
+        })
+        .transpose()
+    }
+
     /// A session's clocks.
     ///
     /// # Errors

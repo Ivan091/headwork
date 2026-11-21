@@ -210,11 +210,22 @@ struct LiveTask {
     kind: String,
     state: TaskState,
     in_main: bool,
+    session_over: bool,
+}
+
+impl LiveTask {
+    const fn holds_slot(&self) -> bool {
+        self.state.holds_slot(self.session_over)
+    }
 }
 
 fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
-    let mut statement =
-        conn.prepare("SELECT project, kind, state, in_main FROM tasks WHERE state <> 'closed'")?;
+    let mut statement = conn.prepare(
+        "SELECT t.project, t.kind, t.state, t.in_main,
+                COALESCE((SELECT s.state IN ('ended', 'gone') FROM sessions s WHERE s.task_id = t.id
+                          ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 1)
+         FROM tasks t WHERE t.state <> 'closed'",
+    )?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -222,16 +233,18 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
                 row.get(1)?,
                 row.get::<_, String>(2)?,
                 row.get(3)?,
+                row.get(4)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
-        .map(|(project, kind, state, in_main)| {
+        .map(|(project, kind, state, in_main, session_over)| {
             Ok(LiveTask {
                 project,
                 kind,
                 state: state.parse()?,
                 in_main,
+                session_over,
             })
         })
         .collect()
@@ -406,7 +419,7 @@ impl Store {
     fn start_facts(&self, config: &Config, id: TaskId) -> Result<StartFacts, StoreError> {
         let task = load_task(&self.conn, id)?;
         let live = live_tasks(&self.conn)?;
-        let slots = live.iter().filter(|other| other.state.takes_slot());
+        let slots = live.iter().filter(|other| other.holds_slot());
         let project = task.project().as_str();
         let project_config = config.project(task.project());
         Ok(StartFacts {
@@ -686,7 +699,7 @@ impl Store {
         let live = live_tasks(&self.conn)?;
         Ok(Board {
             machine: machine_mode(&self.conn)?,
-            live_workers: count(live.iter().filter(|task| task.state.takes_slot()).count())?,
+            live_workers: count(live.iter().filter(|task| task.holds_slot()).count())?,
             projects: self.projects()?,
             tasks: board_tasks,
             other_asks: asks

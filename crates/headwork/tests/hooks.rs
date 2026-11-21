@@ -1034,6 +1034,7 @@ fn mcp_tools_follow_the_role() {
             "spawn",
             "drop",
             "close",
+            "answer",
             "queue",
             "clean",
             "reap",
