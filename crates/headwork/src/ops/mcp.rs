@@ -441,6 +441,38 @@ pub struct Server<'a> {
     closing: Option<Task>,
 }
 
+/// Reads newline-delimited JSON-RPC requests and writes each response `respond` gives, flushed. A line that is not
+/// JSON gets a parse error.
+///
+/// # Errors
+///
+/// Fails when reading or writing fails, or when `respond` fails.
+pub fn serve_lines(
+    input: impl BufRead,
+    mut output: impl Write,
+    mut respond: impl FnMut(&Value) -> Result<Option<Value>>,
+) -> Result<()> {
+    for line in input.lines() {
+        let line = line.context("reading a request")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Ok(message) => respond(&message)?,
+            Err(error) => Some(failure(
+                &Value::Null,
+                -32700,
+                &format!("parse error: {error}"),
+            )),
+        };
+        if let Some(response) = response {
+            writeln!(output, "{response}").context("writing a response")?;
+            output.flush().context("flushing a response")?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> Server<'a> {
     /// A server for one session. `env.actor` is replaced by the role's actor.
     #[must_use]
@@ -466,27 +498,12 @@ impl<'a> Server<'a> {
     /// # Errors
     ///
     /// Fails when reading or writing fails.
-    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> Result<()> {
-        for line in input.lines() {
-            let line = line.context("reading a request")?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(message) => self.handle(&message),
-                Err(error) => Some(failure(
-                    &Value::Null,
-                    -32700,
-                    &format!("parse error: {error}"),
-                )),
-            };
-            if let Some(response) = response {
-                writeln!(output, "{response}").context("writing a response")?;
-                output.flush().context("flushing a response")?;
-            }
+    pub fn serve(&mut self, input: impl BufRead, output: impl Write) -> Result<()> {
+        serve_lines(input, output, |message| {
+            let response = self.handle(message);
             self.finish_pending()?;
-        }
-        Ok(())
+            Ok(response)
+        })
     }
 
     /// Answers one JSON-RPC message; notifications get no answer.

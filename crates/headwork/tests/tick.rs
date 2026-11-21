@@ -1575,7 +1575,11 @@ fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() 
     };
     let second = spawn(&mut w.store, &env, &request).unwrap().0;
     run_tick(&mut w);
-    assert_eq!(state(&w, &first), TaskState::Closed, "closed without merged");
+    assert_eq!(
+        state(&w, &first),
+        TaskState::Closed,
+        "closed without merged"
+    );
     assert_eq!(
         state(&w, &second),
         TaskState::Queued,

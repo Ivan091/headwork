@@ -776,3 +776,11 @@ and the reason.
 - 2026-11-21 `close --force` also finishes a dropped task with no pull request, keeping a worktree the remove command
   refuses (and superseding its waiting `worktree` ask): dropping already gave the task up, and keeping deletes nothing.
   A task that was not dropped and has no pull request is still refused, since its pull request may just not be found.
+- 2026-11-21 A dependency counts merged when it passed through `merged`, or when it is `closing` or `closed` with at
+  least one recorded pull request and all of them merged: the orchestrator's `close` takes an `in_review` task straight
+  to `closing`. Before starting the queue, the tick, `queue` (CLI and tool) and the orchestrator's `close` ask the git
+  host again for such dependencies' pull requests, since the recorded state is the worker's report and may be stale.
+- 2026-11-21 `headwork mcp --serve` reads `config.toml` again before every request (and records changed projects), so
+  a running server sees an edited `max_workers` at its next call instead of the value it started with. A config that no
+  longer parses keeps the last good one in use rather than failing every tool call. Watching the file was not needed:
+  one read and parse per request costs well under a millisecond against the hook budget.

@@ -23,7 +23,7 @@ use headwork::ops::install::{Stamp, install};
 use headwork::ops::launch::{
     OrchestratorOrigin, OrchestratorStart, StartMode, exited, launch_orchestrator,
 };
-use headwork::ops::mcp::{Identity, Server};
+use headwork::ops::mcp::{Identity, Server, serve_lines};
 use headwork::ops::park::{ParkOptions, park};
 use headwork::ops::prs::refresh_dependencies;
 use headwork::ops::reap::{ReapOptions, reap as reap_processes};
@@ -1103,25 +1103,41 @@ fn import_command(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Serves the session's MCP requests. `config.toml` is read again before each request, so a change (such as a new
+/// `max_workers`) reaches a long-running server at its next call; a config that no longer parses leaves the last good
+/// one in use.
 fn mcp_command() -> Result<ExitCode> {
     let home = Home::locate()?;
-    let config = home.load_config()?;
+    let mut config = home.load_config()?;
     let mut store = home.open_store()?;
     store
         .sync_projects(&config)
         .context("recording the configured projects")?;
-    let host = host_for(&config)?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
-    let env = Env {
-        home: &home,
-        config: &config,
-        host: host.as_ref(),
-        exe: &exe,
-        actor: Actor::User,
-    };
     let git = Gh::default();
-    let mut server = Server::new(&mut store, env, &git, Identity::from_env());
-    server.serve(io::stdin().lock(), io::stdout().lock())?;
+    let identity = Identity::from_env();
+    serve_lines(io::stdin().lock(), io::stdout().lock(), |message| {
+        if let Ok(fresh) = home.load_config()
+            && fresh != config
+        {
+            store
+                .sync_projects(&fresh)
+                .context("recording the configured projects")?;
+            config = fresh;
+        }
+        let host = host_for(&config)?;
+        let env = Env {
+            home: &home,
+            config: &config,
+            host: host.as_ref(),
+            exe: &exe,
+            actor: Actor::User,
+        };
+        let mut server = Server::new(&mut store, env, &git, identity.clone());
+        let response = server.handle(message);
+        server.finish_pending()?;
+        Ok(response)
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 
