@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn the_plist_runs_the_tick_every_five_minutes_with_its_environment() {
         let dir = Path::new("/Users");
-        let text = agent(dir).plist_text();
+        let text = agent(dir).plist_text().replace('\\', "/");
         for part in [
             "<key>Label</key>\n  <string>com.headwork.tick</string>",
             "<string>/Users/me/.local/bin/headwork</string>\n    <string>tick</string>",
@@ -377,8 +377,8 @@ mod tests {
             assert!(text.contains(part), "{part}\n{text}");
         }
         assert_eq!(
-            agent(dir).plist,
-            Path::new("/Users/me/Library/LaunchAgents/com.headwork.tick.plist"),
+            agent(dir).plist.display().to_string().replace('\\', "/"),
+            "/Users/me/Library/LaunchAgents/com.headwork.tick.plist",
             "a user agent"
         );
     }
