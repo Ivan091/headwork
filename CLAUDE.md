@@ -304,5 +304,5 @@ so every worktree of a clone uses it). `scripts/check.sh` fails when a commit si
 `scripts/test-attribution.sh` tests the patterns. History is not rewritten.
 
 Never commit to `master`. Each change goes on a kebab-case branch, with single-line Conventional Commits and no AI
-attribution, through a pull request that passes `scripts/check.sh` and CI, then is merged. Use the global `contribute`
-and `ship` skills; this repository has no ship script of its own yet.
+attribution, through a pull request that passes `scripts/check.sh`, then is merged. There is no CI on GitHub: the local
+gate is the only one. Use the global `contribute` and `ship` skills; this repository has no ship script of its own yet.
