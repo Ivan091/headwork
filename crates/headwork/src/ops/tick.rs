@@ -27,7 +27,7 @@ use super::spawn::{Pumped, pump};
 use super::{Env, slashed};
 
 /// The topic of the ask about a worktree that cannot be removed.
-const WORKTREE_TOPIC: &str = "worktree";
+pub(super) const WORKTREE_TOPIC: &str = "worktree";
 
 /// The topic once its answer was carried out.
 const WORKTREE_DONE: &str = "worktree-handled";
@@ -49,6 +49,30 @@ pub const TRUST_FOLDER: &str = "Trust the folder (Recommended)";
 
 /// The answer that does not; the pane's blocked state sends `2`, the dialog's "No, exit".
 pub const DONT_TRUST_FOLDER: &str = "Do not trust it: the session exits";
+
+/// Carries out the answer to a task's `worktree` ask, once.
+///
+/// `Keep` records the worktree `kept`, `Delete` removes it with its changes. Nothing else deletes a worktree that has
+/// changes, and an ask with no answer changes nothing.
+///
+/// # Errors
+///
+/// Returns the store's or the remove command's failure.
+pub fn carry_out_worktree_answer(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
+    let Some(ask) = store.topic_ask(id, WORKTREE_TOPIC)? else {
+        return Ok(());
+    };
+    let (AskState::Answered, Some(answer)) = (ask.state, ask.answer) else {
+        return Ok(());
+    };
+    if answer.starts_with("Keep") {
+        store.set_worktree_state(id, "kept", env.actor)?;
+    } else if answer.starts_with("Delete") {
+        remove_worktree(store, env, id, true)?;
+    }
+    store.set_ask_topic(ask.id, WORKTREE_DONE)?;
+    Ok(())
+}
 
 /// What the tick acts with besides the store.
 #[derive(Debug, Clone, Copy)]
@@ -724,7 +748,7 @@ impl<'b> Run<'_, 'b> {
                 )
                 .map(drop);
         }
-        self.answer_worktree_ask(id)?;
+        carry_out_worktree_answer(self.store, self.env(), id)?;
         let report = finish(self.store, self.env(), id)?;
         if report.pending.is_some() {
             self.ask_about_worktree(id)?;
@@ -754,23 +778,6 @@ impl<'b> Run<'_, 'b> {
             Some(id),
             serde_json::json!({ "asked": true }),
         )
-    }
-
-    fn answer_worktree_ask(&mut self, id: TaskId) -> Result<()> {
-        let Some(ask) = self.store.topic_ask(id, WORKTREE_TOPIC)? else {
-            return Ok(());
-        };
-        let (AskState::Answered, Some(answer)) = (ask.state, ask.answer) else {
-            return Ok(());
-        };
-        let actor = self.actor();
-        if answer.starts_with("Keep") {
-            self.store.set_worktree_state(id, "kept", actor)?;
-        } else if answer.starts_with("Delete") {
-            remove_worktree(self.store, self.env(), id, true)?;
-        }
-        self.store.set_ask_topic(ask.id, WORKTREE_DONE)?;
-        Ok(())
     }
 
     fn live_dirs(&self) -> Result<Vec<(PathBuf, Task)>> {
@@ -1024,6 +1031,7 @@ impl<'b> Run<'_, 'b> {
         }
         let machine = self.store.machine_mode()?;
         if machine == MachineMode::Normal || machine == MachineMode::Resuming {
+            super::prs::refresh_dependencies(self.store, self.env(), self.t.git)?;
             self.report.started = pump(self.store, self.env())?;
         }
         Ok(())

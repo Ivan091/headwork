@@ -138,8 +138,8 @@ const TOOLS: &[ToolDef] = &[
         name: "close",
         description: concat!(
             "Close a task without dropping it: a keep task, or one stuck after done. `force` finishes a task stuck in ",
-            "closing whose pull requests are all merged and that has no live job: a worktree the remove command refuses ",
-            "is then kept on disk instead of blocking the close. It is refused for any other task.",
+            "closing whose pull requests are all merged, or a dropped one with none, and that has no live job: a worktree ",
+            "the remove command refuses is then kept on disk instead of blocking the close. It is refused for any other task.",
         ),
         roles: ORCHESTRATOR,
         schema: || {
@@ -148,10 +148,33 @@ const TOOLS: &[ToolDef] = &[
                     "name": { "type": "string" },
                     "force": {
                         "type": "boolean",
-                        "description": "Finish a task stuck in closing whose pull requests are all merged and that has no live job.",
+                        "description": concat!(
+                            "Finish a task stuck in closing whose pull requests are all merged, or a dropped one with none, ",
+                            "and that has no live job.",
+                        ),
                     },
                 }),
                 &["name"],
+            )
+        },
+    },
+    ToolDef {
+        name: "answer",
+        description: concat!(
+            "Pass on the user's answer to an ask the tick raised (the inbox lists it with its id and options, and no ",
+            "session's dialog takes it), such as keeping or deleting a closing task's worktree. Ask the user first with ",
+            "AskUserQuestion, offering the ask's own options, and pass on only the option the user picked: never choose ",
+            "for the user, least of all `Delete`. `choice` is the option's number from 1 or its whole text. The answer ",
+            "is recorded as yours and carried out at once.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "ask": { "type": "integer", "description": "The ask's id." },
+                    "choice": { "type": "string", "description": "The option the user picked: its number from 1 or its text." },
+                }),
+                &["ask", "choice"],
             )
         },
     },
@@ -418,6 +441,38 @@ pub struct Server<'a> {
     closing: Option<Task>,
 }
 
+/// Reads newline-delimited JSON-RPC requests and writes each response `respond` gives, flushed. A line that is not
+/// JSON gets a parse error.
+///
+/// # Errors
+///
+/// Fails when reading or writing fails, or when `respond` fails.
+pub fn serve_lines(
+    input: impl BufRead,
+    mut output: impl Write,
+    mut respond: impl FnMut(&Value) -> Result<Option<Value>>,
+) -> Result<()> {
+    for line in input.lines() {
+        let line = line.context("reading a request")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Ok(message) => respond(&message)?,
+            Err(error) => Some(failure(
+                &Value::Null,
+                -32700,
+                &format!("parse error: {error}"),
+            )),
+        };
+        if let Some(response) = response {
+            writeln!(output, "{response}").context("writing a response")?;
+            output.flush().context("flushing a response")?;
+        }
+    }
+    Ok(())
+}
+
 impl<'a> Server<'a> {
     /// A server for one session. `env.actor` is replaced by the role's actor.
     #[must_use]
@@ -443,27 +498,12 @@ impl<'a> Server<'a> {
     /// # Errors
     ///
     /// Fails when reading or writing fails.
-    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> Result<()> {
-        for line in input.lines() {
-            let line = line.context("reading a request")?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(message) => self.handle(&message),
-                Err(error) => Some(failure(
-                    &Value::Null,
-                    -32700,
-                    &format!("parse error: {error}"),
-                )),
-            };
-            if let Some(response) = response {
-                writeln!(output, "{response}").context("writing a response")?;
-                output.flush().context("flushing a response")?;
-            }
+    pub fn serve(&mut self, input: impl BufRead, output: impl Write) -> Result<()> {
+        serve_lines(input, output, |message| {
+            let response = self.handle(message);
             self.finish_pending()?;
-        }
-        Ok(())
+            Ok(response)
+        })
     }
 
     /// Answers one JSON-RPC message; notifications get no answer.
@@ -567,6 +607,7 @@ impl<'a> Server<'a> {
             "spawn" => self.spawn(args),
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
+            "answer" => self.answer(args),
             "queue" => self.queue(args),
             "clean" => {
                 let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
@@ -905,6 +946,19 @@ impl<'a> Server<'a> {
         } else {
             close(self.store, &self.env, task.id, None)?
         };
+        super::prs::refresh_dependencies(self.store, &self.env, self.git)?;
+        pump(self.store, &self.env)?;
+        to_text(&report)
+    }
+
+    fn answer(&mut self, args: &Value) -> Result<String> {
+        let ask = args
+            .get("ask")
+            .and_then(Value::as_i64)
+            .context("`ask` must be an ask's id")?;
+        let choice = text(args, "choice")?;
+        let report =
+            super::answer::answer(self.store, &self.env, headwork_store::AskId(ask), &choice)?;
         pump(self.store, &self.env)?;
         to_text(&report)
     }
@@ -934,6 +988,7 @@ impl<'a> Server<'a> {
             self.store.set_queue_order(&ids, self.env.actor)?;
         }
         reap(self.store, &self.env)?;
+        super::prs::refresh_dependencies(self.store, &self.env, self.git)?;
         to_text(&pump(self.store, &self.env)?)
     }
 

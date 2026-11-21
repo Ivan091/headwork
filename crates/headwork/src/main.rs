@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use headwork::home::Home;
+use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
@@ -22,8 +23,9 @@ use headwork::ops::install::{Stamp, install};
 use headwork::ops::launch::{
     OrchestratorOrigin, OrchestratorStart, StartMode, exited, launch_orchestrator,
 };
-use headwork::ops::mcp::{Identity, Server};
+use headwork::ops::mcp::{Identity, Server, serve_lines};
 use headwork::ops::park::{ParkOptions, park};
+use headwork::ops::prs::refresh_dependencies;
 use headwork::ops::reap::{ReapOptions, reap as reap_processes};
 use headwork::ops::relay::Relay;
 use headwork::ops::reload;
@@ -40,7 +42,7 @@ use headwork_core::{
     Actor, Config, Decision, Effort, Model, PermissionMode, Platform, ProjectName, Role, Slug,
     TaskRequest,
 };
-use headwork_store::{EventFilter, Store, TaskId};
+use headwork_store::{AskId, EventFilter, Store, TaskId};
 
 /// Manages Claude Code sessions with hard rules in code.
 #[derive(Debug, Parser)]
@@ -92,6 +94,17 @@ enum Command {
         /// remove command refuses is kept on disk instead of blocking.
         #[arg(long)]
         force: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Answer an ask the tick raised (one no session's dialog takes, such as keeping or deleting a closing task's
+    /// worktree) with one of its options, and carry the answer out.
+    Answer {
+        /// The ask's id, as `board` and the inbox show it.
+        ask: i64,
+        /// The option: its number from 1, or its whole text.
+        choice: String,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -547,6 +560,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Spawn(_)
         | Command::Queue { .. }
         | Command::Close { .. }
+        | Command::Answer { .. }
         | Command::Tick { .. }
         | Command::Jobs { .. }
         | Command::Job { .. }
@@ -575,6 +589,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, force, json } => {
             close_command(&mut store, &ctx, &name, force, json, out)
+        }
+        Command::Answer { ask, choice, json } => {
+            answer_command(&mut store, &ctx, AskId(ask), &choice, json, out)
         }
         Command::Tick { json, .. } => tick_command(&mut store, &ctx, json, out),
         Command::Jobs { json } => jobs_command(&mut store, json, out),
@@ -898,6 +915,7 @@ fn queue_command(
     }
     let pumped = ctx.with_env(|env| {
         reap(store, env)?;
+        refresh_dependencies(store, env, &Gh::default())?;
         pump(store, env)
     })?;
     if json {
@@ -968,6 +986,36 @@ fn close_command(
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn answer_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    ask: AskId,
+    choice: &str,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let actor = Identity::from_env().actor();
+    let report = ctx.with_actor(actor, |env| {
+        let report = answer(store, env, ask, choice)?;
+        pump(store, env)?;
+        Ok(report)
+    })?;
+    if json {
+        json_out(out, &report)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let task = report.task.as_deref().unwrap_or("no task");
+    writeln!(out, "ask {} ({task}): {}", report.ask, report.answer)?;
+    match &report.close {
+        None => {}
+        Some(close) => match &close.pending {
+            None => writeln!(out, "{} {}", close.name, close.state)?,
+            Some(pending) => writeln!(out, "{} {}: {pending}", close.name, close.state)?,
+        },
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn finish_command(home: &Home, task: TaskId, wait_pid: u32) -> Result<ExitCode> {
@@ -1055,25 +1103,41 @@ fn import_command(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Serves the session's MCP requests. `config.toml` is read again before each request, so a change (such as a new
+/// `max_workers`) reaches a long-running server at its next call; a config that no longer parses leaves the last good
+/// one in use.
 fn mcp_command() -> Result<ExitCode> {
     let home = Home::locate()?;
-    let config = home.load_config()?;
+    let mut config = home.load_config()?;
     let mut store = home.open_store()?;
     store
         .sync_projects(&config)
         .context("recording the configured projects")?;
-    let host = host_for(&config)?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
-    let env = Env {
-        home: &home,
-        config: &config,
-        host: host.as_ref(),
-        exe: &exe,
-        actor: Actor::User,
-    };
     let git = Gh::default();
-    let mut server = Server::new(&mut store, env, &git, Identity::from_env());
-    server.serve(io::stdin().lock(), io::stdout().lock())?;
+    let identity = Identity::from_env();
+    serve_lines(io::stdin().lock(), io::stdout().lock(), |message| {
+        if let Ok(fresh) = home.load_config()
+            && fresh != config
+        {
+            store
+                .sync_projects(&fresh)
+                .context("recording the configured projects")?;
+            config = fresh;
+        }
+        let host = host_for(&config)?;
+        let env = Env {
+            home: &home,
+            config: &config,
+            host: host.as_ref(),
+            exe: &exe,
+            actor: Actor::User,
+        };
+        let mut server = Server::new(&mut store, env, &git, identity.clone());
+        let response = server.handle(message);
+        server.finish_pending()?;
+        Ok(response)
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 

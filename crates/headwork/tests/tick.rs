@@ -1346,3 +1346,256 @@ fn a_live_session_is_never_read_for_a_trust_prompt() {
         "no ask"
     );
 }
+
+macro_rules! env_as {
+    ($w:expr, $actor:expr) => {
+        Env {
+            home: &$w.home,
+            config: &$w.config,
+            host: &$w.host,
+            exe: Path::new("S:/bin/headwork.exe"),
+            actor: $actor,
+        }
+    };
+}
+
+fn dropped_dirty(w: &mut World, slug: &str) -> (Task, PathBuf) {
+    let task = spawn_task(w, slug);
+    start(w, &task, FAKE_PID_BASE, FAKE_PID_BASE);
+    w.store
+        .transition(task.id, &Trigger::Drop, Actor::Orchestrator)
+        .unwrap();
+    w.store
+        .transition(task.id, &Trigger::BeginClosing, Actor::Orchestrator)
+        .unwrap();
+    let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
+    std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
+    (task, dir)
+}
+
+fn worktree_ask(w: &World, task: &Task) -> headwork_store::AskId {
+    w.store.topic_ask(task.id, "worktree").unwrap().unwrap().id
+}
+
+fn answered_by(w: &World) -> Vec<(Actor, String)> {
+    w.store
+        .events(EventFilter {
+            task: None,
+            limit: 10_000,
+        })
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "ask-answered")
+        .map(|e| (e.actor, e.data["answer"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_closing_task_whose_session_ended_frees_its_slot_for_the_queue() {
+    let mut w = world_with(false, 1);
+    let (stuck, _) = dropped_dirty(&mut w, "stuck");
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &stuck),
+        TaskState::Closing,
+        "stuck on its worktree"
+    );
+    let next = spawn_task(&mut w, "next");
+    assert_eq!(
+        state(&w, &next),
+        TaskState::Spawning,
+        "the stuck task's slot is free"
+    );
+}
+
+#[test]
+fn the_user_answers_keep_at_the_cli_and_the_dropped_task_closes() {
+    use headwork::ops::answer::answer;
+    let mut w = world();
+    let (task, dir) = dropped_dirty(&mut w, "sand");
+    run_tick(&mut w);
+    let ask = worktree_ask(&w, &task);
+    let env = env_as!(w, Actor::User);
+    let report = answer(&mut w.store, &env, ask, "1").unwrap();
+    assert_eq!(report.answer, KEEP_WORKTREE, "the whole option");
+    let close = report.close.unwrap();
+    assert_eq!(close.state, TaskState::Closed, "{close:?}");
+    assert!(dir.exists(), "kept on disk");
+    assert_eq!(
+        answered_by(&w),
+        [(Actor::User, KEEP_WORKTREE.to_owned())],
+        "recorded with who answered"
+    );
+    let again = answer(&mut w.store, &env, ask, "1").unwrap_err();
+    assert!(again.to_string().contains("no longer waits"), "{again}");
+}
+
+#[test]
+fn the_orchestrator_passes_on_delete_and_the_worktree_goes() {
+    use headwork::ops::answer::answer;
+    let mut w = world();
+    let (task, dir) = dropped_dirty(&mut w, "sand");
+    run_tick(&mut w);
+    let ask = worktree_ask(&w, &task);
+    let env = env_as!(w, Actor::Orchestrator);
+    let report = answer(&mut w.store, &env, ask, DELETE_WORKTREE).unwrap();
+    assert_eq!(report.by, Actor::Orchestrator, "who answered");
+    assert_eq!(report.close.unwrap().state, TaskState::Closed, "closed");
+    assert!(!dir.exists(), "deleted on the Delete answer");
+    assert_eq!(
+        answered_by(&w),
+        [(Actor::Orchestrator, DELETE_WORKTREE.to_owned())],
+        "recorded"
+    );
+}
+
+#[test]
+fn an_answer_that_names_no_option_or_comes_from_a_worker_changes_nothing() {
+    use headwork::ops::answer::answer;
+    let mut w = world();
+    let (task, dir) = dropped_dirty(&mut w, "sand");
+    run_tick(&mut w);
+    let ask = worktree_ask(&w, &task);
+    let env = env_as!(w, Actor::User);
+    for choice in ["Delete", "3", "yes"] {
+        let refused = answer(&mut w.store, &env, ask, choice).unwrap_err();
+        assert!(
+            refused.to_string().contains("none of the options"),
+            "{choice}: {refused}"
+        );
+    }
+    let worker = env_as!(w, Actor::Worker);
+    assert!(
+        answer(&mut w.store, &worker, ask, "2").is_err(),
+        "a worker never answers"
+    );
+    let unknown = answer(&mut w.store, &env, headwork_store::AskId(9999), "1").unwrap_err();
+    assert!(unknown.to_string().contains("no ask"), "{unknown}");
+    assert!(dir.exists(), "nothing deleted");
+    assert_eq!(state(&w, &task), TaskState::Closing, "still closing");
+    assert!(answered_by(&w).is_empty(), "no answer recorded");
+}
+
+#[test]
+fn an_ask_of_a_sessions_own_dialog_is_not_answered_by_id() {
+    use headwork::ops::answer::answer;
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let ask = w
+        .store
+        .open_ask(
+            &headwork_store::NewAsk {
+                task_id: Some(task.id),
+                session_id: Some(session.id),
+                kind: headwork_core::AskKind::Question,
+                question: "Ship it?".to_owned(),
+                options: vec!["Yes".to_owned(), "No".to_owned()],
+            },
+            Actor::Hook,
+        )
+        .unwrap();
+    let env = env_as!(w, Actor::Orchestrator);
+    let refused = answer(&mut w.store, &env, ask, "1").unwrap_err();
+    assert!(refused.to_string().contains("own dialog"), "{refused}");
+}
+
+#[test]
+fn force_keeps_the_worktree_of_a_dropped_task_with_no_pull_request() {
+    use headwork::ops::close::close_forced;
+    let mut w = world();
+    let (task, dir) = dropped_dirty(&mut w, "sand");
+    run_tick(&mut w);
+    let env = env_as!(w, Actor::Orchestrator);
+    let report = close_forced(&mut w.store, &env, &w.git, task.id).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(dir.exists(), "kept, never deleted");
+    let ask = w.store.topic_ask(task.id, "worktree").unwrap().unwrap();
+    assert_eq!(
+        ask.state,
+        headwork_core::AskState::Superseded,
+        "the worktree ask no longer waits"
+    );
+}
+
+#[test]
+fn force_still_refuses_a_task_that_was_not_dropped_and_has_no_pull_request() {
+    use headwork::ops::close::close_forced;
+    let mut w = world();
+    let (task, dir) = dirty_closing(&mut w, "sand");
+    run_tick(&mut w);
+    let env = env_as!(w, Actor::Orchestrator);
+    let refused = close_forced(&mut w.store, &env, &w.git, task.id).unwrap_err();
+    assert!(refused.to_string().contains("was not dropped"), "{refused}");
+    assert!(dir.exists(), "nothing deleted");
+    assert_eq!(state(&w, &task), TaskState::Closing, "still closing");
+}
+
+#[test]
+fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() {
+    let mut w = world();
+    let first = spawn_task(&mut w, "first");
+    start(&mut w, &first, FAKE_PID_BASE, FAKE_PID_BASE);
+    let pr = PrInfo {
+        repo: "acme/demo".to_owned(),
+        number: 48,
+        url: "https://github.com/acme/demo/pull/48".to_owned(),
+        state: PrState::Open,
+    };
+    w.store
+        .record_pr(
+            first.id,
+            &PrSeen {
+                repo: &pr.repo,
+                number: pr.number,
+                url: &pr.url,
+                state: "open",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    w.store
+        .transition(first.id, &Trigger::ForceClose, Actor::Orchestrator)
+        .unwrap();
+    let env = env_as!(w, Actor::User);
+    let request = SpawnRequest {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new("second").unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+        },
+        brief: &w.brief,
+        depends_on: Some(first.id),
+        permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
+    };
+    let second = spawn(&mut w.store, &env, &request).unwrap().0;
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &first),
+        TaskState::Closed,
+        "closed without merged"
+    );
+    assert_eq!(
+        state(&w, &second),
+        TaskState::Queued,
+        "its pull request is still open"
+    );
+    w.git.set(
+        "first",
+        PrInfo {
+            state: PrState::Merged,
+            ..pr
+        },
+    );
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &second),
+        TaskState::Spawning,
+        "the dependency's pull request merged"
+    );
+}

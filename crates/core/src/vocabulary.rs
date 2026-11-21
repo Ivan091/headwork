@@ -127,6 +127,14 @@ impl TaskState {
             | Self::Parked => false,
         }
     }
+
+    /// Whether the task occupies a worker slot, knowing whether its newest session is over (ended, gone, or never
+    /// started): a task in `closing` whose session is over runs nothing and only waits on its worktree, so it frees its
+    /// slot.
+    #[must_use]
+    pub const fn holds_slot(self, session_over: bool) -> bool {
+        self.takes_slot() && !(session_over && matches!(self, Self::Closing))
+    }
 }
 
 text_enum!(
@@ -426,6 +434,26 @@ mod tests {
         for rule in RuleId::ALL {
             assert_eq!(rule.as_str().parse::<RuleId>(), Ok(*rule), "{rule}");
         }
+    }
+
+    #[test]
+    fn a_closing_task_whose_session_is_over_frees_its_slot() {
+        assert!(
+            TaskState::Closing.holds_slot(false),
+            "closing, session live"
+        );
+        assert!(
+            !TaskState::Closing.holds_slot(true),
+            "closing, session over"
+        );
+        assert!(
+            TaskState::Working.holds_slot(true),
+            "working keeps its slot until lost"
+        );
+        assert!(
+            !TaskState::Queued.holds_slot(false),
+            "queued never holds one"
+        );
     }
 
     #[test]

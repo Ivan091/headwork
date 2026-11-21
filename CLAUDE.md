@@ -30,7 +30,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, queue, clean, reap, rules,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, inbox, spawn, drop, close, answer, queue, clean, reap, rules,
 rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add) by the session's identity. `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -61,7 +61,9 @@ processes their launcher and `claude` started, rebuilt from parent links and sta
 `bash` idle for over 10 minutes, never `claude`, `me-studio`, `headwork` or a registered job, nor what they started or
 what started them; Git Bash shells take their parents from Git Bash's `ps -el`. The orchestrator's `close` takes
 `force` for a task stuck in `closing` whose pull requests are all merged and that has no live job (`close_forced` in
-`ops/close.rs`): a worktree the remove command refuses is recorded `kept` instead of blocking.
+`ops/close.rs`), and for a dropped task with none: a worktree the remove command refuses is recorded `kept` instead of
+blocking. A closing task whose session ended frees its worker slot. Asks the tick raises have no dialog: `headwork
+answer` or the orchestrator's `answer` tool answers them by id (`ops/answer.rs`), recording who answered.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -75,7 +77,8 @@ cargo run -p headwork -- board             # projects, tasks, sessions (pane or 
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
-cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged, no job
+cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job
+cargo run -p headwork -- answer <ask-id> <choice>  # answer an ask the tick raised (e.g. keep or delete a worktree) by option number or text
 cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, effort) of live sessions
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children (workers), projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?

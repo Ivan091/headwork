@@ -34,7 +34,7 @@ pub use records::{
 };
 pub use reports::{AddedRule, EVENT_REPORT, NewPr};
 pub use sessions::{EndedSession, LivePids, Place};
-pub use tick::{PrSeen, SessionClock, TopicAsk, WaitingAsk};
+pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
 
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";

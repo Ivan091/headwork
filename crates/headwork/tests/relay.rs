@@ -150,3 +150,63 @@ fn the_relay_switches_to_a_new_build_between_calls() {
     let (_, kept) = clean(&bin).unwrap();
     assert!(kept.is_empty(), "every retired server has exited: {kept:?}");
 }
+
+fn board_projects(session: &mut Session, id: u64) -> Vec<String> {
+    session.send(&json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": "board", "arguments": {} },
+    }));
+    let reply = session.read();
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    let board: Value = serde_json::from_str(text).unwrap();
+    board["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|project| project["enabled"] == true)
+        .map(|project| project["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_server_reads_the_config_again_before_each_call() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let config = fixture("config.toml");
+    std::fs::write(home.join("config.toml"), &config).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_headwork"))
+        .args(["mcp", "--serve"])
+        .env("HEADWORK_HOME", &home)
+        .env("HEADWORK_CLAUDE_JSON", home.join(".claude.json"))
+        .env("HEADWORK_SESSION", "0b6c1d2e-0000-4000-8000-00000000000b")
+        .env("HEADWORK_ROLE", "orchestrator")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut session = Session {
+        input: child.stdin.take().unwrap(),
+        output: BufReader::new(child.stdout.take().unwrap()),
+        child,
+    };
+    let before = board_projects(&mut session, 1);
+    assert!(
+        !before.contains(&"extra".to_owned()),
+        "not configured yet: {before:?}"
+    );
+    let added = format!(
+        "{config}\n[project.extra]\nmain = \"~/work/extra\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
+         worktree_path = \"~/work/extra-wt/{{slug}}\"\ndeliver = \"pr\"\nmerge = \"human\"\nallowed_repos = [\"acme/extra\"]\n"
+    );
+    std::fs::write(home.join("config.toml"), added).unwrap();
+    let after = board_projects(&mut session, 2);
+    assert!(
+        after.contains(&"extra".to_owned()),
+        "the edited config reached the running server: {after:?}"
+    );
+    std::fs::write(home.join("config.toml"), "not toml [").unwrap();
+    let broken = board_projects(&mut session, 3);
+    assert_eq!(broken, after, "a broken config leaves the last good one");
+    session.finish();
+}
