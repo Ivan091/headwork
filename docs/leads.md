@@ -8,7 +8,8 @@ convention) into a role headwork knows, and changes who the user talks to. Resea
 
 The user's words (2026-11-21): the user talks mostly to the lead workers, not to the main orchestrator. The orchestrator
 accepts tasks and hands each to a lead. When asked, it gives status, one line per task ("task x finished
-successfully"), without details. The main feedback and prompt loop runs in the leads.
+successfully"), without details, and tells the user unprompted only when a task finishes or fails. The main feedback
+and prompt loop runs in the leads.
 
 | Who | What it is | Where it runs | Talks to |
 |---|---|---|---|
@@ -50,8 +51,10 @@ extra. A task the orchestrator spawns gets `lead = 1`; a part gets `lead = 0` an
 The user chose tabs in one workspace over workspace groups (2026-11-21, `docs/decisions.md`). Each lead task gets a
 workspace of its own titled with the task name (`<project>-<slug>`). The lead opens in it full-screen, replacing the
 fresh workspace's shell, as `mode = "workspaces"` does today. Every part and every helper opens as a new tab of that
-workspace (`Target::Tab`), with no splits. Tab titles come from `[layout] title` (`{name}` by default), so the tabs read
-`headwork-lead-groups-plan`, `headwork-lead-groups-plan-review`, and so on.
+workspace (`Target::Tab`), with no splits. The workspace and the lead's tab carry the task name; a part's tab shows only
+the part (`review`), since the workspace title already names the task: `[leads] part_title`, default `{part}`, with
+`{name}`, `{model}` and `{effort}` as in `[layout] title`. So the workspace `headwork-lead-groups-plan` holds the tabs
+`headwork-lead-groups-plan`, `review`, `render`.
 
 This placement holds for lead tasks whatever `[layout] mode` says, because a task's sessions must stay together. The
 `panes` grid and `tabs` mode stay for tasks spawned with `lead = 0` (none, once leads are on) and for an install with
@@ -106,6 +109,7 @@ Config, `[leads]`:
 [leads]
 enabled = true      # top-level tasks are leads; placement of section 2
 max_parts = 2       # live parts per lead at once
+part_title = "{part}"   # a part's tab title
 ```
 
 ## 4. Changes by area
@@ -158,8 +162,8 @@ never runs more sessions than today. On top of that a lead may hold at most `max
 fit waits in the queue right behind its lead's `queue_rank`, ahead of tasks queued later, so a started task finishes
 before new tasks start. The lead holds its own slot while it waits for its parts.
 
-**Names.** A part's slug is `<lead-slug>-<part>` (`lead-groups-plan-review`), so its task name, worktree, branch and tab
-title show whose it is, and the live-name uniqueness check stays as it is.
+**Names.** A part's slug is `<lead-slug>-<part>` (`lead-groups-plan-review`), so its task name, worktree and branch show
+whose it is, and the live-name uniqueness check stays as it is. Its tab shows only `<part>` (section 2).
 
 **Rules and grants.**
 
@@ -180,31 +184,29 @@ The lead's address is its task name (its `-n` name and Remote Control name). A p
 reaches it like any session. The orchestrator gets: `report` rows (store) for every state change, and one `SendMessage`
 line when the task finishes or fails. This is the "task x is finished successfully" line the user hears.
 
-## 7. Open questions for the user
+## 7. The user's answers (2026-11-21)
 
-1. Status from the orchestrator: only when asked, or also a one-line push when a task finishes or fails? (The plan does
-   both: the lead's last message lets the orchestrator announce it.)
-2. Should the lead start parts itself (the plan), or still propose them to the orchestrator, which spawns them?
-3. Slots: parts count against the machine's `max_workers` plus `max_parts = 2` per lead (the plan), or does a lead get
-   a reserved budget of its own?
-4. Is every top-level task a lead (the plan), or only those the orchestrator marks?
-5. Closing a lead while a part runs: refuse (the plan) or cascade?
-6. Parts in another project: only through the orchestrator (the plan), or may a lead start them directly?
-7. Is a part's tab title `<project>-<lead-slug>-<part>` fine, or should tabs show only the part (`review`)?
+1. Status: one line per task when asked, plus one unprompted line when a task finishes or fails.
+2. The lead starts its parts itself, with `part_spawn`.
+3. Parts count against the machine's `max_workers` and the project cap, with at most `max_parts = 2` live per lead.
+4. Every top-level task is a lead.
+5. A lead's close is refused while a part runs; only the orchestrator's forced close ends the parts first.
+6. Parts in another project go through the orchestrator as a new task.
+7. A part's tab shows only the part (`review`), not the full task name.
 
 ## 8. Milestones (worker-days, one worker each)
 
 | # | Milestone | Effort |
 |---|---|---|
 | L1 | Store and core: migration 0013, `TaskShape`, `[leads]` config, `max_parts` in `StartFacts`, queue rank behind the lead, close and drop guards with live parts, table and proptest cases | 1 |
-| L2 | Placement: the lead's workspace, parts and helpers as tabs, `release`, resume order, retitle, the cmux landed-workspace check; fake-host tests and a live cmux test | 1 |
+| L2 | Placement: the lead's workspace, parts and helpers as tabs, `part_title`, `release`, resume order, retitle, the cmux landed-workspace check; fake-host tests and a live cmux test | 1 |
 | L3 | MCP and rules: `part_spawn`, `part_drop`, scoped `board` and `inbox`, `lead.md`, `{parent}`, the dispatcher `orchestrator.md`, the stop rule for a waiting lead | 1.5 |
 | L4 | Close, tick, board: drop cascade, `orphan-part` and `stray-tab` findings, blocked-part line to the lead, tree `board`, `status` command and tool | 1 |
 | L5 | Trial: one real lead with two parts on cmux, then on wmux; results in `docs/trials/` | 0.5 |
 | | Total | about 5 |
 
 L1 first; L2 and L3 can run in parallel after it; L4 after both; L5 last. Once L3 is in, the orchestrator's
-behaviour changes for every new task, so it lands after the user answers questions 1 to 4.
+behaviour changes for every new task; the answers in section 7 settle what it does.
 
 ## Deferred
 
