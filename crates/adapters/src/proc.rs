@@ -442,8 +442,12 @@ mod imp {
 
 #[cfg(unix)]
 mod imp {
+    use std::io::IsTerminal;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
+
+    use rustix::io::Errno;
+    use rustix::process::{Pid, Signal};
 
     use super::{Ownership, ProcError};
 
@@ -454,8 +458,40 @@ mod imp {
         command.process_group(0);
     }
 
+    /// Takes the child's group as the tree and, when this process holds the terminal, hands the terminal to that
+    /// group: a group that is not the terminal's foreground group is stopped (`SIGTTIN`) when it reads its input, as
+    /// `claude` does at once. The group is then continued, in case it read before the handover.
     pub(super) fn adopt(child: &Child) -> (Tree, Ownership) {
-        (child.id(), Ownership::ProcessGroup)
+        let group = child.id();
+        if let Some(pid) = pid_of(group) {
+            hand_terminal(pid);
+        }
+        (group, Ownership::ProcessGroup)
+    }
+
+    fn hand_terminal(group: Pid) {
+        let stdin = std::io::stdin();
+        if !stdin.is_terminal() {
+            return;
+        }
+        let ours = rustix::process::getpgrp();
+        if rustix::termios::tcgetpgrp(&stdin).ok() != Some(ours) {
+            return;
+        }
+        if rustix::termios::tcsetpgrp(&stdin, group).is_ok() {
+            rustix::process::kill_process_group(group, Signal::CONT).ok();
+        }
+    }
+
+    fn pid_of(pid: u32) -> Option<Pid> {
+        i32::try_from(pid).ok().and_then(Pid::from_raw)
+    }
+
+    fn tool(error: Errno) -> ProcError {
+        ProcError::Tool {
+            tool: "kill",
+            source: error.into(),
+        }
     }
 
     pub(super) fn spawn_detached(
@@ -476,34 +512,62 @@ mod imp {
     }
 
     pub(super) fn end(group: Tree) {
-        let ended = signal_group(group, "-KILL");
-        drop(ended);
+        if let Some(group) = pid_of(group) {
+            rustix::process::kill_process_group(group, Signal::KILL).ok();
+        }
     }
 
-    fn signal_group(group: u32, signal: &str) -> Result<bool, ProcError> {
-        Command::new("kill")
-            .args([signal, "--", &format!("-{group}")])
-            .output()
-            .map(|output| output.status.success())
-            .map_err(|source| ProcError::Tool {
-                tool: "kill",
-                source,
-            })
+    /// The process and its descendants, by the parent links the system reports.
+    fn descendants(pid: u32) -> Vec<u32> {
+        let mut found = vec![pid];
+        let links: Vec<(u32, u32)> = super::snapshot()
+            .0
+            .into_iter()
+            .filter_map(|process| Some((process.pid, process.parent?)))
+            .collect();
+        let mut next = 0;
+        while let Some(&parent) = found.get(next) {
+            for &(child, of) in &links {
+                if of == parent && !found.contains(&child) {
+                    found.push(child);
+                }
+            }
+            next += 1;
+        }
+        found
     }
 
+    /// Ends the process, its group when it leads one, and every descendant: a child that was not started in a group
+    /// of its own (a plain `Command::spawn`) is still ended with its tree.
     pub(super) fn kill_tree(pid: u32) -> Result<bool, ProcError> {
-        signal_group(pid, "-KILL")
+        if !is_alive(pid)? {
+            return Ok(false);
+        }
+        let Some(target) = pid_of(pid) else {
+            return Ok(false);
+        };
+        let tree = descendants(pid);
+        if rustix::process::getpgid(Some(target)).ok() == Some(target) {
+            rustix::process::kill_process_group(target, Signal::KILL).ok();
+        }
+        for member in tree.into_iter().filter_map(pid_of) {
+            match rustix::process::kill_process(member, Signal::KILL) {
+                Ok(()) | Err(Errno::SRCH) => {}
+                Err(error) => return Err(tool(error)),
+            }
+        }
+        Ok(true)
     }
 
     pub(super) fn kill_one(pid: u32) -> Result<bool, ProcError> {
-        Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .output()
-            .map(|output| output.status.success())
-            .map_err(|source| ProcError::Tool {
-                tool: "kill",
-                source,
-            })
+        let Some(target) = pid_of(pid) else {
+            return Ok(false);
+        };
+        match rustix::process::kill_process(target, Signal::KILL) {
+            Ok(()) => Ok(true),
+            Err(Errno::SRCH) => Ok(false),
+            Err(error) => Err(tool(error)),
+        }
     }
 
     pub(super) fn pids_named(image: &str) -> Result<Vec<u32>, ProcError> {
@@ -520,14 +584,31 @@ mod imp {
             .collect())
     }
 
+    /// Whether the process runs. A zombie, which ended but was not yet waited for (a detached child no one waits
+    /// on), does not.
     pub(super) fn is_alive(pid: u32) -> Result<bool, ProcError> {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-            .map(|output| output.status.success())
-            .map_err(|source| ProcError::Tool {
-                tool: "kill",
-                source,
-            })
+        let Some(target) = pid_of(pid) else {
+            return Ok(false);
+        };
+        match rustix::process::test_kill_process(target) {
+            Ok(()) => Ok(!is_zombie(pid)),
+            Err(Errno::SRCH) => Ok(false),
+            Err(Errno::PERM) => Ok(true),
+            Err(error) => Err(tool(error)),
+        }
+    }
+
+    fn is_zombie(pid: u32) -> bool {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+        let pid = Pid::from_u32(pid);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        system
+            .process(pid)
+            .is_none_or(|process| process.status() == ProcessStatus::Zombie)
     }
 }
