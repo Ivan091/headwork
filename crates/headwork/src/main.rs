@@ -29,7 +29,7 @@ use headwork::ops::prs::refresh_dependencies;
 use headwork::ops::reap::{ReapOptions, reap as reap_processes};
 use headwork::ops::relay::Relay;
 use headwork::ops::reload;
-use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
+use headwork::ops::resume::{self, ResumeOptions, TaskOutcome, resume};
 use headwork::ops::shadow::shadow_report;
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::tick::{TickEnv, tick};
@@ -701,6 +701,30 @@ fn resume_command(
         wait_for_host: std::time::Duration::from_secs(wait),
         claude_dir,
     };
+    let own_surface = resume::SURFACE_VARS
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|value| !value.is_empty()));
+    if let Some(surface) = own_surface {
+        let detached = standalone(home, Actor::User, |store, env| {
+            if resume::would_close(store, env, &surface)? {
+                resume::start_detached(store, env, logon, opts.wait_for_host).map(Some)
+            } else {
+                Ok(None)
+            }
+        })?;
+        if let Some(pid) = detached {
+            if json {
+                json_out(out, &serde_json::json!({ "detached": pid }))?;
+            } else {
+                writeln!(
+                    out,
+                    "resume reopens the session in this pane, so it goes on detached (pid {pid}); this pane closes and \
+                     `headwork board` shows the result"
+                )?;
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
     let report = standalone(home, Actor::User, |store, env| resume(store, env, &opts))?;
     if json {
         json_out(out, &report)?;

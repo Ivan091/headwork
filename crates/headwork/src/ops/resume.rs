@@ -144,7 +144,21 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
     let park = store.current_park()?;
     let was_parked = store.machine_mode()? == MachineMode::Parked;
     store.set_machine_mode(MachineMode::Resuming, env.actor)?;
-    let orchestrator = orchestrator_to_resume(store, park.as_ref().map(|p| p.id), was_parked)?;
+    let orchestrator = orchestrator_to_resume(store, env, park.as_ref().map(|p| p.id), was_parked)?;
+    if let Some(OrchestratorPlan::Back {
+        session,
+        crash: true,
+    }) = &orchestrator
+        && store.live_orchestrator_session()?.is_none()
+    {
+        store.append_event(
+            env.actor,
+            None,
+            Some(&session.id),
+            "orchestrator-unmanaged",
+            &serde_json::json!({ "during": "resume" }),
+        )?;
+    }
     close_restored_panes(
         store,
         env,
@@ -499,10 +513,12 @@ impl OrchestratorPlan {
 }
 
 /// The orchestrator session to bring back. After a park it is the one the park recorded; otherwise an orchestrator the store still
-/// counts as running whose processes are gone. The orchestrator comes back at logon too, whatever `resume_after_crash` says:
-/// it is the session that asks about the rest.
+/// counts as running whose processes are gone, else one the store knows that the host shows running outside headwork (wmux
+/// reopens Claude panes after a reboot with a plain `claude --resume <id>`), which comes back under headwork. The
+/// orchestrator comes back at logon too, whatever `resume_after_crash` says: it is the session that asks about the rest.
 fn orchestrator_to_resume(
     store: &Store,
+    env: &Env<'_>,
     park: Option<i64>,
     was_parked: bool,
 ) -> Result<Option<OrchestratorPlan>> {
@@ -522,7 +538,11 @@ fn orchestrator_to_resume(
                 crash: false,
             }));
     }
-    Ok(live.map(|session| OrchestratorPlan::Back {
+    let session = match live {
+        Some(session) => Some(session),
+        None => park::unmanaged_orchestrator(store, env)?.map(|(session, _)| session),
+    };
+    Ok(session.map(|session| OrchestratorPlan::Back {
         session,
         crash: true,
     }))
@@ -687,15 +707,84 @@ fn session_for(
     }
 }
 
-/// Closes the panes the host restored by itself for sessions that are about to be resumed here, so no conversation
-/// runs twice. After a reboot wmux reopens each Claude pane with a plain `claude --resume <id>`.
-fn close_restored_panes(store: &Store, env: &Env<'_>, orchestrator: Option<&str>) -> Result<()> {
+/// Whether a resume started now would close the host surface `surface`.
+///
+/// It does when the surface runs a session the resume brings back, such as an orchestrator the host restored outside
+/// headwork that runs the resume itself. Such a resume must run detached, or closing that surface ends it halfway.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn would_close(store: &Store, env: &Env<'_>, surface: &str) -> Result<bool> {
+    let park = store.current_park()?;
+    let was_parked = store.machine_mode()? == MachineMode::Parked;
+    let orchestrator = orchestrator_to_resume(store, env, park.map(|p| p.id), was_parked)?;
+    let ids = resumed_sessions(
+        store,
+        orchestrator.as_ref().and_then(OrchestratorPlan::session),
+    )?;
+    let Ok(states) = env.host.surface_states() else {
+        return Ok(false);
+    };
+    Ok(states.into_iter().any(|state| {
+        state.surface.as_str() == surface && state.session_id.is_some_and(|id| ids.contains(&id))
+    }))
+}
+
+/// The environment variables in which a terminal host tells a program the surface it runs in.
+pub const SURFACE_VARS: [&str; 2] = ["WMUX_SURFACE_ID", "CMUX_SURFACE_ID"];
+
+/// Starts `headwork resume` again as a detached process with no surface of its own, so it outlives the surface it was
+/// started in when it closes that surface. Returns its process id.
+///
+/// # Errors
+///
+/// Fails when the process does not start or the store fails.
+pub fn start_detached(
+    store: &Store,
+    env: &Env<'_>,
+    logon: bool,
+    wait_for_host: Duration,
+) -> Result<u32> {
+    let mut process = std::process::Command::new(env.exe);
+    process.arg("resume");
+    if logon {
+        process.arg("--logon");
+    }
+    process
+        .args(["--wait", &wait_for_host.as_secs().to_string()])
+        .arg("--home")
+        .arg(env.home.root())
+        .current_dir(env.home.root());
+    for var in SURFACE_VARS {
+        process.env_remove(var);
+    }
+    let (pid, _) = headwork_adapters::proc::spawn_detached(&mut process)?;
+    store.append_event(
+        env.actor,
+        None,
+        None,
+        "detached",
+        &serde_json::json!({ "command": "resume", "pid": pid, "reason": "it closes the surface it was started in" }),
+    )?;
+    Ok(pid)
+}
+
+/// The Claude sessions a resume brings back: the orchestrator's and those of the parked and interrupted tasks.
+fn resumed_sessions(store: &Store, orchestrator: Option<&str>) -> Result<Vec<String>> {
     let mut ids: Vec<String> = orchestrator.map(str::to_owned).into_iter().collect();
     for state in [TaskState::Parked, TaskState::Interrupted] {
         for id in store.tasks_in(state)? {
             ids.extend(store.session_of(id)?.map(|session| session.id));
         }
     }
+    Ok(ids)
+}
+
+/// Closes the panes the host restored by itself for sessions that are about to be resumed here, so no conversation
+/// runs twice. After a reboot wmux reopens each Claude pane with a plain `claude --resume <id>`.
+fn close_restored_panes(store: &Store, env: &Env<'_>, orchestrator: Option<&str>) -> Result<()> {
+    let ids = resumed_sessions(store, orchestrator)?;
     let states = match env.host.surface_states() {
         Ok(states) => states,
         Err(error) => {

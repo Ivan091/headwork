@@ -15,7 +15,7 @@ use headwork::ops::Env;
 use headwork::ops::jobs::{Registration, register};
 use headwork::ops::launch::{StartMode, claude_command};
 use headwork::ops::park::{ParkOptions, RecapSource, park};
-use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
+use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume, would_close};
 use headwork::ops::spawn::{SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{SurfaceState, TerminalHost};
@@ -24,9 +24,9 @@ use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::{
     Actor, AskKind, Config, JobState, MachineMode, Model, PermissionMode, ProjectName, RecapKind,
-    Role, Slug, TaskRequest, TaskShape, TaskState, Trigger,
+    Role, SessionState, Slug, TaskRequest, TaskShape, TaskState, Trigger,
 };
-use headwork_store::{NewAsk, NewRecap, NewSession, NewTask, Store, Task};
+use headwork_store::{EventFilter, NewAsk, NewRecap, NewSession, NewTask, Store, Task};
 
 const EXE: &str = "S:/bin/headwork.exe";
 const SLEEPER_ROLE: &str = "HEADWORK_PARK_ROLE";
@@ -896,6 +896,143 @@ fn an_orchestrator_whose_transcript_is_gone_starts_fresh_and_a_running_one_is_le
         .unwrap();
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains(&orchestrator), "a new session: {line}");
+}
+
+impl World {
+    /// An orchestrator session the store recorded and saw end, whose conversation the host runs again outside headwork
+    /// in the surface returned, as wmux does after a reboot with a plain `claude --resume <id>`.
+    fn unmanaged_orchestrator(&mut self) -> (String, String) {
+        let (id, pid, _) = self.orchestrator();
+        assert!(
+            headwork_adapters::proc::kill_tree(pid).unwrap(),
+            "the sleeper is ended"
+        );
+        assert!(dead(pid), "the managed process is gone");
+        self.store
+            .set_session_state(&id, SessionState::Ended, Actor::Hook)
+            .unwrap();
+        let surface = self.seen_in("Workspace 1", &id);
+        (id, surface)
+    }
+
+    fn events_of(&self, kind: &str) -> usize {
+        self.store
+            .events(EventFilter {
+                task: None,
+                limit: 500,
+            })
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == kind)
+            .count()
+    }
+}
+
+#[test]
+fn park_records_an_orchestrator_running_outside_headwork_and_resume_brings_it_back_under_headwork()
+{
+    let mut w = world("ask");
+    let (_, sand_session, _) = w.working("sand");
+    let (orchestrator, surface) = w.unmanaged_orchestrator();
+    let env = env!(w);
+    let report = park(&mut w.store, &env, quick(200)).unwrap();
+    let parked = report.orchestrator.clone().unwrap();
+    assert_eq!(
+        parked.session, orchestrator,
+        "the park records it: {report:?}"
+    );
+    assert_eq!(
+        parked.recap,
+        RecapSource::Mechanical,
+        "it has no recap tool"
+    );
+    assert!(
+        parked
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("outside headwork")),
+        "{report:?}"
+    );
+    assert!(
+        !w.host
+            .calls()
+            .iter()
+            .any(|c| c.starts_with(&format!("send {surface} "))),
+        "it is not asked for a recap it cannot write: {:?}",
+        w.host.calls()
+    );
+    assert_eq!(w.events_of("orchestrator-unmanaged"), 1, "logged");
+
+    let claude_dir = claude_dir_with(&w, &[&sand_session, &orchestrator]);
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: false,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    assert!(
+        would_close(&w.store, &env, &surface).unwrap(),
+        "a resume started in its surface must detach"
+    );
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.orchestrator, Some(TaskOutcome::Resumed { .. })),
+        "{report:?}"
+    );
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" orchestrator "))
+        .unwrap();
+    assert!(
+        line.contains(&format!("--session {orchestrator} --resume --summary")),
+        "{line}"
+    );
+    assert!(
+        w.host.calls().contains(&format!("close-surface {surface}")),
+        "the copy outside headwork is closed: {:?}",
+        w.host.calls()
+    );
+    let summary = std::fs::read_to_string(&report.summary).unwrap();
+    assert!(summary.contains("ran outside headwork"), "{summary}");
+}
+
+#[test]
+fn a_resume_without_a_park_brings_an_orchestrator_the_host_restored_back_under_headwork() {
+    let mut w = world("never");
+    let (orchestrator, surface) = w.unmanaged_orchestrator();
+    let other = w.seen_in("Workspace 2", "someone-else");
+    let claude_dir = claude_dir_with(&w, &[&orchestrator]);
+    let env = env!(w);
+    assert!(
+        would_close(&w.store, &env, &surface).unwrap(),
+        "its own surface"
+    );
+    assert!(
+        !would_close(&w.store, &env, &other).unwrap(),
+        "another surface"
+    );
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.orchestrator, Some(TaskOutcome::Resumed { .. })),
+        "{report:?}"
+    );
+    assert!(
+        w.host.calls().contains(&format!("close-surface {surface}")),
+        "{:?}",
+        w.host.calls()
+    );
+    assert_eq!(w.events_of("orchestrator-unmanaged"), 1, "logged");
+    let placed = w.store.session(&orchestrator).unwrap().unwrap().0;
+    assert_eq!(
+        placed.state,
+        SessionState::Starting,
+        "back under headwork: {placed:?}"
+    );
 }
 
 const LEADS: &str = "\n[leads]\nenabled = true\n";

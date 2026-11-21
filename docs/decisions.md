@@ -893,3 +893,17 @@ and the reason.
   and the tick's merged-grace close (`go: CloseGo` in `CloseFacts` and `FinishFacts`), not a drop or the orchestrator's
   close, which already follow the user's word. A go stays valid for the task once given. The setting is not part of
   the rules hash, so a running lead sees a change at its next session.
+- 2026-11-21 An orchestrator running outside headwork. After a reboot wmux reopened the orchestrator's pane with a plain
+  `claude --resume <id>`: the conversation went on, but the store had seen it end (`SessionEnd`) and nothing set
+  `HEADWORK_EXE`, so from 2026-11-17 it ran unmanaged, the park of 2026-11-21 recorded no orchestrator and the resume
+  reopened none. Now park, when the store has no running orchestrator, looks for a surface whose Claude session id (from
+  the host's surface states) is a known orchestrator session (`Store::orchestrator_session`, any state) and records it
+  on the park with a mechanical recap: it is not sent the park notice, since without headwork tools it cannot call
+  `recap`. Resume after a crash adopts such a session the same way when the store has no orchestrator to bring back.
+  Either way resume closes that pane (as it closes every pane the host restored) and reopens the conversation with
+  `headwork orchestrator --session <id> --resume`, so it is managed again; event `orchestrator-unmanaged`. Only
+  sessions the store knows are adopted: a `claude -n orchestrator` started by hand has no recorded folder, so it stays
+  the user's. Because such an orchestrator runs `headwork resume` through Bash in the very pane resume closes, the CLI
+  checks `WMUX_SURFACE_ID` (or `CMUX_SURFACE_ID`) first (`resume::would_close`) and, when resume would close its own
+  surface, starts itself again detached without that variable (event `detached`) and exits, so closing the pane cannot
+  cut it off halfway.

@@ -294,6 +294,26 @@ impl Store {
             .transpose()
     }
 
+    /// The orchestrator session with this Claude session id, in any state; `None` when the id is unknown or names a
+    /// worker's session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn orchestrator_session(&self, id: &str) -> Result<Option<SessionRow>, StoreError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1 AND role = 'orchestrator'"
+                ),
+                params![id],
+                read_session,
+            )
+            .optional()?
+            .map(into_row)
+            .transpose()
+    }
+
     /// Records where the host put a session.
     ///
     /// # Errors

@@ -780,6 +780,49 @@ fn an_ended_session_carries_its_tasks_folders() {
     );
 }
 
+#[test]
+fn an_orchestrator_session_is_found_by_id_in_any_state_and_a_workers_is_not() {
+    let (mut store, _, worker) = hook_world();
+    let id = "0b6c1d2e-0000-4000-8000-0000000000bb";
+    store
+        .record_session(
+            &NewSession {
+                id: id.to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    store.session_launched(id, 100, 101, "job").unwrap();
+    store.session_ended(id, Some(0)).unwrap();
+    assert!(
+        store.live_orchestrator_session().unwrap().is_none(),
+        "it ended"
+    );
+    assert_eq!(
+        store
+            .orchestrator_session(id)
+            .unwrap()
+            .map(|s| s.id)
+            .as_deref(),
+        Some(id),
+        "found though it ended"
+    );
+    assert!(
+        store.orchestrator_session(&worker).unwrap().is_none(),
+        "a worker's session"
+    );
+    assert!(
+        store.orchestrator_session("unknown").unwrap().is_none(),
+        "an unknown id"
+    );
+}
+
 fn hook_world() -> (Store, Task, String) {
     let (mut store, config) = store();
     let task = create(&mut store, &config, "me-sim", "sand");
