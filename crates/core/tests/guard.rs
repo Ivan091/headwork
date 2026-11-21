@@ -771,6 +771,7 @@ fn stop(facts: StopFacts<'_>) -> Option<RuleId> {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one table of every stop case")]
 fn stop_table() {
     let base = StopFacts {
         role: Role::Worker,
@@ -782,6 +783,7 @@ fn stop_table() {
         keep: false,
         running_job: false,
         waiting_background: false,
+        waiting_part: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -886,6 +888,7 @@ fn stop_while_waiting_on_background_work() {
         keep: false,
         running_job: false,
         waiting_background: true,
+        waiting_part: false,
         last_message: Some("The build runs in the background."),
     };
     assert_eq!(stop(waiting), None, "waiting on background work");
@@ -900,6 +903,7 @@ fn stop_while_waiting_on_background_work() {
     assert_eq!(
         stop(StopFacts {
             waiting_background: false,
+            waiting_part: false,
             ..waiting
         }),
         Some(RuleId::StopUnfinished),
@@ -919,6 +923,7 @@ fn stop_while_a_job_runs() {
         keep: false,
         running_job: true,
         waiting_background: false,
+        waiting_part: false,
         last_message: Some("Training runs; I will look at the next checkpoint."),
     };
     assert_eq!(stop(waiting), None, "waiting on its own running job");
@@ -1083,5 +1088,39 @@ fn the_orchestrator_gains_nothing_from_worker_grants() {
         rule(&check_tool(&scope, &call)),
         Some(RuleId::OrchestratorEdit),
         "only orchestrator_writable counts"
+    );
+}
+
+#[test]
+fn a_lead_waiting_on_a_live_part_may_stop() {
+    let waiting = StopFacts {
+        role: Role::Worker,
+        task: Some(TaskState::Working),
+        blocked_in_row: 0,
+        asked: false,
+        messaged: false,
+        reported: false,
+        keep: false,
+        running_job: false,
+        waiting_background: false,
+        waiting_part: true,
+        last_message: Some("The review part runs; I wait for its report."),
+    };
+    assert_eq!(stop(waiting), None, "a lead waits for its part");
+    assert_eq!(
+        stop(StopFacts {
+            last_message: Some("Shall I wait for the part?"),
+            ..waiting
+        }),
+        Some(RuleId::StopPlainQuestion),
+        "a live part does not excuse a plain question"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            waiting_part: false,
+            ..waiting
+        }),
+        Some(RuleId::StopUnfinished),
+        "without a live part the stop is unfinished"
     );
 }

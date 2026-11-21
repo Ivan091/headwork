@@ -14,7 +14,8 @@ use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{
-    CLOSING_HEADING, ORCHESTRATOR_RULES, RuleFiles, WORKER_RULES, platform_words,
+    CLOSING_HEADING, ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES,
+    platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
@@ -1897,4 +1898,309 @@ fn dropping_a_lead_drops_and_closes_its_parts_first() {
         .into_iter()
         .any(|event| event.kind == "drop-cascade");
     assert!(cascaded, "the part's drop is logged as the lead's cascade");
+}
+
+fn part_spawn(w: &mut World, arguments: &Value) -> (bool, String) {
+    let identity = worker_identity(w);
+    w.tool(identity, "part_spawn", arguments)
+}
+
+fn part_named(w: &World, slug: &str) -> Task {
+    w.store.find_task(&format!("demo-{slug}")).unwrap().unwrap()
+}
+
+#[test]
+fn only_a_lead_sees_and_calls_the_part_tools() {
+    let mut w = world(LEADS, false);
+    let names = w.tool_names(worker_identity(&w));
+    assert!(
+        names.contains(&"part_spawn".to_owned()) && names.contains(&"part_drop".to_owned()),
+        "{names:?}"
+    );
+    let mut plain = world("", false);
+    let names = plain.tool_names(worker_identity(&plain));
+    assert!(
+        !names.iter().any(|name| name.starts_with("part_")),
+        "{names:?}"
+    );
+    let (is_error, text) = part_spawn(
+        &mut plain,
+        &json!({ "slug": "review", "brief": "Review it." }),
+    );
+    assert!(is_error && text.contains("not a lead"), "{text}");
+    let names = w.tool_names(orchestrator_identity());
+    assert!(
+        !names.iter().any(|name| name.starts_with("part_")),
+        "{names:?}"
+    );
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "part_spawn",
+        &json!({ "slug": "review", "brief": "Review it." }),
+    );
+    assert!(is_error && text.contains("worker"), "{text}");
+}
+
+#[test]
+fn part_spawn_names_the_part_after_its_lead_in_the_leads_project() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-review");
+    assert_eq!(
+        part.shape,
+        headwork_core::TaskShape::Part { parent: w.task.id },
+        "a part of the lead"
+    );
+    assert_eq!(part.project().as_str(), "demo", "the lead's project");
+    assert_eq!(part.state, TaskState::Spawning, "it starts: {text}");
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "sand-render", "brief": "Render it." }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        part_named(&w, "sand-render").state,
+        TaskState::Queued,
+        "an already prefixed slug is kept, and the second part waits for max_parts = 1"
+    );
+    assert!(text.contains("max_parts"), "{text}");
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "port", "brief": "Port it.", "project": "other" }),
+    );
+    assert!(is_error && text.contains("new task"), "{text}");
+}
+
+#[test]
+fn part_spawn_keeps_the_model_within_the_allowed_and_fable_with_the_user() {
+    let leads = format!("{LEADS}\n[models]\nallowed = [\"haiku\", \"sonnet\", \"fable\"]\n");
+    let mut w = world(&leads, false);
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "review", "brief": "Review it.", "model": "opus" }),
+    );
+    assert!(is_error && text.contains("opus"), "{text}");
+    assert!(
+        w.store.find_task("demo-sand-review").unwrap().is_none(),
+        "no part for a model not allowed"
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "render", "brief": "Render it.", "model": "fable" }),
+    );
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-render");
+    assert!(
+        part.fable_ask.is_some(),
+        "Fable raises the user's approval ask"
+    );
+    assert_eq!(part.state, TaskState::Queued, "and waits for it");
+    assert!(text.contains("approval"), "{text}");
+}
+
+#[test]
+fn part_spawn_after_names_another_part_of_the_same_lead() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "render", "brief": "Render it.", "after": "review" }),
+    );
+    assert!(is_error && text.contains("not a part"), "{text}");
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "render", "brief": "Render it.", "after": "demo-sand" }),
+    );
+    assert!(
+        is_error && text.contains("not a part"),
+        "the lead itself: {text}"
+    );
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    let review = part_named(&w, "sand-review");
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "render", "brief": "Render it.", "after": "review" }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        part_named(&w, "sand-render").depends_on,
+        Some(review.id),
+        "after becomes the dependency"
+    );
+}
+
+#[test]
+fn part_drop_drops_only_the_leads_own_parts() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(
+        identity.clone(),
+        "part_drop",
+        &json!({ "name": "demo-sand" }),
+    );
+    assert!(
+        is_error && text.contains("not a part"),
+        "the lead itself: {text}"
+    );
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(
+        identity,
+        "part_drop",
+        &json!({ "name": "review", "reason": "not needed" }),
+    );
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-review");
+    assert_eq!(part.state, TaskState::Closed, "the part closed");
+    assert_eq!(w.state(), TaskState::Working, "the lead goes on");
+}
+
+#[test]
+fn a_leads_board_and_inbox_show_only_the_lead_and_its_parts() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "spawn",
+        &json!({ "project": "demo", "slug": "other", "brief": "Something else." }),
+    );
+    assert!(!is_error, "{text}");
+    let names = |text: &str| -> Vec<String> {
+        let board: Value = serde_json::from_str(text).unwrap();
+        board["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, text) = w.tool(worker_identity(&w), "board", &json!({}));
+    let mut lead = names(&text);
+    lead.sort();
+    assert_eq!(lead, ["demo-sand", "demo-sand-review"], "the lead's board");
+    let (_, text) = w.tool(orchestrator_identity(), "board", &json!({}));
+    assert!(
+        names(&text).contains(&"demo-other".to_owned()),
+        "the orchestrator's board is the machine's"
+    );
+    let other = part_named(&w, "other");
+    w.store
+        .open_ask(
+            &headwork_store::NewAsk {
+                task_id: Some(other.id),
+                session_id: None,
+                kind: headwork_core::AskKind::Tool,
+                question: "Other?".to_owned(),
+                options: vec!["1".to_owned(), "2".to_owned()],
+            },
+            Actor::Hook,
+        )
+        .unwrap();
+    let (_, text) = w.tool(worker_identity(&w), "inbox", &json!({}));
+    assert!(
+        !text.contains("Other?"),
+        "another task's ask stays out: {text}"
+    );
+    let (_, text) = w.tool(orchestrator_identity(), "inbox", &json!({}));
+    assert!(
+        text.contains("Other?"),
+        "the orchestrator's inbox has it: {text}"
+    );
+}
+
+#[test]
+fn a_lead_with_a_live_part_may_stop_and_wait() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let stop = json!({ "last_assistant_message": "The part runs." });
+    w.hook(HookEvent::Stop, &stop);
+    assert!(
+        w.denies().iter().any(|(_, rule)| rule == "stop-unfinished"),
+        "without a part the silent stop is unfinished"
+    );
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    let before = w.denies().len();
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        w.denies().len(),
+        before,
+        "a lead waiting on its part may stop"
+    );
+}
+
+#[test]
+fn the_rules_follow_the_tasks_shape() {
+    let mut w = world(LEADS, false);
+    let lead_rules = context(&w.start());
+    assert!(
+        lead_rules.contains("You are the lead of this task"),
+        "{lead_rules}"
+    );
+    assert!(
+        !lead_rules.contains(PLAIN_LEAD_HEADING),
+        "a lead drops the plain section"
+    );
+    assert!(
+        lead_rules.contains("short report to the session named `orchestrator`"),
+        "a lead reports to the orchestrator"
+    );
+    assert!(
+        !lead_rules.contains("{parent}") && !lead_rules.contains("{orchestrator}"),
+        "{lead_rules}"
+    );
+    let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-review");
+    w.session = w.store.session_of(part.id).unwrap().unwrap().id;
+    let part_rules = context(&w.start());
+    assert!(
+        part_rules.contains("short report to the session named `demo-sand`"),
+        "a part reports to its lead: {part_rules}"
+    );
+    assert!(part_rules.contains("tell `demo-sand`"), "{part_rules}");
+    assert!(
+        !part_rules.contains("You are the lead"),
+        "a part is no lead"
+    );
+    assert!(
+        !part_rules.contains(PLAIN_LEAD_HEADING),
+        "a part drops the plain section"
+    );
+    let mut plain = world("", false);
+    let plain_rules = context(&plain.start());
+    assert!(
+        plain_rules.contains(PLAIN_LEAD_HEADING),
+        "a plain worker keeps it"
+    );
+    assert!(
+        !plain_rules.contains("You are the lead"),
+        "a plain worker is no lead"
+    );
+    assert!(
+        plain_rules.contains("short report to the session named `orchestrator`"),
+        "{plain_rules}"
+    );
+    for text in [&lead_rules, &part_rules, &plain_rules] {
+        assert!(text.len() < 10_000, "{}", text.len());
+    }
+}
+
+#[test]
+fn the_orchestrator_rules_dispatch() {
+    let w = world("", false);
+    let files = RuleFiles::load(&w.home, &w.config, &[], "orchestrator").unwrap();
+    let text = files.render(Role::Orchestrator, &w.config, Path::new(EXE), None);
+    assert!(text.contains("## Dispatching"), "{text}");
+    assert!(!text.contains("Briefing a lead"), "{text}");
+    assert!(text.contains("Never relay an ask's text"), "{text}");
+    assert!(text.contains("finishes or fails"), "{text}");
 }

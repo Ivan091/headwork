@@ -830,3 +830,21 @@ and the reason.
   (`Store::drop_task`): the lead and its droppable parts go to `dropped`, each part logged `drop-cascade`; the
   orchestrator's `close` of a lead (forced or by drop) closes its parts that are not closing or closed first, then the
   lead. `part_spawn`, placement, the tick findings and the tree board are L2 to L4.
+- 2026-11-21 Leads, milestone L3 (MCP tools and rules). `part_spawn` and `part_drop` are worker tools listed and callable
+  only for a session whose task is a lead (`LEAD_TOOLS` in `ops/mcp.rs`); a plain worker, a part and the orchestrator
+  neither see nor may call them. `part_spawn` takes the part's own word as `slug` and prefixes `<lead slug>-` unless it
+  is already there; the project is always the lead's (a `project` naming another is refused, pointing at the
+  orchestrator); kind `task`, worktree, no `keep`, no `allow_ask`, no effort (the settings' level, as for a spawn without
+  one). The model goes through the same admission as `spawn`, so `[models] allowed` refuses and Fable raises the user's
+  approval ask, the part waiting queued for it. `max_parts` is not a refusal: the part is created and waits in the queue
+  behind its lead (L1), and the answer's `queue` says so. `after` names a part of the same lead by its word, slug or
+  full name and becomes `depends_on`, so it means "that part's pull request merged", as `--after` does. `part_drop`
+  drops one of the lead's parts and closes it through `close_dropped_part`, the one close a worker may run on another
+  task (only a dropped part of its own). `board` and `inbox` of a lead or a part show the lead and its parts and no
+  task-less asks; a plain worker's and the orchestrator's stay machine-wide. A lead's rules are `worker.md` plus
+  `lead.md` (built in, overridable in the rules folder, part of the rules hash); a lead's and a part's `worker.md` drop
+  "When your brief makes you a lead", which stays for plain workers while `[leads] enabled` is off. `{parent}` in
+  `worker.md` is the lead's task name for a part, else the orchestrator's address. `orchestrator.md` "Briefing a lead"
+  became "Dispatching". The stop gate lets a lead stop while a part is not closed (`waiting_part`, the same measure as
+  `lead-parts-live`). `[leads] enabled` stays off by default until L2's placement is merged: parts would otherwise open
+  in the project's panes instead of the lead's workspace.

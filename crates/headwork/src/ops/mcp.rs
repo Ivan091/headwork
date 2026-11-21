@@ -12,15 +12,15 @@ use headwork_adapters::git::GitHost;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
-    TaskRequest, TaskState,
+    TaskRequest, TaskShape, TaskState,
 };
-use headwork_store::{NewPr, NewRecap, Store, StoreError, Task};
+use headwork_store::{Board, NewPr, NewRecap, Store, StoreError, Task, TaskId};
 use serde_json::{Value, json};
 
-use super::close::{begin_own_close, close, close_forced, end_closing};
+use super::close::{begin_own_close, close, close_dropped_part, close_forced, end_closing};
 use super::jobs::{self, Registration};
 use super::rules;
-use super::spawn::{SpawnRequest, pump, spawn};
+use super::spawn::{SpawnRequest, pump, spawn, spawn_shaped};
 use super::{Env, close::reap};
 
 /// The protocol revision offered when the client names none.
@@ -74,6 +74,9 @@ struct ToolDef {
 const BOTH: &[Role] = &[Role::Orchestrator, Role::Worker];
 const ORCHESTRATOR: &[Role] = &[Role::Orchestrator];
 const WORKER: &[Role] = &[Role::Worker];
+
+/// The worker tools only a lead's session sees and may call.
+const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop"];
 
 const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -370,6 +373,45 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "part_spawn",
+        description: "A lead's tool: start a part, a session of its own for one piece of your task, as a tab in your \
+                      workspace. Its task is `<your slug>-<slug>` in your project. At most `[leads] max_parts` of your \
+                      parts run at once; one more waits in the queue right behind you. Fable needs the user's approval.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "slug": { "type": "string", "description": "The part's own kebab-case word, such as `review`." },
+                    "brief": { "type": "string", "description": "The part's brief; it must stand alone." },
+                    "model": { "type": "string", "enum": ["haiku", "sonnet", "opus", "fable"] },
+                    "after": {
+                        "type": "string",
+                        "description": "Another part of yours (its word or full name) whose pull request must merge first.",
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Only your own project; another project's work goes to the orchestrator as a new task.",
+                    },
+                }),
+                &["slug", "brief"],
+            )
+        },
+    },
+    ToolDef {
+        name: "part_drop",
+        description: "A lead's tool: drop one of your parts and close it.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "name": { "type": "string", "description": "The part's word or full task name." },
+                    "reason": { "type": "string", "description": "Why, for the event log." },
+                }),
+                &["name"],
+            )
+        },
+    },
+    ToolDef {
         name: "job_status",
         description: "The registered jobs that are not over: your own for a worker, all for the orchestrator.",
         roles: BOTH,
@@ -556,9 +598,11 @@ impl<'a> Server<'a> {
         let Some((_, role)) = self.identity.managed() else {
             return Vec::new();
         };
+        let lead = self.is_lead();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
+            .filter(|tool| lead || !LEAD_TOOLS.contains(&tool.name))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -601,9 +645,20 @@ impl<'a> Server<'a> {
                 tool.roles[0]
             );
         }
+        if LEAD_TOOLS.contains(&name) && !self.is_lead() {
+            bail!("`{name}` is a lead's tool; your task is not a lead");
+        }
         match name {
-            "board" => self.board(args),
-            "inbox" => self.inbox(),
+            "board" => self.board(&session, role, args),
+            "inbox" => self.inbox(&session, role),
+            "part_spawn" => {
+                let lead = self.own_task(&session)?;
+                self.part_spawn(&lead, args)
+            }
+            "part_drop" => {
+                let lead = self.own_task(&session)?;
+                self.part_drop(&lead, args)
+            }
             "spawn" => self.spawn(args),
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
@@ -821,14 +876,50 @@ impl<'a> Server<'a> {
         Ok(self.store.task(row)?)
     }
 
-    fn board(&mut self, args: &Value) -> Result<String> {
-        let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
-        super::lost::reconcile(self.store, &self.env)?;
-        to_text(&self.store.board(all)?)
+    /// Whether the calling session is a worker whose task is a lead.
+    fn is_lead(&self) -> bool {
+        match self.identity.managed() {
+            Some((session, Role::Worker)) => self
+                .own_task(session)
+                .is_ok_and(|task| task.shape.is_lead()),
+            Some(_) | None => false,
+        }
     }
 
-    fn inbox(&self) -> Result<String> {
-        let board = self.store.board(false)?;
+    /// The tasks a session's `board` and `inbox` show: for a lead or a part, the lead and its parts; `None` for the
+    /// orchestrator and a plain worker, who see the whole machine.
+    fn group(&self, session: &str, role: Role) -> Result<Option<Vec<TaskId>>> {
+        if role != Role::Worker {
+            return Ok(None);
+        }
+        let task = self.own_task(session)?;
+        let lead = match task.shape {
+            TaskShape::Lead => task.id,
+            TaskShape::Part { parent } => parent,
+            TaskShape::Plain => return Ok(None),
+        };
+        let mut ids = vec![lead];
+        ids.extend(self.store.parts(lead)?);
+        Ok(Some(ids))
+    }
+
+    fn scoped_board(&self, session: &str, role: Role, all: bool) -> Result<Board> {
+        let mut board = self.store.board(all)?;
+        if let Some(ids) = self.group(session, role)? {
+            board.tasks.retain(|entry| ids.contains(&entry.task.id));
+            board.other_asks.clear();
+        }
+        Ok(board)
+    }
+
+    fn board(&mut self, session: &str, role: Role, args: &Value) -> Result<String> {
+        let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+        super::lost::reconcile(self.store, &self.env)?;
+        to_text(&self.scoped_board(session, role, all)?)
+    }
+
+    fn inbox(&self, session: &str, role: Role) -> Result<String> {
+        let board = self.scoped_board(session, role, false)?;
         let mut items: Vec<Value> = Vec::new();
         for entry in &board.tasks {
             for ask in &entry.asks {
@@ -913,6 +1004,103 @@ impl<'a> Server<'a> {
         std::fs::remove_file(&file).ok();
         let (task, pumped) = result?;
         to_text(&json!({ "task": task, "queue": pumped }))
+    }
+
+    fn part_spawn(&mut self, lead: &Task, args: &Value) -> Result<String> {
+        let project = lead.project().clone();
+        if let Some(asked) = args.get("project").and_then(Value::as_str)
+            && asked != project.as_str()
+        {
+            bail!(
+                "a part runs in its lead's project `{project}`; work in `{asked}` goes to the orchestrator as a new task"
+            );
+        }
+        let word = text(args, "slug")?;
+        let prefix = format!("{}-", lead.slug());
+        let slug = Slug::new(if word.starts_with(&prefix) {
+            word
+        } else {
+            format!("{prefix}{word}")
+        })?;
+        let brief = text(args, "brief")?;
+        let model: Option<Model> = args
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::parse)
+            .transpose()?;
+        let depends_on = match args.get("after").and_then(Value::as_str) {
+            Some(after) => Some(self.part_of(lead, after)?.id),
+            None => None,
+        };
+        let incoming = self.env.home.root().join("incoming");
+        std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
+        let file = incoming.join(format!("{project}-{slug}.md"));
+        std::fs::write(&file, brief).with_context(|| format!("writing {}", file.display()))?;
+        let request = SpawnRequest {
+            request: TaskRequest {
+                project,
+                slug,
+                kind: "task".to_owned(),
+                model,
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief: &file,
+            depends_on,
+            permission_mode: PermissionMode::Auto,
+            allow_ask: &[],
+        };
+        reap(self.store, &self.env)?;
+        let result = spawn_shaped(
+            self.store,
+            &self.env,
+            &request,
+            TaskShape::Part { parent: lead.id },
+        );
+        std::fs::remove_file(&file).ok();
+        let (task, pumped) = result?;
+        let fable = task.fable_ask.map(
+            |_| "Fable waits for the user's approval: the part starts once the user allows it",
+        );
+        to_text(&json!({ "task": task, "queue": pumped, "fable": fable }))
+    }
+
+    /// A part of `lead` by its word (`review`), its slug (`<lead slug>-review`) or its task name.
+    fn part_of(&self, lead: &Task, name: &str) -> Result<Task> {
+        let slug = lead.slug().as_str();
+        let candidates = [
+            name.to_owned(),
+            format!("{}-{name}", lead.project()),
+            format!("{}-{slug}-{name}", lead.project()),
+        ];
+        for candidate in &candidates {
+            if let Some(task) = self.store.find_task(candidate)?
+                && task.shape.parent() == Some(lead.id)
+            {
+                return Ok(task);
+            }
+        }
+        bail!("`{name}` is not a part of {}", lead.name)
+    }
+
+    fn part_drop(&mut self, lead: &Task, args: &Value) -> Result<String> {
+        let part = self.part_of(lead, &text(args, "name")?)?;
+        let reason = args
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("dropped by its lead");
+        self.store.drop_task(part.id, self.env.actor)?;
+        self.store.append_event(
+            self.env.actor,
+            Some(part.id),
+            None,
+            "drop-reason",
+            &json!({ "lead": lead.name.to_string(), "reason": reason }),
+        )?;
+        let report = close_dropped_part(self.store, &self.env, lead.id, part.id)?;
+        pump(self.store, &self.env)?;
+        to_text(&report)
     }
 
     fn named(&self, args: &Value) -> Result<Task> {
