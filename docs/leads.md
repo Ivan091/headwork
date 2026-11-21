@@ -195,19 +195,12 @@ line when the task finishes or fails. This is the "task x is finished successful
 6. Parts in another project go through the orchestrator as a new task.
 7. A part's tab shows only the part (`review`), not the full task name; its session address stays the full name.
 
-## Known issue, today
-
-The cmux adapter's `spawn` trusts `surface.create`, which opens a surface in the caller's workspace when the
-`workspace_id` it is given does not exist (`docs/cmux.md`, "Tabs in one workspace"). A worker's pane could then open in
-the orchestrator's workspace. The fix (compare the answer's `workspace_id`, close the surface and fail on a mismatch)
-does not wait for leads: it is a small fix of its own, and L2 relies on it.
-
 ## 8. Milestones (worker-days, one worker each)
 
 | # | Milestone | Effort |
 |---|---|---|
 | L1 | Store and core: migration 0013, `TaskShape`, `[leads]` config, `max_parts` in `StartFacts`, queue rank behind the lead, close and drop guards with live parts, table and proptest cases | 1 |
-| L2 | Placement: the lead's workspace, parts and helpers as tabs, `part_title`, `release`, resume order, retitle, the cmux landed-workspace check; fake-host tests and a live cmux test | 1 |
+| L2 | Placement: the lead's workspace, parts and helpers as tabs, `part_title`, `release`, resume order, retitle; fake-host tests and a live cmux test | 1 |
 | L3 | MCP and rules: `part_spawn`, `part_drop`, scoped `board` and `inbox`, `lead.md`, `{parent}`, the dispatcher `orchestrator.md`, the stop rule for a waiting lead | 1.5 |
 | L4 | Close, tick, board: drop cascade, `orphan-part` and `stray-tab` findings, blocked-part line to the lead, tree `board`, `status` command and tool | 1 |
 | L5 | Trial: one real lead with two parts on cmux, then on wmux; results in `docs/trials/` | 0.5 |

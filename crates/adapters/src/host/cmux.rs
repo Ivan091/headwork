@@ -162,7 +162,27 @@ impl<R: Runner> Cmux<R> {
             .ok_or_else(|| HostError::Missing(format!("no workspace holds `{surface}`")))
     }
 
-    fn split_at(&self, surface: &str, down: bool) -> Result<(PaneId, SurfaceId), HostError> {
+    fn landed_in(&self, created: &Created, asked: &WorkspaceId) -> Result<WorkspaceId, HostError> {
+        let landed = match &created.workspace {
+            Some(id) => id.clone(),
+            None => self.holding(&SurfaceId(created.surface.clone()))?.id,
+        };
+        if landed == asked.as_str() {
+            return Ok(asked.clone());
+        }
+        tolerate_missing(self.close_surface(&SurfaceId(created.surface.clone())))?;
+        Err(HostError::Missing(format!(
+            "cmux opened surface `{}` in workspace `{landed}`, not in the asked workspace `{asked}`; it was closed",
+            created.surface
+        )))
+    }
+
+    fn split_at(
+        &self,
+        workspace: &WorkspaceId,
+        surface: &str,
+        down: bool,
+    ) -> Result<(PaneId, SurfaceId), HostError> {
         let answer: Created = self.rpc(
             "surface.split",
             &json!({
@@ -173,7 +193,9 @@ impl<R: Runner> Cmux<R> {
         )?;
         let pane = answer
             .pane
+            .clone()
             .ok_or_else(|| HostError::Missing(format!("splitting `{surface}` opened no pane")))?;
+        self.landed_in(&answer, workspace)?;
         Ok((PaneId(pane), SurfaceId(answer.surface)))
     }
 
@@ -639,17 +661,14 @@ impl<R: Runner> TerminalHost for Cmux<R> {
             }
         }
         let created: Created = self.rpc("surface.create", &params)?;
+        let landed = self.landed_in(&created, workspace)?;
         if let Some(old) = replaced {
             tolerate_missing(self.close_surface(&old))?;
         }
         Ok(Pane {
             agent: AgentId(created.surface.clone()),
             surface: SurfaceId(created.surface),
-            workspace: Some(
-                created
-                    .workspace
-                    .map_or_else(|| workspace.clone(), WorkspaceId),
-            ),
+            workspace: Some(landed),
             label: label.to_owned(),
             command: shell_line(argv),
             running: true,
@@ -675,7 +694,7 @@ impl<R: Runner> TerminalHost for Cmux<R> {
             .ok_or_else(|| {
                 HostError::Missing(format!("workspace `{}` has no pane", workspace.id))
             })?;
-        self.split_at(first, down)
+        self.split_at(&WorkspaceId(workspace.id.clone()), first, down)
     }
 
     fn split_pane(
@@ -688,7 +707,7 @@ impl<R: Runner> TerminalHost for Cmux<R> {
             .pane(pane.as_str())
             .and_then(RawPane::active)
             .ok_or_else(|| HostError::Missing(format!("no pane `{pane}` in `{workspace}`")))?;
-        self.split_at(surface, false)
+        self.split_at(workspace, surface, false)
     }
 
     fn close_pane(&self, pane: &PaneId) -> Result<(), HostError> {
