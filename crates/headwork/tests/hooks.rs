@@ -1906,6 +1906,40 @@ fn a_lead_closes_only_after_the_users_go_unless_ask_before_close_is_off() {
 }
 
 #[test]
+fn a_leads_own_headwork_close_waits_for_the_users_go() {
+    let mut w = world(LEADS, false);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::Worker,
+    };
+    let refused = headwork::ops::close::begin_own_close(&mut w.store, &env, &w.prs, w.task.id);
+    assert!(
+        refused.is_err_and(|error| error.to_string().contains("lead-close-unasked")),
+        "the self-close is refused without a go"
+    );
+    assert_eq!(w.state(), TaskState::Working, "the lead keeps working");
+    assert!(
+        w.events().iter().any(|event| event.kind == "close-refused"),
+        "the refusal is logged"
+    );
+    give_close_go(&mut w, "Close it (Recommended)");
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::Worker,
+    };
+    headwork::ops::close::begin_own_close(&mut w.store, &env, &w.prs, w.task.id).unwrap();
+    assert_eq!(w.state(), TaskState::Closing, "closing after the go");
+}
+
+#[test]
 fn dropping_a_lead_drops_and_closes_its_parts_first() {
     let mut w = world(LEADS, false);
     w.start();
