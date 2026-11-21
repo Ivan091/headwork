@@ -1263,6 +1263,29 @@ fn a_trust_prompt_on_a_starting_pane_becomes_an_ask_and_holds_the_spawn_timeout(
 }
 
 #[test]
+fn a_trust_prompt_after_the_launcher_started_claude_is_seen_too() {
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    w.store
+        .session_launched(
+            &session.id,
+            std::process::id(),
+            std::process::id(),
+            "process-group",
+        )
+        .unwrap();
+    let surface = trust_surface(&w, &task);
+    w.host.set_screen(&surface, TRUST_SCREEN);
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report),
+        [(FindingId::TrustPrompt, Status::Standing)],
+        "a launched session whose task still spawns can wait at the dialog"
+    );
+}
+
+#[test]
 fn an_answered_trust_ask_presses_the_dialogs_yes() {
     let mut w = world();
     let task = spawn_task(&mut w, "sand");

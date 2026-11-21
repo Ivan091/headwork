@@ -322,7 +322,8 @@ impl<'b> Run<'_, 'b> {
             .is_some_and(|ask| ask.state.is_waiting()))
     }
 
-    /// A starting session whose pane shows Claude Code's folder trust dialog waits on the user, unseen: headwork
+    /// A starting session (launched or not, its task still spawning) whose pane shows Claude Code's folder trust
+    /// dialog waits on the user, unseen: headwork
     /// trusts every project's main checkout before a session starts, so this is the fallback. The tick raises it as
     /// a `trust` ask, a blocked state on the pane whose buttons answer the dialog, and a notification, and holds back
     /// the spawn timeout meanwhile. Once the dialog is gone the ask is retired; an answer given through the store is
@@ -335,7 +336,10 @@ impl<'b> Run<'_, 'b> {
             let Some(session) = self.store.session_of(id)? else {
                 continue;
             };
-            if session.state != SessionState::Starting {
+            let starting = session.state == SessionState::Starting
+                || (session.state == SessionState::Live
+                    && self.store.task(id)?.state == TaskState::Spawning);
+            if !starting {
                 continue;
             }
             let surface = SurfaceId(surface);
