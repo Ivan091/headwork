@@ -2,16 +2,17 @@
 //!
 //! Windows and the Mac share one set of rules files; the parts that name system programs (the stray shells `reap`
 //! ends, the tool it replaces, the scheduler `tick --install` uses) come from here, picked by the OS of the running
-//! build. macOS has no tick scheduler yet, so its scheduler words are a neutral placeholder.
+//! build. Windows schedules the tick with a Task Scheduler task, macOS with a launchd launch agent; other unix systems
+//! have no tick scheduler, so their scheduler words are a neutral placeholder.
 
 /// An operating system family headwork tells apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     /// Windows: Git Bash shells, `taskkill`, Job Objects, the Task Scheduler.
     Windows,
-    /// macOS: plain unix shells, `kill`, process groups, no tick scheduler yet.
+    /// macOS: plain unix shells, `kill`, process groups, a launchd launch agent.
     MacOs,
-    /// Any other unix: as macOS.
+    /// Any other unix: as macOS, without a tick scheduler.
     Unix,
 }
 
@@ -57,7 +58,11 @@ impl Platform {
             Self::Windows => {
                 "creates the Windows scheduled task \"headwork tick\" (every 5 minutes, current user)"
             }
-            Self::MacOs | Self::Unix => {
+            Self::MacOs => {
+                "loads the launchd agent `com.headwork.tick` (`~/Library/LaunchAgents/com.headwork.tick.plist`, every 5 \
+                 minutes, current user; cmux's socket must be in `automation` mode)"
+            }
+            Self::Unix => {
                 "would schedule `headwork tick` every 5 minutes for the current user (this system has no scheduler for \
                  it yet: it refuses and changes nothing)"
             }
@@ -72,7 +77,11 @@ impl Platform {
                 "Create (or replace) the Windows scheduled task \"headwork tick\", every 5 minutes for the current user, \
                  and run no tick. Only after the user's `Allow` tap."
             }
-            Self::MacOs | Self::Unix => {
+            Self::MacOs => {
+                "Write and load (or replace) the launchd agent `com.headwork.tick` in ~/Library/LaunchAgents, every 5 \
+                 minutes for the current user, and run no tick. Only after the user's `Allow` tap."
+            }
+            Self::Unix => {
                 "Schedule `headwork tick` every 5 minutes for the current user, and run no tick; this system has no \
                  scheduler for it yet, so it refuses. Only after the user's `Allow` tap."
             }
@@ -86,10 +95,22 @@ impl Platform {
             Self::Windows => {
                 "Remove the Windows scheduled task \"headwork tick\", and run no tick."
             }
-            Self::MacOs | Self::Unix => {
+            Self::MacOs => {
+                "Unload the launchd agent `com.headwork.tick` and delete its plist, and run no tick."
+            }
+            Self::Unix => {
                 "Remove the scheduled `headwork tick`, and run no tick; this system has no scheduler for it yet, so it \
                  refuses."
             }
+        }
+    }
+
+    /// What `tick --install` makes, as its report names it.
+    #[must_use]
+    pub const fn scheduler_entry(self) -> &'static str {
+        match self {
+            Self::Windows | Self::Unix => "scheduled task",
+            Self::MacOs => "launch agent",
         }
     }
 
@@ -97,8 +118,8 @@ impl Platform {
     #[must_use]
     pub const fn no_scheduler(self) -> Option<&'static str> {
         match self {
-            Self::Windows => None,
-            Self::MacOs | Self::Unix => Some(
+            Self::Windows | Self::MacOs => None,
+            Self::Unix => Some(
                 "headwork has no tick scheduler on this system yet; nothing changed. Run `headwork tick` by hand or \
                  from the system's own scheduler",
             ),
@@ -161,7 +182,7 @@ mod tests {
                 platform.no_scheduler().unwrap_or_default(),
             ];
             for text in words {
-                for windows_word in ["Windows", "schtasks", "taskkill", ".exe", "launchd"] {
+                for windows_word in ["Windows", "schtasks", "taskkill", ".exe"] {
                     assert!(!text.contains(windows_word), "{platform:?}: {text}");
                 }
             }
@@ -170,7 +191,33 @@ mod tests {
                 platform.kill_tools().contains("process-group"),
                 "process groups"
             );
-            assert!(platform.no_scheduler().is_some(), "no scheduler yet");
+        }
+    }
+
+    #[test]
+    fn macos_schedules_the_tick_with_a_launch_agent() {
+        let mac = Platform::MacOs;
+        assert_eq!(mac.no_scheduler(), None, "launchd schedules the tick");
+        for text in [
+            mac.tick_install(),
+            mac.tick_install_help(),
+            mac.tick_uninstall_help(),
+        ] {
+            assert!(text.contains("launchd agent `com.headwork.tick`"), "{text}");
+        }
+        assert_eq!(mac.scheduler_entry(), "launch agent", "the report's noun");
+    }
+
+    #[test]
+    fn other_unix_has_no_scheduler() {
+        let unix = Platform::Unix;
+        assert!(unix.no_scheduler().is_some(), "no scheduler");
+        for text in [
+            unix.tick_install(),
+            unix.tick_install_help(),
+            unix.tick_uninstall_help(),
+        ] {
+            assert!(!text.contains("launchd"), "{text}");
         }
     }
 }

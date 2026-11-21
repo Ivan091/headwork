@@ -84,7 +84,7 @@ cargo run -p headwork -- retitle [<name>]   # set the pane titles (name, model, 
 cargo run -p headwork -- import [--dry-run]  # adopt the orchestrate scripts' children (workers), projects, worktrees
 cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background]   # would the guard deny it?
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
-cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" (after the user's Allow tap)
+cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
@@ -108,8 +108,11 @@ repository's own `target/` on S:; C: has little free space.
 `headwork tick` is idempotent and takes `tick.lock`, so a scheduler may call it every few minutes. `headwork tick
 --install` creates (or replaces) the one Windows scheduled task "headwork tick": every 5 minutes, the current user,
 no admin, running the installed `~/.local/bin/headwork.exe tick`; `headwork tick --uninstall` removes it
-(`ops/schedule.rs`). Sessions run either only after the user's `Allow` tap naming that command; nothing installs it
-silently.
+(`ops/schedule.rs`). On macOS the same commands write and load, or unload and delete, the user launch agent
+`~/Library/LaunchAgents/com.headwork.tick.plist` (`launchctl bootstrap`/`bootout gui/<uid>`, every 5 minutes, output in
+`<home>/tick.log`, `ops/launchd.rs`); cmux's socket must be in `automation` mode for it (`docs/cmux.md`, "Outside a cmux
+terminal"), and `headwork doctor` (check `tick-agent`) says whether it is loaded. Sessions run either only after the
+user's `Allow` tap naming that command; nothing installs it silently.
 
 It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
 

@@ -1391,17 +1391,45 @@ fn tick_command(
 }
 
 fn schedule_command(install: bool, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::doctor::Probe;
+    use headwork::ops::launchd::{self, Agent, SystemLaunchctl};
     use headwork::ops::schedule::{self, Schtasks};
+    let platform = Platform::current();
+    if let Some(reason) = platform.no_scheduler() {
+        bail!("{reason}");
+    }
+    let home = Home::locate()?;
+    let user_home = home.expand("~");
+    let windows = platform == Platform::Windows;
     let report = if install {
-        let home = Home::locate()?;
         let installed = home.expand(&format!(
             "~/.local/bin/headwork{}",
             std::env::consts::EXE_SUFFIX
         ));
         let current = std::env::current_exe().context("finding the headwork program")?;
-        schedule::install(&Schtasks, &schedule::program(&installed, &current))?
-    } else {
+        let exe = schedule::program(&installed, &current);
+        if windows {
+            schedule::install(&Schtasks, &exe)?
+        } else {
+            let mut programs = vec![exe.clone()];
+            programs.extend(
+                launchd::TICK_PROGRAMS
+                    .iter()
+                    .filter_map(|program| SystemProbe.which(program)),
+            );
+            programs.push(PathBuf::from(headwork_adapters::host::cmux::BUNDLED_CLI));
+            let agent = Agent::new(
+                &exe,
+                &user_home,
+                home.root(),
+                launchd::agent_path(&programs),
+            );
+            launchd::install(&SystemLaunchctl, &agent)?
+        }
+    } else if windows {
         schedule::uninstall(&Schtasks)?
+    } else {
+        launchd::uninstall(&SystemLaunchctl, &launchd::plist_path(&user_home))?
     };
     if json {
         json_out(out, &report)?;
@@ -1440,6 +1468,7 @@ fn doctor_command(
         probe: &SystemProbe,
         disks: &SystemDisks,
         host: host_for,
+        platform: Platform::current(),
     });
     if json {
         json_out(out, &report)?;
