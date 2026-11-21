@@ -819,8 +819,8 @@ and the reason.
   `lead = 1`; a stored row like that fails to load (`StoreError::BadShape`) instead of guessing. A part is created only
   under a live lead (not closing or over) of its own project; a part is never a lead, so parts start no parts.
   `[leads] enabled` defaults to **false** in L1, although `docs/leads.md` shows it on: with it on, `spawn` records new
-  top-level tasks as leads, but nothing places them or starts parts until L2 and L3, so doctor lists it under
-  `unenforced-keys`. L3 (or the user) turns it on. A part "is live" for its lead's close until it is `closed`: dropped,
+  top-level tasks as leads, but nothing places them or starts parts until L2 and L3, so doctor listed it under
+  `unenforced-keys` (no longer, see 2026-11-21 doctor). L3 (or the user) turns it on. A part "is live" for its lead's close until it is `closed`: dropped,
   failed and closing parts still hold a worktree or a tab, so the lead's `done` and the tick's merged-grace close are
   refused with `lead-parts-live` until each part is closed (a lifecycle refusal, not a hook rule id, so
   `enforce_rules` does not name it). For `max_parts` a part counts its siblings that hold a worker slot, the same
@@ -881,3 +881,5 @@ and the reason.
   `finished` for a merged or closing lead without open parts, else `working`. The words beyond the five of
   `docs/leads.md` (`queued`, `interrupted`, `parked`, `dropped`) are kept because folding them into `working` or
   `failed` would mislead. A part whose lead is not listed gets a line of its own. `[leads] enabled` stays off.
+- 2026-11-21 Doctor and `[leads] enabled`. `unenforced-keys` no longer reports `leads.enabled`: placement (L2), `part_spawn` (L3)
+  and close, tick and board (L4) are built, so the key is enforced.

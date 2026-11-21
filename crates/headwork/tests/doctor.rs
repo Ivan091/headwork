@@ -567,14 +567,9 @@ fn an_unknown_leads_key_fails_the_config_check_and_enabled_leads_warn() {
     .unwrap();
     let report = run(&install, &FakeProbe::default());
     assert_eq!(status(&report, "config"), Status::Ok, "known keys");
-    assert_eq!(
-        status(&report, "unenforced-keys"),
-        Status::Warn,
-        "leads not placed yet"
-    );
     assert!(
-        detail(&report, "unenforced-keys").contains("leads.enabled"),
-        "named"
+        !detail(&report, "unenforced-keys").contains("leads.enabled"),
+        "leads.enabled is enforced since L2 to L4"
     );
     std::fs::write(&path, format!("{text}\n[leads]\nmax_parts = 3\n")).unwrap();
     let report = run(&install, &FakeProbe::default());
