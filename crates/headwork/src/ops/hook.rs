@@ -12,8 +12,9 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::{Choice, SurfaceId, TerminalHost};
-use headwork_core::config::{Delivery, PushMode, WorktreeCommand};
+use headwork_core::config::{Delivery, ProjectConfig, PushMode, WorktreeCommand};
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
+use headwork_core::guard::grants::brief_grants;
 use headwork_core::guard::stop::{StopFacts, check_stop};
 use headwork_core::guard::{
     ALLOW_HEADER, DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope, SimpleCommand, ToolCall,
@@ -405,6 +406,7 @@ pub fn scope_for(
                         .iter()
                         .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
                         .collect();
+                    scope.extra_writable = extra_writable_of(env, task, project, &scope.places);
                     scope.long_jobs.clone_from(&project.long_jobs);
                     scope.own_delivery = matches!(project.deliver, Delivery::Command(_));
                     scope.allowed_repos = project
@@ -427,6 +429,35 @@ pub fn scope_for(
     scope.user_only = config.all_user_only();
     scope.writable = writable;
     Ok(scope)
+}
+
+/// The paths outside its folder a task may write: its project's `extra_writable` for its kind, and the files its brief
+/// lists on its `Writes:` lines below `hooks.brief_writable` (none when that is empty or the brief cannot be read).
+fn extra_writable_of(
+    env: &HookEnv<'_>,
+    task: &Task,
+    project: &ProjectConfig,
+    places: &Places,
+) -> Vec<GuardPath> {
+    let mut grants: Vec<GuardPath> = project
+        .extra_writable
+        .iter()
+        .filter(|grant| grant.applies_to(&task.kind))
+        .map(|grant| GuardPath::new(&slashed(&env.home.expand(&grant.path))))
+        .collect();
+    let roots: Vec<GuardPath> = env
+        .config
+        .hooks
+        .brief_writable
+        .iter()
+        .map(|dir| GuardPath::new(&slashed(&env.home.expand(dir))))
+        .collect();
+    if !roots.is_empty()
+        && let Ok(brief) = std::fs::read_to_string(&task.brief_path)
+    {
+        grants.extend(brief_grants(&brief, &roots, places));
+    }
+    grants
 }
 
 /// The notes repositories the orchestrator may commit in, and the project folders inside them it may not.
@@ -940,6 +971,7 @@ fn decide(
             "rule": verdict.rule,
             "reason": verdict.reason,
             "input": input,
+            "cwd": call.cwd(),
         }),
     )?;
     if !enforce {

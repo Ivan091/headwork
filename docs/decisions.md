@@ -700,6 +700,23 @@ and the reason.
   run a program reliably when tried from a session, and a windowless build is a separate change. Neither the binary nor
   the guard can tell an `Allow` tap of the orchestrator (asks are stored per task), so "only after the user's go" is
   in the injected rules; for workers `tick` stays an orchestrator command.
+- 2026-11-21 Extra writable paths for workers. The shadow week showed 35 of 52 would-denies were workers writing and
+  committing notes in code-home as their instructions say (car-training's handoff and night results, audit reports).
+  Two narrow grants, both checked by the edit rule and the git rule: a project's `extra_writable = [{ path, kinds }]`
+  (a file or a folder; `kinds` limits it to task kinds, empty means every task of the project), and `[hooks]
+  brief_writable`, folders below which a worker may write exactly the absolute paths its brief lists on a `Writes:`
+  line. A line of its own, not every path the brief mentions: briefs name notes they only want read (the audit
+  footer names `notes/audit-2026-11-15.md`), and those must stay unwritable. The brief copy in the headwork home is
+  read at each hook call, so a worker cannot widen it (that folder is not writable to it). In the repository holding
+  a grant (the git folder lies in the grant or the grant in it, so `cd <notes>` and `git -C <repo root>` both count)
+  a worker may run `add` and `rm` naming only granted paths (no bare `-A`, `.` of a wider folder, `:/` magic or
+  `--pathspec-from-file`), `commit` of what is staged or of granted paths (no `-a`, `--amend`, `-p`), `push` without
+  force, deletion, `+` or `:` refspecs, `--mirror` or `--all`, and `pull`; anything else there stays
+  `worker-git-outside`, with a reason naming the paths it may add. Such a repository is a notes repository committed
+  on its default branch by design, so a granted git write skips `worker-default-branch` and `worker-push-repo`, which
+  read the session's own checkout. `git add notes` (the whole folder) is refused although car-training ran it three
+  times: it would take in other sessions' notes; the reason tells the worker to name its files. Would-deny events now
+  record the session's folder (`cwd`) so a later replay is exact, and `rule test --edit <file>` decides an edit.
 - 2026-11-21 The `Stop` gate counts a foreground `Bash` that outlived its timeout and that Claude Code moved to the
   background (its response carries `backgroundTaskId`) as background work, like `run_in_background`. Of the six
   `stop-unfinished` events of 2026-11-19 (20:27 to 21:18 UTC), all ran on the build stamped 19:57 UTC, before the

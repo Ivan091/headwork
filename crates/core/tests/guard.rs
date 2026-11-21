@@ -33,6 +33,7 @@ fn worker(branch: &str) -> Scope {
         cwd: WORKTREE.to_owned(),
         writable: vec![GuardPath::new(WORKTREE), GuardPath::new(TEMP)],
         read_only: vec![GuardPath::new("S:/Code/me-studio")],
+        extra_writable: Vec::new(),
         user_only: vec!["scripts/publish-now.sh".to_owned()],
         long_jobs: vec![
             "scripts/rl-run.sh".to_owned(),
@@ -928,5 +929,159 @@ fn stop_while_a_job_runs() {
         }),
         Some(RuleId::StopPlainQuestion),
         "a running job does not excuse a plain question"
+    );
+}
+
+const NOTES: &str = "S:/Code/notes";
+
+fn car_training() -> Scope {
+    Scope {
+        cwd: MAIN.to_owned(),
+        writable: vec![GuardPath::new(MAIN), GuardPath::new(TEMP)],
+        branch: Some("master".to_owned()),
+        extra_writable: vec![
+            GuardPath::new("S:/Code/notes/handoff-car-training.md"),
+            GuardPath::new("S:/Code/notes/night-results"),
+        ],
+        ..worker("master")
+    }
+}
+
+#[test]
+fn a_worker_writes_its_extra_paths_and_nothing_beside_them() {
+    let scope = car_training();
+    let table: &[(&str, Option<RuleId>)] = &[
+        (r"S:\Code\notes\handoff-car-training.md", None),
+        ("/s/Code/notes/night-results/2026-11-02.md", None),
+        ("S:/Code/notes/night-results/sub/x.md", None),
+        (
+            "S:/Code/notes/approval-friction-plan.md",
+            Some(RuleId::WorkerEditOutside),
+        ),
+        (
+            "S:/Code/notes/handoff-car-training.md.bak",
+            Some(RuleId::WorkerEditOutside),
+        ),
+        ("S:/Code/todo.md", Some(RuleId::WorkerEditOutside)),
+        ("S:/Code/briefs/x.md", Some(RuleId::WorkerEditOutside)),
+        ("S:/Code/CLAUDE.md", Some(RuleId::WorkerEditOutside)),
+    ];
+    for (path, want) in table {
+        let call = ToolCall::Write { tool: "Edit", path };
+        assert_eq!(rule(&check_tool(&scope, &call)), *want, "{path}");
+    }
+    let without = worker("master");
+    let call = ToolCall::Write {
+        tool: "Write",
+        path: "S:/Code/notes/handoff-car-training.md",
+    };
+    assert_eq!(
+        rule(&check_tool(&without, &call)),
+        Some(RuleId::WorkerEditOutside),
+        "no grant, no write"
+    );
+}
+
+#[test]
+fn a_worker_commits_its_extra_paths_in_their_notes_repository() {
+    let scope = car_training();
+    let allowed = [
+        "cd S:/Code/notes && git add handoff-car-training.md night-results/2026-11-02.md && git commit -q -m \"docs: v5n\" && git push -q",
+        "cd /s/Code && git add notes/handoff-car-training.md notes/night-results/2026-11-02.md && git commit -q -m x && git push -q",
+        "cd /s/Code && git add notes/night-results && git commit -qm \"docs: x\" && git push -q origin master",
+        "git -C S:/Code add -- notes/night-results/a.md",
+        "git -C S:/Code commit -m x -- notes/handoff-car-training.md",
+        "git -C S:/Code/notes pull --rebase -q",
+        "cd S:/Code/notes/night-results && git add . && git commit -m x",
+        "git -C S:/Code rm notes/night-results/old.md",
+    ];
+    for command in allowed {
+        assert_eq!(rule(&check_tool(&scope, &bash(command))), None, "{command}");
+    }
+    let refused = [
+        "cd /s/Code && git add notes",
+        "cd /s/Code && git add -A",
+        "cd /s/Code && git add .",
+        "cd /s/Code && git add todo.md",
+        "cd S:/Code/notes && git add -u",
+        "git -C S:/Code add :/",
+        "git -C S:/Code add --pathspec-from-file=list.txt",
+        "git -C S:/Code commit -am x",
+        "git -C S:/Code commit -a -m x",
+        "git -C S:/Code commit --all -m x",
+        "git -C S:/Code commit --amend --no-edit",
+        "git -C S:/Code commit -m x todo.md",
+        "git -C S:/Code commit -m x -- briefs/a.md",
+        "git -C S:/Code push --force",
+        "git -C S:/Code push -f origin master",
+        "git -C S:/Code push origin +master",
+        "git -C S:/Code push origin :old",
+        "git -C S:/Code push --delete origin old",
+        "git -C S:/Code reset --hard",
+        "git -C S:/Code checkout -- todo.md",
+        "git -C S:/Code merge origin/master",
+        "git -C S:/Code stash",
+        "git -C S:/Code/me-studio/me-studio commit -m x",
+    ];
+    for command in refused {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            Some(RuleId::WorkerGitOutside),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn granted_notes_git_skips_the_default_branch_and_push_repository_rules() {
+    let scope = car_training();
+    assert_eq!(
+        rule(&check_tool(
+            &scope,
+            &bash("cd S:/Code/notes && git commit -m x && git push")
+        )),
+        None,
+        "code-home is committed on master by design"
+    );
+    assert_eq!(
+        rule(&check_tool(&scope, &bash("git commit -m x"))),
+        Some(RuleId::WorkerDefaultBranch),
+        "its own checkout on master stays refused"
+    );
+    assert_eq!(
+        rule(&check_tool(&scope, &bash("git push fork x"))),
+        Some(RuleId::WorkerPushRepo),
+        "its own checkout keeps the repository rule"
+    );
+}
+
+#[test]
+fn a_refusal_in_a_granted_repository_says_why() {
+    let scope = car_training();
+    let decision = check_tool(&scope, &bash("cd S:/Code && git add todo.md"));
+    let reason = decision
+        .verdict()
+        .map(|verdict| verdict.reason.clone())
+        .unwrap_or_default();
+    assert!(
+        reason.contains("s:/code/todo.md is not one of the paths"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn the_orchestrator_gains_nothing_from_worker_grants() {
+    let scope = Scope {
+        extra_writable: vec![GuardPath::new(NOTES)],
+        ..orchestrator()
+    };
+    let call = ToolCall::Write {
+        tool: "Edit",
+        path: "S:/Code/notes/a.md",
+    };
+    assert_eq!(
+        rule(&check_tool(&scope, &call)),
+        Some(RuleId::OrchestratorEdit),
+        "only orchestrator_writable counts"
     );
 }

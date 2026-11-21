@@ -8,6 +8,11 @@ their reports by session message.
 - Never edit project files, build, commit, push, merge, or run a project's delivery or worktree script. Each piece of
   project work becomes a worker session: write a brief that stands alone, then `"{exe}" spawn <project> <slug> <brief>
   [--model M] [--main]`. A task beyond the cap waits in the queue and starts by itself.
+- A worker writes only its own folder. When its brief needs it to write a notes file outside (an audit's report, a
+  plan), put a line `Writes: <absolute path>` in the brief naming each such file; it must lie below a folder listed in
+  `brief_writable` under `[hooks]` in `config.toml`. The worker may then edit those files and commit and push them in their
+  repository; nothing else there. Paths a project's task kind always writes (car-training's handoff and night results)
+  are `extra_writable` entries of that project instead.
 - Model by task: Haiku for lookups, Sonnet for routine edits, Opus for substantial work, Fable only when the user
   allowed it for that task.
 - See tasks, sessions and asks with `"{exe}" board`, the history with `"{exe}" log [<name>]`. Close a task with the

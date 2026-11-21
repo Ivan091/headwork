@@ -210,6 +210,16 @@ fn rule_test_decides_a_command_as_the_orchestrator() {
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["result"]["rule"], "user-only", "{json}");
+    let output = headwork(
+        home.path(),
+        &["rule", "test", "--edit", "S:/Code/me-sim/me-sim/src/a.rs"],
+    );
+    assert_eq!(output.status.code(), Some(1), "an edit outside the home");
+    assert!(
+        stdout(&output).starts_with("deny orchestrator-edit (orchestrator, shadow): "),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]

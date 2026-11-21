@@ -85,6 +85,13 @@ impl GuardPath {
         Self(format!("{prefix}{}", parts.join("/")))
     }
 
+    /// Normalizes `path` when it is absolute: a drive letter, a leading slash or `~`. `None` for a relative path.
+    #[must_use]
+    pub fn absolute(path: &str) -> Option<Self> {
+        let path = path.replace('\\', "/");
+        is_absolute(&path).then(|| Self::new(&path))
+    }
+
     /// The normalized text.
     #[must_use]
     pub fn as_str(&self) -> &str {

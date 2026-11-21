@@ -46,7 +46,10 @@ the project's `worktree_new` at `worktree_path` with the part's slug, writable f
 holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
 the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install`;
 `[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
-them excluded); `orchestrator_writable` gives it the edits there.
+them excluded); `orchestrator_writable` gives it the edits there. A worker may write paths outside its folder only
+when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ path, kinds }]` for its task kind, and
+under `[hooks] brief_writable` the files its brief lists on a `Writes:` line; in their repository it may then `add`,
+`rm`, `commit`, `push` (no force) and `pull` those paths only, whatever the branch.
 `headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with
