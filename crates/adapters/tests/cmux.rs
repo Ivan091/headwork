@@ -267,7 +267,10 @@ fn spawn_writes_the_label_and_path_into_the_initial_command() {
     let initial = params["initial_command"].as_str().unwrap();
     assert_eq!(
         initial,
-        r#"/usr/bin/env HEADWORK_HOST_LABEL=demo/sand "PATH=${PATH%%:*}:"/opt/homebrew/bin:/usr/bin /Users/me/.local/bin/headwork launch --task 3"#,
+        concat!(
+            r#"/usr/bin/env HEADWORK_HOST_LABEL=demo/sand "PATH=${PATH%%:*}:"/opt/homebrew/bin:/usr/bin "#,
+            "/Users/me/.local/bin/headwork launch --task 3"
+        ),
         "the surface's own shims stay first on PATH"
     );
     assert_eq!(
