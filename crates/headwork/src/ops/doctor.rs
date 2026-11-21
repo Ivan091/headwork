@@ -434,7 +434,10 @@ fn host_check(d: &Doctor<'_>, config: &Config) -> Check {
                 "{} does not answer: {error:#}",
                 config.machine.host.as_str()
             ),
-            "start wmux, or set `machine.host_bin` in config.toml to its CLI",
+            format!(
+                "start {}, or set `machine.host_bin` in config.toml to its CLI",
+                config.machine.host.as_str()
+            ),
         ),
     }
 }
