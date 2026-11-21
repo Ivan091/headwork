@@ -17,8 +17,8 @@ use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::grants::brief_grants;
 use headwork_core::guard::stop::{StopFacts, check_stop};
 use headwork_core::guard::{
-    ALLOW_HEADER, DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope, SimpleCommand, ToolCall,
-    check_tool, commands, repo_from_url,
+    ALLOW_HEADER, CLOSE_HEADER, DEFAULT_BRANCHES, Decision, GuardPath, Places, Scope,
+    SimpleCommand, ToolCall, check_tool, commands, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{
@@ -826,6 +826,15 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
             for pattern in allowed_patterns(call.env.config, asked, &response) {
                 store.allow_user_only(task.id, &call.session.id, &pattern, Actor::Hook)?;
             }
+            if task.shape.is_lead() && close_go(asked, &response) {
+                store.append_event(
+                    Actor::Hook,
+                    Some(task.id),
+                    Some(&call.session.id),
+                    EVENT_CLOSE_GO,
+                    &json!({}),
+                )?;
+            }
         }
         if let Some(surface) = &call.session.host_surface
             && let Err(error) = call.env.host.clear_blocked(&SurfaceId(surface.clone()))
@@ -873,6 +882,23 @@ fn moved_to_background(response: Option<&Value>) -> bool {
 
 /// The field of a `Bash` response that names the background task it became.
 const BACKGROUND_TASK_ID: &str = "backgroundTaskId";
+
+/// The event a lead's answered `Close` ask records: the user's go to close the task (`[leads] ask_before_close`).
+pub const EVENT_CLOSE_GO: &str = "close-go";
+
+/// Whether an answered ask gives the go to close: a question headed `Close` whose chosen answer starts with `Close`.
+fn close_go(asked: &Value, response: &Value) -> bool {
+    let answers = response.get("answers");
+    questions(asked)
+        .into_iter()
+        .filter(|(_, header, _)| header.trim().eq_ignore_ascii_case(CLOSE_HEADER))
+        .any(|(question, _, _)| {
+            answers
+                .and_then(|answers| answers.get(question))
+                .and_then(Value::as_str)
+                .is_some_and(|answer| answer.trim_start().to_lowercase().starts_with("close"))
+        })
+}
 
 /// The user-only patterns an answered `Allow` ask grants: for each question headed `Allow` whose chosen answer starts
 /// with `Allow`, the configured user-only patterns that a command in backticks in the question runs.

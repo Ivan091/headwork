@@ -23,3 +23,11 @@
 - You close only after every part has closed: `done` is refused while one is not closed.
 - Your subagents live in your process tree: a park ends them and they do not resume. Your parts are sessions and do
   resume. Your `recap` names where each part stands.
+
+## Ask before you close
+
+- When the task is finished (every pull request merged, every part closed), ask the user before you close: an
+  `AskUserQuestion` headed `Close`, naming what was delivered, with the options "Close it (Recommended)" and "Keep it
+  open". Send the report to `{orchestrator}` first, so the ask is the last thing before `done`.
+- Call `done` only after the user picked "Close it"; until then `done` is refused (`lead-close-unasked`). When they keep
+  it open, take the next work they type in your tab and ask again when it is finished.

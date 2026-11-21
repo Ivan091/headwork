@@ -6,7 +6,7 @@
 )]
 
 use headwork_core::lifecycle::{
-    CleanupFacts, CloseCause, CloseFacts, Dependency, FableGate, FinishFacts, MergePolicy,
+    CleanupFacts, CloseCause, CloseFacts, CloseGo, Dependency, FableGate, FinishFacts, MergePolicy,
     MergeSource, ParkedFacts, PrEnd, SessionFacts, StartFacts, WorktreeEnd,
 };
 use headwork_core::{MachineMode, PartSlots, Refusal, TaskSnapshot, TaskState, Trigger, apply};
@@ -37,6 +37,7 @@ const READY: CloseFacts = CloseFacts {
     running_job: false,
     report_sent: true,
     live_parts: 0,
+    go: CloseGo::Clear,
 };
 
 const FINISHED: FinishFacts = FinishFacts {
@@ -44,6 +45,7 @@ const FINISHED: FinishFacts = FinishFacts {
     running_job: false,
     report_sent: true,
     live_parts: 0,
+    go: CloseGo::Clear,
     pr: PrEnd::None,
 };
 
@@ -392,6 +394,13 @@ fn close_guards() {
             },
             Refusal::LeadPartsLive { live: 2 },
         ),
+        (
+            CloseFacts {
+                go: CloseGo::Awaiting,
+                ..READY
+            },
+            Refusal::LeadCloseUnasked,
+        ),
     ];
     for (facts, refusal) in cases {
         assert_eq!(
@@ -450,6 +459,13 @@ fn finish_guards() {
                 ..FINISHED
             },
             Refusal::LeadPartsLive { live: 1 },
+        ),
+        (
+            FinishFacts {
+                go: CloseGo::Awaiting,
+                ..FINISHED
+            },
+            Refusal::LeadCloseUnasked,
         ),
         (
             FinishFacts {
@@ -736,6 +752,10 @@ fn pr_end() -> impl Strategy<Value = PrEnd> {
     ]
 }
 
+fn close_go() -> impl Strategy<Value = CloseGo> {
+    prop_oneof![Just(CloseGo::Clear), Just(CloseGo::Awaiting)]
+}
+
 fn trigger() -> impl Strategy<Value = Trigger> {
     let merge_source = prop_oneof![Just(MergeSource::GitHost), Just(MergeSource::Worker)];
     let merge_policy = prop_oneof![Just(MergePolicy::Deliver), Just(MergePolicy::Human)];
@@ -757,30 +777,41 @@ fn trigger() -> impl Strategy<Value = Trigger> {
         Just(Trigger::ChangesRequested),
         (merge_source, merge_policy)
             .prop_map(|(source, policy)| Trigger::Merged { source, policy }),
-        (cause, any::<bool>(), any::<bool>(), any::<bool>(), 0..3_u32).prop_map(
-            |(cause, open_ask, running_job, report_sent, live_parts)| {
-                Trigger::Close(CloseFacts {
-                    cause,
-                    open_ask,
-                    running_job,
-                    report_sent,
-                    live_parts,
-                })
-            }
-        ),
+        (
+            cause,
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+            0..3_u32,
+            close_go()
+        )
+            .prop_map(
+                |(cause, open_ask, running_job, report_sent, live_parts, go)| {
+                    Trigger::Close(CloseFacts {
+                        cause,
+                        open_ask,
+                        running_job,
+                        report_sent,
+                        live_parts,
+                        go,
+                    })
+                }
+            ),
         (
             any::<bool>(),
             any::<bool>(),
             any::<bool>(),
             0..3_u32,
+            close_go(),
             pr_end()
         )
-            .prop_map(|(open_ask, running_job, report_sent, live_parts, pr)| {
+            .prop_map(|(open_ask, running_job, report_sent, live_parts, go, pr)| {
                 Trigger::Finish(FinishFacts {
                     open_ask,
                     running_job,
                     report_sent,
                     live_parts,
+                    go,
                     pr,
                 })
             }),
@@ -826,13 +857,19 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
             !(source == MergeSource::Worker && policy == MergePolicy::Human)
         }
         Trigger::Close(f) => {
-            !task.keep && !f.open_ask && !f.running_job && f.live_parts == 0 && f.report_sent
+            !task.keep
+                && !f.open_ask
+                && !f.running_job
+                && f.live_parts == 0
+                && f.go == CloseGo::Clear
+                && f.report_sent
         }
         Trigger::Finish(f) => {
             !task.keep
                 && !f.open_ask
                 && !f.running_job
                 && f.live_parts == 0
+                && f.go == CloseGo::Clear
                 && f.report_sent
                 && matches!(f.pr, PrEnd::None | PrEnd::Closed)
         }

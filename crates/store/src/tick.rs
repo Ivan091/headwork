@@ -208,6 +208,20 @@ impl Store {
         )?)
     }
 
+    /// Whether the user gave the task's lead its go to close: an answered ask headed `Close`, recorded by the hook as a
+    /// `close-go` event.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn close_go_given(&self, task: TaskId) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND type = 'close-go')",
+            params![task.0],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Whether an ask of the task still waits on the user.
     ///
     /// # Errors

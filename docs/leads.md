@@ -110,7 +110,14 @@ Config, `[leads]`:
 enabled = true      # top-level tasks are leads; placement of section 2
 max_parts = 2       # live parts per lead at once
 part_title = "{part}"   # a part's tab title
+ask_before_close = true # a lead asks the user (an ask headed `Close`) before its task closes
 ```
+
+With `ask_before_close` on (the default), a lead's `done` and the tick's merged-grace close are refused
+(`lead-close-unasked`) until the user answered the lead's `AskUserQuestion` headed `Close` with an option starting
+`Close`; the hook records that answer as a `close-go` event. "Keep it open" is no go. The lead's rules carry the
+section "Ask before you close" only while the setting is on. A user's drop and the orchestrator's close are not held.
+Set it to `false` to let leads close themselves again.
 
 ## 4. Changes by area
 

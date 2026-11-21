@@ -887,3 +887,9 @@ and the reason.
   `orchestrator.md` is in `~/.claude/agents` or the launch folder's `.claude/agents`. The agent file may live in the project
   (`~/Work/.claude/agents`), so the old "else `root`" fallback made a bare `headwork orchestrator` fail there.
 - 2026-11-21 Bare `headwork`. With no arguments the binary runs `headwork orchestrator` with its defaults, instead of printing the usage. `--help` and `--version` are unchanged.
+- 2026-11-21 Leads ask before closing. The user asked that a lead ask them before its task closes, until they say
+  otherwise: `[leads] ask_before_close`, default `true`. The go is an answered `AskUserQuestion` headed `Close` whose
+  pick starts with `Close`, stored as a `close-go` event (no migration: events hold it). It holds the lead's own close
+  and the tick's merged-grace close (`go: CloseGo` in `CloseFacts` and `FinishFacts`), not a drop or the orchestrator's
+  close, which already follow the user's word. A go stays valid for the task once given. The setting is not part of
+  the rules hash, so a running lead sees a change at its next session.

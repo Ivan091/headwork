@@ -665,6 +665,7 @@ impl<'b> Run<'_, 'b> {
                 running_job: super::jobs::has_running_job(self.store, id)?,
                 report_sent: self.store.report_sent(id)?,
                 live_parts: self.store.live_parts(id)?,
+                go: super::close::close_go(self.store, self.env().config, &task)?,
             };
             let key = format!("merged-grace:{}", task.name);
             if !self.enforce {

@@ -661,6 +661,9 @@ pub struct LeadsConfig {
     /// The title of a part's tab. `{part}` is the part's own slug after its lead's, `{name}` the full task name,
     /// `{model}` and `{effort}` as in `[layout] title`.
     pub part_title: String,
+    /// A lead asks the user before its task closes: its own close and the tick's merged-grace close wait for the
+    /// user's go on an ask headed `Close` (`docs/decisions.md`, 2026-11-21, leads ask before closing).
+    pub ask_before_close: bool,
 }
 
 impl LeadsConfig {
@@ -685,6 +688,7 @@ impl Default for LeadsConfig {
             enabled: false,
             max_parts: NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
             part_title: DEFAULT_PART_TITLE.to_owned(),
+            ask_before_close: true,
         }
     }
 }
