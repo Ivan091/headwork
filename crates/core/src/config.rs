@@ -407,6 +407,9 @@ pub struct HooksConfig {
     /// Notes repositories the orchestrator may commit and push in, such as the folder it runs in when that holds only
     /// briefs and notes; give it write access with `orchestrator_writable` too.
     pub orchestrator_repos: Vec<String>,
+    /// Folders where a worker may write the files its brief lists on a `Writes:` line, and commit them in the
+    /// repository that holds them, such as a notes folder where audits leave their reports.
+    pub brief_writable: Vec<String>,
     /// A push notification counts for an ask within this many seconds.
     pub push_window_secs: u32,
     /// A sent file counts for a review ask within this many seconds.
@@ -433,6 +436,7 @@ impl Default for HooksConfig {
             ],
             orchestrator_writable: vec!["~/.claude/cache/orchestrate".to_owned()],
             orchestrator_repos: Vec::new(),
+            brief_writable: Vec::new(),
             push_window_secs: 120,
             file_window_secs: 300,
         }
@@ -534,6 +538,9 @@ pub struct ProjectConfig {
     /// Paths a worker may read and never write.
     #[serde(default)]
     pub read_only_paths: Vec<String>,
+    /// Paths outside its folder a worker of this project may write, and commit in the repository that holds them.
+    #[serde(default)]
+    pub extra_writable: Vec<ExtraWritable>,
     /// Review requirements.
     #[serde(default)]
     pub review: ReviewConfig,
@@ -556,6 +563,26 @@ pub struct ProjectConfig {
     /// itself.
     #[serde(default)]
     pub install: bool,
+}
+
+/// One entry of a project's `extra_writable`: a file or folder outside the task's own folder that its workers may write,
+/// and commit and push in the repository that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtraWritable {
+    /// The file or folder; a folder grants everything below it.
+    pub path: String,
+    /// The task kinds it is for; empty grants it to every task of the project.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+}
+
+impl ExtraWritable {
+    /// Whether a task of this kind gets the path.
+    #[must_use]
+    pub fn applies_to(&self, kind: &str) -> bool {
+        self.kinds.is_empty() || self.kinds.iter().any(|own| own == kind)
+    }
 }
 
 /// `review` of a project.

@@ -352,8 +352,11 @@ enum JobAction {
 enum RuleAction {
     /// Decide a Bash command as the orchestrator, or as a task's worker with `--task`; exits 1 on a deny.
     Test {
-        /// The command line.
+        /// The command line, or the file with `--edit`.
         command: String,
+        /// Decide an `Edit` of the file the argument names instead of a Bash command.
+        #[arg(long)]
+        edit: bool,
         /// Decide as this task's worker session.
         #[arg(long)]
         task: Option<String>,
@@ -461,6 +464,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             action:
                 RuleAction::Test {
                     command,
+                    edit,
                     task,
                     cwd,
                     branch,
@@ -470,6 +474,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         } => {
             let probe = RuleProbe {
                 command: &command,
+                edit,
                 task: task.as_deref(),
                 cwd,
                 branch,
@@ -1178,6 +1183,7 @@ fn answer_hook(event: HookEvent, session: &str) -> Result<headwork::ops::hook::H
 /// What `rule test` decides.
 struct RuleProbe<'a> {
     command: &'a str,
+    edit: bool,
     task: Option<&'a str>,
     cwd: Option<PathBuf>,
     branch: Option<String>,
@@ -1226,17 +1232,29 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
         Role::Orchestrator
     };
     let cwd = headwork::ops::slashed(&cwd);
-    let mut scope = scope_for(&store, &env, role, task.as_ref(), &cwd, Some(probe.command))?;
+    let mut scope = scope_for(
+        &store,
+        &env,
+        role,
+        task.as_ref(),
+        &cwd,
+        (!probe.edit).then_some(probe.command),
+    )?;
     if let Some(branch) = &probe.branch {
         scope.branch = Some(branch.clone());
     }
-    let decision = check_tool(
-        &scope,
-        &ToolCall::Bash {
+    let call = if probe.edit {
+        ToolCall::Write {
+            tool: "Edit",
+            path: probe.command,
+        }
+    } else {
+        ToolCall::Bash {
             command: probe.command,
             background: probe.background,
-        },
-    );
+        }
+    };
+    let decision = check_tool(&scope, &call);
     let enforced = match &decision {
         Decision::Deny(verdict) => config.hooks.enforces(verdict.rule),
         Decision::Allow => config.hooks.enforce,

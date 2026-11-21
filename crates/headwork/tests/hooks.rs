@@ -63,7 +63,15 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn world(hooks: &str, keep: bool) -> World {
+    world_in(hooks, "", keep)
+}
+
+/// A world whose `[hooks]` and project tables get these extra lines, with `@DIR@` standing for its temporary folder.
+fn world_in(hooks: &str, project: &str, keep: bool) -> World {
     let dir = tempfile::tempdir().unwrap();
+    let dir_text = dir.path().display().to_string().replace('\\', "/");
+    let hooks = hooks.replace("@DIR@", &dir_text);
+    let project = project.replace("@DIR@", &dir_text);
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
     git(&main, &["init", "-q", "-b", "master"]);
@@ -73,7 +81,7 @@ fn world(hooks: &str, keep: bool) -> World {
         "[machine]\nhost = \"wmux\"\n\n[hooks]\nplugin_dir = \"S:/plugin\"\n{hooks}\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
          deliver = \"scripts/ship.sh\"\nmerge = \"deliver\"\nallowed_repos = [\"Ivan091/demo\"]\n\
-         user_only = [\"scripts/publish.sh\"]\n"
+         user_only = [\"scripts/publish.sh\"]\n{project}\n"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -1569,7 +1577,7 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
         &mut w,
         "Bash",
         &json!({ "command": "cargo build" }),
-        &json!({}),
+        &json!({ "stdout": "ok", "backgroundTaskId": null }),
     );
     w.hook(HookEvent::Stop, &stop);
     assert_eq!(w.denies().len(), 1, "a foreground Bash is not waiting");
@@ -1583,6 +1591,11 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
         ("Workflow", json!({}), json!({})),
         ("Agent", json!({ "run_in_background": true }), json!({})),
         ("Agent", json!({}), json!({ "status": "async_launched" })),
+        (
+            "Bash",
+            json!({ "command": "scripts/ship.sh -m x" }),
+            json!({ "stdout": "", "backgroundTaskId": "bje2sgi00", "timedOutAfterMs": 600_000 }),
+        ),
     ] {
         w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "again" }));
         post(&mut w, tool, &input, &response);
@@ -1617,5 +1630,58 @@ fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
             ("would-deny".to_owned(), "worker-global-skill".to_owned())
         ],
         "events"
+    );
+}
+
+#[test]
+fn extra_writable_paths_follow_the_project_the_kind_and_the_brief() {
+    let mut w = world_in(
+        "brief_writable = [\"@DIR@/notes\"]",
+        "extra_writable = [{ path = \"@DIR@/notes/handoff.md\", kinds = [\"task\"] }, \
+         { path = \"@DIR@/notes/night\", kinds = [\"car-training\"] }]",
+        false,
+    );
+    w.start();
+    let notes = w.dir.path().join("notes");
+    let write = |w: &mut World, name: &str| {
+        let path = notes.join(name).display().to_string();
+        w.pre("Write", &json!({ "file_path": path, "content": "x" }));
+        w.denies().len()
+    };
+    assert_eq!(write(&mut w, "handoff.md"), 0, "granted to this kind");
+    assert_eq!(
+        write(&mut w, "night/a.md"),
+        1,
+        "granted to another kind only"
+    );
+    assert_eq!(write(&mut w, "plan.md"), 2, "not named yet");
+    let brief = format!("# Task\n\nWrites: `{}`\n", notes.join("plan.md").display());
+    std::fs::write(&w.task.brief_path, brief).unwrap();
+    assert_eq!(
+        write(&mut w, "plan.md"),
+        2,
+        "named on the brief's Writes: line"
+    );
+    assert_eq!(write(&mut w, "other.md"), 3, "a sibling stays refused");
+    let notes_text = notes.display().to_string().replace('\\', "/");
+    w.pre("Bash", &json!({ "command": format!("cd {notes_text} && git add plan.md handoff.md && git commit -m x && git push") }));
+    assert_eq!(w.denies().len(), 3, "commits its granted files");
+    w.pre(
+        "Bash",
+        &json!({ "command": format!("git -C {notes_text} add -A") }),
+    );
+    assert_eq!(w.denies().len(), 4, "not the whole repository");
+    let logged = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "would-deny")
+        .all(|event| {
+            event.data["cwd"]
+                .as_str()
+                .is_some_and(|cwd| !cwd.is_empty())
+        });
+    assert!(
+        logged,
+        "each would-deny records the session's folder for a replay"
     );
 }

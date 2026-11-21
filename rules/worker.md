@@ -6,7 +6,10 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 ## How to work
 
 
-- Work in your own folder only. Edits elsewhere are refused, except Claude's memory, plans and the scratchpad.
+- Work in your own folder only. Edits elsewhere are refused, except Claude's memory, plans and the scratchpad, and the
+  notes paths your project grants your task kind or your brief lists on a `Writes:` line: write those, and in their
+  repository only `git add` and `git rm` of them by name, `git commit` (no `-a`, no `--amend`), `git push` (no force)
+  and `git pull`.
 - Deliver with {deliver}. Never commit or push on the default branch; make a kebab-case branch, write single-line
   Conventional Commits without AI attribution, and open a pull request.
 - Publishing, uploads, logins and releases are the user's alone; never run them, unless the user allowed that command

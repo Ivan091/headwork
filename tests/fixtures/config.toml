@@ -36,6 +36,10 @@ long_jobs = ["scripts/rl-run.sh", "cargo run --release -p render"]
 jobs.car-training = { park_policy = "checkpoint", checkpoint = "{out}/checkpoint.json" }
 jobs.pro-render = { park_policy = "rerun" }
 jobs.publish = { park_policy = "finish" }
+extra_writable = [
+  { path = "S:/Code/notes/handoff-car-training.md", kinds = ["car-training"] },
+  { path = "S:/Code/notes/night-results", kinds = ["car-training"] },
+]
 
 [project.me-studio]
 main = "S:/Code/me-studio/me-studio"

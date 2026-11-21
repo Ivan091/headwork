@@ -419,3 +419,58 @@ fn enforce_rules_name_known_rules_and_enforce_only_those() {
     );
     assert!(unknown.is_err(), "unknown id");
 }
+
+#[test]
+fn extra_writable_paths_name_their_task_kinds() {
+    let config = machine();
+    let me_sim = config.project(&project("me-sim")).unwrap();
+    let paths: Vec<&str> = me_sim
+        .extra_writable
+        .iter()
+        .map(|grant| grant.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "S:/Code/notes/handoff-car-training.md",
+            "S:/Code/notes/night-results"
+        ],
+        "in order"
+    );
+    assert!(
+        me_sim
+            .extra_writable
+            .iter()
+            .all(|grant| grant.applies_to("car-training")),
+        "car-training"
+    );
+    assert!(
+        !me_sim
+            .extra_writable
+            .iter()
+            .any(|grant| grant.applies_to("task")),
+        "not other kinds"
+    );
+    let studio = config.project(&project("me-studio")).unwrap();
+    assert!(studio.extra_writable.is_empty(), "none by default");
+    assert!(
+        config.hooks.brief_writable.is_empty(),
+        "no brief roots by default"
+    );
+    let every = fixture("config.toml").replace(", kinds = [\"car-training\"] }", " }");
+    let every = Config::parse(&every, "every").unwrap();
+    let every = every.project(&project("me-sim")).unwrap();
+    assert_eq!(every.extra_writable.len(), 2, "both entries");
+    assert!(
+        every
+            .extra_writable
+            .iter()
+            .all(|grant| grant.applies_to("task")),
+        "no kinds: every task"
+    );
+    let unknown = fixture("config.toml").replace("kinds = [\"car-training\"]", "kind = \"x\"");
+    assert!(
+        Config::parse(&unknown, "unknown").is_err(),
+        "unknown keys refused"
+    );
+}

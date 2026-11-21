@@ -5,6 +5,7 @@
 //! for a [`Decision`]. Whether a deny blocks or is only logged (shadow mode) is the caller's business.
 
 pub mod ask;
+pub mod grants;
 pub mod paths;
 pub mod shell;
 pub mod stop;
@@ -12,6 +13,7 @@ pub mod stop;
 use serde::Serialize;
 
 use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
+use grants::{GrantedGit, granted_git};
 pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
 
@@ -201,6 +203,9 @@ pub struct Scope {
     pub writable: Vec<GuardPath>,
     /// Folders a worker may read and never write.
     pub read_only: Vec<GuardPath>,
+    /// Files and folders outside its folder a worker may write, and commit in the repository that holds them: its
+    /// project's `extra_writable` for its task kind and the files its brief lists on a `Writes:` line (see [`grants`]).
+    pub extra_writable: Vec<GuardPath>,
     /// Delivery and worktree scripts the orchestrator may not run, such as `scripts/ship.sh`.
     pub scripts: Vec<String>,
     /// Commands only the user runs.
@@ -267,7 +272,12 @@ pub fn check_tool(scope: &Scope, call: &ToolCall<'_>) -> Decision {
 
 fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
     let target = scope.places.resolve(&scope.cwd, path);
-    let inside = scope.writable.iter().any(|root| target.is_within(root));
+    let granted = role == Role::Worker
+        && scope
+            .extra_writable
+            .iter()
+            .any(|grant| target.is_within(grant));
+    let inside = granted || scope.writable.iter().any(|root| target.is_within(root));
     match role {
         Role::Orchestrator if !inside => Decision::deny(
             RuleId::OrchestratorEdit,
@@ -430,8 +440,10 @@ fn check_worker_command(
     let Some((sub, args)) = git_subcommand(command) else {
         return Decision::Allow;
     };
-    if let Some(decision) = check_git_outside(scope, command, cwd, &sub, &args) {
-        return decision;
+    match check_git_outside(scope, command, cwd, &sub, &args) {
+        GitPlace::Own => {}
+        GitPlace::Granted => return Decision::Allow,
+        GitPlace::Refused(decision) => return decision,
     }
     let on_default = scope
         .branch
@@ -512,20 +524,22 @@ fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
 
 /// A worker's git write against a folder outside its writable folders ([`git_folder`]; an unknown folder is allowed).
 /// A fast-forward of the project's main checkout (`git pull --ff-only`) is allowed, as the ship flow does after a
-/// merge.
+/// merge, and so is a write the worker's extra writable paths allow ([`grants`]).
 fn check_git_outside(
     scope: &Scope,
     command: &SimpleCommand,
     cwd: Option<&str>,
     sub: &str,
     args: &[String],
-) -> Option<Decision> {
+) -> GitPlace {
     if !is_git_write(sub, args) {
-        return None;
+        return GitPlace::Own;
     }
-    let folder = git_folder(scope, command, cwd)?;
+    let Some(folder) = git_folder(scope, command, cwd) else {
+        return GitPlace::Own;
+    };
     if scope.writable.iter().any(|root| folder.is_within(root)) {
-        return None;
+        return GitPlace::Own;
     }
     let fast_forward = sub == "pull" && args.iter().any(|arg| arg == "--ff-only");
     if fast_forward
@@ -534,16 +548,34 @@ fn check_git_outside(
             .as_ref()
             .is_some_and(|main| folder.is_within(main))
     {
-        return None;
+        return GitPlace::Own;
     }
-    Some(Decision::deny(
-        RuleId::WorkerGitOutside,
-        format!(
+    let reason = match granted_git(&scope.extra_writable, &scope.places, &folder, sub, args) {
+        GrantedGit::Allowed => return GitPlace::Granted,
+        GrantedGit::Beyond(why) => format!(
+            "`git {sub}` in {folder} reaches beyond the paths this task may write there: {why}; ask the orchestrator \
+             (session `{ORCHESTRATOR_ADDRESS}`) for anything else"
+        ),
+        GrantedGit::Unrelated => format!(
             "`git {sub}` would change {folder}, outside this task's folder ({}); change only your own worktree, or \
              ask the orchestrator (session `{ORCHESTRATOR_ADDRESS}`)",
             scope.cwd
         ),
-    ))
+    };
+    GitPlace::Refused(Decision::deny(RuleId::WorkerGitOutside, reason))
+}
+
+/// Where a worker's git command acts.
+#[derive(Debug)]
+enum GitPlace {
+    /// A read, a folder the guard cannot tell, the worker's own folders, or a fast-forward of its main checkout: the
+    /// other git rules decide.
+    Own,
+    /// A repository holding paths the worker was granted outside its folder, within those grants: allowed whatever the
+    /// branch, since such a notes repository is committed on its default branch by design.
+    Granted,
+    /// Outside its folders.
+    Refused(Decision),
 }
 
 /// The folder a git command acts on: its working folder with each `-C` applied in turn, as git stacks them. `None`
