@@ -1,6 +1,6 @@
 # Leads: one workspace per task, the user talks to the lead
 
-Status: plan of 2026-11-21; L1 (store and core), L2 (placement), L3 (MCP tools and rules) and L4 (close, tick, board) built, see `docs/decisions.md` (2026-11-21, leads, milestones L1 to L4). It turns the "lead variant" that `docs/sub-roots.md` recommended (a brief
+Status: plan of 2026-11-21; L1 (store and core), L2 (placement), L3 (MCP tools and rules) and L4 (close, tick, board) built, see `docs/decisions.md` (2026-11-21, leads, milestones L1 to L4); L5 tried on cmux, wmux still to do, see `docs/trials/e-leads/results.md`. It turns the "lead variant" that `docs/sub-roots.md` recommended (a brief
 convention) into a role headwork knows, and changes who the user talks to. Research behind it: `docs/cmux.md`
 ("Workspace groups", "Tabs in one workspace"), and the wmux notes below.
 
