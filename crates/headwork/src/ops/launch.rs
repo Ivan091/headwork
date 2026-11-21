@@ -434,7 +434,7 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
     let agent = start.agent.clone().unwrap_or_else(|| {
         let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
             .map_or_else(|| home.expand("~/.claude"), PathBuf::from);
-        orchestrator_agent(&claude_dir).to_owned()
+        orchestrator_agent(&claude_dir, &dir).to_owned()
     });
     let argv = ClaudeLaunch {
         plugin_dir: plugin_dir.as_deref(),
@@ -477,13 +477,17 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
     Ok(code)
 }
 
-/// The agent definition the orchestrator runs: `orchestrator` once `<claude_dir>/agents/orchestrator.md` exists, else
-/// `root`, its name before 2026-11-14.
+/// The agent definition the orchestrator runs: `orchestrator`, unless only the old `root` definition exists, in
+/// `<claude_dir>/agents/root.md` with no `orchestrator.md` there or in `<dir>/.claude/agents`.
 #[must_use]
-pub fn orchestrator_agent(claude_dir: &Path) -> &'static str {
-    if claude_dir.join("agents/orchestrator.md").is_file() {
-        "orchestrator"
-    } else {
+pub fn orchestrator_agent(claude_dir: &Path, dir: &Path) -> &'static str {
+    let has = |base: &Path, name: &str| base.join(format!("agents/{name}.md")).is_file();
+    if has(claude_dir, "root")
+        && !has(claude_dir, "orchestrator")
+        && !has(&dir.join(".claude"), "orchestrator")
+    {
         "root"
+    } else {
+        "orchestrator"
     }
 }

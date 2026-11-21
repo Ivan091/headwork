@@ -883,3 +883,6 @@ and the reason.
   `failed` would mislead. A part whose lead is not listed gets a line of its own. `[leads] enabled` stays off.
 - 2026-11-21 Doctor and `[leads] enabled`. `unenforced-keys` no longer reports `leads.enabled`: placement (L2), `part_spawn` (L3)
   and close, tick and board (L4) are built, so the key is enforced.
+- 2026-11-21 The orchestrator's agent defaults to `orchestrator`; `root` only when `~/.claude/agents/root.md` exists and no
+  `orchestrator.md` is in `~/.claude/agents` or the launch folder's `.claude/agents`. The agent file may live in the project
+  (`~/Work/.claude/agents`), so the old "else `root`" fallback made a bare `headwork orchestrator` fail there.
