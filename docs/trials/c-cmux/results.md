@@ -33,7 +33,7 @@ Consequence for the adapter: with the CLI, quote the whole `claude ...` line for
 ## Restart behavior [V]
 
 - cmux restores windows, workspaces, panes, scrollback and browser state on relaunch.
-- Session hooks write `~/.cmuxterm/<agent>-hook-sessions.json`: agent session id, workspace, surface, cwd, pid, lifecycle, sanitized launch command. On relaunch cmux rebuilds each workspace and runs `claude --resume <id>`. The sanitizer keeps model, sandbox, config and cwd flags and drops prompts, credentials, old session selectors and non-interactive commands. Whether `--remote-control <name> -n <name>` survive it is **[U]** (test 10).
+- Session hooks write `~/.cmuxterm/<agent>-hook-sessions.json`: agent session id, workspace, surface, cwd, pid, lifecycle, sanitized launch command. On relaunch cmux rebuilds each workspace and runs `claude --resume <id>`. The sanitizer keeps model, sandbox, config and cwd flags and drops prompts, credentials, old session selectors and non-interactive commands. Whether `--remote-control <name> -n <name>` survive it is **[U]** (test 10), and does not apply: this Mac does not use Remote Control.
 - Off switch: `terminal.autoResumeAgentSessions: false` in `~/.config/cmux/cmux.json` (global, not per pane): layout comes back, agent panes stay idle. This is what agentctl needs if it does its own resume.
 - `cmux surface resume set --shell <cmd> | -- <argv...>` attaches a custom resume command to a surface. A CLI or socket write is stored but **not auto-run** until the user approves it in the UI (reply has `approval_required: true`). agentctl cannot silently make a custom resume sticky. Agent hooks publish bindings with auto-resume already granted.
 - Agent Hibernation (off by default except under memory pressure): SIGTERM an idle off-screen agent and resume on revisit; `cmux agent hibernate/wake surface:N`. Matters if agentctl counts running processes.
@@ -63,16 +63,16 @@ Use `--model haiku` and labels `trial-5-*`; close afterwards.
 1. `cmux --version; cmux ping; cmux socket-status --json`: version, pong, socket mode.
 2. `cmux new-workspace --cwd ~ --command 'echo shell=$0 pid=$$; sleep 600'`, then `cmux read-screen --surface <ref>`: confirms a login shell runs it. In another terminal `ps -o pid,ppid,command`: shell with a `sleep` child?
 3. `cmux close-surface --surface <ref>`, then `pgrep -f 'sleep 600'`: child gone? **Key point: closing ends the process.**
-4. Spawn Claude the wmux way: `cmux new-workspace --cwd ~/somerepo --command 'claude --remote-control trial-5-a -n trial-5-a --model haiku --permission-mode auto -- "Reply ok and wait"'`. Does Claude start, does the phone show `trial-5-a`, does `~/.cmuxterm/claude-hook-sessions.json` list the session? **Key point: wrapper plus `--remote-control`/`-n` work.**
+4. Spawn Claude the wmux way: `cmux new-workspace --cwd ~/somerepo --command 'claude --remote-control trial-5-a -n trial-5-a --model haiku --permission-mode auto -- "Reply ok and wait"'`. Does Claude start, does the phone show `trial-5-a`, does `~/.cmuxterm/claude-hook-sessions.json` list the session? **Key point: wrapper plus `--remote-control`/`-n` work.** *Does not apply: this Mac does not use Remote Control (`docs/decisions.md`, 2026-11-21).*
 5. `cmux rename-tab --surface <ref> "trial-5/a"`, then `cmux list-panes --json` and `cmux tree --json`: title present? pid or lifecycle field present?
 6. `cmux capabilities`: look for `surface.input_state`, `feed.*`, `agent.*`. Try the socket call: `printf '{"id":1,"method":"surface.input_state","params":{"surface_id":"<uuid>"}}\n' | nc -U "$CMUX_SOCKET_PATH"` while Claude works and while idle (auth may be needed).
 7. `cmux send --surface <ref> "hi"; cmux send-key enter --surface <ref>`; then leave a half-typed draft and repeat: does the guard refuse, does `--force` override?
 8. In that Claude: "use AskUserQuestion with options 1 yes 2 no". Does Feed show the options with buttons, does the ring and badge appear, does `cmux events --category feed` print it? **Key point: blocked with choices.**
 9. `cmux agent message trial-5/a "ping"`: does the idle child wake with it?
-10. Restart: with `autoResumeAgentSessions` true (default) quit cmux (Cmd+Q) and reopen. Does the pane return with `claude --resume <id>`, and does the phone still show `trial-5-a` (are `--remote-control`/`-n` kept)? Repeat with `false`: the pane should stay idle. **Key point: restart.**
+10. Restart: with `autoResumeAgentSessions` true (default) quit cmux (Cmd+Q) and reopen. Does the pane return with `claude --resume <id>`, and does the phone still show `trial-5-a` (are `--remote-control`/`-n` kept)? Repeat with `false`: the pane should stay idle. **Key point: restart.** *Does not apply: this Mac does not use Remote Control (`docs/decisions.md`, 2026-11-21).*
 11. Cleanup: `cmux close-workspace`; `pgrep -fl claude`.
 
-If short on time: 2, 3, 4, 8, 10.
+If short on time: 2, 3, 8.
 
 ## Not verified
 

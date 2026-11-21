@@ -58,5 +58,5 @@ to launch the requested command"; such a surface still counts as running in `pan
 ## Outside a cmux terminal
 
 The socket's default mode is `cmuxOnly` ("only the bundled cmux CLI may connect"), and the adapter always goes through
-that CLI. A scheduled tick under launchd was not tried: there is no launchd schedule yet (see the macOS list in
-`docs/decisions.md`).
+that CLI. A scheduled tick under launchd was not tried: there is no launchd schedule yet (see the macOS tick in
+`docs/decisions.md`, 2026-11-21: a LaunchAgent, planned in the follow-up `headwork-macos-launchd-tick`).
