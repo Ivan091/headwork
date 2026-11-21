@@ -802,7 +802,13 @@ impl<R: Runner> TerminalHost for Cmux<R> {
     ) -> Result<(), HostError> {
         let answers = choices
             .iter()
-            .map(|choice| format!("{} {}", choice.key, choice.label))
+            .map(|choice| {
+                if choice.label.starts_with(&choice.key) {
+                    choice.label.clone()
+                } else {
+                    format!("{} {}", choice.key, choice.label)
+                }
+            })
             .collect::<Vec<_>>()
             .join(" · ");
         let shown = if answers.is_empty() {

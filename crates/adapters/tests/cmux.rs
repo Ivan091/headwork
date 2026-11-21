@@ -400,7 +400,7 @@ fn a_blocked_state_is_a_sidebar_status_and_a_notification() {
         },
         Choice {
             id: "no".to_owned(),
-            label: "No".to_owned(),
+            label: "2 No".to_owned(),
             key: "2".to_owned(),
         },
     ];
