@@ -389,6 +389,7 @@ dependencies = [
  "ctrlc",
  "fs4",
  "headwork-core",
+ "rustix",
  "serde",
  "serde_json",
  "sysinfo",

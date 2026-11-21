@@ -328,8 +328,9 @@ fn on_path(d: &Doctor<'_>) -> Check {
                 "path",
                 "`headwork` is not on PATH; sessions started by headwork use HEADWORK_EXE and are not affected",
                 format!(
-                    "copy {} to a folder on PATH, such as ~/.local/bin/headwork.exe",
-                    slashed(d.exe)
+                    "copy {} to a folder on PATH, such as ~/.local/bin/headwork{}",
+                    slashed(d.exe),
+                    std::env::consts::EXE_SUFFIX
                 ),
             )
         },

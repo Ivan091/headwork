@@ -1332,7 +1332,10 @@ fn schedule_command(install: bool, json: bool, out: &mut impl Write) -> Result<E
     use headwork::ops::schedule::{self, Schtasks};
     let report = if install {
         let home = Home::locate()?;
-        let installed = home.expand("~/.local/bin/headwork.exe");
+        let installed = home.expand(&format!(
+            "~/.local/bin/headwork{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         let current = std::env::current_exe().context("finding the headwork program")?;
         schedule::install(&Schtasks, &schedule::program(&installed, &current))?
     } else {

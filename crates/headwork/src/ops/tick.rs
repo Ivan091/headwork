@@ -322,7 +322,8 @@ impl<'b> Run<'_, 'b> {
             .is_some_and(|ask| ask.state.is_waiting()))
     }
 
-    /// A starting session whose pane shows Claude Code's folder trust dialog waits on the user, unseen: headwork
+    /// A starting session (launched or not, its task still spawning) whose pane shows Claude Code's folder trust
+    /// dialog waits on the user, unseen: headwork
     /// trusts every project's main checkout before a session starts, so this is the fallback. The tick raises it as
     /// a `trust` ask, a blocked state on the pane whose buttons answer the dialog, and a notification, and holds back
     /// the spawn timeout meanwhile. Once the dialog is gone the ask is retired; an answer given through the store is
@@ -335,10 +336,14 @@ impl<'b> Run<'_, 'b> {
             let Some(session) = self.store.session_of(id)? else {
                 continue;
             };
-            if session.state != SessionState::Starting {
+            let starting = session.state == SessionState::Starting
+                || (session.state == SessionState::Live
+                    && self.store.task(id)?.state == TaskState::Spawning);
+            let surface = SurfaceId(surface);
+            if !starting {
+                self.retire_trust_ask(id, &surface)?;
                 continue;
             }
-            let surface = SurfaceId(surface);
             let screen = match self.env().host.read_screen(&surface, 40) {
                 Ok(screen) => screen,
                 Err(error) => {
@@ -350,16 +355,11 @@ impl<'b> Run<'_, 'b> {
                     continue;
                 }
             };
-            let ask = self.store.topic_ask(id, TRUST_TOPIC)?;
             if !watch::trust_prompt(&screen) {
-                if let Some(ask) = ask.filter(|ask| ask.state.is_waiting()) {
-                    let actor = self.actor();
-                    self.store.supersede_ask(ask.id, id, actor)?;
-                    self.store.set_ask_topic(ask.id, TRUST_DONE)?;
-                    drop(self.env().host.clear_blocked(&surface));
-                }
+                self.retire_trust_ask(id, &surface)?;
                 continue;
             }
+            let ask = self.store.topic_ask(id, TRUST_TOPIC)?;
             if let Some(ask) = &ask
                 && let (AskState::Answered, Some(answer)) = (ask.state, ask.answer.as_deref())
             {
@@ -408,6 +408,21 @@ impl<'b> Run<'_, 'b> {
             )?;
         }
         self.sweep(FindingId::TrustPrompt)
+    }
+
+    /// Retires a task's waiting `trust` ask and clears its pane's blocked state: the dialog is gone.
+    fn retire_trust_ask(&mut self, id: TaskId, surface: &SurfaceId) -> Result<()> {
+        if let Some(ask) = self
+            .store
+            .topic_ask(id, TRUST_TOPIC)?
+            .filter(|ask| ask.state.is_waiting())
+        {
+            let actor = self.actor();
+            self.store.supersede_ask(ask.id, id, actor)?;
+            self.store.set_ask_topic(ask.id, TRUST_DONE)?;
+            drop(self.env().host.clear_blocked(surface));
+        }
+        Ok(())
     }
 
     fn end_session(&self, session: &SessionRow) -> Result<()> {
