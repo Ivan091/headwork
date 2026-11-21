@@ -1,6 +1,6 @@
 //! The store's error type.
 
-use headwork_core::{AdmissionRefusal, NameError, Refusal, UnknownWord};
+use headwork_core::{AdmissionRefusal, NameError, Refusal, ShapeError, UnknownWord};
 
 /// Everything that can go wrong in the store.
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +51,17 @@ pub enum StoreError {
     /// No active rule has this id.
     #[error("no active rule with id {0}")]
     UnknownRule(i64),
+    /// A stored task's `parent_id` and `lead` do not make a shape.
+    #[error("stored task shape: {0}")]
+    BadShape(#[from] ShapeError),
+    /// A part may not be created under this task.
+    #[error("no part under `{lead}`: {reason}")]
+    NotALead {
+        /// The task named as the lead.
+        lead: String,
+        /// Why not.
+        reason: &'static str,
+    },
     /// Event data is not valid JSON.
     #[error("event data: {0}")]
     Json(#[from] serde_json::Error),

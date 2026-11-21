@@ -46,6 +46,7 @@ fn request(project: &str, slug: &str, kind: &str) -> NewTask {
         brief_path: format!("briefs/{project}-{slug}.md"),
         depends_on: None,
         permission_mode: PermissionMode::Auto,
+        shape: headwork_core::TaskShape::Plain,
     }
 }
 
@@ -1242,4 +1243,285 @@ fn concurrent_writers_wait_for_each_other_instead_of_failing() {
         .filter(|event| event.kind == "machine-mode")
         .count();
     assert_eq!(changes, WRITERS * ROUNDS, "every write landed");
+}
+
+fn shaped(
+    store: &mut Store,
+    config: &Config,
+    project: &str,
+    slug: &str,
+    shape: headwork_core::TaskShape<headwork_store::TaskId>,
+) -> Result<Task, StoreError> {
+    let new = NewTask {
+        shape,
+        ..request(project, slug, "scene")
+    };
+    store.create_task(config, &new, Actor::Orchestrator)
+}
+
+fn lead_with_parts(store: &mut Store, config: &Config, parts: &[&str]) -> (Task, Vec<Task>) {
+    let lead = shaped(
+        store,
+        config,
+        "me-sim",
+        "big",
+        headwork_core::TaskShape::Lead,
+    )
+    .unwrap();
+    store.start_task(config, lead.id, Actor::Tick).unwrap();
+    store
+        .transition(lead.id, &Trigger::SessionStarted(LIVE), Actor::Hook)
+        .unwrap();
+    let parts = parts
+        .iter()
+        .map(|part| {
+            shaped(
+                store,
+                config,
+                "me-sim",
+                &format!("big-{part}"),
+                headwork_core::TaskShape::Part { parent: lead.id },
+            )
+            .unwrap()
+        })
+        .collect();
+    (lead, parts)
+}
+
+#[test]
+fn migration_13_leaves_every_existing_task_plain() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..12] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 12).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (name, main_path, config_hash) VALUES ('me-sim', 'S:/m', 'h');
+             INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+                 VALUES (1, 'me-sim', 'sand', 'scene', 'working', 'opus', 'b.md', 't', 't'),
+                        (2, 'me-sim', 'dune', 'scene', 'queued', 'opus', 'b.md', 't', 't');",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.schema_version().unwrap(),
+        i64::try_from(MIGRATIONS.len()).unwrap(),
+        "migrated"
+    );
+    for name in ["me-sim-sand", "me-sim-dune"] {
+        let task = store.find_task(name).unwrap().unwrap();
+        assert_eq!(task.shape, headwork_core::TaskShape::Plain, "{name}");
+        assert_eq!(store.live_parts(task.id).unwrap(), 0, "{name} has no parts");
+    }
+}
+
+fn on_disk(dir: &tempfile::TempDir) -> (Store, Config, rusqlite::Connection) {
+    let config = config();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    store.sync_projects(&config).unwrap();
+    (store, config, rusqlite::Connection::open(&path).unwrap())
+}
+
+#[test]
+fn a_part_that_is_also_a_lead_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, config, raw) = on_disk(&dir);
+    let (_, parts) = lead_with_parts(&mut store, &config, &["review"]);
+    raw.execute_batch("UPDATE tasks SET lead = 1 WHERE slug = 'big-review'")
+        .unwrap();
+    let error = store.task(parts[0].id).unwrap_err();
+    assert!(matches!(error, StoreError::BadShape(_)), "{error}");
+}
+
+#[test]
+fn a_part_goes_only_under_a_live_lead_of_its_own_project() {
+    let (mut store, config) = store();
+    let plain = create(&mut store, &config, "me-sim", "plain");
+    let error = shaped(
+        &mut store,
+        &config,
+        "me-sim",
+        "plain-review",
+        headwork_core::TaskShape::Part { parent: plain.id },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, StoreError::NotALead { .. }),
+        "a plain task: {error}"
+    );
+    let (lead, parts) = lead_with_parts(&mut store, &config, &["review"]);
+    assert_eq!(
+        parts[0].shape,
+        headwork_core::TaskShape::Part { parent: lead.id },
+        "stored as a part"
+    );
+    let error = shaped(
+        &mut store,
+        &config,
+        "me-studio",
+        "big-render",
+        headwork_core::TaskShape::Part { parent: lead.id },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, StoreError::NotALead { .. }),
+        "another project: {error}"
+    );
+    let error = shaped(
+        &mut store,
+        &config,
+        "me-sim",
+        "big-review-nested",
+        headwork_core::TaskShape::Part {
+            parent: parts[0].id,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, StoreError::NotALead { .. }),
+        "parts start no parts: {error}"
+    );
+    store.drop_task(lead.id, Actor::Orchestrator).unwrap();
+    let error = shaped(
+        &mut store,
+        &config,
+        "me-sim",
+        "big-late",
+        headwork_core::TaskShape::Part { parent: lead.id },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, StoreError::NotALead { .. }),
+        "a dropped lead: {error}"
+    );
+}
+
+#[test]
+fn a_part_beyond_max_parts_waits_and_starts_when_a_sibling_closes() {
+    let (mut store, config) = store();
+    let (_, parts) = lead_with_parts(&mut store, &config, &["a", "b", "c"]);
+    store.start_task(&config, parts[0].id, Actor::Tick).unwrap();
+    store.start_task(&config, parts[1].id, Actor::Tick).unwrap();
+    let error = store
+        .start_task(&config, parts[2].id, Actor::Tick)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            StoreError::Refused {
+                refusal: Refusal::PartCapReached { max: 2 },
+                ..
+            }
+        ),
+        "{error}"
+    );
+    let plain = create(&mut store, &config, "me-sim", "other");
+    store.start_task(&config, plain.id, Actor::Tick).unwrap();
+    store
+        .transition(parts[0].id, &Trigger::LaunchFailed, Actor::Tick)
+        .unwrap();
+    store.start_task(&config, parts[2].id, Actor::Tick).unwrap();
+}
+
+#[test]
+fn a_waiting_part_queues_right_behind_its_lead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, config, raw) = on_disk(&dir);
+    let early = create(&mut store, &config, "me-sim", "early");
+    let (lead, parts) = lead_with_parts(&mut store, &config, &["a"]);
+    let later = create(&mut store, &config, "me-sim", "later");
+    raw.execute_batch(&format!(
+            "UPDATE tasks SET queued_at = CASE id WHEN {} THEN '2026-01-01T00:00:00Z' WHEN {} THEN '2026-01-02T00:00:00Z'
+                 WHEN {} THEN '2026-01-04T00:00:00Z' WHEN {} THEN '2026-01-03T00:00:00Z' END",
+            early.id, lead.id, parts[0].id, later.id
+        ))
+        .unwrap();
+    assert_eq!(
+        store.queued().unwrap(),
+        vec![early.id, parts[0].id, later.id],
+        "the part queued after `later`, but waits at its lead's place"
+    );
+}
+
+#[test]
+fn a_lead_counts_its_parts_until_they_are_closed() {
+    let (mut store, config) = store();
+    let (lead, parts) = lead_with_parts(&mut store, &config, &["a", "b"]);
+    assert_eq!(store.live_parts(lead.id).unwrap(), 2, "two queued parts");
+    assert_eq!(
+        store.parts(lead.id).unwrap(),
+        parts.iter().map(|part| part.id).collect::<Vec<_>>(),
+        "oldest first"
+    );
+    for trigger in [Trigger::Drop, Trigger::BeginClosing] {
+        store
+            .transition(parts[0].id, &trigger, Actor::Orchestrator)
+            .unwrap();
+    }
+    assert_eq!(
+        store.live_parts(lead.id).unwrap(),
+        2,
+        "closing still counts"
+    );
+    store
+        .transition(
+            parts[0].id,
+            &Trigger::Cleaned(CleanupFacts {
+                pane_gone: true,
+                processes_gone: true,
+                worktree: WorktreeEnd::Removed,
+            }),
+            Actor::Tick,
+        )
+        .unwrap();
+    assert_eq!(
+        store.live_parts(lead.id).unwrap(),
+        1,
+        "a closed part no longer counts"
+    );
+}
+
+#[test]
+fn dropping_a_lead_drops_its_live_parts_and_a_part_drops_alone() {
+    let (mut store, config) = store();
+    let (lead, parts) = lead_with_parts(&mut store, &config, &["a", "b", "c"]);
+    let dropped = store.drop_task(parts[2].id, Actor::Orchestrator).unwrap();
+    assert!(dropped.is_empty(), "a part has no parts");
+    assert_eq!(
+        store.task(lead.id).unwrap().state,
+        TaskState::Working,
+        "the lead stays"
+    );
+    store
+        .transition(parts[2].id, &Trigger::BeginClosing, Actor::Orchestrator)
+        .unwrap();
+    let dropped = store.drop_task(lead.id, Actor::Orchestrator).unwrap();
+    assert_eq!(
+        dropped,
+        vec![parts[0].id, parts[1].id],
+        "the live parts, not the closing one"
+    );
+    for id in [lead.id, parts[0].id, parts[1].id] {
+        assert_eq!(
+            store.task(id).unwrap().state,
+            TaskState::Dropped,
+            "{id} dropped"
+        );
+    }
+    assert_eq!(
+        store.task(parts[2].id).unwrap().state,
+        TaskState::Closing,
+        "left closing"
+    );
+    let error = store.drop_task(lead.id, Actor::Orchestrator).unwrap_err();
+    assert!(
+        matches!(error, StoreError::Refused { .. }),
+        "twice: {error}"
+    );
 }

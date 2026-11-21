@@ -543,3 +543,43 @@ fn doctor_names_the_rules_that_enforce() {
     assert_eq!(check.status, Status::Ok, "{check:?}");
     assert!(check.detail.contains("stop-unfinished"), "{check:?}");
 }
+
+#[test]
+fn an_unknown_leads_key_fails_the_config_check_and_enabled_leads_warn() {
+    let install = install();
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{text}\n[leads]\nenabled = true\nmax_part = 3\n"),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "config"), Status::Fail, "unknown key");
+    assert!(
+        detail(&report, "config").contains("max_part"),
+        "names the key"
+    );
+    std::fs::write(
+        &path,
+        format!("{text}\n[leads]\nenabled = true\nmax_parts = 3\n"),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "config"), Status::Ok, "known keys");
+    assert_eq!(
+        status(&report, "unenforced-keys"),
+        Status::Warn,
+        "leads not placed yet"
+    );
+    assert!(
+        detail(&report, "unenforced-keys").contains("leads.enabled"),
+        "named"
+    );
+    std::fs::write(&path, format!("{text}\n[leads]\nmax_parts = 3\n")).unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert!(
+        !detail(&report, "unenforced-keys").contains("leads.enabled"),
+        "leads off"
+    );
+}

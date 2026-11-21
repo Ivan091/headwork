@@ -1,0 +1,3 @@
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN lead INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX tasks_parent ON tasks(parent_id);

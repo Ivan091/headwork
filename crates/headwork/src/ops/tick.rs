@@ -653,6 +653,7 @@ impl<'b> Run<'_, 'b> {
                 open_ask: self.store.has_waiting_ask(id)?,
                 running_job: super::jobs::has_running_job(self.store, id)?,
                 report_sent: self.store.report_sent(id)?,
+                live_parts: self.store.live_parts(id)?,
             };
             let key = format!("merged-grace:{}", task.name);
             if !self.enforce {

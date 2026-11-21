@@ -643,6 +643,7 @@ mod tests {
             brief_path: "brief.md".to_owned(),
             depends_on: None,
             permission_mode: PermissionMode::Auto,
+            shape: headwork_core::TaskShape::Plain,
         };
         store
             .create_task(config, &new, Actor::Orchestrator)
@@ -665,6 +666,7 @@ mod tests {
             brief_path: "brief.md".to_owned(),
             depends_on: None,
             permission_mode: PermissionMode::Auto,
+            shape: headwork_core::TaskShape::Plain,
         };
         store
             .create_task(&config, &new, Actor::Orchestrator)

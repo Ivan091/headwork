@@ -4,7 +4,7 @@ use std::fmt;
 
 use headwork_core::{
     Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, PlaceKind, ProjectName,
-    SessionState, Slug, TaskName, TaskSnapshot, TaskState,
+    SessionState, Slug, TaskName, TaskShape, TaskSnapshot, TaskState,
 };
 use serde::{Serialize, Serializer};
 
@@ -57,6 +57,8 @@ pub struct Task {
     pub in_main: bool,
     /// The task it waits for.
     pub depends_on: Option<TaskId>,
+    /// A lead, a part of a lead, or neither.
+    pub shape: TaskShape<TaskId>,
     /// The Fable approval ask.
     pub fable_ask: Option<AskId>,
     /// The brief file.

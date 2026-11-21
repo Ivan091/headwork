@@ -280,6 +280,9 @@ fn unenforced_keys_check(config: &Config) -> Check {
             .filter(|(_, project)| project.heavy_slots.is_some())
             .map(|(name, _)| format!("project.{}.heavy_slots", name.as_str())),
     );
+    if config.leads.enabled {
+        keys.push("leads.enabled (tasks are recorded as leads; their placement and part_spawn come later)".to_owned());
+    }
     if keys.is_empty() {
         return Check::ok("unenforced-keys", "no configured key is ignored");
     }

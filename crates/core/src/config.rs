@@ -62,6 +62,9 @@ pub enum ConfigError {
         /// What is wrong.
         problem: TemplateProblem,
     },
+    /// `[leads] part_title` names an unknown placeholder or leaves a brace open.
+    #[error("leads.part_title: {0}")]
+    PartTitle(TemplateProblem),
     /// A repository is not `owner/name`.
     #[error("project `{project}`: `{repo}` in allowed_repos is not `owner/name`")]
     BadRepo {
@@ -282,6 +285,9 @@ pub struct Config {
     /// Where new workers appear in their project's workspace.
     #[serde(default)]
     pub layout: LayoutConfig,
+    /// Leads and their parts (`docs/leads.md`).
+    #[serde(default)]
+    pub leads: LeadsConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -637,6 +643,36 @@ const fn default_max_workers() -> NonZeroU32 {
     }
 }
 
+/// The placeholders `[leads] part_title` may use.
+pub const PART_TITLE_PLACEHOLDERS: &[&str] = &["part", "name", "model", "effort"];
+
+/// The default `[leads] part_title`.
+pub const DEFAULT_PART_TITLE: &str = "{part}";
+
+/// `[leads]`: top-level tasks as leads that start parts of their own (`docs/leads.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LeadsConfig {
+    /// New top-level tasks are leads. Off by default until the lead's placement and `part_spawn` are built
+    /// (`docs/decisions.md`, 2026-11-21).
+    pub enabled: bool,
+    /// At most this many live parts per lead at once; a part beyond it waits in the queue behind its lead.
+    pub max_parts: NonZeroU32,
+    /// The title of a part's tab. `{part}` is the part's own slug after its lead's, `{name}` the full task name,
+    /// `{model}` and `{effort}` as in `[layout] title`.
+    pub part_title: String,
+}
+
+impl Default for LeadsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_parts: NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            part_title: DEFAULT_PART_TITLE.to_owned(),
+        }
+    }
+}
+
 const fn yes() -> bool {
     true
 }
@@ -669,6 +705,8 @@ impl Config {
         if !self.models.allowed.contains(&self.models.default) {
             return Err(ConfigError::DefaultModelNotAllowed(self.models.default));
         }
+        check_template_with(&self.leads.part_title, PART_TITLE_PLACEHOLDERS)
+            .map_err(ConfigError::PartTitle)?;
         if self.watch.disk_stop_gb >= self.watch.disk_warn_gb {
             return Err(ConfigError::DiskThresholds {
                 stop: self.watch.disk_stop_gb,
@@ -861,12 +899,21 @@ impl ProjectOverlay {
 ///
 /// Returns a [`TemplateProblem`] for an unknown placeholder or an unclosed brace.
 pub fn check_template(template: &str) -> Result<(), TemplateProblem> {
+    check_template_with(template, PLACEHOLDERS)
+}
+
+/// Checks that every `{placeholder}` in a template is one of `known`.
+///
+/// # Errors
+///
+/// Returns a [`TemplateProblem`] for an unknown placeholder or an unclosed brace.
+pub fn check_template_with(template: &str, known: &[&str]) -> Result<(), TemplateProblem> {
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         let after = rest.get(open + 1..).unwrap_or_default();
         let close = after.find('}').ok_or(TemplateProblem::Unclosed)?;
         let name = after.get(..close).unwrap_or_default();
-        if !PLACEHOLDERS.contains(&name) {
+        if !known.contains(&name) {
             return Err(TemplateProblem::Unknown(name.to_owned()));
         }
         rest = after.get(close + 1..).unwrap_or_default();

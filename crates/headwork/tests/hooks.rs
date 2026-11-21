@@ -1772,3 +1772,129 @@ fn extra_writable_paths_follow_the_project_the_kind_and_the_brief() {
         "each would-deny records the session's folder for a replay"
     );
 }
+
+const LEADS: &str = "\n[leads]\nenabled = true\nmax_parts = 1\n";
+
+impl World {
+    fn part(&mut self, part: &str) -> Task {
+        let new = headwork_store::NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("demo").unwrap(),
+                slug: Slug::new(format!("sand-{part}")).unwrap(),
+                kind: "task".to_owned(),
+                model: Some(Model::Haiku),
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief_path: self.dir.path().join("brief.md").display().to_string(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape: headwork_core::TaskShape::Part {
+                parent: self.task.id,
+            },
+        };
+        self.store
+            .create_task(&self.config, &new, Actor::Worker)
+            .unwrap()
+    }
+}
+
+#[test]
+fn with_leads_enabled_a_spawned_task_is_a_lead_and_without_it_plain() {
+    let w = world(LEADS, false);
+    assert_eq!(w.task.shape, headwork_core::TaskShape::Lead, "lead");
+    let w = world("", false);
+    assert_eq!(w.task.shape, headwork_core::TaskShape::Plain, "plain");
+}
+
+#[test]
+fn a_lead_may_not_finish_while_a_part_is_not_closed() {
+    let mut w = world(LEADS, false);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let part = w.part("review");
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("lead-parts-live"), "{text}");
+    assert_eq!(w.state(), TaskState::Working, "the lead keeps working");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "drop",
+        &json!({ "name": part.name.to_string(), "user_words": "not needed" }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        w.store.task(part.id).unwrap().state,
+        TaskState::Closed,
+        "the dropped part closed"
+    );
+    assert_eq!(
+        w.state(),
+        TaskState::Working,
+        "dropping a part leaves its lead"
+    );
+    let mut server = w.server(identity);
+    let message = json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": { "name": "done", "arguments": { "summary": "built" } },
+    });
+    let reply = server.handle(&message).unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    server.finish_pending().unwrap();
+    assert!(
+        matches!(w.state(), TaskState::Closing | TaskState::Closed),
+        "the lead closes once its parts are closed"
+    );
+}
+
+#[test]
+fn dropping_a_lead_drops_and_closes_its_parts_first() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let running = w.part("review");
+    let waiting = w.part("render");
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::Orchestrator,
+    };
+    let pumped = headwork::ops::spawn::pump(&mut w.store, &env).unwrap();
+    assert_eq!(pumped.len(), 2, "{pumped:?}");
+    assert!(
+        matches!(
+            pumped[0].outcome,
+            headwork::ops::spawn::Outcome::Started { .. }
+        ),
+        "the first part starts: {pumped:?}"
+    );
+    assert!(
+        matches!(&pumped[1].outcome, headwork::ops::spawn::Outcome::Waiting { reason } if reason.contains("max_parts")),
+        "the second waits for max_parts = 1: {pumped:?}"
+    );
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "drop",
+        &json!({ "name": w.task.name.to_string(), "user_words": "stop it all" }),
+    );
+    assert!(!is_error, "{text}");
+    for (id, what) in [
+        (running.id, "running part"),
+        (waiting.id, "waiting part"),
+        (w.task.id, "lead"),
+    ] {
+        assert_eq!(w.store.task(id).unwrap().state, TaskState::Closed, "{what}");
+    }
+    let cascaded = w
+        .store
+        .events(EventFilter {
+            task: Some(running.id),
+            limit: 100,
+        })
+        .unwrap()
+        .into_iter()
+        .any(|event| event.kind == "drop-cascade");
+    assert!(cascaded, "the part's drop is logged as the lead's cascade");
+}
