@@ -81,6 +81,10 @@ const fn roomy_limits() -> Limits {
 }
 
 fn world_with(enforce: bool, max_workers: u32) -> World {
+    world_extra(enforce, max_workers, "")
+}
+
+fn world_extra(enforce: bool, max_workers: u32, extra: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -91,7 +95,7 @@ fn world_with(enforce: bool, max_workers: u32) -> World {
         "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[hooks]\nenforce = {enforce}\n\n\
          [project.demo]\nmain = \"{main_text}\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
          worktree_path = \"{{main}}-{{slug}}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\n\
-         allowed_repos = [\"acme/demo\"]\n"
+         allowed_repos = [\"acme/demo\"]\n{extra}"
     );
     let config = Config::parse(&text, "test").unwrap();
     let config_text = text;
@@ -1597,5 +1601,108 @@ fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() 
         state(&w, &second),
         TaskState::Spawning,
         "the dependency's pull request merged"
+    );
+}
+
+const LEADS: &str = "\n[leads]\nenabled = true\n";
+
+fn working_part(w: &mut World, lead: &Task, part: &str) -> (Task, String) {
+    let new = headwork_store::NewTask {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new(format!("{}-{part}", lead.slug())).unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+        },
+        brief_path: w.brief.display().to_string(),
+        depends_on: None,
+        permission_mode: PermissionMode::Auto,
+        shape: headwork_core::TaskShape::Part { parent: lead.id },
+    };
+    let task = w.store.create_task(&w.config, &new, Actor::Worker).unwrap();
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new("S:/bin/headwork.exe"),
+        actor: Actor::User,
+    };
+    headwork::ops::spawn::pump(&mut w.store, &env).unwrap();
+    let child = sleeper();
+    let pid = child.id();
+    w.children.push(child);
+    let session = start(w, &task, pid, pid);
+    (w.store.task(task.id).unwrap(), session)
+}
+
+fn surface(w: &World, task: &Task) -> SurfaceId {
+    SurfaceId(
+        w.store
+            .session_of(task.id)
+            .unwrap()
+            .unwrap()
+            .host_surface
+            .unwrap(),
+    )
+}
+
+#[test]
+fn a_part_whose_lead_failed_is_reported_orphaned_once() {
+    let mut w = world_extra(false, 10, LEADS);
+    let lead = spawn_task(&mut w, "plan");
+    assert!(lead.shape.is_lead(), "a lead");
+    let (part, _) = working_part(&mut w, &lead, "review");
+    assert_eq!(state(&w, &part), TaskState::Working, "the part runs");
+    let quiet = run_tick(&mut w);
+    assert!(
+        !rules(&quiet)
+            .iter()
+            .any(|(rule, _)| *rule == FindingId::OrphanPart),
+        "a spawning lead is no orphan maker: {:?}",
+        quiet.lines
+    );
+    w.limits.spawn_timeout = 0;
+    let report = run_tick(&mut w);
+    assert_eq!(state(&w, &lead), TaskState::Failed, "the lead failed");
+    let line = report
+        .lines
+        .iter()
+        .find(|line| line.rule == FindingId::OrphanPart)
+        .unwrap();
+    assert_eq!(line.task.as_deref(), Some("demo-plan-review"), "the part");
+    assert_eq!(line.status, Status::Standing, "reported, not acted on");
+    assert_eq!(state(&w, &part), TaskState::Working, "left running");
+    let raised = count(&w, "finding");
+    run_tick(&mut w);
+    assert_eq!(count(&w, "finding"), raised, "raised once");
+}
+
+#[test]
+fn a_part_tab_moved_out_of_its_leads_workspace_is_a_stray_tab_not_a_lost_pane() {
+    let mut w = world_extra(false, 10, LEADS);
+    let lead = spawn_task(&mut w, "plan");
+    let child = sleeper();
+    let pid = child.id();
+    w.children.push(child);
+    start(&mut w, &lead, pid, pid);
+    let (part, _) = working_part(&mut w, &lead, "review");
+    let quiet = run_tick(&mut w);
+    assert!(quiet.lines.is_empty(), "{:?}", quiet.lines);
+    w.host.move_surface(&surface(&w, &part), "elsewhere");
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report),
+        [(FindingId::StrayTab, Status::Standing)],
+        "{:?}",
+        report.lines
+    );
+    assert_eq!(state(&w, &part), TaskState::Working, "still running");
+    assert!(
+        !w.host.calls().iter().any(|c| c.starts_with("close-")),
+        "nothing closed or moved back: {:?}",
+        w.host.calls()
     );
 }

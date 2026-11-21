@@ -91,6 +91,20 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "status",
+        description: concat!(
+            "One line per top-level task, rolled up from its parts: working, needs you, in review <PR URLs>, finished, ",
+            "failed. What you tell the user unless asked for more.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({ "all": { "type": "boolean", "description": "Include closed tasks." } }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "inbox",
         description: "Everything waiting on the user, oldest first, each with the worker's name.",
         roles: BOTH,
@@ -651,6 +665,7 @@ impl<'a> Server<'a> {
         match name {
             "board" => self.board(&session, role, args),
             "inbox" => self.inbox(&session, role),
+            "status" => self.status(args),
             "part_spawn" => {
                 let lead = self.own_task(&session)?;
                 self.part_spawn(&lead, args)
@@ -918,6 +933,11 @@ impl<'a> Server<'a> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
         super::lost::reconcile(self.store, &self.env)?;
         to_text(&self.scoped_board(session, role, all)?)
+    }
+
+    fn status(&mut self, args: &Value) -> Result<String> {
+        super::lost::reconcile(self.store, &self.env)?;
+        to_text(&super::status::status(self.store, flag(args, "all"))?)
     }
 
     fn inbox(&self, session: &str, role: Role) -> Result<String> {

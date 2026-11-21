@@ -864,3 +864,20 @@ and the reason.
   and is relied on as is. The live check is `a_lead_gets_a_workspace_and_its_part_a_tab_in_the_real_cmux` in
   `tests/live.rs`; cmux lists a closed workspace for a moment, so it polls for the close. `[leads] enabled` stays off here as
   well: turning it on changes every new task, and is left to the user.
+- 2026-11-21 Leads, milestone L4 (close, tick, board). The drop cascade itself came with L1 (`Store::drop_task`, the
+  orchestrator's `drop` and `close` ending a lead's parts first); L4 adds that the enforcing tick takes dropped parts to
+  `closing` before their leads. Two standing findings, reported and never acted on: `orphan-part`, a part not closing
+  or closed whose lead is `closing`, `closed`, `dropped` or `failed` (`core::lead::orphaned`), and `stray-tab`, a
+  running part whose surface runs but not in its lead's workspace (found as `place::lead_workspace` finds it; nothing
+  is reported while that workspace is gone). A part's pane-lost check now looks for its surface in any workspace, so a
+  moved tab is a stray tab and not an interrupted part. A lead's `UserPromptSubmit` adds one line per part that is
+  `needs_user` or has a waiting ask ("part `<name>` waits for the user in its tab"), on every prompt while it waits,
+  with or without a rules change. `board` prints each lead with its parts indented under it (`└`), marks leads
+  `(lead)`, and a part whose lead is hidden (closed) stays at the top marked `(part of #<id>)`. `status` (CLI and the
+  orchestrator's MCP tool, `ops/status.rs`, pure roll-up `core::lead::status`) prints one line per top-level task:
+  the lead's end decides first (`dropped`, also for a closed task that was dropped; `failed`; `interrupted`;
+  `parked`; `finished` once closed), then an ask of the lead or of a part not closing or closed makes it `needs you`
+  (naming the asking parts), then `queued`, `in review` with the open pull request URLs of the lead and its parts,
+  `finished` for a merged or closing lead without open parts, else `working`. The words beyond the five of
+  `docs/leads.md` (`queued`, `interrupted`, `parked`, `dropped`) are kept because folding them into `working` or
+  `failed` would mislead. A part whose lead is not listed gets a line of its own. `[leads] enabled` stays off.

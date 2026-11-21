@@ -14,9 +14,10 @@ use headwork::ops::schedule::{Change, ScheduleReport};
 use headwork::ops::shadow::ShadowReport;
 use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
+use headwork::ops::status::StatusLine;
 use headwork::ops::tick::TickReport;
-use headwork_core::PlaceKind;
 use headwork_core::reap::{Reason as ReapReason, Spare};
+use headwork_core::{PlaceKind, TaskShape};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
@@ -97,8 +98,8 @@ pub(crate) fn board(board: &Board, max_workers: u32) -> String {
         if tasks.is_empty() {
             text.push_str("  no tasks\n");
         }
-        for task in tasks {
-            task_line(&mut text, task, width);
+        for (task, depth) in tree(&tasks) {
+            task_line(&mut text, task, width, depth);
         }
     }
     if !board.other_asks.is_empty() {
@@ -110,12 +111,36 @@ pub(crate) fn board(board: &Board, max_workers: u32) -> String {
     text
 }
 
-fn task_line(text: &mut String, task: &BoardTask, width: usize) {
+/// The tasks of one project as a tree of depth one: each lead or plain task, then its parts indented under it. A part
+/// whose lead is not listed (closed, while closed tasks are hidden) stays at the top and names its lead.
+fn tree<'a>(tasks: &[&'a BoardTask]) -> Vec<(&'a BoardTask, usize)> {
+    let listed = |id| tasks.iter().any(|task| task.task.id == id);
+    let mut rows = Vec::with_capacity(tasks.len());
+    for &task in tasks {
+        if task.task.shape.parent().is_some_and(listed) {
+            continue;
+        }
+        rows.push((task, 0));
+        for &part in tasks {
+            if part.task.shape.parent() == Some(task.task.id) {
+                rows.push((part, 1));
+            }
+        }
+    }
+    rows
+}
+
+fn task_line(text: &mut String, task: &BoardTask, width: usize, depth: usize) {
     let t = &task.task;
     let name = t.name.to_string();
+    let (indent, width) = if depth == 0 {
+        ("", width)
+    } else {
+        ("  └ ", width.saturating_sub(4))
+    };
     let _ = write!(
         text,
-        "  #{:<3} {name:<width$}  {:<11} {:<6} {:<6} {}",
+        "  {indent}#{:<3} {name:<width$}  {:<11} {:<6} {:<6} {}",
         t.id.0,
         t.state.as_str(),
         t.model,
@@ -127,6 +152,13 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize) {
     }
     if t.keep {
         text.push_str(" (keep)");
+    }
+    match t.shape {
+        TaskShape::Lead => text.push_str(" (lead)"),
+        TaskShape::Part { parent } if depth == 0 => {
+            let _ = write!(text, " (part of #{})", parent.0);
+        }
+        TaskShape::Part { .. } | TaskShape::Plain => {}
     }
     if let Some(session) = &task.session {
         let _ = write!(text, " · session {}", session.state);
@@ -169,6 +201,19 @@ fn ask_line(text: &mut String, ask: &AskRow) {
         ask.question,
         options.join(" ")
     );
+}
+
+/// One line per top-level task, as `status` prints it.
+#[must_use]
+pub(crate) fn statuses(lines: &[StatusLine]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let _ = writeln!(text, "{}", line.line);
+    }
+    if lines.is_empty() {
+        text.push_str("no tasks\n");
+    }
+    text
 }
 
 /// The event log as text, one line per event.
@@ -682,6 +727,58 @@ mod tests {
                 .unwrap(),
         );
         assert!(log.contains("model opus, effort xhigh"), "{log}");
+    }
+
+    fn shaped(
+        store: &mut Store,
+        config: &Config,
+        slug: &str,
+        shape: headwork_core::TaskShape<headwork_store::TaskId>,
+    ) -> headwork_store::Task {
+        let new = NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("me-sim").unwrap(),
+                slug: Slug::new(slug).unwrap(),
+                kind: "task".to_owned(),
+                model: None,
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief_path: "brief.md".to_owned(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape,
+        };
+        store
+            .create_task(config, &new, Actor::Orchestrator)
+            .unwrap()
+    }
+
+    #[test]
+    fn board_prints_each_lead_with_its_parts_under_it() {
+        let (mut store, config) = store();
+        let lead = shaped(&mut store, &config, "big", headwork_core::TaskShape::Lead);
+        task(&mut store, &config, "me-sim", "other");
+        let part = headwork_core::TaskShape::Part { parent: lead.id };
+        shaped(&mut store, &config, "big-review", part);
+        let text = super::board(&store.board(false).unwrap(), 10);
+        let rows: Vec<&str> = text.lines().filter(|line| line.contains(" #")).collect();
+        assert_eq!(rows.len(), 3, "{text}");
+        assert!(
+            rows[0].contains("me-sim-big ") && rows[0].contains("(lead)"),
+            "{text}"
+        );
+        assert!(
+            rows[1].trim_start().starts_with("└ #3") && rows[1].contains("me-sim-big-review"),
+            "{text}"
+        );
+        assert!(rows[2].contains("me-sim-other"), "{text}");
+        let lines = super::statuses(&headwork::ops::status::status(&store, false).unwrap());
+        assert_eq!(
+            lines, "me-sim-big: queued\nme-sim-other: queued\n",
+            "one line per top-level task"
+        );
     }
 
     #[test]

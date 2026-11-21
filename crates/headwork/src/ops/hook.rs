@@ -313,17 +313,42 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     {
         lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
     }
+    let waiting = waiting_parts(store, call.task)?;
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
-        return Ok(HookReply::default());
+        if waiting.is_empty() {
+            return Ok(HookReply::default());
+        }
+        return Ok(HookReply::context(HookEvent::UserPromptSubmit, &waiting));
     }
     let (rules, version) = rules_for(store, call)?;
     store.set_rules_seen(&call.session.id, call.session.task_id, version, rules.len())?;
     let text = format!(
-        "headwork: your rules changed (version {version}); they replace the earlier ones.\n\n{rules}"
+        "headwork: your rules changed (version {version}); they replace the earlier ones.\n\n{rules}{waiting}"
     );
     Ok(HookReply::context(HookEvent::UserPromptSubmit, &text))
+}
+
+/// For a lead, one line per part that waits on the user (its state is `needs_user` or an ask of it waits), so the
+/// lead can point the user at that part's tab (`docs/leads.md`, section 4). Empty for every other session.
+fn waiting_parts(store: &Store, task: Option<&Task>) -> Result<String> {
+    let Some(lead) = task.filter(|task| task.shape.is_lead()) else {
+        return Ok(String::new());
+    };
+    let mut text = String::new();
+    for id in store.parts(lead.id)? {
+        let part = store.task(id)?;
+        if matches!(part.state, TaskState::Closing | TaskState::Closed) {
+            continue;
+        }
+        if part.state == TaskState::NeedsUser || store.has_waiting_ask(id)? {
+            text.push_str("\nheadwork: part `");
+            text.push_str(&part.name.to_string());
+            text.push_str("` waits for the user in its tab.");
+        }
+    }
+    Ok(text)
 }
 
 /// Where Claude Code puts the worktrees of `Agent` subagents started with `isolation: "worktree"`, under the main

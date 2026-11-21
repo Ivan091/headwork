@@ -26,6 +26,7 @@ pub mod rules;
 pub mod schedule;
 pub mod shadow;
 pub mod spawn;
+pub mod status;
 pub mod tick;
 pub mod title;
 pub mod trust;

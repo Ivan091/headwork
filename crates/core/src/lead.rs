@@ -159,3 +159,130 @@ pub fn part_label<'a>(slug: &'a str, lead_slug: &str) -> &'a str {
         .filter(|rest| !rest.is_empty())
         .unwrap_or(slug)
 }
+
+/// Whether a part has lost its lead.
+///
+/// The part is not closing or closed, while its lead is over (`closing`, `closed`, `dropped`) or `failed`. The tick
+/// reports such a part as `orphan-part`; nobody else would close it.
+#[must_use]
+pub const fn orphaned(part: TaskState, lead: TaskState) -> bool {
+    let part_open = !matches!(part, TaskState::Closing | TaskState::Closed);
+    let lead_gone = matches!(
+        lead,
+        TaskState::Closing | TaskState::Closed | TaskState::Dropped | TaskState::Failed
+    );
+    part_open && lead_gone
+}
+
+/// One task's facts for [`status`]: its state, whether an ask of it waits on the user, and whether it was dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusFacts {
+    /// The task's state.
+    pub state: TaskState,
+    /// An ask of the task waits on the user.
+    pub asking: bool,
+    /// The task was dropped at some point (a closed task keeps no other trace of it).
+    pub dropped: bool,
+}
+
+impl StatusFacts {
+    const fn needs_user(self) -> bool {
+        self.asking || matches!(self.state, TaskState::NeedsUser)
+    }
+}
+
+/// A top-level task's one-line status (`docs/leads.md`, section 4), rolled up from its parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskStatus {
+    /// Waiting in the queue.
+    Queued,
+    /// The lead or a part works.
+    Working,
+    /// The lead or a part waits on the user.
+    NeedsYou,
+    /// The lead's pull request is open.
+    InReview,
+    /// Merged, closing or closed after its work landed.
+    Finished,
+    /// The session never started.
+    Failed,
+    /// The session went away without `done`; a resume brings it back.
+    Interrupted,
+    /// Stopped for a restart.
+    Parked,
+    /// Dropped by the user or the orchestrator.
+    Dropped,
+}
+
+impl TaskStatus {
+    /// The words the orchestrator tells the user.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Working => "working",
+            Self::NeedsYou => "needs you",
+            Self::InReview => "in review",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+            Self::Parked => "parked",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A top-level task's status from its own facts and its parts'.
+///
+/// The lead's end decides first (dropped, failed, interrupted, parked, closed); while it is open, any ask of the lead
+/// or a part makes it `needs you`, ahead of the queue, the review and a merge waiting for its parts.
+#[must_use]
+pub fn status(task: StatusFacts, parts: &[StatusFacts]) -> TaskStatus {
+    if task.dropped {
+        return TaskStatus::Dropped;
+    }
+    match task.state {
+        TaskState::Dropped => return TaskStatus::Dropped,
+        TaskState::Failed => return TaskStatus::Failed,
+        TaskState::Interrupted => return TaskStatus::Interrupted,
+        TaskState::Parking | TaskState::Parked => return TaskStatus::Parked,
+        TaskState::Closed => return TaskStatus::Finished,
+        TaskState::Queued
+        | TaskState::Spawning
+        | TaskState::Working
+        | TaskState::NeedsUser
+        | TaskState::InReview
+        | TaskState::Merged
+        | TaskState::Closing => {}
+    }
+    let open_parts: Vec<&StatusFacts> = parts
+        .iter()
+        .filter(|part| !matches!(part.state, TaskState::Closing | TaskState::Closed))
+        .collect();
+    if task.needs_user() || open_parts.iter().any(|part| part.needs_user()) {
+        return TaskStatus::NeedsYou;
+    }
+    match task.state {
+        TaskState::Queued => TaskStatus::Queued,
+        TaskState::InReview => TaskStatus::InReview,
+        TaskState::Merged | TaskState::Closing if open_parts.is_empty() => TaskStatus::Finished,
+        TaskState::Spawning
+        | TaskState::Working
+        | TaskState::NeedsUser
+        | TaskState::Merged
+        | TaskState::Closing
+        | TaskState::Closed
+        | TaskState::Dropped
+        | TaskState::Failed
+        | TaskState::Interrupted
+        | TaskState::Parking
+        | TaskState::Parked => TaskStatus::Working,
+    }
+}
