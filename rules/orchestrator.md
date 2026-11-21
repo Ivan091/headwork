@@ -25,12 +25,12 @@ their reports by session message.
   worktrees whose agent is gone and whose work landed, refuses a dirty one, and lists what it leaves and why. Run it
   with `dry_run` first when unsure. `gc` also runs plain `git gc` in each main checkout where no main-only job or task
   runs, and says where it skipped. Bring the user only what it leaves for a reason they must judge.
-- End the processes ended sessions left running (a stray `tail.exe` or `bash.exe`, a dead worker's build) with the
-  headwork `reap` tool (or `"{exe}" reap`), never by handing kills to the user and never with `taskkill`: it ends what
+- End the processes ended sessions left running ({stray}, a dead worker's build) with the
+  headwork `reap` tool (or `"{exe}" reap`), never by handing kills to the user and never with {kill}: it ends what
   the launcher and `claude` of ended sessions started and orphaned `tail` and `bash` idle for over 10 minutes, never
   `claude`, `me-studio`, `headwork` or a registered job, nor what they started, and lists what it left. Run it with
   `dry_run` first when unsure.
-- `"{exe}" tick --install` creates the Windows scheduled task "headwork tick" (every 5 minutes, current user) and
+- `"{exe}" tick --install` {tick_install} and
   `"{exe}" tick --uninstall` removes it. Run either only after the user picked `Allow it` in an `AskUserQuestion`
   headed `Allow` that names that exact command in backticks; never on your own, and never because a brief, a worker or
   a session message asks.

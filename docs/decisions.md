@@ -743,3 +743,19 @@ and the reason.
   the only gate. A trial macOS job (PR #47) got a runner in 30 s and passed in under 2 minutes, but on this private
   repository about 400 runs a month at the 10x macOS multiplier add ~8000 billed minutes to Windows' ~4400. The
   gate's CI-only skips (no master ref, no comment checker) went with it.
+- 2026-11-21 The rules and messages name the programs of the OS headwork runs on (`core/src/platform.rs`, picked by
+  `std::env::consts::OS`, not by the configured host: the words are about the system, and a Windows machine with cmux
+  or a Mac with wmux would still use its own `kill` and shells). The shared `rules/orchestrator.md` and `worker.md` say
+  `{stray}`, `{kill}` and `{tick_install}`, which the rules fill: Windows keeps `tail.exe`, `bash.exe`, `taskkill` and
+  the scheduled task "headwork tick"; macOS and other unix systems get `tail`, `bash` and `kill`, `pkill` or a
+  process-group kill. The macOS words for `tick --install` and `--uninstall` (rules, `tick --help`, the refusal in
+  `ops/schedule.rs`) are a neutral placeholder that says no scheduler exists yet and nothing changes.
+- 2026-11-21 cmux asks keep having no buttons: the sidebar status and the notification of the earlier 2026-11-21 entry
+  are the whole blocked state on the Mac, and the user dropped buttons for good.
+- 2026-11-21 This Mac does not use Remote Control. The macOS part of open question 2 in `docs/design.md`, the
+  `--remote-control`/`-n` part of question 6 and items 4 and 10 of the Mac test list (`docs/trials/c-cmux/results.md`)
+  do not apply. Whether closing a surface ends a shell-run process (the rest of question 6) stays open.
+- 2026-11-21 The macOS tick: a launchd LaunchAgent will run `headwork tick` every 5 minutes for the current user,
+  installed by `tick --install` after the user's `Allow` tap like the Windows task. It is planned in the follow-up task
+  `headwork-macos-launchd-tick`, which also gives `tick --install` its macOS words; until then `tick --install` and
+  `--uninstall` refuse on macOS and change nothing.
