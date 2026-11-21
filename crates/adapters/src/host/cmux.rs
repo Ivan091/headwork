@@ -780,13 +780,16 @@ impl<R: Runner> TerminalHost for Cmux<R> {
     }
 
     fn close_surface(&self, surface: &SurfaceId) -> Result<(), HostError> {
-        self.rpc_quiet("surface.close", &json!({ "surface_id": surface.as_str() }))
+        self.rpc_quiet(
+            "surface.close",
+            &json!({ "surface_id": surface.as_str(), "force": true }),
+        )
     }
 
     fn close_workspace(&self, workspace: &WorkspaceId) -> Result<(), HostError> {
         self.rpc_quiet(
             "workspace.close",
-            &json!({ "workspace_id": workspace.as_str() }),
+            &json!({ "workspace_id": workspace.as_str(), "force": true }),
         )
     }
 

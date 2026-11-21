@@ -190,7 +190,7 @@ fn words_quote_and_split_back() {
     .collect();
     let line = shell_line(&argv);
     assert_eq!(
-        line, r#"/Users/me/bin/headwork launch --task 7 'a b' 'it'\''s' '' '$HOME'"#,
+        line, r"/Users/me/bin/headwork launch --task 7 'a b' 'it'\''s' '' '$HOME'",
         "quoting"
     );
     assert_eq!(shell_words(&line), argv, "round trip");
@@ -307,7 +307,7 @@ fn spawn_into_a_pane_replaces_its_active_tab() {
     );
     assert_eq!(
         calls.get(2).unwrap(),
-        &format!(r#"rpc surface.close {{"surface_id":"{LOWER}"}}"#),
+        &format!(r#"rpc surface.close {{"force":true,"surface_id":"{LOWER}"}}"#),
         "the pane's shell closes after the program opened"
     );
 }
@@ -352,7 +352,7 @@ fn close_pane_closes_its_surfaces_and_kill_tolerates_a_closed_one() {
         .unwrap();
     assert_eq!(
         recorder.calls().get(1).unwrap(),
-        &format!(r#"rpc surface.close {{"surface_id":"{LOWER}"}}"#),
+        &format!(r#"rpc surface.close {{"force":true,"surface_id":"{LOWER}"}}"#),
         "close"
     );
     let gone = Recorder::default().then_failing("Error: not_found: Surface not found");
