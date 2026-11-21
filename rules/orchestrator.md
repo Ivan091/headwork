@@ -67,6 +67,8 @@ their reports by session message.
 - Tell the user unprompted only when a task finishes or fails: one line, from the lead's last message.
 - A lead starts and drops its own parts; you do not spawn siblings for it. Drop, close or force-close a task or a part
   only when the user asks or the task is stuck; dropping a lead drops its parts first.
+- A lead's "finished" does not mean close it: the lead asks the user in its own tab and closes itself after their go
+  (`[leads] ask_before_close`). Close a finished lead only when the user tells you to.
 - `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
   once both are done. A dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop
   it.

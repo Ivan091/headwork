@@ -36,6 +36,10 @@ pub const CLOSING_HEADING: &str = "## Closing yourself";
 /// The heading of `worker.md`'s section for a plain worker that leads by convention; a lead and a part leave it out.
 pub const PLAIN_LEAD_HEADING: &str = "## When your brief makes you a lead";
 
+/// The heading of `lead.md`'s section that has a lead ask the user before it closes; left out when
+/// `[leads] ask_before_close` is off and for a keep task.
+pub const ASK_BEFORE_CLOSE_HEADING: &str = "## Ask before you close";
+
 /// The most `additionalContext` a hook may return before Claude moves it to a file.
 pub const CONTEXT_LIMIT: usize = 10_000;
 
@@ -159,7 +163,11 @@ impl RuleFiles {
                 }
                 parts.push(worker);
                 if shape.is_lead() {
-                    parts.push(self.lead.clone());
+                    if keep || !config.leads.ask_before_close {
+                        parts.push(without_section(&self.lead, ASK_BEFORE_CLOSE_HEADING));
+                    } else {
+                        parts.push(self.lead.clone());
+                    }
                 }
                 if let Some(card) = card
                     && let Some((_, text)) = self

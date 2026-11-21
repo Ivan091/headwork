@@ -100,6 +100,16 @@ pub enum CloseCause {
     GraceElapsed,
 }
 
+/// Whether a task may close as far as the user's go is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseGo {
+    /// No go is needed, or the user gave it.
+    Clear,
+    /// The task is a lead that asks the user before it closes, and the user has not answered its `Close` ask with a
+    /// go yet.
+    Awaiting,
+}
+
 /// Facts for `merged` → `closing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CloseFacts {
@@ -113,6 +123,8 @@ pub struct CloseFacts {
     pub report_sent: bool,
     /// Parts of the task, a lead, that are not closed yet.
     pub live_parts: u32,
+    /// Whether the user's go to close is still missing (`[leads] ask_before_close`).
+    pub go: CloseGo,
 }
 
 /// Where the task's pull request stands when its worker finishes.
@@ -139,6 +151,8 @@ pub struct FinishFacts {
     pub report_sent: bool,
     /// Parts of the task, a lead, that are not closed yet.
     pub live_parts: u32,
+    /// Whether the user's go to close is still missing (`[leads] ask_before_close`).
+    pub go: CloseGo,
     /// The task's pull request.
     pub pr: PrEnd,
 }
@@ -311,6 +325,12 @@ pub enum Refusal {
         /// The parts not closed yet.
         live: u32,
     },
+    /// A lead that asks before it closes has no go from the user yet (`lead-close-unasked`).
+    #[error(
+        "lead-close-unasked: ask the user first, an `AskUserQuestion` headed `Close` whose first option starts with \
+         `Close`; the task closes after they pick it"
+    )]
+    LeadCloseUnasked,
     /// Another task of the same main-only kind runs in the project.
     #[error("another task of this main-only kind already runs in the project's main checkout")]
     MainOnlyKindBusy,
@@ -584,6 +604,9 @@ const fn check_close(keep: bool, facts: CloseFacts) -> Result<(), Refusal> {
             live: facts.live_parts,
         });
     }
+    if matches!(facts.go, CloseGo::Awaiting) {
+        return Err(Refusal::LeadCloseUnasked);
+    }
     if !facts.report_sent {
         return Err(Refusal::ReportMissing);
     }
@@ -604,6 +627,9 @@ const fn check_finish(keep: bool, facts: FinishFacts) -> Result<(), Refusal> {
         return Err(Refusal::LeadPartsLive {
             live: facts.live_parts,
         });
+    }
+    if matches!(facts.go, CloseGo::Awaiting) {
+        return Err(Refusal::LeadCloseUnasked);
     }
     if !facts.report_sent {
         return Err(Refusal::ReportMissing);

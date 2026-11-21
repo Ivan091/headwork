@@ -76,6 +76,9 @@ lead back before its parts.
 L4 adds the tick findings `orphan-part` (a part open while its lead is over or failed) and `stray-tab` (a part's tab
 outside its lead's workspace), a line in a lead's next prompt per part waiting on the user, the tree `board`, and
 `status` (`ops/status.rs`, roll-up in `core/src/lead.rs`), a CLI command and an orchestrator MCP tool.
+`[leads] ask_before_close` (default on) holds a lead's own close and the tick's merged-grace close until the user
+answers its ask headed `Close` with a go (`close-go` event, refusal `lead-close-unasked`); the lead's rules gain "Ask
+before you close" while it is on.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

@@ -20,9 +20,10 @@ use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::{TaskVars, WorktreeCommand};
 use headwork_core::guard::DEFAULT_BRANCHES;
 use headwork_core::lifecycle::{
-    CleanupFacts, CloseCause, CloseFacts, FinishFacts, MergeSource, PrEnd, Trigger, WorktreeEnd,
+    CleanupFacts, CloseCause, CloseFacts, CloseGo, FinishFacts, MergeSource, PrEnd, Trigger,
+    WorktreeEnd,
 };
-use headwork_core::{Actor, JobState, SessionState, TaskShape, TaskState};
+use headwork_core::{Actor, Config, JobState, SessionState, TaskShape, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
@@ -266,6 +267,19 @@ pub fn begin_own_close(
     Ok(())
 }
 
+/// Whether the user's go to close is missing: the task is a lead, `[leads] ask_before_close` is on and no ask headed
+/// `Close` was answered with a go.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn close_go(store: &Store, config: &Config, task: &Task) -> Result<CloseGo> {
+    if !task.shape.is_lead() || !config.leads.ask_before_close || store.close_go_given(task.id)? {
+        return Ok(CloseGo::Clear);
+    }
+    Ok(CloseGo::Awaiting)
+}
+
 /// The transitions that take a worker's own task to `closing`, all checked against the lifecycle before any is
 /// applied.
 fn own_steps(
@@ -295,6 +309,7 @@ fn own_steps(
         running_job: super::jobs::has_running_job(store, id)?,
         report_sent: store.report_sent(id)?,
         live_parts: store.live_parts(id)?,
+        go: close_go(store, env.config, task)?,
         pr,
     };
     let close = Trigger::Close(CloseFacts {
@@ -303,6 +318,7 @@ fn own_steps(
         running_job: facts.running_job,
         report_sent: facts.report_sent,
         live_parts: facts.live_parts,
+        go: facts.go,
     });
     let project = env.project(task)?;
     let merged = Trigger::Merged {

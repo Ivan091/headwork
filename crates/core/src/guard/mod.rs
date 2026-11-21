@@ -20,6 +20,9 @@ pub use shell::{SimpleCommand, commands};
 /// The header of the ask by which the user allows one task a user-only command.
 pub const ALLOW_HEADER: &str = "Allow";
 
+/// The header of the ask by which a lead asks the user before its task closes (`[leads] ask_before_close`).
+pub const CLOSE_HEADER: &str = "Close";
+
 /// The global skills that deliver a change; a project with its own delivery command forbids them.
 pub const DELIVERY_SKILLS: &[&str] = &["commit", "push", "create-pr", "contribute", "ship"];
 

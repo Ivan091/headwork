@@ -14,8 +14,8 @@ use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{
-    CLOSING_HEADING, ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES,
-    platform_words,
+    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles,
+    WORKER_RULES, platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
@@ -1836,6 +1836,9 @@ fn a_lead_may_not_finish_while_a_part_is_not_closed() {
         TaskState::Working,
         "dropping a part leaves its lead"
     );
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("lead-close-unasked"), "{text}");
+    give_close_go(&mut w, "Close it (Recommended)");
     let mut server = w.server(identity);
     let message = json!({
         "jsonrpc": "2.0", "id": 9, "method": "tools/call",
@@ -1848,6 +1851,58 @@ fn a_lead_may_not_finish_while_a_part_is_not_closed() {
         matches!(w.state(), TaskState::Closing | TaskState::Closed),
         "the lead closes once its parts are closed"
     );
+}
+
+fn give_close_go(w: &mut World, answer: &str) {
+    let asked = ask_input(&["Close it (Recommended)", "Keep it open"], "Close");
+    w.pre("AskUserQuestion", &asked);
+    let input = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_input": asked,
+        "tool_response": { "answers": { "Ship?": answer } },
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+}
+
+#[test]
+fn a_lead_closes_only_after_the_users_go_unless_ask_before_close_is_off() {
+    let mut w = world(LEADS, false);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("lead-close-unasked"), "{text}");
+    give_close_go(&mut w, "Keep it open");
+    let (is_error, text) = w.tool(identity.clone(), "done", &json!({ "summary": "built" }));
+    assert!(
+        is_error && text.contains("lead-close-unasked"),
+        "keep it open is no go: {text}"
+    );
+    assert_eq!(w.state(), TaskState::Working, "the lead keeps working");
+    give_close_go(&mut w, "Close it (Recommended)");
+    assert!(
+        w.events().iter().any(|event| event.kind == "close-go"),
+        "the go is recorded"
+    );
+    let (is_error, text) = w.tool(identity, "done", &json!({ "summary": "built" }));
+    assert!(!is_error, "{text}");
+
+    let mut off = world(&format!("{LEADS}ask_before_close = false\n"), false);
+    off.start();
+    off.post("SendMessage", &json!({}));
+    let identity = worker_identity(&off);
+    let (is_error, text) = off.tool(identity, "done", &json!({ "summary": "built" }));
+    assert!(
+        !is_error,
+        "with the setting off a lead closes without asking: {text}"
+    );
+
+    let mut plain = world("", false);
+    plain.start();
+    plain.post("SendMessage", &json!({}));
+    let identity = worker_identity(&plain);
+    let (is_error, text) = plain.tool(identity, "done", &json!({ "summary": "built" }));
+    assert!(!is_error, "a plain worker never asks: {text}");
 }
 
 #[test]
@@ -2157,6 +2212,17 @@ fn the_rules_follow_the_tasks_shape() {
     assert!(
         !lead_rules.contains("{parent}") && !lead_rules.contains("{orchestrator}"),
         "{lead_rules}"
+    );
+    assert!(
+        lead_rules.contains(ASK_BEFORE_CLOSE_HEADING),
+        "a lead asks before it closes"
+    );
+    let mut off = world(&format!("{LEADS}ask_before_close = false\n"), false);
+    let off_rules = context(&off.start());
+    assert!(
+        off_rules.contains("You are the lead of this task")
+            && !off_rules.contains(ASK_BEFORE_CLOSE_HEADING),
+        "with ask_before_close off the section is gone: {off_rules}"
     );
     let (is_error, text) = part_spawn(&mut w, &json!({ "slug": "review", "brief": "Review it." }));
     assert!(!is_error, "{text}");
