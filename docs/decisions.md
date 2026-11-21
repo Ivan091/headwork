@@ -700,3 +700,9 @@ and the reason.
   run a program reliably when tried from a session, and a windowless build is a separate change. Neither the binary nor
   the guard can tell an `Allow` tap of the orchestrator (asks are stored per task), so "only after the user's go" is
   in the injected rules; for workers `tick` stays an orchestrator command.
+- 2026-11-21 The `Stop` gate counts a foreground `Bash` that outlived its timeout and that Claude Code moved to the
+  background (its response carries `backgroundTaskId`) as background work, like `run_in_background`. Of the six
+  `stop-unfinished` events of 2026-11-19 (20:27 to 21:18 UTC), all ran on the build stamped 19:57 UTC, before the
+  background-wait change (PR #38, merged 21:22 UTC, installed 21:42 UTC); four started background work that change
+  recognises, and two (`me-sim-audit-master-check` 20:40, `me-studio-audit-reactions` 21:04) were `ship.sh` runs in
+  the foreground that hit the 600 s timeout, which it did not, and which this change does.

@@ -1569,7 +1569,7 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
         &mut w,
         "Bash",
         &json!({ "command": "cargo build" }),
-        &json!({}),
+        &json!({ "stdout": "ok", "backgroundTaskId": null }),
     );
     w.hook(HookEvent::Stop, &stop);
     assert_eq!(w.denies().len(), 1, "a foreground Bash is not waiting");
@@ -1583,6 +1583,11 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
         ("Workflow", json!({}), json!({})),
         ("Agent", json!({ "run_in_background": true }), json!({})),
         ("Agent", json!({}), json!({ "status": "async_launched" })),
+        (
+            "Bash",
+            json!({ "command": "scripts/ship.sh -m x" }),
+            json!({ "stdout": "", "backgroundTaskId": "bje2sgi00", "timedOutAfterMs": 600_000 }),
+        ),
     ] {
         w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "again" }));
         post(&mut w, tool, &input, &response);

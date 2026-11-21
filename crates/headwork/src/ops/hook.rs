@@ -787,7 +787,7 @@ fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
         .and_then(Value::as_bool)
         .unwrap_or_default();
     match tool {
-        "Bash" => requested,
+        "Bash" => requested || moved_to_background(call.input.get("tool_response")),
         "Monitor" | "Workflow" => true,
         "Agent" | "Task" => {
             requested
@@ -799,6 +799,18 @@ fn starts_background_work(tool: &str, call: &Call<'_>) -> bool {
         _ => false,
     }
 }
+
+/// Whether a `Bash` response says the command runs on in the background: one that outlived its timeout and that Claude
+/// Code moved there carries the id of its background task, as a requested background run does.
+fn moved_to_background(response: Option<&Value>) -> bool {
+    response
+        .and_then(|response| response.get(BACKGROUND_TASK_ID))
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+}
+
+/// The field of a `Bash` response that names the background task it became.
+const BACKGROUND_TASK_ID: &str = "backgroundTaskId";
 
 /// The user-only patterns an answered `Allow` ask grants: for each question headed `Allow` whose chosen answer starts
 /// with `Allow`, the configured user-only patterns that a command in backticks in the question runs.
