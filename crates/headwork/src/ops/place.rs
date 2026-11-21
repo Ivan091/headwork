@@ -12,15 +12,21 @@
 //! `tabs` mode adds tabs. `workspaces` mode gives each worker a workspace of its own, titled with the task's name and
 //! holding one full-screen pane: the fresh workspace's shell is replaced, nothing splits or stacks, and the workspace
 //! closes with its worker.
+//!
+//! A lead task (`docs/leads.md`, section 2) opens like `workspaces` mode whatever `[layout] mode` says: a workspace of
+//! its own titled with its name, the lead full-screen in it. Its parts open as new tabs of the lead's recorded
+//! workspace (found by id, then by the lead's name) and never in a workspace of their own: a part whose lead's
+//! workspace is gone is refused. A part's release closes only its tab; the lead's release closes the workspace with the
+//! helpers still in it.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use headwork_adapters::host::{PaneCell, PaneId, SurfaceId, Target, TerminalHost, WorkspaceId};
 use headwork_core::layout::{self, Cell, Placement};
-use headwork_core::{LayoutMode, PlaceKind};
-use headwork_store::{Place, Store, Task};
+use headwork_core::{LayoutMode, PlaceKind, TaskShape};
+use headwork_store::{Place, Store, Task, TaskId};
 
 use super::{Env, label, title};
 
@@ -59,16 +65,17 @@ pub(super) struct Opening<'a> {
 ///
 /// Fails when the host or the store fails.
 pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> Result<String> {
-    let (target, kind) = match env.config.layout.mode {
-        LayoutMode::Tabs => (
-            tab(env.host, opening.workspace, opening.fresh)?,
-            PlaceKind::Tab,
-        ),
-        LayoutMode::Panes => pane(store, env, opening.workspace)?,
-        LayoutMode::Workspaces => (
+    let (target, kind) = match (opening.task.shape, env.config.layout.mode) {
+        (TaskShape::Part { .. }, _) => (Target::Tab, PlaceKind::Tab),
+        (TaskShape::Lead, _) | (TaskShape::Plain, LayoutMode::Workspaces) => (
             tab(env.host, opening.workspace, opening.fresh)?,
             PlaceKind::Pane,
         ),
+        (TaskShape::Plain, LayoutMode::Tabs) => (
+            tab(env.host, opening.workspace, opening.fresh)?,
+            PlaceKind::Tab,
+        ),
+        (TaskShape::Plain, LayoutMode::Panes) => pane(store, env, opening.workspace)?,
     };
     let started = env.host.spawn(
         opening.workspace,
@@ -77,7 +84,7 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
         opening.argv,
         &target,
     )?;
-    title::set(env, opening.task, &started.surface).ok();
+    title::set(store, env, opening.task, &started.surface).ok();
     let pane = match &target {
         Target::Pane { pane, .. } => Some(pane.as_str()),
         Target::Tab => None,
@@ -97,29 +104,36 @@ pub(super) fn open(store: &mut Store, env: &Env<'_>, opening: &Opening<'_>) -> R
 
 /// Closes a session's surface, or its workspace when nothing else there holds a session.
 ///
-/// In `tabs` mode the workspace closes when it holds nothing else; in `panes` mode when no other surface holds a
-/// session. Otherwise only the surface closes: a pane whose last surface it was leaves the layout and the host gives
-/// its space to the panes beside it. Placeholders that builds before this one left in the workspace close first.
+/// A lead's part closes only its tab: the lead's tab still holds a session. A lead's workspace, like any in
+/// `workspaces` or `panes` mode, closes when no other surface holds a session (helpers do not count); in `tabs` mode a
+/// plain task's workspace closes when it holds nothing else. Otherwise only the surface closes: a pane whose last
+/// surface it was leaves the layout and the host gives its space to the panes beside it. Placeholders that builds
+/// before this one left in the workspace close first.
 ///
 /// # Errors
 ///
 /// Returns the host's failure.
-pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &SurfaceId) -> Result<()> {
+pub fn release(
+    env: &Env<'_>,
+    shape: TaskShape<TaskId>,
+    workspace: Option<&WorkspaceId>,
+    surface: &SurfaceId,
+) -> Result<()> {
     let host = env.host;
-    if let Some(workspace) = workspace {
+    if let (Some(workspace), false) = (workspace, shape.is_part()) {
         sweep(host, workspace)?;
         let surfaces = host.surfaces(workspace)?;
-        let last = match env.config.layout.mode {
-            LayoutMode::Tabs => surfaces.iter().all(|s| s == surface),
-            LayoutMode::Panes | LayoutMode::Workspaces => {
-                let mut busy = busy_on_host(host)?;
-                for program in host.panes()? {
-                    if program.label == HELPER_LABEL {
-                        busy.remove(&program.surface);
-                    }
+        let tabs = shape == TaskShape::Plain && env.config.layout.mode == LayoutMode::Tabs;
+        let last = if tabs {
+            surfaces.iter().all(|s| s == surface)
+        } else {
+            let mut busy = busy_on_host(host)?;
+            for program in host.panes()? {
+                if program.label == HELPER_LABEL {
+                    busy.remove(&program.surface);
                 }
-                !surfaces.iter().any(|s| s != surface && busy.contains(s))
             }
+            !surfaces.iter().any(|s| s != surface && busy.contains(s))
         };
         if last {
             host.close_workspace(workspace)?;
@@ -130,13 +144,85 @@ pub fn release(env: &Env<'_>, workspace: Option<&WorkspaceId>, surface: &Surface
     Ok(())
 }
 
-/// The title of the workspace a task opens in: its own name in `workspaces` mode, else its project's.
+/// The title of the workspace a task opens in: its own name for a lead and in `workspaces` mode, else its project's.
+/// A part opens in its lead's workspace, found by [`workspace_for`].
 #[must_use]
 pub(super) fn workspace_title(env: &Env<'_>, task: &Task) -> String {
-    match env.config.layout.mode {
-        LayoutMode::Workspaces => task.name.to_string(),
-        LayoutMode::Panes | LayoutMode::Tabs => task.project().as_str().to_owned(),
+    match (task.shape, env.config.layout.mode) {
+        (TaskShape::Lead, _) | (TaskShape::Plain, LayoutMode::Workspaces) => task.name.to_string(),
+        (TaskShape::Part { .. } | TaskShape::Plain, LayoutMode::Panes | LayoutMode::Tabs)
+        | (TaskShape::Part { .. }, LayoutMode::Workspaces) => task.project().as_str().to_owned(),
     }
+}
+
+/// The workspace a task's session opens in, and whether it was just created.
+///
+/// A lead or a plain task gets the workspace [`workspace_title`] names, created in `main` when missing. A part gets
+/// its lead's recorded workspace, by id, else the one titled with the lead's name; it never creates one.
+///
+/// # Errors
+///
+/// Fails when the host or the store fails, or for a part whose lead's workspace is gone.
+pub(super) fn workspace_for(
+    store: &Store,
+    env: &Env<'_>,
+    task: &Task,
+    main: &Path,
+) -> Result<(WorkspaceId, bool)> {
+    let TaskShape::Part { parent } = task.shape else {
+        return Ok(env
+            .host
+            .ensure_workspace(&workspace_title(env, task), main)?);
+    };
+    Ok((lead_workspace(store, env, parent)?, false))
+}
+
+/// The open workspace of the lead `lead`: its newest session's recorded one by id, else the one titled with its name.
+///
+/// # Errors
+///
+/// Fails when the host or the store fails, or when neither is open.
+pub(super) fn lead_workspace(store: &Store, env: &Env<'_>, lead: TaskId) -> Result<WorkspaceId> {
+    let title = store.task(lead)?.name.to_string();
+    let recorded = store
+        .session_of(lead)?
+        .and_then(|session| session.host_workspace)
+        .map(WorkspaceId);
+    let open = env.host.workspaces()?;
+    let found = recorded
+        .as_ref()
+        .and_then(|id| open.iter().find(|w| &w.id == id))
+        .or_else(|| open.iter().find(|w| w.title == title));
+    match found {
+        Some(workspace) => Ok(workspace.id.clone()),
+        None => bail!(
+            "the workspace of the lead {title} is gone (recorded: {}); a part or helper opens only in its lead's workspace",
+            recorded.as_ref().map_or("none", WorkspaceId::as_str)
+        ),
+    }
+}
+
+/// The workspace a helper of `task` opens in: its lead's for a lead or a part ([`lead_workspace`]), else the one its
+/// session recorded.
+///
+/// # Errors
+///
+/// Fails when the host or the store fails, or when the lead's workspace is gone.
+pub(super) fn helper_workspace(
+    store: &Store,
+    env: &Env<'_>,
+    task: &Task,
+    recorded: Option<WorkspaceId>,
+) -> Result<WorkspaceId> {
+    let lead = match task.shape {
+        TaskShape::Lead => task.id,
+        TaskShape::Part { parent } => parent,
+        TaskShape::Plain => {
+            return recorded
+                .ok_or_else(|| anyhow::anyhow!("this session has no workspace recorded"));
+        }
+    };
+    lead_workspace(store, env, lead)
 }
 
 /// Opens `argv` as a new tab of the workspace a worker runs in, and returns the new surface.

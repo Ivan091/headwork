@@ -16,7 +16,7 @@ use headwork::ops::jobs::{Registration, register};
 use headwork::ops::launch::{StartMode, claude_command};
 use headwork::ops::park::{ParkOptions, RecapSource, park};
 use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume};
-use headwork::ops::spawn::{SpawnRequest, spawn};
+use headwork::ops::spawn::{SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{SurfaceState, TerminalHost};
 use headwork_adapters::proc::is_alive;
@@ -24,9 +24,9 @@ use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::{
     Actor, AskKind, Config, JobState, MachineMode, Model, PermissionMode, ProjectName, RecapKind,
-    Role, Slug, TaskRequest, TaskState, Trigger,
+    Role, Slug, TaskRequest, TaskShape, TaskState, Trigger,
 };
-use headwork_store::{NewAsk, NewRecap, NewSession, Store, Task};
+use headwork_store::{NewAsk, NewRecap, NewSession, NewTask, Store, Task};
 
 const EXE: &str = "S:/bin/headwork.exe";
 const SLEEPER_ROLE: &str = "HEADWORK_PARK_ROLE";
@@ -69,6 +69,10 @@ fn git_in(dir: &Path, args: &[&str]) {
 }
 
 fn world(resume_after_crash: &str) -> World {
+    world_with(resume_after_crash, "")
+}
+
+fn world_with(resume_after_crash: &str, extra: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -82,7 +86,7 @@ fn world(resume_after_crash: &str) -> World {
     let text = format!(
         "[machine]\nhost = \"wmux\"\nresume_after_crash = \"{resume_after_crash}\"\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
-         deliver = \"pr\"\nmerge = \"deliver\"\n"
+         deliver = \"pr\"\nmerge = \"deliver\"\n{extra}"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -169,6 +173,66 @@ impl World {
             )
             .unwrap();
         (self.store.task(task.id).unwrap(), session.id, pid)
+    }
+
+    fn part(&mut self, lead: &Task, part: &str) -> (Task, String, u32) {
+        let new = NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("demo").unwrap(),
+                slug: Slug::new(format!("{}-{part}", lead.slug())).unwrap(),
+                kind: "task".to_owned(),
+                model: Some(Model::Haiku),
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief_path: self.brief.display().to_string(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape: TaskShape::Part { parent: lead.id },
+        };
+        let task = self
+            .store
+            .create_task(&self.config, &new, Actor::Worker)
+            .unwrap();
+        let env = env!(self);
+        pump(&mut self.store, &env).unwrap();
+        self.launched(task.id)
+    }
+
+    fn launched(&mut self, id: headwork_store::TaskId) -> (Task, String, u32) {
+        let pid = self.sleeper();
+        let session = self.store.session_of(id).unwrap().unwrap();
+        self.store
+            .session_launched(&session.id, pid, pid, "job")
+            .unwrap();
+        self.store
+            .transition(
+                id,
+                &Trigger::SessionStarted(SessionFacts {
+                    session_matches: true,
+                    launcher_alive: true,
+                }),
+                Actor::Hook,
+            )
+            .unwrap();
+        (self.store.task(id).unwrap(), session.id, pid)
+    }
+
+    fn crash(&mut self, task: &Task, pid: u32) {
+        self.store
+            .transition(
+                task.id,
+                &Trigger::ProcessLost {
+                    machine: MachineMode::Normal,
+                },
+                Actor::Tick,
+            )
+            .unwrap();
+        assert!(
+            headwork_adapters::proc::kill_tree(pid).unwrap(),
+            "the sleeper is ended"
+        );
     }
 
     fn state(&self, task: &Task) -> TaskState {
@@ -832,4 +896,102 @@ fn an_orchestrator_whose_transcript_is_gone_starts_fresh_and_a_running_one_is_le
         .unwrap();
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains(&orchestrator), "a new session: {line}");
+}
+
+const LEADS: &str = "\n[leads]\nenabled = true\n";
+
+fn workspace_of(w: &World, task: &Task) -> String {
+    w.store
+        .session_of(task.id)
+        .unwrap()
+        .unwrap()
+        .host_workspace
+        .unwrap()
+}
+
+#[test]
+fn resume_brings_each_lead_back_before_its_parts_and_the_parts_become_tabs_again() {
+    let mut w = world_with("ask", LEADS);
+    let (lead, lead_session, lead_pid) = w.working("plan");
+    let (review, review_session, review_pid) = w.part(&lead, "review");
+    let (render, render_session, render_pid) = w.part(&lead, "render");
+    w.crash(&render, render_pid);
+    w.crash(&review, review_pid);
+    w.crash(&lead, lead_pid);
+    let old = workspace_of(&w, &lead);
+    w.host
+        .close_workspace(&headwork_adapters::host::WorkspaceId(old.clone()))
+        .unwrap();
+    let claude_dir = claude_dir_with(&w, &[&lead_session, &review_session, &render_session]);
+    let env = env!(w);
+    let report = resume(
+        &mut w.store,
+        &env,
+        &ResumeOptions {
+            logon: false,
+            wait_for_host: Duration::ZERO,
+            claude_dir,
+        },
+    )
+    .unwrap();
+    let order: Vec<&str> = report.tasks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        order,
+        ["demo-plan", "demo-plan-review", "demo-plan-render"],
+        "the lead first, then its parts in the order they were made: {report:?}"
+    );
+    assert!(
+        report
+            .tasks
+            .iter()
+            .all(|t| matches!(t.outcome, TaskOutcome::Resumed { .. })),
+        "{report:?}"
+    );
+    let workspace = workspace_of(&w, &lead);
+    assert_ne!(workspace, old, "the lead opened its workspace again");
+    assert_eq!(workspace_of(&w, &review), workspace, "a tab of it");
+    assert_eq!(workspace_of(&w, &render), workspace, "a tab of it");
+    let created = w
+        .host
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("new-workspace "))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        created,
+        ["new-workspace demo-plan", "new-workspace demo-plan"],
+        "only the lead makes a workspace, at spawn and at resume"
+    );
+}
+
+#[test]
+fn a_part_whose_lead_does_not_come_back_waits_for_it() {
+    let mut w = world_with("ask", LEADS);
+    let (lead, lead_session, lead_pid) = w.working("plan");
+    let (review, review_session, review_pid) = w.part(&lead, "review");
+    w.crash(&review, review_pid);
+    w.crash(&lead, lead_pid);
+    std::fs::remove_dir_all(w.dir.path().join("demo-plan")).unwrap();
+    let claude_dir = claude_dir_with(&w, &[&lead_session, &review_session]);
+    let env = env!(w);
+    let report = resume(
+        &mut w.store,
+        &env,
+        &ResumeOptions {
+            logon: false,
+            wait_for_host: Duration::ZERO,
+            claude_dir,
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(report.tasks[0].outcome, TaskOutcome::Failed { .. }),
+        "the lead's folder is gone: {report:?}"
+    );
+    assert!(
+        matches!(&report.tasks[1].outcome, TaskOutcome::Skipped { reason } if reason.contains("demo-plan")),
+        "{report:?}"
+    );
+    assert_eq!(w.state(&review), TaskState::Interrupted, "it waits");
 }

@@ -16,7 +16,9 @@ use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
 use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
-use headwork_core::{Actor, AskState, FindingId, MachineMode, SessionState, TaskState, Trigger};
+use headwork_core::{
+    Actor, AskState, FindingId, MachineMode, SessionState, TaskShape, TaskState, Trigger,
+};
 use headwork_store::{SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
@@ -327,7 +329,8 @@ impl<'b> Run<'_, 'b> {
                 self.store
                     .set_session_state(&session.id, SessionState::Gone, actor)?;
                 if self.enforce {
-                    self.end_session(session)?;
+                    let shape = self.store.task(id)?.shape;
+                    self.end_session(shape, session)?;
                 }
             }
             self.applied(
@@ -449,7 +452,7 @@ impl<'b> Run<'_, 'b> {
         Ok(())
     }
 
-    fn end_session(&self, session: &SessionRow) -> Result<()> {
+    fn end_session(&self, shape: TaskShape<TaskId>, session: &SessionRow) -> Result<()> {
         Self::end_processes(session)?;
         if let Some(surface) = session.host_surface.as_deref() {
             let workspace = session
@@ -460,7 +463,12 @@ impl<'b> Run<'_, 'b> {
             if self.report.host_up
                 && surface_present(self.env().host, workspace.as_ref(), &surface)?
             {
-                super::close::close_surface_or_workspace(self.env(), workspace.as_ref(), &surface)?;
+                super::close::close_surface_or_workspace(
+                    self.env(),
+                    shape,
+                    workspace.as_ref(),
+                    &surface,
+                )?;
             }
         }
         Ok(())

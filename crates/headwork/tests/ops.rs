@@ -18,9 +18,9 @@ use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{PaneId, SurfaceId, Target, TerminalHost, WorkspaceId};
 use headwork_core::{
     Actor, Config, Effort, Model, PermissionMode, PlaceKind, ProjectName, SessionState, Slug,
-    TaskRequest, TaskState,
+    TaskRequest, TaskShape, TaskState,
 };
-use headwork_store::{EventFilter, Store};
+use headwork_store::{EventFilter, NewTask, Store};
 
 const EXE: &str = "S:/bin/headwork.exe";
 
@@ -440,8 +440,13 @@ fn env(w: &World) -> Env<'_> {
 fn release(w: &World, task: &headwork_store::Task) {
     let session = w.store.session_of(task.id).unwrap().unwrap();
     let workspace = session.host_workspace.map(WorkspaceId);
-    close_surface_or_workspace(&env(w), workspace.as_ref(), &SurfaceId(surface_of(w, task)))
-        .unwrap();
+    close_surface_or_workspace(
+        &env(w),
+        task.shape,
+        workspace.as_ref(),
+        &SurfaceId(surface_of(w, task)),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1044,5 +1049,248 @@ fn the_main_checkout_refusal_names_the_main_only_kinds() {
         text.contains("kind `publish` is not main-only")
             && text.contains("the main-only kinds are `probe`"),
         "{text}"
+    );
+}
+
+const LEADS: &str = "
+[leads]
+enabled = true
+";
+
+impl World {
+    fn part(&mut self, lead: &headwork_store::Task, part: &str) -> headwork_store::Task {
+        let slug = format!("{}-{part}", lead.slug());
+        let new = NewTask {
+            request: request(&self.brief, &slug, false).request,
+            brief_path: self.brief.display().to_string(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape: TaskShape::Part { parent: lead.id },
+        };
+        let task = self
+            .store
+            .create_task(&self.config, &new, Actor::Worker)
+            .unwrap();
+        let env = Env {
+            home: &self.home,
+            config: &self.config,
+            host: &self.host,
+            exe: Path::new(EXE),
+            actor: Actor::User,
+        };
+        pump(&mut self.store, &env).unwrap();
+        self.store.task(task.id).unwrap()
+    }
+}
+
+fn workspace_of(w: &World, task: &headwork_store::Task) -> String {
+    w.store
+        .session_of(task.id)
+        .unwrap()
+        .unwrap()
+        .host_workspace
+        .unwrap()
+}
+
+#[test]
+fn a_lead_opens_full_screen_in_a_workspace_of_its_own_whatever_the_layout_mode() {
+    let mut w = world_with(10, "builtin", LEADS);
+    let (lead, _) = w.spawn("plan", false);
+    let (other, _) = w.spawn("dune", false);
+    assert_eq!(lead.shape, TaskShape::Lead, "a lead");
+    let calls = w.host.calls();
+    assert!(calls.iter().all(|c| !c.starts_with("split ")), "{calls:?}");
+    assert!(
+        calls.contains(&"new-workspace demo-plan".to_owned())
+            && calls.contains(&"new-workspace demo-dune".to_owned()),
+        "a workspace per lead, titled with its name, though the mode is panes: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("spawn ws-1 demo/plan in ")
+                && c.ends_with(" pane pane-2 replace")),
+        "the lead replaces the fresh shell: {calls:?}"
+    );
+    let row = w.store.session_of(lead.id).unwrap().unwrap();
+    assert_eq!(row.host_place, Some(PlaceKind::Pane), "a pane of its own");
+    assert_ne!(
+        workspace_of(&w, &lead),
+        workspace_of(&w, &other),
+        "never shared"
+    );
+}
+
+#[test]
+fn a_part_opens_as_a_tab_of_its_leads_workspace_titled_with_the_part_only() {
+    let mut w = world_with(10, "builtin", LEADS);
+    let (lead, _) = w.spawn("plan", false);
+    let review = w.part(&lead, "review");
+    let render = w.part(&lead, "render");
+    assert_eq!(review.state, TaskState::Spawning, "started");
+    let workspace = workspace_of(&w, &lead);
+    assert_eq!(workspace_of(&w, &review), workspace, "the lead's workspace");
+    assert_eq!(workspace_of(&w, &render), workspace, "the lead's workspace");
+    let calls = w.host.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("new-workspace "))
+            .count(),
+        1,
+        "a part opens no workspace: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(
+            |c| c.starts_with(&format!("spawn {workspace} demo/plan-review in "))
+                && c.ends_with(" tab")
+        ),
+        "a new tab: {calls:?}"
+    );
+    let row = w.store.session_of(review.id).unwrap().unwrap();
+    assert_eq!(row.host_place, Some(PlaceKind::Tab), "a tab");
+    assert_eq!(
+        row.rc_name, "demo-plan-review",
+        "the address stays the full name"
+    );
+    let surface = surface_of(&w, &review);
+    assert!(
+        calls.contains(&format!("rename-surface {surface} review")),
+        "the tab shows the part: {calls:?}"
+    );
+    let surfaces = w.host.surfaces(&WorkspaceId(workspace)).unwrap();
+    assert_eq!(
+        surfaces.len(),
+        3,
+        "the lead and two parts as tabs: {surfaces:?}"
+    );
+}
+
+#[test]
+fn part_title_follows_its_template_and_retitle_covers_part_tabs() {
+    let mut w = world_with(
+        10,
+        "builtin",
+        "
+[leads]
+enabled = true
+part_title = \"{part}|{name}|{model}\"
+",
+    );
+    let (lead, _) = w.spawn("plan", false);
+    let review = w.part(&lead, "review");
+    let (all, failed) = headwork::ops::title::retitle(&w.store, &env(&w), None).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    let titles: Vec<(&str, &str)> = all
+        .iter()
+        .map(|item| (item.name.as_str(), item.title.as_str()))
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            ("demo-plan", "demo-plan"),
+            ("demo-plan-review", "review|demo-plan-review|haiku")
+        ],
+        "the lead keeps [layout] title, the part [leads] part_title"
+    );
+    assert_eq!(
+        all.get(1).unwrap().surface,
+        surface_of(&w, &review),
+        "the part's tab"
+    );
+}
+
+#[test]
+fn a_part_finds_its_leads_workspace_by_title_when_the_recorded_id_is_gone() {
+    let mut w = world_with(10, "builtin", LEADS);
+    let (lead, _) = w.spawn("plan", false);
+    let row = w.store.session_of(lead.id).unwrap().unwrap();
+    w.store
+        .set_session_place(
+            &row.id,
+            &headwork_store::Place {
+                workspace: "ws-gone",
+                surface: row.host_surface.as_deref().unwrap(),
+                pane: row.host_pane.as_deref(),
+                kind: row.host_place,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    let review = w.part(&lead, "review");
+    assert_eq!(review.state, TaskState::Spawning, "started");
+    assert_eq!(
+        workspace_of(&w, &review),
+        "ws-1",
+        "the workspace titled demo-plan"
+    );
+}
+
+#[test]
+fn a_part_is_refused_when_its_leads_workspace_is_gone() {
+    let mut w = world_with(10, "builtin", LEADS);
+    let (lead, _) = w.spawn("plan", false);
+    w.host
+        .close_workspace(&WorkspaceId(workspace_of(&w, &lead)))
+        .unwrap();
+    let review = w.part(&lead, "review");
+    assert_eq!(review.state, TaskState::Failed, "not started elsewhere");
+    let calls = w.host.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("new-workspace "))
+            .count(),
+        1,
+        "no workspace of its own: {calls:?}"
+    );
+    let errors = w
+        .store
+        .events(EventFilter {
+            task: Some(review.id),
+            limit: 50,
+        })
+        .unwrap();
+    assert!(
+        errors.iter().any(|e| e.kind == "launch-error"
+            && e.data
+                .to_string()
+                .contains("workspace of the lead demo-plan is gone")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_parts_release_closes_only_its_tab_and_the_leads_closes_the_workspace_with_its_helpers() {
+    let mut w = world_with(10, "builtin", LEADS);
+    let (lead, _) = w.spawn("plan", false);
+    let review = w.part(&lead, "review");
+    let workspace = WorkspaceId(workspace_of(&w, &lead));
+    headwork::ops::place::open_helper(&env(&w), &workspace, w.dir.path(), &["sleep".to_owned()])
+        .unwrap();
+    release(&w, &review);
+    assert!(
+        w.host
+            .workspaces()
+            .unwrap()
+            .iter()
+            .any(|ws| ws.id == workspace),
+        "the workspace stays"
+    );
+    assert_eq!(
+        w.host.surfaces(&workspace).unwrap().len(),
+        2,
+        "the lead and the helper are left"
+    );
+    let calls = w.host.calls();
+    assert!(
+        calls.contains(&format!("close-surface {}", surface_of(&w, &review))),
+        "{calls:?}"
+    );
+    release(&w, &lead);
+    assert!(
+        w.host.workspaces().unwrap().is_empty(),
+        "the lead's close takes the workspace and its helper: {:?}",
+        w.host.calls()
     );
 }

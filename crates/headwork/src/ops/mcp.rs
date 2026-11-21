@@ -775,10 +775,12 @@ impl<'a> Server<'a> {
             .store
             .session(session)?
             .ok_or_else(|| anyhow!("this session is not in headwork's store"))?;
-        let workspace = row
-            .host_workspace
-            .map(headwork_adapters::host::WorkspaceId)
-            .ok_or_else(|| anyhow!("this session has no workspace recorded"))?;
+        let workspace = super::place::helper_workspace(
+            self.store,
+            &self.env,
+            &task,
+            row.host_workspace.map(headwork_adapters::host::WorkspaceId),
+        )?;
         let dir = match registration.cwd {
             Some(cwd) => std::path::PathBuf::from(cwd),
             None => self.env.task_dir(&task)?,

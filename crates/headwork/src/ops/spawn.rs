@@ -240,9 +240,7 @@ fn open_pane(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<String> {
         store.record_worktree(task.id, &slashed(&dir), slug, env.actor)?;
     }
     super::trust::before_start(store, env, task)?;
-    let (workspace, fresh) = env
-        .host
-        .ensure_workspace(&place::workspace_title(env, task), &main)?;
+    let (workspace, fresh) = place::workspace_for(store, env, task, &main)?;
     let session_id = uuid::Uuid::new_v4().to_string();
     store.record_session(
         &NewSession {
