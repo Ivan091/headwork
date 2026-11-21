@@ -1530,3 +1530,68 @@ fn force_still_refuses_a_task_that_was_not_dropped_and_has_no_pull_request() {
     assert!(dir.exists(), "nothing deleted");
     assert_eq!(state(&w, &task), TaskState::Closing, "still closing");
 }
+
+#[test]
+fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() {
+    let mut w = world();
+    let first = spawn_task(&mut w, "first");
+    start(&mut w, &first, FAKE_PID_BASE, FAKE_PID_BASE);
+    let pr = PrInfo {
+        repo: "acme/demo".to_owned(),
+        number: 48,
+        url: "https://github.com/acme/demo/pull/48".to_owned(),
+        state: PrState::Open,
+    };
+    w.store
+        .record_pr(
+            first.id,
+            &PrSeen {
+                repo: &pr.repo,
+                number: pr.number,
+                url: &pr.url,
+                state: "open",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    w.store
+        .transition(first.id, &Trigger::ForceClose, Actor::Orchestrator)
+        .unwrap();
+    let env = env_as!(w, Actor::User);
+    let request = SpawnRequest {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new("second").unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+        },
+        brief: &w.brief,
+        depends_on: Some(first.id),
+        permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
+    };
+    let second = spawn(&mut w.store, &env, &request).unwrap().0;
+    run_tick(&mut w);
+    assert_eq!(state(&w, &first), TaskState::Closed, "closed without merged");
+    assert_eq!(
+        state(&w, &second),
+        TaskState::Queued,
+        "its pull request is still open"
+    );
+    w.git.set(
+        "first",
+        PrInfo {
+            state: PrState::Merged,
+            ..pr
+        },
+    );
+    run_tick(&mut w);
+    assert_eq!(
+        state(&w, &second),
+        TaskState::Spawning,
+        "the dependency's pull request merged"
+    );
+}

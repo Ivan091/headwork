@@ -250,6 +250,13 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
         .collect()
 }
 
+/// A task ending (`closing` or `closed`) whose recorded pull requests are all merged, there being at least one: it
+/// delivered even when it closed without passing through `merged`, as a forced close from `in_review` does. `?1` is the
+/// task's id.
+const DELIVERED: &str = "state IN ('closing', 'closed')
+    AND EXISTS (SELECT 1 FROM prs WHERE task_id = ?1)
+    AND NOT EXISTS (SELECT 1 FROM prs WHERE task_id = ?1 AND state <> 'merged')";
+
 fn count(n: usize) -> Result<u32, StoreError> {
     u32::try_from(n).map_err(|_| StoreError::OutOfRange(i64::MAX))
 }
@@ -452,9 +459,11 @@ impl Store {
             return Ok(Dependency::None);
         };
         let merged: bool = self.conn.query_row(
-            "SELECT state = 'merged' OR EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND type = 'transition'
-                 AND json_extract(data, '$.to') = 'merged')
-             FROM tasks WHERE id = ?1",
+            &format!(
+                "SELECT state = 'merged' OR EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND type = 'transition'
+                     AND json_extract(data, '$.to') = 'merged') OR ({DELIVERED})
+                 FROM tasks WHERE id = ?1"
+            ),
             params![id.0],
             |row| row.get(0),
         )?;
@@ -463,6 +472,27 @@ impl Store {
         } else {
             Dependency::Waiting
         })
+    }
+
+    /// The ending dependencies (`closing` or `closed`) of queued tasks that the store does not count merged yet: their
+    /// recorded pull requests may be stale, so the queue asks the git host again before it starts anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn unsettled_dependencies(&self) -> Result<Vec<TaskId>, StoreError> {
+        let ids: Vec<i64> = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT d.id FROM tasks q JOIN tasks d ON d.id = q.depends_on
+                 WHERE q.state = 'queued' AND d.state IN ('closing', 'closed') AND NOT EXISTS (
+                     SELECT 1 FROM events WHERE task_id = d.id AND type = 'transition'
+                         AND json_extract(data, '$.to') = 'merged')
+                 ORDER BY d.id",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids.into_iter().map(TaskId).collect())
     }
 
     fn fable_gate(&self, task: &Task) -> Result<FableGate, StoreError> {

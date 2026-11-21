@@ -1031,6 +1031,7 @@ impl<'b> Run<'_, 'b> {
         }
         let machine = self.store.machine_mode()?;
         if machine == MachineMode::Normal || machine == MachineMode::Resuming {
+            super::prs::refresh_dependencies(self.store, self.env(), self.t.git)?;
             self.report.started = pump(self.store, self.env())?;
         }
         Ok(())

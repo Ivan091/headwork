@@ -929,6 +929,7 @@ impl<'a> Server<'a> {
         } else {
             close(self.store, &self.env, task.id, None)?
         };
+        super::prs::refresh_dependencies(self.store, &self.env, self.git)?;
         pump(self.store, &self.env)?;
         to_text(&report)
     }
@@ -970,6 +971,7 @@ impl<'a> Server<'a> {
             self.store.set_queue_order(&ids, self.env.actor)?;
         }
         reap(self.store, &self.env)?;
+        super::prs::refresh_dependencies(self.store, &self.env, self.git)?;
         to_text(&pump(self.store, &self.env)?)
     }
 

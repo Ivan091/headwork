@@ -25,6 +25,7 @@ use headwork::ops::launch::{
 };
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::park::{ParkOptions, park};
+use headwork::ops::prs::refresh_dependencies;
 use headwork::ops::reap::{ReapOptions, reap as reap_processes};
 use headwork::ops::relay::Relay;
 use headwork::ops::reload;
@@ -914,6 +915,7 @@ fn queue_command(
     }
     let pumped = ctx.with_env(|env| {
         reap(store, env)?;
+        refresh_dependencies(store, env, &Gh::default())?;
         pump(store, env)
     })?;
     if json {

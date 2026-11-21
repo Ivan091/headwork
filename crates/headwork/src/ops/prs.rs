@@ -109,6 +109,30 @@ pub fn lookup(
     Ok(PrLookup { seen })
 }
 
+/// Asks the git host again for the pull requests of queued tasks' ending dependencies not counted merged yet.
+///
+/// A dependency closed straight from `in_review` then counts once its pull requests merged. A lookup that fails is
+/// logged and the dependency keeps waiting.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn refresh_dependencies(store: &mut Store, env: &Env<'_>, git: &dyn GitHost) -> Result<()> {
+    for id in store.unsettled_dependencies()? {
+        let task = store.task(id)?;
+        if let Err(error) = lookup(store, env, git, &task) {
+            store.append_event(
+                env.actor,
+                Some(id),
+                None,
+                "pr-lookup-error",
+                &serde_json::json!({ "error": format!("{error:#}") }),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
