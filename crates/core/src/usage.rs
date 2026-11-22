@@ -250,11 +250,42 @@ pub fn short_count(count: u64) -> String {
 mod tests {
     use super::*;
 
-    const RESPONSE: &str = r#"{"parentUuid":"p","isSidechain":false,"message":{"model":"claude-opus-5-5","id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":34277,"cache_read_input_tokens":35483,"output_tokens":75,"output_tokens_details":{"thinking_tokens":20},"server_tool_use":{"web_search_requests":1,"web_fetch_requests":2},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":34000,"ephemeral_5m_input_tokens":277},"speed":"standard"}},"requestId":"req_1","type":"assistant","uuid":"u1","timestamp":"2026-11-22T20:03:15.027Z","effort":"medium","sessionId":"s1","cwd":"S:\\Code\\x"}"#;
+    fn response() -> String {
+        serde_json::json!({
+            "parentUuid": "p",
+            "isSidechain": false,
+            "message": {
+                "model": "claude-opus-5-5",
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {
+                    "input_tokens": 2,
+                    "cache_creation_input_tokens": 34277,
+                    "cache_read_input_tokens": 35483,
+                    "output_tokens": 75,
+                    "output_tokens_details": { "thinking_tokens": 20 },
+                    "server_tool_use": { "web_search_requests": 1, "web_fetch_requests": 2 },
+                    "service_tier": "standard",
+                    "cache_creation": { "ephemeral_1h_input_tokens": 34000, "ephemeral_5m_input_tokens": 277 },
+                    "speed": "standard"
+                }
+            },
+            "requestId": "req_1",
+            "type": "assistant",
+            "uuid": "u1",
+            "timestamp": "2026-11-22T20:03:15.027Z",
+            "effort": "medium",
+            "sessionId": "s1",
+            "cwd": r"S:\Code\x"
+        })
+        .to_string()
+    }
 
     #[test]
     fn a_response_line_gives_every_field() {
-        let line = parse_line(RESPONSE);
+        let line = parse_line(&response());
         assert_eq!(
             line,
             Some(UsageLine {
@@ -313,9 +344,10 @@ mod tests {
 
     #[test]
     fn missing_fields_count_as_zero_and_old_cache_writes_are_five_minute() {
-        let line = parse_line(
-            r#"{"type":"assistant","requestId":"req_9","timestamp":"t","message":{"model":"m","usage":{"input_tokens":5,"cache_creation_input_tokens":7,"output_tokens":3}}}"#,
-        );
+        let line = parse_line(concat!(
+            r#"{"type":"assistant","requestId":"req_9","timestamp":"t","message":{"model":"m","#,
+            r#""usage":{"input_tokens":5,"cache_creation_input_tokens":7,"output_tokens":3}}}"#
+        ));
         let line = line.unwrap_or_else(|| unreachable!("the line parses"));
         assert_eq!(
             line.message_id, "req_9",
@@ -337,15 +369,15 @@ mod tests {
 
     #[test]
     fn copies_of_one_response_share_the_id() {
-        let other_block = RESPONSE.replace("\"uuid\":\"u1\"", "\"uuid\":\"u2\"");
-        let first = parse_line(RESPONSE).map(|line| line.message_id);
+        let other_block = response().replace("\"uuid\":\"u1\"", "\"uuid\":\"u2\"");
+        let first = parse_line(&response()).map(|line| line.message_id);
         let second = parse_line(&other_block).map(|line| line.message_id);
         assert_eq!(first, second, "one key for both blocks");
     }
 
     #[test]
     fn sidechain_lines_are_read_like_any_other() {
-        let sidechain = RESPONSE.replace("\"isSidechain\":false", "\"isSidechain\":true");
+        let sidechain = response().replace("\"isSidechain\":false", "\"isSidechain\":true");
         assert!(
             parse_line(&sidechain).is_some(),
             "a sidechain response counts"
