@@ -213,7 +213,8 @@ impl Rig {
         std::fs::write(bin.join(program_name()), format!("{installed}\n")).unwrap();
         let home = Home::at(Some(root))
             .unwrap()
-            .with_claude_json(dir.path().join(".claude.json"));
+            .with_claude_json(dir.path().join(".claude.json"))
+            .with_claude_dir(dir.path().join(".claude"));
         let config = Config::parse(&text, "test").unwrap();
         let disks = FakeDisks::new();
         disks.set(home.root(), 100 * GIB);

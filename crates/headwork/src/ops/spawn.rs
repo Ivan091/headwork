@@ -1,7 +1,8 @@
 //! `spawn`: create a task in `queued`, then start queued tasks, oldest first, while the start guard lets them.
 //!
-//! The brief holds the task only; the worker rules reach the session through the plugin's hooks. Without the plugin
-//! configured, the rendered worker rules are appended to the brief instead.
+//! The brief holds the task only; the worker rules reach the session through the plugin's hooks. Only when no session
+//! loads the plugin (neither `hooks.plugin_dir` nor the user's `settings.json` names it) are the rendered worker rules
+//! appended to the brief instead.
 //!
 //! A spawn with `--allow-ask` commands appends the worker's first action, the `Allow` ask for them, to the brief. A
 //! brief or allow-ask that names a user-only command under a kind that is not main-only is refused before the task
@@ -151,7 +152,7 @@ pub fn spawn_shaped(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let brief = if launch::plugin_dir(env.home, env.config).is_some() {
+    let brief = if launch::plugin_loaded(env.home, env.config) {
         brief
     } else {
         let dir = env.task_dir(&task)?;

@@ -516,10 +516,24 @@ const INSTALL_FIX: &str = concat!(
     "or set `hooks.plugin_dir` in config.toml"
 );
 
-fn plugin_checks(d: &Doctor<'_>, config: Option<&Config>) -> Vec<Check> {
-    let settings = std::fs::read_to_string(d.claude_dir.join("settings.json"))
+fn user_settings(claude_dir: &Path) -> Option<Value> {
+    std::fs::read_to_string(claude_dir.join("settings.json"))
         .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+}
+
+/// Whether the user's `settings.json` in `claude_dir` enables the plugin, so every session loads it and its
+/// `SessionStart` hook injects the rules.
+#[must_use]
+pub fn plugin_enabled_in(claude_dir: &Path) -> bool {
+    user_settings(claude_dir)
+        .as_ref()
+        .and_then(installed_plugin)
+        .is_some_and(|installed| installed.enabled)
+}
+
+fn plugin_checks(d: &Doctor<'_>, config: Option<&Config>) -> Vec<Check> {
+    let settings = user_settings(d.claude_dir);
     let installed = settings.as_ref().and_then(installed_plugin);
     let launcher_dir = config
         .and_then(|config| config.hooks.plugin_dir.as_deref())

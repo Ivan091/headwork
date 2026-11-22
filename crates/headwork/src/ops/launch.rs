@@ -124,6 +124,13 @@ pub fn plugin_dir(home: &Home, config: &Config) -> Option<String> {
         .map(|dir| super::slashed(&home.expand(dir)))
 }
 
+/// Whether a task's session loads the plugin, whose `SessionStart` hook then injects the rules: named by
+/// `hooks.plugin_dir`, or enabled in the user's `settings.json`.
+#[must_use]
+pub fn plugin_loaded(home: &Home, config: &Config) -> bool {
+    plugin_dir(home, config).is_some() || super::doctor::plugin_enabled_in(home.claude_dir())
+}
+
 /// Runs a task's session to its end and returns the exit code of `claude`.
 ///
 /// # Errors

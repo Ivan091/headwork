@@ -90,7 +90,8 @@ fn world() -> World {
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(root.join("home")))
         .unwrap()
-        .with_claude_json(root.join(".claude.json"));
+        .with_claude_json(root.join(".claude.json"))
+        .with_claude_dir(root.join(".claude"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = root.join("brief.md");

@@ -81,7 +81,8 @@ main_only = ["probe"]
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
         .unwrap()
-        .with_claude_json(dir.path().join(".claude.json"));
+        .with_claude_json(dir.path().join(".claude.json"))
+        .with_claude_dir(dir.path().join(".claude"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");
@@ -130,6 +131,30 @@ impl World {
         };
         spawn(&mut self.store, &env, &request).unwrap()
     }
+}
+
+#[test]
+fn brief_carries_the_rules_only_when_no_session_loads_the_plugin() {
+    let mut w = world(10, "builtin");
+    let (bare, _) = w.spawn("bare", false);
+    let brief = std::fs::read_to_string(w.home.brief_path(&bare.name)).unwrap();
+    assert!(
+        brief.contains("# headwork: rules for worker sessions"),
+        "no plugin: the rules follow the task: {brief}"
+    );
+    let claude = w.home.claude_dir().to_path_buf();
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("settings.json"),
+        r#"{"enabledPlugins": {"headwork@headwork": true}}"#,
+    )
+    .unwrap();
+    let (plugged, _) = w.spawn("plugged", false);
+    let brief = std::fs::read_to_string(w.home.brief_path(&plugged.name)).unwrap();
+    assert_eq!(
+        brief, "# Task\n\nSay ready.\n",
+        "the plugin is enabled in settings.json: its hook brings the rules"
+    );
 }
 
 #[test]
@@ -387,6 +412,7 @@ fn the_exited_command_does_the_launchers_exit_work() {
         .arg("--home")
         .arg(w.home.root())
         .env("HEADWORK_CLAUDE_JSON", w.home.root().join(".claude.json"))
+        .env("HEADWORK_CLAUDE_DIR", w.home.root().join(".claude"))
         .output()
         .unwrap();
     assert!(
