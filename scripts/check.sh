@@ -41,6 +41,8 @@ if [[ -f "$checker" ]]; then
   if (( ${#files[@]} )); then
     node "$checker" "${files[@]}"
   fi
+elif [[ -n "${CI:-}" ]]; then
+  printf 'skipped in CI: the no-comments checker lives in the user config; the local gate runs it\n'
 else
   printf 'the no-comments checker is missing at %s\n' "$checker"
   exit 1

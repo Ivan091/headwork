@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            asset: headwork-x86_64-pc-windows-msvc.exe
+            binary: target/release/headwork.exe
+          - os: macos-latest
+            asset: headwork-aarch64-apple-darwin
+            binary: target/release/headwork
+    runs-on: ${{ matrix.os }}
+    env:
+      HEADWORK_VERSION: 0.1.${{ github.run_number }}
+      HEADWORK_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - name: gate
+        shell: bash
+        run: bash scripts/check.sh
+      - name: build
+        shell: bash
+        run: cargo build --release --locked -p headwork
+      - name: check the binary
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --version
+          "${{ matrix.binary }}" --version | grep -F "headwork $HEADWORK_VERSION ($HEADWORK_COMMIT, schema "
+      - name: stage
+        shell: bash
+        run: mkdir -p dist && cp "${{ matrix.binary }}" "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: sha256sum headwork-* > SHA256SUMS && cat SHA256SUMS
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.1.${{ github.run_number }}
+        run: >-
+          gh release create "$TAG" dist/*
+          --repo "${{ github.repository }}"
+          --target "${{ github.sha }}"
+          --title "headwork $TAG"
+          --generate-notes

@@ -259,7 +259,8 @@ Each a pull request through `scripts/check.sh`:
    `doctor` showing it. Built: `crates/headwork/src/version.rs`.
 3. **Going public:** a `LICENSE` (MIT) and `license = "MIT"` in `Cargo.toml`, the history rewrite above, then the user
    changes the visibility. Done 2026-11-22, see "How it went public".
-4. **The release workflow** (and the read-only pull request gate); the first release proves it.
+4. **The release workflow** (and the read-only pull request gate); the first release proves it. Built:
+   `.github/workflows/release.yml`, `.github/workflows/gate.yml`; `check.sh` skips the comment ban when `CI` is set.
 5. **`headwork update`:** `[update]` config, `core/src/update.rs` with table tests, `ops/update.rs` (lock and pending,
    GitHub query, download and hash, smoke test, install, `--after`, checkout fast-forward, `--wait`, `--to`),
    `update.json`, events, the `doctor` check, `install` waiting for the lock. CLI tests on a temporary home with a fake

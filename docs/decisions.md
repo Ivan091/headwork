@@ -985,3 +985,10 @@ and the reason.
   force push and a visibility switch: GitHub keeps every pull request's `refs/pull/<n>/head`, which would have kept the
   old commits (private e-mail addresses, session trailers) fetchable. The old repository is the private
   `Ivan091/headwork-archive`; pull request numbers before the move refer to it. The code is MIT licensed.
+- 2026-11-22 The release workflow (autoupdate step 4): `release.yml` on every push to `master` (and by hand) runs
+  `check.sh` and a release build on `windows-latest` and `macos-latest` with `HEADWORK_VERSION=0.1.<run number>` and
+  `HEADWORK_COMMIT`, checks the binary prints both, and a publish job on `ubuntu-latest`, the only one with `contents:
+  write`, writes `SHA256SUMS` and runs `gh release create v0.1.<run> --generate-notes`. One run at a time (`concurrency:
+  release`, newer pending runs replace older pending ones). `gate.yml` runs `check.sh` read-only on pull requests. The
+  comment checker is the user's (`~/.claude/skills/no-comments`), not vendored into a public repository, so `check.sh`
+  skips that step when `CI` is set and the local gate keeps enforcing it.
