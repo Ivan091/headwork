@@ -1,0 +1,90 @@
+name = "code"
+description = "A branch's diff against the default branch"
+target = "diff"
+
+[levels.1]
+pushback = "Report only defects you can show with a concrete failing scenario: the inputs or state, and the wrong result or crash. No style remarks, no risks without a scenario. When unsure, leave it out."
+dispute = "reason"
+unsettled = "accept"
+rounds = 1
+
+[levels.2]
+pushback = "Report defects with a concrete failing scenario, and risks that are likely to bite; mark minor issues as nit. A finding needs a file and line and a scenario someone can check. Expect each finding to be challenged with evidence."
+dispute = "evidence"
+unsettled = "ask"
+rounds = 1
+
+[levels.3]
+pushback = "Be strict. Report defects, risks and nits, and also doubt the approach and the scope: say when a simpler design, a smaller change or a different place would serve better, marked doubt. Do not give the benefit of the doubt; ask for evidence."
+dispute = "evidence"
+unsettled = "ask"
+rounds = 2
+argue_back = true
+
+[[node]]
+id = "correctness"
+prompt = "code/correctness.md"
+from_level = 1
+model = { 1 = "sonnet", 2 = "opus", 3 = "opus" }
+
+[[node]]
+id = "tests"
+prompt = "code/tests.md"
+from_level = 1
+model = "sonnet"
+
+[[node]]
+id = "rules"
+prompt = "code/rules.md"
+from_level = 1
+model = { 1 = "sonnet", 2 = "sonnet", 3 = "opus" }
+
+[[node]]
+id = "errors"
+prompt = "code/errors.md"
+from_level = 2
+model = { 2 = "sonnet", 3 = "opus" }
+
+[[node]]
+id = "design"
+prompt = "code/design.md"
+from_level = 2
+model = "opus"
+
+[[node]]
+id = "docs"
+prompt = "code/docs.md"
+from_level = 2
+model = { 2 = "sonnet", 3 = "opus" }
+
+[[node]]
+id = "concurrency"
+prompt = "code/concurrency.md"
+from_level = 3
+model = "opus"
+
+[[node]]
+id = "security"
+prompt = "code/security.md"
+from_level = 3
+model = "opus"
+
+[[node]]
+id = "challenge-approach"
+prompt = "code/challenge-approach.md"
+from_level = 3
+model = "opus"
+
+[[node]]
+id = "challenge-scope"
+prompt = "code/challenge-scope.md"
+from_level = 3
+model = "opus"
+
+[[node]]
+id = "verify"
+prompt = "code/verify.md"
+from_level = 2
+after = ["*"]
+each = "finding"
+model = "opus"

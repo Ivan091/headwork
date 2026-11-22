@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 use headwork::ops::clean::{BranchOutcome, CleanReport, GcOutcome, Outcome as CleanOutcome};
 use headwork::ops::doctor::{DoctorReport, Status};
+use headwork::ops::flows::{FlowReport, Origin as FlowOrigin};
 use headwork::ops::import::ImportReport;
 use headwork::ops::install::InstallReport;
 use headwork::ops::park::{ParkReport, RecapSource};
@@ -464,6 +465,27 @@ pub(crate) fn doctored(report: &DoctorReport) -> String {
         report.count(Status::Warn),
         report.count(Status::Fail)
     );
+    text
+}
+
+/// Each flow with where it comes from, and its problems.
+#[must_use]
+pub(crate) fn flows_checked(reports: &[FlowReport]) -> String {
+    let mut text = String::new();
+    for report in reports {
+        let mark = if report.ok() { "ok  " } else { "FAIL" };
+        let origin = match &report.origin {
+            FlowOrigin::Builtin => "built-in".to_owned(),
+            FlowOrigin::Home(path) => path.display().to_string(),
+        };
+        let _ = writeln!(text, "[{mark}] {:<12} {origin}", report.name);
+        if let Some(description) = &report.description {
+            let _ = writeln!(text, "       {description}");
+        }
+        for problem in &report.problems {
+            let _ = writeln!(text, "       {problem}");
+        }
+    }
     text
 }
 
