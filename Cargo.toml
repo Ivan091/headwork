@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 publish = false
 authors = ["Ivan Karnasevich"]
+license = "MIT"
 description = "An orchestrator for Claude Code sessions with hard rules in code"
 repository = "https://github.com/Ivan091/headwork"
 readme = "README.md"
