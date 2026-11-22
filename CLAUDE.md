@@ -41,7 +41,8 @@ Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
 Claude app's list (`docs/decisions.md`, 2026-11-22). A close from outside the session presses Escape and Ctrl+U first
 (an open `AskUserQuestion` dialog would take the Enter as an answer, and a running turn would hold `/exit` back) and
 asks twice; a self-close never interrupts its own tool call, and its caller runs no queue (the finisher does). A close
-that finds the claim held waits up to two minutes for that finisher and reports how it ended. A running task whose session ended or whose launcher is gone
+that finds the claim held waits up to two minutes for that finisher and reports how it ended. A closed task's waiting
+asks are superseded, at close and by the tick. A running task whose session ended or whose launcher is gone
 becomes `interrupted` through `ops/lost.rs`, called by the `SessionEnd` hook, `board` and the tick alike.
 A task may deliver in several pull requests: close and the tick find them through one lookup (`ops/prs.rs`: recorded
 URLs, the stored branch, the branch checked out), a later pull request takes a `merged` task back to `in_review`, and

@@ -1199,3 +1199,7 @@ and the reason.
   to a bare `ssh`, which replaced `core.sshCommand` (Windows' OpenSSH, which reaches the agent) with Git Bash's client
   and failed with "Permission denied (publickey)", so the main checkout was never forwarded. `ssh::batch_command_in`
   takes the program git would use (`GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`, `ssh`) and adds the batch options.
+- 2026-11-22 A task that closes supersedes its asks still waiting, and the tick supersedes any it finds on a closed
+  task. A lead's "Close the task?" dialog opened while the orchestrator closed it stayed `open` for ever (eight such
+  asks, the oldest from 2026-11-16), so the board listed them and the tick reminded the user of questions no session
+  could act on. Superseding is bookkeeping, not enforcement, so the tick does it in shadow mode too.
