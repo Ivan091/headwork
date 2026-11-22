@@ -949,6 +949,17 @@ and the reason.
   pinned commit, not one from the project's `worktree_new`; the reviewer lead runs on Sonnet by default while the nodes
   carry the judgement; sessions pass findings and resolutions by `SendMessage`, the tools returning the text and the
   address; the first flows are `code` and `plan`.
+- 2026-11-22 Review flows R1, the core and the store (`core/src/review/`, `crates/store/src/reviews.rs`). Choices the plan
+  left open or that the code showed: the migration is `0019_reviews.sql`, not 0015 (0015 to 0018 landed since the plan);
+  a finding whose fix the re-check accepts becomes `fix-accepted`, a resolution the plan's list lacked, so `fixed` means
+  only "waiting on the re-check"; a level's `argue_back = true` (level 3 of `code`) makes the reviewer lead argue back
+  once before a dispute goes to `unsettled`, and the finding's `argued` column remembers it; `after = ["*"]` means every
+  node declared earlier in the file that runs at the level, which keeps star edges acyclic by construction; an `each`
+  node returns a verdict on its one finding, never findings of its own, and fans out over the findings of its plain
+  inputs only; a node that fails counts as over, so a round goes on without it; another round is due only when the
+  round fixed something (no fix, nothing new to review); a state step from `rechecking` with nothing left to do stays in
+  `rechecking` until `review_finish`, and `finish` also ends a delivered round that found nothing. A home flow is named
+  by its file, and a `name` that differs from the file name is a `flow check` problem.
 - 2026-11-22 Closed sessions leave the Claude app. Closed workers stayed listed in the Claude app (Remote Control)
   because `close` ended `claude` with `taskkill /T /F`, which skips the teardown where Claude Code archives its Remote
   Control session at claude.ai (`[remote-bridge] Torn down (archive=200)` in its debug log). A trial with throwaway

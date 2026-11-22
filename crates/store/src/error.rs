@@ -62,6 +62,9 @@ pub enum StoreError {
         /// Why not.
         reason: &'static str,
     },
+    /// A stored review node id is not valid.
+    #[error("stored review node: {0}")]
+    BadNode(#[from] headwork_core::review::FlowError),
     /// Event data is not valid JSON.
     #[error("event data: {0}")]
     Json(#[from] serde_json::Error),
