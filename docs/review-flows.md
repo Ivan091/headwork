@@ -1,6 +1,6 @@
 # Review flows: reviews on the user's word, run by a reviewer lead with many small reviewers
 
-Status: plan of 2026-11-22, nothing built. It builds on leads (`docs/leads.md`): a review is a part of the task, and
+Status: plan of 2026-11-22. R1 (core, store, `flow check`, the `code` flow) is built; R2 to R4 are not. It builds on leads (`docs/leads.md`): a review is a part of the task, and
 that part is the reviewer lead.
 
 ## 1. The model
@@ -55,7 +55,7 @@ lead's session against:
 review [<flow>] <level> [<focus>]        level: 1, 2 or 3, optionally in brackets: review [2]
 ```
 
-`core/src/review.rs` parses it (pure, table-tested): `review 2`, `review [3]`, `review plan 1`, `review 2 focus on the
+`core/src/review/command.rs` parses it (pure, table-tested): `review 2`, `review [3]`, `review plan 1`, `review 2 focus on the
 park path` match; `review the docs`, `please review 2 things`, `reviewer`, `review 4` do not (a near miss gets a hint
 in the hook's context, no review). The flow defaults through `[reviews] flows` by the task's kind, then `code`.
 
@@ -174,7 +174,7 @@ a `command` node (run `scripts/check.sh` in the review worktree) and a `gate` no
   or on the reviewer lead's opinion.
 - Re-checks and the second round are new subagents too, given the finding, the lead's resolution and the new diff.
 
-## 7. Store: migration 0015
+## 7. Store: migration 0018
 
 ```sql
 CREATE TABLE reviews (
@@ -211,12 +211,13 @@ CREATE TABLE review_findings (
     summary TEXT NOT NULL,
     scenario TEXT NOT NULL,
     verdict TEXT,
-    resolution TEXT CHECK (resolution IN ('open', 'fixed', 'disputed', 'dispute-accepted', 'fix-rejected', 'asked', 'user-kept', 'user-dropped')),
-    note TEXT
+    resolution TEXT CHECK (resolution IN ('open', 'fixed', 'fix-accepted', 'disputed', 'dispute-accepted', 'fix-rejected', 'asked', 'user-kept', 'user-dropped')),
+    note TEXT,
+    argued INTEGER NOT NULL DEFAULT 0
 );
 ```
 
-`core/src/review.rs` holds the pure parts: the command parser, the flow model and its validation, which nodes are ready
+`core/src/review/` holds the pure parts: the command parser, the flow model and its validation, which nodes are ready
 given the level and the finished ones, the review's state machine (`requested` → `running` → `delivered` →
 `rechecking` → `running` (round 2) or `asking` or `done`; `cancelled` from any state when the lead closes or the user
 drops the part), and the dispute decision by level. Table tests per transition and guard, `proptest` over random node
@@ -279,7 +280,7 @@ parallel = 6                            # at most this many nodes running at onc
 
 | # | Milestone | Effort |
 |---|---|---|
-| R1 | Core and store: `core/src/review.rs` (parser, flow model and validation, ready-node scheduling, state machine, dispute rule), migration 0015, store queries, `flow check`, the built-in `code` flow and its prompts; table and proptest cases | 1.5 |
+| R1 | Core and store: `core/src/review/` (parser, flow model and validation, ready-node scheduling, state machine, dispute rule), migration 0018, store queries, `flow check`, the built-in `code` flow and its prompts; table and proptest cases | 1.5 |
 | R2 | Start: the hook's trigger, `review_start`, the review worktree, the part of kind `review`, `rules/reviewer.md`, the `reviewer-write` and `review-unstarted` rules, `[reviews]` config | 1 |
 | R3 | The loop: `review_next`, `review_node_done`, `review_deliver`, `review_resolve`, `review_verdict`, `review_finish`, rounds, the dispute ask, `review-open` and `review-unfinished`, the lead's "Reviews" section | 1.5 |
 | R4 | Surface and trial: board, status, log, the `plan` flow, `doctor` check `flows`, one real review at each level on a headwork task; results in `docs/trials/` | 1 |
