@@ -220,9 +220,12 @@ public, for the user to decide on:
 | Raw trial artefacts | `docs/trials/b-hooks/proj/logs/` (hook payloads with session ids and transcript paths), `docs/trials/a-resume/reboot-before/` (pane listings, disk state) | delete from the tree going forward, or from history in the rewrite |
 | Files copied from cmux | `docs/trials/c-cmux/` (12 files, a 1.6 MB `tree.txt`) | check cmux's licence, else delete (tree or history) |
 
-Going public is the user's step (repository settings). Without a rewrite, every item above stays in history for good.
-With one, it happens before the repository goes public, with a backup clone first, and every open worktree and clone
-re-cloned afterwards.
+The user chose (2026-11-22): rewrite the history before going public, and license the code under MIT. The rewrite
+(`git filter-repo`) maps both e-mail addresses to the GitHub noreply address, strips the `Claude-Session:` trailers, and
+drops `docs/trials/b-hooks/proj/logs/`, `docs/trials/a-resume/reboot-before/` and `docs/trials/c-cmux/` from history.
+It runs from a backup clone kept aside, its force push waits for the user's `Allow`, it happens when no headwork worker
+has a branch open, and every worktree and clone (this machine and the Mac) is re-cloned afterwards. Going public is the
+user's step in the repository settings, after the rewrite.
 
 ## Conventions that change, together with turning it on
 
@@ -238,7 +241,7 @@ Each a pull request through `scripts/check.sh`:
 1. **Store backup before migrating** (`Store::open`). Useful on its own.
 2. **Version in the binary** (`option_env!` for `HEADWORK_VERSION` and `HEADWORK_COMMIT`, the schema in `--version`) and
    `doctor` showing it.
-3. **Going public:** the user's choices on the table above (licence, rewrite or not, trial files), then the user
+3. **Going public:** a `LICENSE` (MIT) and `license = "MIT"` in `Cargo.toml`, the history rewrite above, then the user
    changes the visibility.
 4. **The release workflow** (and the read-only pull request gate); the first release proves it.
 5. **`headwork update`:** `[update]` config, `core/src/update.rs` with table tests, `ops/update.rs` (lock and pending,
@@ -253,6 +256,5 @@ Steps 1 and 2 need nothing from the user and can start at once.
 
 ## Open questions for the user
 
-- The table under "Before the repository goes public": licence, rewrite or not, trial and cmux files.
 - Whether to schedule the tick (`headwork tick --install`), which makes updates reach every machine within 15 minutes
   of a release.
