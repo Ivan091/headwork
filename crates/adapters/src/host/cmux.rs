@@ -11,8 +11,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::timed::{self, TimedError};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -58,24 +61,33 @@ impl Cli {
     }
 }
 
+/// How long one cmux call may take before it is ended and reported as a failure.
+pub const CMUX_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Runner for Cli {
     fn run(&self, args: &[&str]) -> Result<String, HostError> {
-        let output = Command::new(&self.program)
-            .args(args)
-            .env("CMUX_QUIET", "1")
-            .output()
-            .map_err(|source| HostError::Run {
+        let ran = timed::run(
+            Command::new(&self.program)
+                .args(args)
+                .env("CMUX_QUIET", "1"),
+            CMUX_TIMEOUT,
+        )
+        .map_err(|error| match error {
+            TimedError::Start { source, .. } => HostError::Run {
                 program: self.program.display().to_string(),
                 source,
-            })?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        if output.status.success() {
-            Ok(stdout)
+            },
+            TimedError::TimedOut { .. } => HostError::Failed {
+                command: args.join(" "),
+                message: error.to_string(),
+            },
+        })?;
+        if ran.success() {
+            Ok(ran.stdout)
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Err(HostError::Failed {
                 command: args.join(" "),
-                message: format!("{}{}", stderr.trim(), stdout.trim()),
+                message: format!("{}{}", ran.stderr.trim(), ran.stdout.trim()),
             })
         }
     }

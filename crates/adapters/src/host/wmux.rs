@@ -6,8 +6,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::timed::{self, TimedError};
 
 use super::{
     AgentId, Choice, HostError, Key, Pane, PaneId, PaneTree, SurfaceId, SurfaceState, Target,
@@ -34,6 +37,9 @@ pub trait Runner: std::fmt::Debug {
 }
 
 /// The variable the wmux CLI reads as a floor under its reply deadline (5 s by default).
+/// How long one wmux call may take before it is ended and reported as a failure; wmux's own RPC limit is shorter.
+pub const WMUX_TIMEOUT: Duration = Duration::from_secs(60);
+
 const RPC_TIMEOUT_VAR: &str = "WMUX_RPC_TIMEOUT_MS";
 
 /// The reply deadline headwork gives wmux: a busy wmux with many panes takes longer than 5 s to list its workspaces,
@@ -88,18 +94,22 @@ impl Runner for Cli {
         if self.electron {
             command.env("ELECTRON_RUN_AS_NODE", "1");
         }
-        let output = command.output().map_err(|source| HostError::Run {
-            program: self.node.display().to_string(),
-            source,
+        let ran = timed::run(&mut command, WMUX_TIMEOUT).map_err(|error| match error {
+            TimedError::Start { source, .. } => HostError::Run {
+                program: self.node.display().to_string(),
+                source,
+            },
+            TimedError::TimedOut { .. } => HostError::Failed {
+                command: args.join(" "),
+                message: error.to_string(),
+            },
         })?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        if output.status.success() {
-            Ok(stdout)
+        if ran.success() {
+            Ok(ran.stdout)
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Err(HostError::Failed {
                 command: args.join(" "),
-                message: format!("{}{}", stderr.trim(), stdout.trim()),
+                message: format!("{}{}", ran.stderr.trim(), ran.stdout.trim()),
             })
         }
     }

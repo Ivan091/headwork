@@ -6,8 +6,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::timed::{self, TimedError};
 
 /// Why the git host could not answer.
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +120,43 @@ struct RawPr {
     url: String,
 }
 
+/// How long one `gh` call may take before it is ended and reported as a failure, so a hung `gh` never holds up the
+/// tick or a close.
+pub const GH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Turns what `gh pr view` left into the answer: the pull request, none when `gh` says there is none, or an error.
+///
+/// # Errors
+///
+/// Returns [`GitHostError::Failed`] when `gh` failed for any other reason and [`GitHostError::Parse`] when its JSON
+/// does not read.
+pub fn interpret_view(
+    shown: &str,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Option<PrInfo>, GitHostError> {
+    if !success {
+        let message = stderr.trim().to_owned();
+        if message.contains("no pull requests found") || message.contains("Could not resolve") {
+            return Ok(None);
+        }
+        return Err(GitHostError::Failed {
+            command: shown.to_owned(),
+            message,
+        });
+    }
+    parse_pr(stdout).map_or_else(
+        |source| {
+            Err(GitHostError::Parse {
+                command: shown.to_owned(),
+                source,
+            })
+        },
+        |pr| Ok(Some(pr)),
+    )
+}
+
 impl Gh {
     fn view(&self, dir: Option<&Path>, target: &str) -> Result<Option<PrInfo>, GitHostError> {
         let args = ["pr", "view", target, "--json", "number,state,url"];
@@ -126,26 +166,14 @@ impl Gh {
         if let Some(dir) = dir {
             command.current_dir(dir);
         }
-        let output = command.output().map_err(GitHostError::Run)?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            if message.contains("no pull requests found") || message.contains("Could not resolve") {
-                return Ok(None);
-            }
-            return Err(GitHostError::Failed {
-                command: shown,
-                message,
-            });
-        }
-        parse_pr(&String::from_utf8_lossy(&output.stdout)).map_or_else(
-            |source| {
-                Err(GitHostError::Parse {
-                    command: shown,
-                    source,
-                })
+        let ran = timed::run(&mut command, GH_TIMEOUT).map_err(|error| match error {
+            TimedError::Start { source, .. } => GitHostError::Run(source),
+            TimedError::TimedOut { .. } => GitHostError::Failed {
+                command: shown.clone(),
+                message: error.to_string(),
             },
-            |pr| Ok(Some(pr)),
-        )
+        })?;
+        interpret_view(&shown, ran.success(), &ran.stdout, &ran.stderr)
     }
 }
 
@@ -225,6 +253,48 @@ mod tests {
     #![expect(clippy::unwrap_used, reason = "tests")]
 
     use super::*;
+
+    const URL: &str = "https://github.com/owner/name/pull/7";
+
+    fn viewed(success: bool, stdout: &str, stderr: &str) -> Result<Option<PrInfo>, GitHostError> {
+        interpret_view("pr view x", success, stdout, stderr)
+    }
+
+    #[test]
+    fn gh_output_reads_as_open_merged_closed_missing_or_an_error() {
+        for (state, expected) in [
+            ("OPEN", PrState::Open),
+            ("MERGED", PrState::Merged),
+            ("CLOSED", PrState::Closed),
+        ] {
+            let json = format!(r#"{{"number":7,"state":"{state}","url":"{URL}"}}"#);
+            let pr = viewed(true, &json, "").unwrap().unwrap();
+            assert_eq!(pr.state, expected, "{state}");
+            assert_eq!(pr.number, 7);
+        }
+        for stderr in [
+            "no pull requests found for branch \"x\"\n",
+            "GraphQL: Could not resolve to a PullRequest with the number of 9.",
+        ] {
+            assert_eq!(viewed(false, "", stderr).unwrap(), None, "{stderr}");
+        }
+        assert!(matches!(
+            viewed(false, "", "HTTP 502: Bad Gateway"),
+            Err(GitHostError::Failed { message, .. }) if message == "HTTP 502: Bad Gateway"
+        ));
+        assert!(matches!(
+            viewed(true, "not json", ""),
+            Err(GitHostError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn a_gh_that_outlives_its_deadline_is_a_failure_with_a_clear_message() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let error = timed::run(&mut command, Duration::from_millis(200)).unwrap_err();
+        assert!(error.to_string().contains("did not finish within"), "{error}");
+    }
 
     #[test]
     fn a_pull_request_of_any_host_keeps_its_url_and_names_its_repository() {
