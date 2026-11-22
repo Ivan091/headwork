@@ -37,7 +37,7 @@ pub const CLOSING_HEADING: &str = "## Closing yourself";
 pub const PLAIN_LEAD_HEADING: &str = "## When your brief makes you a lead";
 
 /// The heading of `lead.md`'s section that has a lead ask the user before it closes; left out when
-/// `[leads] ask_before_close` is off and for a keep task.
+/// `[leads] ask_before_close` is off, for a `silent` task and for a keep task.
 pub const ASK_BEFORE_CLOSE_HEADING: &str = "## Ask before you close";
 
 /// The most `additionalContext` a hook may return before Claude moves it to a file.
@@ -153,6 +153,7 @@ impl RuleFiles {
             Role::Worker => {
                 let keep = card.is_some_and(|card| card.task.keep);
                 let shape = card.map_or(TaskShape::Plain, |card| card.task.shape);
+                let asks = card.is_none_or(|card| config.leads.asks_before_close(&card.task.kind));
                 let mut worker = if keep {
                     without_closing(&self.worker)
                 } else {
@@ -163,7 +164,7 @@ impl RuleFiles {
                 }
                 parts.push(worker);
                 if shape.is_lead() {
-                    if keep || !config.leads.ask_before_close {
+                    if keep || !asks {
                         parts.push(without_section(&self.lead, ASK_BEFORE_CLOSE_HEADING));
                     } else {
                         parts.push(self.lead.clone());

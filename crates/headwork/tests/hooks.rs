@@ -21,8 +21,8 @@ use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, Platform, ProjectName, Role, SessionState, Slug,
-    TaskRequest, TaskState, Trigger,
+    Actor, Config, Model, PermissionMode, Platform, ProjectName, Role, SILENT_KIND, SessionState,
+    Slug, TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
 use serde_json::{Value, json};
@@ -71,6 +71,11 @@ fn world(hooks: &str, keep: bool) -> World {
 
 /// A world whose `[hooks]` and project tables get these extra lines, with `@DIR@` standing for its temporary folder.
 fn world_in(hooks: &str, project: &str, keep: bool) -> World {
+    world_of(hooks, project, keep, "task")
+}
+
+/// A world as [`world_in`] whose task is of this kind.
+fn world_of(hooks: &str, project: &str, keep: bool, kind: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let dir_text = dir.path().display().to_string().replace('\\', "/");
     let hooks = hooks.replace("@DIR@", &dir_text);
@@ -99,7 +104,7 @@ fn world_in(hooks: &str, project: &str, keep: bool) -> World {
         request: TaskRequest {
             project: ProjectName::new("demo").unwrap(),
             slug: Slug::new("sand").unwrap(),
-            kind: "task".to_owned(),
+            kind: kind.to_owned(),
             model: Some(Model::Haiku),
             effort: None,
             in_main: false,
@@ -1933,6 +1938,25 @@ fn a_lead_closes_only_after_the_users_go_unless_ask_before_close_is_off() {
     let identity = worker_identity(&plain);
     let (is_error, text) = plain.tool(identity, "done", &json!({ "summary": "built" }));
     assert!(!is_error, "a plain worker never asks: {text}");
+}
+
+#[test]
+fn a_silent_lead_closes_without_the_users_go() {
+    let mut w = world_of(LEADS, "", false, SILENT_KIND);
+    let rules = context(&w.start());
+    assert!(
+        rules.contains("You are the lead of this task")
+            && !rules.contains(ASK_BEFORE_CLOSE_HEADING),
+        "a silent lead is not told to ask: {rules}"
+    );
+    w.post("SendMessage", &json!({}));
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity, "done", &json!({ "summary": "built" }));
+    assert!(!is_error, "a silent lead closes without asking: {text}");
+    assert!(
+        !w.events().iter().any(|event| event.kind == "close-go"),
+        "no go was needed"
+    );
 }
 
 #[test]
