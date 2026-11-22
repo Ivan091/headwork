@@ -199,6 +199,9 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize, depth: usize) {
     if let Some(pr) = &task.pr {
         let _ = write!(text, " · PR {} {}", pr.state, pr.url);
     }
+    if task.tokens > 0 {
+        let _ = write!(text, " · {} tokens", short_count(task.tokens));
+    }
     text.push('\n');
     for ask in &task.asks {
         ask_line(text, ask);
@@ -228,7 +231,11 @@ fn ask_line(text: &mut String, ask: &AskRow) {
 pub(crate) fn statuses(lines: &[StatusLine]) -> String {
     let mut text = String::new();
     for line in lines {
-        let _ = writeln!(text, "{}", line.line);
+        if line.tokens > 0 {
+            let _ = writeln!(text, "{} · {} tokens", line.line, short_count(line.tokens));
+        } else {
+            let _ = writeln!(text, "{}", line.line);
+        }
     }
     if lines.is_empty() {
         text.push_str("no tasks\n");
@@ -313,6 +320,13 @@ pub(crate) fn ticked(report: &TickReport) -> String {
         );
     }
     text.push_str(&pumped(&report.started));
+    if let Some(usage) = report.usage.as_ref().filter(|usage| usage.inserted > 0) {
+        let _ = writeln!(
+            text,
+            "  usage     {} new responses from {} transcripts",
+            usage.inserted, usage.read
+        );
+    }
     if let Some(update) = &report.update {
         let _ = match (&update.started, &update.error) {
             (Some(started), _) => writeln!(

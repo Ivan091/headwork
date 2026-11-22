@@ -203,6 +203,9 @@ pub fn run_hook(
     {
         store.set_session_mode(&session.id, mode, Actor::Hook)?;
     }
+    if matches!(event, HookEvent::Stop | HookEvent::SessionEnd) {
+        read_usage(store, env, &session, input);
+    }
     let task = session.task_id.map(|id| store.task(id)).transpose()?;
     let call = Call {
         env,
@@ -219,6 +222,37 @@ pub fn run_hook(
         HookEvent::SessionEnd => session_end(store, &call),
     }
 }
+
+/// Reads the session's new transcript lines and its subagents' into the usage table (`docs/usage.md`). A failure is
+/// logged as `usage-error` and never blocks the hook.
+fn read_usage(store: &mut Store, env: &HookEnv<'_>, session: &HookSession, input: &Value) {
+    let transcript = input
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
+    let outcome = if let Some(path) = transcript {
+        super::usage::read_transcript(store, &path)
+    } else {
+        let files = super::usage::session_transcripts(env.home.claude_dir(), &session.id);
+        super::usage::ingest(store, &files, false)
+    };
+    let error = match outcome {
+        Ok(report) if report.errors.is_empty() => return,
+        Ok(report) => report.errors.join("; "),
+        Err(error) => format!("{error:#}"),
+    };
+    drop(store.append_event(
+        Actor::Hook,
+        session.task_id,
+        Some(&session.id),
+        EVENT_USAGE_ERROR,
+        &json!({ "error": error }),
+    ));
+}
+
+/// The event a failed usage read logs.
+pub const EVENT_USAGE_ERROR: &str = "usage-error";
 
 /// One hook call.
 #[derive(Debug, Clone, Copy)]

@@ -137,6 +137,8 @@ pub struct TickReport {
     pub started: Vec<Pumped>,
     /// The `headwork update` started because a poll was due (`[update] poll_min`), when one was.
     pub update: Option<Triggered>,
+    /// What the read of the transcripts changed since the last read did (`docs/usage.md`).
+    pub usage: Option<super::usage::IngestReport>,
 }
 
 /// Runs one tick.
@@ -160,6 +162,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
             lines: Vec::new(),
             started: Vec::new(),
             update: None,
+            usage: None,
         },
     };
     run.stage("rules", Run::rules)?;
@@ -179,6 +182,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("waiting", Run::waiting)?;
     run.stage("queue", Run::queue)?;
     run.stage("update", Run::update)?;
+    run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
     run.store.record_tick()?;
@@ -288,6 +292,24 @@ impl<'b> Run<'_, 'b> {
     /// Runs one stage of the tick. A stage that fails is recorded as a `tick-error` finding and the next stage runs
     /// anyway, so one bad pane or host call never skips the asks, the queue, the update poll or the tick's record. A
     /// failure to record it, which means the store itself is gone, ends the tick.
+    /// Reads every transcript changed since its last read: the sessions whose hooks did not run, subagents that ran in
+    /// the background, and sessions headwork did not start. Unreadable files are logged as `usage-error`.
+    fn usage(&mut self) -> Result<()> {
+        let files = super::usage::transcripts(self.env().home.claude_dir());
+        let report = super::usage::ingest(self.store, &files, false)?;
+        if !report.errors.is_empty() {
+            self.store.append_event(
+                self.actor(),
+                None,
+                None,
+                super::hook::EVENT_USAGE_ERROR,
+                &serde_json::json!({ "errors": report.errors }),
+            )?;
+        }
+        self.report.usage = Some(report);
+        Ok(())
+    }
+
     fn stage(&mut self, name: &str, stage: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         match stage(self) {
             Ok(()) => Ok(()),

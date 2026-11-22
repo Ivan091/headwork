@@ -318,3 +318,58 @@ fn unmanaged_rows_are_one_line_unless_asked_and_retagged_once_known() {
         "now under its task: {tasks:?}"
     );
 }
+
+#[test]
+fn a_leads_tokens_roll_up_its_parts() {
+    let (mut store, config) = store();
+    let lead = task(&mut store, &config, "big", TaskShape::Lead);
+    store.start_task(&config, lead.id, Actor::Tick).unwrap();
+    store
+        .transition(
+            lead.id,
+            &Trigger::SessionStarted(SessionFacts {
+                session_matches: true,
+                launcher_alive: true,
+            }),
+            Actor::Hook,
+        )
+        .unwrap();
+    let part = task(
+        &mut store,
+        &config,
+        "big-review",
+        TaskShape::Part { parent: lead.id },
+    );
+    session(&mut store, "lead", Some(lead.id), Role::Worker);
+    session(&mut store, "part", Some(part.id), Role::Worker);
+    record(
+        &mut store,
+        "lead",
+        None,
+        &[line("m1", "2026-11-22T10:00:00.000Z", "m", 5, 5)],
+    );
+    record(
+        &mut store,
+        "part",
+        None,
+        &[line("m2", "2026-11-22T10:00:00.000Z", "m", 1, 1)],
+    );
+    let tokens = store.usage_task_tokens().unwrap();
+    assert_eq!(tokens.own(lead.id), 20, "the lead's own");
+    assert_eq!(tokens.tree(lead.id), 32, "with its part");
+    assert_eq!(tokens.own(part.id), 12, "the part's own");
+    let board = store.board(false).unwrap();
+    let shown: Vec<(String, u64)> = board
+        .tasks
+        .iter()
+        .map(|entry| (entry.task.name.to_string(), entry.tokens))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("me-sim-big".to_owned(), 32),
+            ("me-sim-big-review".to_owned(), 12)
+        ],
+        "the board rolls up the lead"
+    );
+}

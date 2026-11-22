@@ -26,7 +26,7 @@ use headwork_core::lifecycle::{
     WorktreeEnd,
 };
 use headwork_core::{Actor, Config, JobState, SessionState, TaskShape, TaskState};
-use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, WorktreeRow};
+use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, UsageTotal, WorktreeRow};
 use serde::Serialize;
 
 use super::hook::{Git, GitProbe};
@@ -56,6 +56,8 @@ pub struct CloseReport {
     pub state: TaskState,
     /// Why it is not `closed` yet, when it is not.
     pub pending: Option<String>,
+    /// The tokens the task and its parts spent, once it is closed (`docs/usage.md`).
+    pub usage: Option<UsageTotal>,
 }
 
 /// What a self-close reports: the session's launcher finishes the close once `claude` has left.
@@ -570,12 +572,27 @@ fn finish_claimed(
     match store.transition(id, &Trigger::Cleaned(facts), env.actor) {
         Ok(_) => {
             store.supersede_asks(id, env.actor)?;
+            record_usage_total(store, env, id);
             update_after_close(store, env, &task);
             report(store, id, None)
         }
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),
         Err(error) => Err(error.into()),
     }
+}
+
+/// The event a closed task's token total is logged in.
+pub const EVENT_USAGE_TOTAL: &str = "usage-total";
+
+/// Logs the closed task's tokens, with its parts', as `usage-total`. It never fails the close.
+fn record_usage_total(store: &Store, env: &Env<'_>, id: TaskId) {
+    let Ok(total) = super::usage::task_total(store, id) else {
+        return;
+    };
+    let mut data = serde_json::to_value(total.tokens).unwrap_or_default();
+    data["responses"] = total.responses.into();
+    data["total"] = total.tokens.total().into();
+    drop(store.append_event(env.actor, Some(id), None, EVENT_USAGE_TOTAL, &data));
 }
 
 /// The close trigger of `docs/autoupdate.md`: once a task of `[update] project` is closed, with `[update] enabled`, a
@@ -1057,10 +1074,16 @@ pub fn finish_after(store: &mut Store, env: &Env<'_>, id: TaskId, pid: u32) -> R
 
 fn report(store: &Store, id: TaskId, pending: Option<String>) -> Result<CloseReport> {
     let task = store.task(id)?;
+    let usage = if task.state == TaskState::Closed {
+        Some(super::usage::task_total(store, id)?)
+    } else {
+        None
+    };
     Ok(CloseReport {
         name: task.name.to_string(),
         state: task.state,
         pending,
+        usage,
     })
 }
 

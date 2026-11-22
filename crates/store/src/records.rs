@@ -221,6 +221,8 @@ pub struct BoardTask {
     pub asks: Vec<AskRow>,
     /// Its latest pull request.
     pub pr: Option<PrRow>,
+    /// The tokens it spent (`docs/usage.md`); a lead's include its parts'.
+    pub tokens: u64,
 }
 
 /// The whole board.

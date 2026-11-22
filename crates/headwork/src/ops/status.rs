@@ -21,6 +21,8 @@ pub struct StatusLine {
     pub asking_parts: Vec<String>,
     /// The line as the orchestrator says it.
     pub line: String,
+    /// The tokens the task and its parts spent (`docs/usage.md`).
+    pub tokens: u64,
 }
 
 /// The status of every top-level task on the board: not closed ones, or all with `all`.
@@ -94,6 +96,7 @@ pub fn lines(store: &Store, board: &Board) -> Result<Vec<StatusLine>> {
             prs,
             asking_parts,
             line,
+            tokens: top.tokens,
         });
     }
     Ok(out)
