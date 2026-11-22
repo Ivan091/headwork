@@ -3,6 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+quick=false
+case "${1:-}" in
+  "") ;;
+  --quick) quick=true ;;
+  *)
+    printf 'usage: scripts/check.sh [--quick]\n'
+    exit 2
+    ;;
+esac
+
 step() { printf '\n== %s\n' "$1"; }
 
 step "cargo fmt --check"
@@ -11,11 +21,13 @@ cargo fmt --all --check
 step "cargo clippy"
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
-step "cargo test"
-cargo test --workspace --locked
+if [[ "$quick" == false ]]; then
+  step "cargo test"
+  cargo test --workspace --locked
 
-step "cargo doc"
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+  step "cargo doc"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+fi
 
 step "line length"
 long=$(git ls-files -- ':!docs/' '*.rs' '*.sh' '*.toml' '*.sql' '*.yml' | xargs awk 'length > 140 { print FILENAME ":" FNR }')
@@ -48,4 +60,8 @@ else
   exit 1
 fi
 
-printf '\nall checks passed\n'
+if [[ "$quick" == true ]]; then
+  printf '\nquick checks passed; tests and docs run in the pull request gate\n'
+else
+  printf '\nall checks passed\n'
+fi
