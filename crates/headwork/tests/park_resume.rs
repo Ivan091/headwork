@@ -15,7 +15,7 @@ use headwork::ops::Env;
 use headwork::ops::jobs::{Registration, register};
 use headwork::ops::launch::{StartMode, claude_command};
 use headwork::ops::park::{ParkOptions, RecapSource, park};
-use headwork::ops::resume::{ResumeOptions, TaskOutcome, resume, would_close};
+use headwork::ops::resume::{ResumeOptions, TaskOutcome, last_mode, resume, would_close};
 use headwork::ops::spawn::{SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::host::{SurfaceState, TerminalHost};
@@ -1131,4 +1131,220 @@ fn a_part_whose_lead_does_not_come_back_waits_for_it() {
         "{report:?}"
     );
     assert_eq!(w.state(&review), TaskState::Interrupted, "it waits");
+}
+
+/// A transcript that switched from `auto` to `plan` by shift+tab, then quoted a mode inside a tool result.
+const PLAN_TRANSCRIPT: &str = concat!(
+    r#"{"type":"permission-mode","permissionMode":"auto","sessionId":"s"}"#,
+    "
+",
+    r#"{"type":"user","message":{"role":"user","content":"go"},"permissionMode":"auto"}"#,
+    "
+",
+    r#"{"type":"permission-mode","permissionMode":"plan","sessionId":"s"}"#,
+    "
+",
+    r#"{"type":"assistant","message":{"content":"\"permissionMode\":\"default\""}}"#,
+    "
+",
+);
+
+fn transcript(claude_dir: &Path, session: &str, text: &str) {
+    std::fs::write(
+        claude_dir
+            .join("projects")
+            .join("S--demo")
+            .join(format!("{session}.jsonl")),
+        text,
+    )
+    .unwrap();
+}
+
+fn launch_args(w: &World, task: &Task, mode: StartMode) -> Vec<String> {
+    let task = w.store.task(task.id).unwrap();
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    claude_command(
+        &w.home,
+        &w.config,
+        &task,
+        &session,
+        &w.dir.path().join("demo-sand"),
+        Path::new(EXE),
+        mode,
+    )
+    .unwrap()
+    .get_args()
+    .map(|a| a.to_string_lossy().into_owned())
+    .collect()
+}
+
+fn mode_flag(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find(|pair| pair[0] == "--permission-mode")
+        .map(|pair| pair[1].as_str())
+}
+
+#[test]
+fn the_last_top_level_mode_of_a_transcript_counts() {
+    let cases: &[(&str, Option<PermissionMode>)] = &[
+        (PLAN_TRANSCRIPT, Some(PermissionMode::Plan)),
+        ("", None),
+        (
+            "{}
+", None,
+        ),
+        (
+            "not json \"permissionMode\"
+",
+            None,
+        ),
+        (
+            concat!(
+                r#"{"type":"permission-mode","permissionMode":"auto"}"#,
+                "
+",
+                r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+                "
+"
+            ),
+            None,
+        ),
+        (
+            concat!(
+                r#"{"type":"permission-mode","permissionMode":"plan"}"#,
+                "
+",
+                r#"{"type":"user","permissionMode":"acceptEdits"}"#,
+                "
+"
+            ),
+            Some(PermissionMode::AcceptEdits),
+        ),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(last_mode(text), *expected, "{text}");
+    }
+}
+
+#[test]
+fn a_resumed_worker_starts_in_the_mode_its_transcript_last_records() {
+    let mut w = world("ask");
+    let (sand, session, pid) = w.working("sand");
+    w.crash(&sand, pid);
+    assert_eq!(
+        mode_flag(&launch_args(&w, &sand, StartMode::New)),
+        Some("auto"),
+        "spawned in the task's mode"
+    );
+    let claude_dir = claude_dir_with(&w, &[&session]);
+    transcript(&claude_dir, &session, PLAN_TRANSCRIPT);
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: false,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.tasks[0].outcome, TaskOutcome::Resumed { .. }),
+        "{report:?}"
+    );
+    let row = w.store.session_of(sand.id).unwrap().unwrap();
+    assert_eq!(row.id, session, "same conversation");
+    assert_eq!(row.permission_mode, Some(PermissionMode::Plan), "recorded");
+    assert_eq!(
+        mode_flag(&launch_args(&w, &sand, StartMode::Resumed { crash: true })),
+        Some("plan"),
+        "back in the mode it was left in"
+    );
+    assert_eq!(w.events_of("session-mode"), 1, "the change is logged");
+}
+
+#[test]
+fn a_worker_whose_transcript_is_gone_comes_back_in_the_mode_its_hooks_reported() {
+    let mut w = world("ask");
+    let (sand, session, pid) = w.working("sand");
+    w.store
+        .set_session_mode(&session, PermissionMode::AcceptEdits, Actor::Hook)
+        .unwrap();
+    w.crash(&sand, pid);
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: false,
+        wait_for_host: Duration::ZERO,
+        claude_dir: claude_dir_with(&w, &[]),
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.tasks[0].outcome, TaskOutcome::Fresh { .. }),
+        "{report:?}"
+    );
+    let row = w.store.session_of(sand.id).unwrap().unwrap();
+    assert_ne!(row.id, session, "a new conversation");
+    assert_eq!(
+        mode_flag(&launch_args(&w, &sand, StartMode::Fresh { crash: true })),
+        Some("acceptEdits"),
+        "the new conversation keeps the mode"
+    );
+}
+
+#[test]
+fn an_orchestrator_comes_back_in_the_mode_its_transcript_last_records() {
+    let mut w = world("never");
+    let (orchestrator, _) = w.unmanaged_orchestrator();
+    let claude_dir = claude_dir_with(&w, &[&orchestrator]);
+    transcript(
+        &claude_dir,
+        &orchestrator,
+        concat!(
+            r#"{"type":"permission-mode","permissionMode":"default"}"#,
+            "
+",
+            r#"{"type":"permission-mode","permissionMode":"auto"}"#,
+            "
+"
+        ),
+    );
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    resume(&mut w.store, &env, &opts).unwrap();
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" orchestrator "))
+        .unwrap();
+    assert!(
+        line.contains(&format!(
+            "--session {orchestrator} --resume --mode auto --summary"
+        )),
+        "{line}"
+    );
+}
+
+#[test]
+fn an_orchestrator_whose_transcript_is_gone_comes_back_in_the_mode_its_hooks_reported() {
+    let mut w = world("never");
+    let (orchestrator, _) = w.unmanaged_orchestrator();
+    w.store
+        .set_session_mode(&orchestrator, PermissionMode::Auto, Actor::Hook)
+        .unwrap();
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir: claude_dir_with(&w, &[]),
+    };
+    let report = resume(&mut w.store, &env, &opts).unwrap();
+    assert!(
+        matches!(report.orchestrator, Some(TaskOutcome::Fresh { .. })),
+        "{report:?}"
+    );
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" orchestrator "))
+        .unwrap();
+    assert!(line.contains("--mode auto --summary"), "{line}");
 }

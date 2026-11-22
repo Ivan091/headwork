@@ -907,3 +907,13 @@ and the reason.
   checks `WMUX_SURFACE_ID` (or `CMUX_SURFACE_ID`) first (`resume::would_close`) and, when resume would close its own
   surface, starts itself again detached without that variable (event `detached`) and exits, so closing the pane cannot
   cut it off halfway.
+- 2026-11-22 Resume keeps each session's permission mode. After a restart the orchestrator came back in `default` (the
+  `headwork orchestrator` default) although it ran in auto when parked, and a worker came back in its task's spawn
+  mode whatever the user had switched it to with shift+tab. Migration 0014 adds `sessions.permission_mode`, the mode a
+  session was last seen in: every hook records the `permission_mode` of its input (event `session-mode` on a change),
+  and `headwork orchestrator` records the mode it starts with. Resume starts each session, workers and the orchestrator
+  alike, in the last top-level `permissionMode` its Claude transcript records (Claude writes one on every mode switch
+  and on each prompt, and the transcript exists for an orchestrator running outside headwork, which has no hooks),
+  else the stored one, else as before (the task's mode; `default` for the orchestrator). A worker gets it through its
+  session row (`claude_command` prefers it to the task's), the orchestrator through `--mode`. A mode headwork cannot
+  start a session in (`bypassPermissions`, `dontAsk`) counts as none, so the fallback applies rather than an older mode.

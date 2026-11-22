@@ -244,6 +244,36 @@ fn session_start_marks_the_task_working_and_injects_the_rules() {
 }
 
 #[test]
+fn hooks_record_the_permission_mode_the_session_is_in() {
+    let mut w = world("", false);
+    w.start();
+    let mode = |w: &World| {
+        w.store
+            .session(&w.session)
+            .unwrap()
+            .unwrap()
+            .0
+            .permission_mode
+    };
+    assert_eq!(mode(&w), None, "nothing reported yet");
+    let cwd = w.worktree().display().to_string();
+    for (reported, expected) in [
+        ("plan", Some(PermissionMode::Plan)),
+        ("bypassPermissions", Some(PermissionMode::Plan)),
+        ("auto", Some(PermissionMode::Auto)),
+    ] {
+        let input = json!({
+            "tool_name": "Read",
+            "tool_input": { "file_path": "x" },
+            "cwd": cwd,
+            "permission_mode": reported,
+        });
+        w.hook(HookEvent::PreToolUse, &input);
+        assert_eq!(mode(&w), expected, "after {reported}");
+    }
+}
+
+#[test]
 fn the_built_in_rules_name_the_programs_of_their_platform() {
     for rules in [ORCHESTRATOR_RULES, WORKER_RULES] {
         let windows = platform_words(rules, Platform::Windows);

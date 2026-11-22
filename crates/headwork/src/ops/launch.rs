@@ -63,8 +63,10 @@ pub fn first_prompt(home: &Home, task: &Task, mode: StartMode) -> String {
     }
 }
 
-/// The `claude` command for a task's session, with its identity in the environment. `exe` is the `headwork` program
-/// the plugin's hooks call; with `hooks.plugin_dir` set, the session loads that plugin.
+/// The `claude` command for a task's session, with its identity in the environment.
+///
+/// It starts in the session's recorded permission mode (the one a resume brings back), else the task's. `exe` is the
+/// `headwork` program the plugin's hooks call; with `hooks.plugin_dir` set, the session loads that plugin.
 ///
 /// # Errors
 ///
@@ -94,7 +96,7 @@ pub fn claude_command(
             .unwrap_or(config.machine.remote_control),
         model: Some(task.model),
         effort: task.effort,
-        permission_mode: task.permission_mode,
+        permission_mode: session.permission_mode.unwrap_or(task.permission_mode),
         agent: None,
         prompt: &prompt,
     }
@@ -428,6 +430,7 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
     };
     let dir = std::env::current_dir().context("finding the current folder")?;
     store.set_session_dir(&id, &super::slashed(&dir))?;
+    store.set_session_mode(&id, start.mode, Actor::User)?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let plugin_dir = plugin_dir(home, &config);
     let prompt = orchestrator_prompt(start);

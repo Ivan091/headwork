@@ -5,6 +5,10 @@
 //! session whose conversation is gone starts fresh from its brief and recap. Jobs that asked to be restarted run
 //! again, and a summary for the orchestrator is written to `recaps/<park-id>.md`.
 //!
+//! Every session, the orchestrator too, comes back in the permission mode it was last in: the last `permissionMode`
+//! its transcript records (the user may have switched it with shift+tab), else the one its hooks last reported, else
+//! the task's (or `headwork orchestrator`'s) default.
+//!
 //! A lead comes back before its parts (`docs/leads.md`, section 4), so its workspace is open again when each part
 //! becomes a tab in it, in the order the parts were made; a part whose lead did not come back waits for it.
 //!
@@ -19,7 +23,7 @@ use anyhow::{Context, Result, bail};
 use headwork_adapters::host::{Target, TerminalHost};
 use headwork_core::config::{CrashResume, ParkPolicy};
 use headwork_core::lifecycle::Trigger;
-use headwork_core::{JobState, MachineMode, PlaceKind, Role, TaskState};
+use headwork_core::{JobState, MachineMode, PermissionMode, PlaceKind, Role, TaskState};
 use headwork_store::{NewSession, Place, SessionRow, Store, Task};
 use serde::Serialize;
 
@@ -112,6 +116,43 @@ pub fn transcript_exists(claude_dir: &Path, session: &str) -> bool {
         .flatten()
         .flatten()
         .any(|folder| folder.path().join(&file).is_file())
+}
+
+/// The permission mode Claude's transcript of a session last records, when it has one headwork knows.
+#[must_use]
+pub fn transcript_mode(claude_dir: &Path, session: &str) -> Option<PermissionMode> {
+    let file = format!("{session}.jsonl");
+    std::fs::read_dir(claude_dir.join("projects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|folder| folder.path().join(&file))
+        .find(|path| path.is_file())
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| last_mode(&text))
+}
+
+/// The last top-level `permissionMode` among the transcript lines in `text`; none when there is none or the last one
+/// is a mode headwork cannot start a session in.
+#[must_use]
+pub fn last_mode(text: &str) -> Option<PermissionMode> {
+    text.lines()
+        .rev()
+        .filter(|line| line.contains("\"permissionMode\""))
+        .find_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()?
+                .get("permissionMode")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .and_then(|word| word.parse().ok())
+}
+
+/// The permission mode a session comes back in: its transcript's last, else the one its hooks last reported.
+fn parked_mode(opts: &ResumeOptions, session: Option<&SessionRow>) -> Option<PermissionMode> {
+    let session = session?;
+    transcript_mode(&opts.claude_dir, &session.id).or(session.permission_mode)
 }
 
 /// Waits for the host to answer, up to `wait`.
@@ -313,7 +354,11 @@ fn resume_task(
         },
         env.actor,
     )?;
+    let mode = parked_mode(opts, store.session_of(task.id)?.as_ref());
     let (session_id, fresh_reason) = session_for(store, env, opts, task)?;
+    if let Some(mode) = mode {
+        store.set_session_mode(&session_id, mode, env.actor)?;
+    }
     let flags: &[&str] = match (&fresh_reason, crash) {
         (None, false) => &["--resume"],
         (None, true) => &["--resume", "--crash"],
@@ -593,6 +638,7 @@ fn open_orchestrator(
         )
     })?;
     let dir = PathBuf::from(dir);
+    let mode = parked_mode(opts, Some(old));
     let fresh_reason = if transcript_exists(&opts.claude_dir, &old.id) {
         store.session_resumed(&old.id, env.actor)?;
         None
@@ -626,6 +672,9 @@ fn open_orchestrator(
     ];
     if fresh_reason.is_none() {
         argv.push("--resume".to_owned());
+    }
+    if let Some(mode) = mode {
+        argv.extend(["--mode".to_owned(), mode.as_str().to_owned()]);
     }
     argv.extend([
         "--summary".to_owned(),

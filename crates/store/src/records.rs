@@ -138,6 +138,8 @@ pub struct SessionRow {
     pub last_event_at: Option<String>,
     /// The exit code of `claude`, once it ended.
     pub exit_code: Option<i32>,
+    /// The permission mode the session was last seen in, which a resume starts it in again.
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// An ask.
