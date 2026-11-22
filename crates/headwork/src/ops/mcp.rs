@@ -122,7 +122,10 @@ const TOOLS: &[ToolDef] = &[
                     "brief": { "type": "string", "description": "The brief's text; it must stand alone." },
                     "model": { "type": "string", "enum": ["haiku", "sonnet", "opus", "fable"] },
                     "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max"] },
-                    "kind": { "type": "string" },
+                    "kind": {
+                        "type": "string",
+                        "description": "The task kind; `silent` makes a lead close without asking the user first."
+                    },
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
                     "depends_on": { "type": "string", "description": "Name of a task that must be merged first." },

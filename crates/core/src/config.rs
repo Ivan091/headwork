@@ -675,7 +675,18 @@ pub struct LeadsConfig {
     pub ask_before_close: bool,
 }
 
+/// The task kind whose lead closes without the user's go, whatever `[leads] ask_before_close` says
+/// (`docs/decisions.md`, 2026-11-22, the silent kind).
+pub const SILENT_KIND: &str = "silent";
+
 impl LeadsConfig {
+    /// Whether a lead of this kind asks the user before its task closes: `ask_before_close` is on and the kind is not
+    /// [`SILENT_KIND`].
+    #[must_use]
+    pub fn asks_before_close(&self, kind: &str) -> bool {
+        self.ask_before_close && kind != SILENT_KIND
+    }
+
     /// A part's tab title: `part_title` with its placeholders filled in.
     #[must_use]
     #[expect(

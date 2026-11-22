@@ -929,3 +929,8 @@ and the reason.
   (`Store::adopt_orchestrator_recap`, event `recap-adopted`), and then neither asks nor waits; a recap from an earlier
   turn does not count. Otherwise it sends the notice and waits, and logs `orchestrator-asked`, or `orchestrator-unasked`
   with the reason, which the mechanical recap repeats.
+- 2026-11-22 The silent kind. The user asked for a kind of worker that closes without the user's confirmation. Kinds were
+  already free strings (`spawn --kind`, the `spawn` tool's `kind`), so `silent` is a reserved kind name
+  (`SILENT_KIND`, `LeadsConfig::asks_before_close`) rather than a new flag or migration: a `silent` lead's close and the
+  tick's merged-grace close need no `close-go`, and its rules leave out "Ask before you close". Every other kind keeps
+  `[leads] ask_before_close`. A `silent` kind in the main checkout still needs to be listed as main-only like any kind.

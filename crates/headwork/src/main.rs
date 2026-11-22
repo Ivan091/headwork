@@ -419,7 +419,7 @@ struct SpawnArgs {
     /// The permission mode.
     #[arg(long, default_value = "auto")]
     mode: PermissionMode,
-    /// The task kind; the slug for a main-checkout task, `task` otherwise.
+    /// The task kind; the slug for a main-checkout task, `task` otherwise. A `silent` lead closes without asking the user.
     #[arg(long)]
     kind: Option<String>,
     /// Start only after this task is merged.

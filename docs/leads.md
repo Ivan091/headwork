@@ -118,6 +118,8 @@ With `ask_before_close` on (the default), a lead's `done` and the tick's merged-
 `Close`; the hook records that answer as a `close-go` event. "Keep it open" is no go. The lead's rules carry the
 section "Ask before you close" only while the setting is on. A user's drop and the orchestrator's close are not held.
 Set it to `false` to let leads close themselves again.
+A task of kind `silent` (`spawn --kind silent`, or `kind` in the `spawn` tool) never asks, whatever the setting says:
+its close needs no go and its rules leave the section out; every other kind keeps asking.
 
 ## 4. Changes by area
 

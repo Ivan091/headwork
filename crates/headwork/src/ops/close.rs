@@ -267,14 +267,17 @@ pub fn begin_own_close(
     Ok(())
 }
 
-/// Whether the user's go to close is missing: the task is a lead, `[leads] ask_before_close` is on and no ask headed
-/// `Close` was answered with a go.
+/// Whether the user's go to close is missing: the task is a lead, `[leads] ask_before_close` is on, its kind is not
+/// `silent` and no ask headed `Close` was answered with a go.
 ///
 /// # Errors
 ///
 /// Fails when the store fails.
 pub fn close_go(store: &Store, config: &Config, task: &Task) -> Result<CloseGo> {
-    if !task.shape.is_lead() || !config.leads.ask_before_close || store.close_go_given(task.id)? {
+    if !task.shape.is_lead()
+        || !config.leads.asks_before_close(&task.kind)
+        || store.close_go_given(task.id)?
+    {
         return Ok(CloseGo::Clear);
     }
     Ok(CloseGo::Awaiting)
