@@ -81,6 +81,12 @@ pub enum ConfigError {
         /// The key.
         key: String,
     },
+    /// `[update]` is on but names a project that is not configured.
+    #[error("update.project `{0}` is not a configured project")]
+    UpdateProject(ProjectName),
+    /// `[update]` is on but its project has no repository to take releases from.
+    #[error("update.project `{0}` has no allowed_repos entry to take releases from")]
+    UpdateRepo(ProjectName),
 }
 
 /// What is wrong with a template.
@@ -297,6 +303,9 @@ pub struct Config {
     /// Leads and their parts (`docs/leads.md`).
     #[serde(default)]
     pub leads: LeadsConfig,
+    /// Installing releases with `headwork update` (`docs/autoupdate.md`).
+    #[serde(default)]
+    pub update: UpdateConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -718,6 +727,38 @@ impl Default for LeadsConfig {
     }
 }
 
+/// `[update]`: installing headwork's own releases with `headwork update` (`docs/autoupdate.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct UpdateConfig {
+    /// Whether updates run at all; off until the user turns it on. `headwork update --to` works either way.
+    pub enabled: bool,
+    /// The configured project whose main checkout carries the plugin and whose first `allowed_repos` entry is the
+    /// repository releases come from. It must be configured, with a repository, while `enabled` is on.
+    pub project: ProjectName,
+    /// How often the tick asks GitHub for a new release, in minutes; `0` turns the tick trigger off.
+    pub poll_min: u32,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            project: ProjectName::headwork(),
+            poll_min: 15,
+        }
+    }
+}
+
+impl Config {
+    /// The repository releases come from: the first `allowed_repos` entry of `[update] project`, when that project is
+    /// configured with one.
+    #[must_use]
+    pub fn update_repo(&self) -> Option<&Repo> {
+        self.project(&self.update.project)?.allowed_repos.first()
+    }
+}
+
 const fn yes() -> bool {
     true
 }
@@ -757,6 +798,15 @@ impl Config {
                 stop: self.watch.disk_stop_gb,
                 warn: self.watch.disk_warn_gb,
             });
+        }
+        if self.update.enabled {
+            let project = &self.update.project;
+            if self.project(project).is_none() {
+                return Err(ConfigError::UpdateProject(project.clone()));
+            }
+            if self.update_repo().is_none() {
+                return Err(ConfigError::UpdateRepo(project.clone()));
+            }
         }
         self.projects
             .iter()

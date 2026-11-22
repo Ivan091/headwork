@@ -528,3 +528,66 @@ fn leads_refuse_unknown_keys_zero_parts_and_bad_titles() {
         assert!(Config::parse(&text, "leads").is_ok(), "{title} is fine");
     }
 }
+
+#[test]
+fn update_is_off_by_default_for_headwork_every_fifteen_minutes() {
+    let config = Config::parse("[machine]\nhost = \"cmux\"\n", "minimal").unwrap();
+    assert!(!config.update.enabled, "off until the user turns it on");
+    assert_eq!(config.update.project, project("headwork"), "project");
+    assert_eq!(config.update.poll_min, 15, "poll");
+    assert_eq!(config.update_repo(), None, "no headwork project here");
+}
+
+fn with_headwork(update: &str, repos: &str) -> String {
+    format!(
+        "[machine]\nhost = \"cmux\"\n\n[update]\n{update}\n\n[project.headwork]\nmain = \"~/headwork\"\n\
+         worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
+         deliver = \"pr\"\nmerge = \"human\"\nallowed_repos = [{repos}]\n"
+    )
+}
+
+#[test]
+fn update_names_a_configured_project_with_a_repository_when_on() {
+    let config = Config::parse(
+        &with_headwork("enabled = true\npoll_min = 0", "\"Ivan091/headwork\""),
+        "on",
+    )
+    .unwrap();
+    assert!(config.update.enabled, "on");
+    assert_eq!(config.update.poll_min, 0, "tick trigger off");
+    assert_eq!(
+        config
+            .update_repo()
+            .map(headwork_core::config::Repo::as_str),
+        Some("Ivan091/headwork"),
+        "the project's repository"
+    );
+    let error = Config::parse(
+        &with_headwork("enabled = true\nproject = \"elsewhere\"", "\"a/b\""),
+        "missing",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::UpdateProject(name) if name.as_str() == "elsewhere"),
+        "{error}"
+    );
+    let error = Config::parse(&with_headwork("enabled = true", ""), "no repo").unwrap_err();
+    assert!(matches!(error, ConfigError::UpdateRepo(_)), "{error}");
+    assert!(
+        Config::parse(&with_headwork("project = \"elsewhere\"", ""), "off").is_ok(),
+        "an update that is off is not checked"
+    );
+}
+
+#[test]
+fn update_refuses_unknown_keys_and_bad_values() {
+    for bad in [
+        "every = 5",
+        "enabled = \"yes\"",
+        "poll_min = -1",
+        "project = \"Bad Name\"",
+    ] {
+        let error = Config::parse(&with_headwork(bad, "\"a/b\""), "update").unwrap_err();
+        assert!(matches!(error, ConfigError::Parse { .. }), "{bad}: {error}");
+    }
+}

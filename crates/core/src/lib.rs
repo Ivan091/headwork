@@ -13,6 +13,7 @@ pub mod names;
 pub mod platform;
 pub mod process;
 pub mod reap;
+pub mod update;
 pub mod user_go;
 pub mod vocabulary;
 pub mod watch;
@@ -20,7 +21,7 @@ pub mod watch;
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{
     Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
-    SILENT_KIND,
+    SILENT_KIND, UpdateConfig,
 };
 pub use guard::{Decision, Verdict};
 pub use lead::{
