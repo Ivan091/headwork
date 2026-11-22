@@ -1174,3 +1174,28 @@ and the reason.
   a row's state. The `report` tool compares the pull request's repository with `allowed_repos` ignoring case, as close
   and the tick do. A `review` report from a task already `in_review` records the pull request without trying
   `review-opened`, which the lifecycle refuses there and which logged a `refused` event at every further report.
+- 2026-11-22 A close from outside a session presses Escape, waits a second, presses Ctrl+U and only then types
+  `/exit`, and asks twice before it ends `claude`. Three leads were killed today, so their Remote Control sessions
+  stayed listed: the orchestrator closed them while their turn ran, and the `/exit` either waited behind the turn or
+  landed in the `AskUserQuestion` dialog the lead opened, whose Enter picked the highlighted option (twice the close
+  ask's "Close it"; it could as well have been "Merge it"). Escape ends the turn or dismisses the dialog; the pause keeps
+  the next key from reading as Alt and that key; Ctrl+U clears what an interrupt puts back into the input. A self-close
+  never presses Escape: its own `done` or `headwork close` is the turn, and Escape would end the command that closes.
+- 2026-11-22 A self-close runs no queue. The worker's `done` and `headwork close` used to start queued tasks in the
+  process `/exit` was about to end, and `shiftroom-blank-names` was moved to `spawning` by such a process and stayed
+  there, with no pane or session, for 80 minutes until the tick timed it out. The detached finisher runs the queue once
+  the close is done (`CloseReport::left_to_launcher`).
+- 2026-11-22 A close that finds the close claim held waits up to two minutes for the finisher holding it, then reports
+  the state that close reached, instead of `close-claimed` and "another finisher is closing this task" at once. The
+  orchestrator's close of a lead races the launcher's finisher whenever `claude` leaves after `/exit`, and the
+  immediate answer read as a failed close. The tick's reap keeps the two-second wait, so a tick never blocks on it.
+- 2026-11-22 A branch counts as merged when the main checkout's `HEAD` or the upstream of its branch contains it, and
+  a close fetches that upstream before it keeps a branch. Pull requests merge on GitHub, and the main checkout follows
+  only when it is pulled; it was 18 commits behind today, so closes kept `waiting-frees-worker-slot` and
+  `orchestrate-rules-injected` although both had landed. A branch only the upstream holds is deleted with `-D` after the
+  check, since `git branch -d` judges it against `HEAD`. `clean` fetches each project's upstream first and deletes the
+  branches closed tasks were logged keeping once they landed (`branch-cleaned`).
+- 2026-11-22 Non-interactive fetches keep the user's ssh program. The release's checkout forward set `GIT_SSH_COMMAND`
+  to a bare `ssh`, which replaced `core.sshCommand` (Windows' OpenSSH, which reaches the agent) with Git Bash's client
+  and failed with "Permission denied (publickey)", so the main checkout was never forwarded. `ssh::batch_command_in`
+  takes the program git would use (`GIT_SSH_COMMAND`, `core.sshCommand`, `GIT_SSH`, `ssh`) and adds the batch options.
