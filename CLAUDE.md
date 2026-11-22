@@ -38,7 +38,10 @@ reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `d
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
 `core/src/watch.rs`, its memory in migration 0004). `close` types `/exit` into a session's pane and waits up to
 `[watch] exit_grace_s` before it kills `claude`, so Claude Code archives the Remote Control session and it leaves the
-Claude app's list (`docs/decisions.md`, 2026-11-22). A running task whose session ended or whose launcher is gone
+Claude app's list (`docs/decisions.md`, 2026-11-22). A close from outside the session presses Escape and Ctrl+U first
+(an open `AskUserQuestion` dialog would take the Enter as an answer, and a running turn would hold `/exit` back) and
+asks twice; a self-close never interrupts its own tool call, and its caller runs no queue (the finisher does). A close
+that finds the claim held waits up to two minutes for that finisher and reports how it ended. A running task whose session ended or whose launcher is gone
 becomes `interrupted` through `ops/lost.rs`, called by the `SessionEnd` hook, `board` and the tick alike.
 A task may deliver in several pull requests: close and the tick find them through one lookup (`ops/prs.rs`: recorded
 URLs, the stored branch, the branch checked out), a later pull request takes a `merged` task back to `in_review`, and
@@ -57,7 +60,10 @@ under `[hooks] brief_writable` the files its brief lists on a `Writes:` line; in
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with
 `git branch -d`), superseded by commits of the same subjects, or gone upstream (branch kept). It never touches a dirty
-tree, a live task's, a running agent's or one no task owns; it lists each with the reason. `--gc` runs plain `git gc`
+tree, a live task's, a running agent's or one no task owns; it lists each with the reason. It also deletes the
+branches closed tasks were logged keeping (`branch-kept`) once they landed, and lists the rest. "Merged" means the main
+checkout's `HEAD` or its branch's upstream contains it; `clean` fetches that upstream first, and a close fetches it
+before it keeps a branch (`ssh.rs`: batch mode with the user's own `core.sshCommand`). `--gc` runs plain `git gc`
 in a main checkout only when no registered job runs there and no main-only task is live.
 `headwork reap` (`ops/reap.rs`, pure decisions in `core/src/reap.rs`) ends what ended sessions left running (the
 processes their launcher and `claude` started, rebuilt from parent links and start times; on unix also those `launchd`

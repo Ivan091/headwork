@@ -43,6 +43,10 @@ const PROCESS_GRACE: Duration = Duration::from_secs(10);
 /// lock until it starts its program, so a claim just released can still look held for a moment.
 const CLAIM_WAIT: Duration = Duration::from_secs(2);
 
+/// How long a close from outside the session waits for a finisher that already holds the claim, such as the one the
+/// launcher starts once `claude` has left, before it reports the close as another finisher's.
+const FINISHER_WAIT: Duration = Duration::from_secs(120);
+
 /// Where a close ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloseReport {
@@ -52,6 +56,19 @@ pub struct CloseReport {
     pub state: TaskState,
     /// Why it is not `closed` yet, when it is not.
     pub pending: Option<String>,
+}
+
+/// What a self-close reports: the session's launcher finishes the close once `claude` has left.
+pub const LAUNCHER_FINISHES: &str = "the launcher finishes the close";
+
+impl CloseReport {
+    /// Whether the close was left to the session's launcher, which runs in the very session that closed. Its caller is
+    /// about to end with `claude` and must start nothing more, such as a queued task, that it could leave half done;
+    /// the finisher runs the queue.
+    #[must_use]
+    pub fn left_to_launcher(&self) -> bool {
+        self.pending.as_deref() == Some(LAUNCHER_FINISHES)
+    }
 }
 
 /// Force-closes a task, as the user or the orchestrator.
@@ -201,7 +218,7 @@ pub fn close_forced(
         "force-finish",
         &serde_json::json!({ "prs": found.seen.iter().map(|pr| pr.url.as_str()).collect::<Vec<_>>() }),
     )?;
-    let Some(_claim) = claim_close(env, id)? else {
+    let Some(_claim) = claim_close(env, id, CLAIM_WAIT)? else {
         return report(store, id, Some(ANOTHER_FINISHER.to_owned()));
     };
     finish_claimed(store, env, id, true)
@@ -382,8 +399,9 @@ pub fn end_closing(
         && let Some(launcher) = session.launcher().filter(session_procs::runs)
     {
         let target = session.claude().unwrap_or_else(|| launcher.clone());
-        let left = ask_exit(store, env, id, &session)?;
-        if own_session == Some(session.id.as_str()) {
+        let own = own_session == Some(session.id.as_str());
+        let left = ask_exit(store, env, id, &session, !own)?;
+        if own {
             store.append_event(
                 env.actor,
                 Some(id),
@@ -398,18 +416,14 @@ pub fn end_closing(
             if !left {
                 session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
             }
-            return report(
-                store,
-                id,
-                Some("the launcher finishes the close".to_owned()),
-            );
+            return report(store, id, Some(LAUNCHER_FINISHES.to_owned()));
         }
         if !left {
             session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
         }
         wait_until(LAUNCHER_GRACE, || !session_procs::runs(&launcher));
     }
-    finish(store, env, id)
+    finish_within(store, env, id, FINISHER_WAIT)
 }
 
 fn begin_closing(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
@@ -446,7 +460,18 @@ fn remove_brief(env: &Env<'_>, brief: &str) {
 ///
 /// Fails when the store fails or the task is not closing.
 pub fn finish(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<CloseReport> {
-    let Some(_claim) = claim_close(env, id)? else {
+    finish_within(store, env, id, CLAIM_WAIT)
+}
+
+/// [`finish`], waiting up to `wait` for a finisher that holds the claim; once it lets go, the close it ran is
+/// reported as it ended.
+fn finish_within(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    wait: Duration,
+) -> Result<CloseReport> {
+    let Some(_claim) = claim_close(env, id, wait)? else {
         store.append_event(
             env.actor,
             Some(id),
@@ -465,7 +490,7 @@ pub const ANOTHER_FINISHER: &str = "another finisher is closing this task";
 /// Takes the task's close claim: an exclusive lock on `<home>/closing/<id>.lock`, held until the returned file drops
 /// and released by the system if the finisher dies. `None` when another finisher holds it, so two finishers (the
 /// launcher's, a backup, the tick, `headwork close`) never end the same task at once.
-fn claim_close(env: &Env<'_>, id: TaskId) -> Result<Option<std::fs::File>> {
+fn claim_close(env: &Env<'_>, id: TaskId, wait: Duration) -> Result<Option<std::fs::File>> {
     let folder = env.home.root().join("closing");
     std::fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let path = folder.join(format!("{id}.lock"));
@@ -479,7 +504,7 @@ fn claim_close(env: &Env<'_>, id: TaskId) -> Result<Option<std::fs::File>> {
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(Some(file)),
-            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < CLAIM_WAIT => {
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => {
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
@@ -795,15 +820,31 @@ fn delete_empty_branches(
     Ok(())
 }
 
-/// Deletes a closed task's branch when it holds no commits beyond the main checkout's `HEAD`, so the slug can be
-/// spawned again, and logs what became of it. A git failure is logged, never fatal: the close is already verified.
+/// Deletes a closed task's branch when it holds no commits beyond the main checkout's `HEAD` or its upstream, so the
+/// slug can be spawned again, and logs what became of it. A branch that looks unmerged is checked once more after a
+/// fetch of the upstream, since its pull request was usually merged on the remote moments ago. A git failure is logged,
+/// never fatal: the close is already verified.
 fn delete_empty_branch(store: &Store, env: &Env<'_>, task: &Task, branch: &str) -> Result<()> {
-    let (kind, data) = match env.worktrees(task)?.delete_empty_branch(branch) {
+    let worktrees = env.worktrees(task)?;
+    let mut end = worktrees.delete_empty_branch(branch);
+    let mut fetch_error = None;
+    if matches!(end, Ok(BranchEnd::Kept)) {
+        match worktrees.fetch_upstream() {
+            Ok(true) => end = worktrees.delete_empty_branch(branch),
+            Ok(false) => {}
+            Err(error) => fetch_error = Some(error.to_string()),
+        }
+    }
+    let (kind, data) = match end {
         Ok(BranchEnd::Absent) => return Ok(()),
         Ok(BranchEnd::Deleted) => ("branch-deleted", serde_json::json!({ "branch": branch })),
         Ok(BranchEnd::Kept) => (
             "branch-kept",
-            serde_json::json!({ "branch": branch, "reason": "it has commits the main checkout lacks" }),
+            serde_json::json!({
+                "branch": branch,
+                "reason": "it has commits the main checkout lacks",
+                "fetch_error": fetch_error,
+            }),
         ),
         Err(error) => (
             "branch-refused",
@@ -908,16 +949,34 @@ fn pinned(store: &Store, session: &str) -> Result<bool> {
 /// What `close` types into a session's pane to have `claude` leave on its own.
 const EXIT_COMMAND: &str = "/exit";
 
+/// How many times `close` asks a session from outside to exit before it ends the process tree.
+const EXIT_ATTEMPTS: u32 = 2;
+
+/// How long `claude` gets to settle after Escape before `/exit` is typed: an interrupted turn needs a moment to stop,
+/// and a key typed right after Escape reads as Alt and that key.
+const INTERRUPT_SETTLE: Duration = Duration::from_secs(1);
+
 /// Asks a session's `claude` to exit by typing `/exit` into its pane, and waits up to `[watch] exit_grace_s` for it to
-/// be gone. Claude Code archives its Remote Control session at claude.ai while it exits, even in the middle of a turn
-/// or a tool call, so the session leaves the Claude app's list; a killed `claude` stays listed. Returns whether it
-/// left; when it did not (no pane or pid known, the host refused the keys, or the grace ran out), the caller ends the
-/// process tree.
+/// be gone. Claude Code archives its Remote Control session at claude.ai while it exits, so the session leaves the
+/// Claude app's list; a killed `claude` stays listed. Returns whether it left; when it did not (no pane or pid known,
+/// the host refused the keys, or the grace ran out), the caller ends the process tree.
+///
+/// A close from outside the session (`interrupt`) first presses Escape and clears the input line. `/exit` typed
+/// during a turn waits for the turn to end, and typed into an open `AskUserQuestion` dialog its Enter picks the
+/// highlighted option instead, so Escape ends the turn or dismisses the dialog first; it is asked [`EXIT_ATTEMPTS`]
+/// times. A self-close never interrupts: its own tool call is the turn, and Escape would end the very command that
+/// closes.
 ///
 /// # Errors
 ///
 /// Fails when the store fails.
-fn ask_exit(store: &Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> Result<bool> {
+fn ask_exit(
+    store: &Store,
+    env: &Env<'_>,
+    id: TaskId,
+    session: &SessionRow,
+    interrupt: bool,
+) -> Result<bool> {
     let grace = env.config.watch.exit_grace_s;
     let (Some(claude), Some(surface)) = (session.claude(), session.host_surface.as_deref()) else {
         return Ok(false);
@@ -926,40 +985,55 @@ fn ask_exit(store: &Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> R
         return Ok(false);
     }
     let surface = SurfaceId(surface.to_owned());
-    if let Err(error) = env
-        .host
-        .send_text(&surface, EXIT_COMMAND)
-        .and_then(|()| env.host.send_key(&surface, Key::Enter))
-    {
+    let attempts = if interrupt { EXIT_ATTEMPTS } else { 1 };
+    for attempt in 1..=attempts {
+        if let Err(error) = type_exit(env.host, &surface, interrupt) {
+            store.append_event(
+                env.actor,
+                Some(id),
+                Some(&session.id),
+                "exit-unasked",
+                &serde_json::json!({ "error": error.to_string(), "attempt": attempt }),
+            )?;
+            return Ok(false);
+        }
         store.append_event(
             env.actor,
             Some(id),
             Some(&session.id),
-            "exit-unasked",
-            &serde_json::json!({ "error": error.to_string() }),
+            "exit-asked",
+            &serde_json::json!({ "grace_s": grace, "attempt": attempt, "interrupt": interrupt }),
         )?;
-        return Ok(false);
-    }
-    store.append_event(
-        env.actor,
-        Some(id),
-        Some(&session.id),
-        "exit-asked",
-        &serde_json::json!({ "grace_s": grace }),
-    )?;
-    let left = wait_until(Duration::from_secs(u64::from(grace)), || {
-        !session_procs::runs(&claude)
-    });
-    if !left {
+        let left = wait_until(Duration::from_secs(u64::from(grace)), || {
+            !session_procs::runs(&claude)
+        });
+        if left {
+            return Ok(true);
+        }
         store.append_event(
             env.actor,
             Some(id),
             Some(&session.id),
             "exit-ignored",
-            &serde_json::json!({ "grace_s": grace }),
+            &serde_json::json!({ "grace_s": grace, "attempt": attempt }),
         )?;
     }
-    Ok(left)
+    Ok(false)
+}
+
+/// Types `/exit` and Enter into `surface`; with `interrupt`, Escape and Ctrl+U (clear the line) come first.
+fn type_exit(
+    host: &dyn TerminalHost,
+    surface: &SurfaceId,
+    interrupt: bool,
+) -> std::result::Result<(), headwork_adapters::host::HostError> {
+    if interrupt {
+        host.send_key(surface, Key::Escape)?;
+        std::thread::sleep(INTERRUPT_SETTLE);
+        host.send_key(surface, Key::Ctrl('u'))?;
+    }
+    host.send_text(surface, EXIT_COMMAND)?;
+    host.send_key(surface, Key::Enter)
 }
 
 /// The detached finisher: waits for `pid` to be gone, records the end of a session its launcher could not record,

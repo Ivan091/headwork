@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use headwork::ops::clean::{CleanReport, GcOutcome, Outcome as CleanOutcome};
+use headwork::ops::clean::{BranchOutcome, CleanReport, GcOutcome, Outcome as CleanOutcome};
 use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::import::ImportReport;
 use headwork::ops::install::InstallReport;
@@ -558,6 +558,9 @@ pub(crate) fn cleaned(report: &CleanReport) -> String {
         if let Some(error) = &project.error {
             let _ = writeln!(text, "  cannot read: {error}");
         }
+        if let Some(error) = &project.fetch_error {
+            let _ = writeln!(text, "  fetch failed, judged on older remote refs: {error}");
+        }
         if project.error.is_none() && project.worktrees.is_empty() {
             text.push_str("  no other worktrees\n");
         }
@@ -582,6 +585,19 @@ pub(crate) fn cleaned(report: &CleanReport) -> String {
             if let Some(note) = &worktree.note {
                 let _ = writeln!(text, "    {note}");
             }
+        }
+        for branch in &project.branches {
+            let what = match &branch.outcome {
+                BranchOutcome::WouldDelete => "would delete: it landed".to_owned(),
+                BranchOutcome::Deleted => "deleted: it landed".to_owned(),
+                BranchOutcome::Left { reason } => format!("left: {reason}"),
+                BranchOutcome::Failed { error } => format!("FAILED: {error}"),
+            };
+            let _ = writeln!(
+                text,
+                "  branch {} ({})\n    {what}",
+                branch.branch, branch.owner
+            );
         }
         if let Some(gc) = &project.gc {
             let line = match gc {

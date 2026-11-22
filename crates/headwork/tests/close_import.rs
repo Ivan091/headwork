@@ -10,6 +10,7 @@ use std::process::Command;
 
 use headwork::home::Home;
 use headwork::ops::Env;
+use headwork::ops::clean::{BranchOutcome, CleanOptions, clean};
 use headwork::ops::close::{close, reap};
 use headwork::ops::helpers::add as add_helper;
 use headwork::ops::import::{
@@ -362,6 +363,146 @@ fn close_keeps_a_branch_with_commits_of_its_own() {
             .iter()
             .any(|k| k == "branch-kept"),
         "logged"
+    );
+}
+
+/// Gives the world's main checkout a bare `origin` that its `master` tracks, and a second clone of it that stands in
+/// for the forge: what it pushes reaches `origin` without the main checkout seeing it until it fetches.
+fn with_origin(w: &World) -> PathBuf {
+    let origin = w.dir.path().join("origin.git");
+    git(
+        w.dir.path(),
+        &["init", "-q", "--bare", "-b", "master", "origin.git"],
+    );
+    let origin_text = origin.display().to_string().replace('\\', "/");
+    git(&w.main, &["remote", "add", "origin", &origin_text]);
+    git(&w.main, &["push", "-q", "-u", "origin", "master"]);
+    let forge = w.dir.path().join("forge");
+    git(w.dir.path(), &["clone", "-q", &origin_text, "forge"]);
+    forge
+}
+
+/// Merges `branch`, pushed to `origin`, into `origin`'s master from the forge clone, as a pull request merge does.
+fn merge_on_forge(forge: &Path, branch: &str) {
+    git(forge, &["fetch", "-q", "origin", branch]);
+    git(
+        forge,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "Merge pull request",
+            "FETCH_HEAD",
+        ],
+    );
+    git(forge, &["push", "-q", "origin", "master"]);
+}
+
+#[test]
+fn close_deletes_a_branch_its_upstream_merged_once_it_has_fetched() {
+    let mut w = world(10);
+    let forge = with_origin(&w);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let worktree = w.dir.path().join("demo-sand");
+    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
+    git(&worktree, &["push", "-q", "origin", "sand"]);
+    merge_on_forge(&forge, "sand");
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(
+        !branch_exists(&w.main, "sand"),
+        "the merged branch is gone though the main checkout was never pulled"
+    );
+    let kinds = event_kinds(&w.store, &task);
+    assert!(kinds.iter().any(|k| k == "branch-deleted"), "{kinds:?}");
+    assert!(!kinds.iter().any(|k| k == "branch-kept"), "{kinds:?}");
+}
+
+#[test]
+fn clean_deletes_a_kept_branch_once_it_landed_and_leaves_one_that_did_not() {
+    let mut w = world(10);
+    let forge = with_origin(&w);
+    let mut tasks = Vec::new();
+    for slug in ["sand", "clay"] {
+        let (task, _) = spawn_task(&mut w, slug, false, false);
+        let worktree = w.dir.path().join(format!("demo-{slug}"));
+        git(&worktree, &["commit", "-q", "--allow-empty", "-m", slug]);
+        git(&worktree, &["push", "-q", "origin", slug]);
+        let env = env!(w);
+        close(&mut w.store, &env, task.id, None).unwrap();
+        assert!(branch_exists(&w.main, slug), "{slug}: kept at close");
+        tasks.push(task);
+    }
+    merge_on_forge(&forge, "sand");
+    let outcomes = |w: &mut World, dry_run: bool| {
+        let env = env!(w);
+        let report = clean(&mut w.store, &env, CleanOptions { dry_run, gc: false }).unwrap();
+        let project = report.projects.into_iter().next().unwrap();
+        assert_eq!(project.fetch_error, None, "the fetch worked");
+        project
+            .branches
+            .into_iter()
+            .map(|branch| (branch.branch, branch.outcome))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let unmerged = BranchOutcome::Left {
+        reason: "neither the main checkout nor its upstream contains it".to_owned(),
+    };
+    let planned = outcomes(&mut w, true);
+    assert_eq!(
+        planned.get("sand"),
+        Some(&BranchOutcome::WouldDelete),
+        "{planned:?}"
+    );
+    assert_eq!(planned.get("clay"), Some(&unmerged), "{planned:?}");
+    assert!(branch_exists(&w.main, "sand"), "a dry run deletes nothing");
+    let done = outcomes(&mut w, false);
+    assert_eq!(done.get("sand"), Some(&BranchOutcome::Deleted), "{done:?}");
+    assert_eq!(done.get("clay"), Some(&unmerged), "{done:?}");
+    assert!(!branch_exists(&w.main, "sand"), "the landed branch is gone");
+    assert!(branch_exists(&w.main, "clay"), "the unmerged one stays");
+    assert!(
+        event_kinds(&w.store, &tasks[0])
+            .iter()
+            .any(|k| k == "branch-cleaned"),
+        "logged on its task"
+    );
+    let again = outcomes(&mut w, true);
+    assert!(
+        !again.contains_key("sand"),
+        "a deleted branch is not listed again: {again:?}"
+    );
+}
+
+#[test]
+fn a_close_from_outside_waits_for_the_finisher_that_holds_the_claim() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let folder = w.home.root().join("closing");
+    std::fs::create_dir_all(&folder).unwrap();
+    let claim = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(folder.join(format!("{}.lock", task.id)))
+        .unwrap();
+    claim.try_lock().unwrap();
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        drop(claim);
+    });
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    holder.join().unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert_eq!(report.pending, None, "nothing pending: {report:?}");
+    assert!(
+        !event_kinds(&w.store, &task)
+            .iter()
+            .any(|k| k == "close-claimed"),
+        "no claimed close once the other finisher let go"
     );
 }
 
@@ -868,6 +1009,15 @@ fn a_self_close_of_a_session_from_before_hot_reload_starts_a_backup_finisher() {
             TaskState::Closing,
             "the launcher finishes: {report:?}"
         );
+        assert!(
+            report.left_to_launcher(),
+            "a self-close is left to the launcher, so its caller runs no queue: {report:?}"
+        );
+        let calls = w.host.calls();
+        assert!(
+            !calls.iter().any(|c| c.ends_with(" Escape")),
+            "{slug}: a self-close never interrupts its own turn: {calls:?}"
+        );
         let backup = event_kinds(&w.store, &task)
             .iter()
             .any(|kind| kind == "backup-finisher");
@@ -921,8 +1071,24 @@ fn close_types_exit_and_kills_only_a_claude_that_stays() {
             calls.contains(&format!("send-key {surface} Enter")),
             "{slug}: and sent: {calls:?}"
         );
+        let at = |call: String| calls.iter().position(|c| *c == call);
+        let order = [
+            at(format!("send-key {surface} Escape")),
+            at(format!("send-key {surface} Ctrl('u')")),
+            at(format!("send {surface} /exit")),
+            at(format!("send-key {surface} Enter")),
+        ];
+        assert!(
+            order.iter().all(Option::is_some) && order.is_sorted(),
+            "{slug}: Escape and a cleared line come before /exit and Enter: {calls:?}"
+        );
         let kinds = event_kinds(&w.store, &task);
-        assert!(kinds.iter().any(|k| k == "exit-asked"), "{slug}: {kinds:?}");
+        let asked = kinds.iter().filter(|k| *k == "exit-asked").count();
+        assert_eq!(
+            asked,
+            if stays { 2 } else { 1 },
+            "{slug}: a claude that stays is asked twice: {kinds:?}"
+        );
         assert_eq!(
             kinds.iter().any(|k| k == "exit-ignored"),
             stays,

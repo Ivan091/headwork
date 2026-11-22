@@ -1715,16 +1715,14 @@ pub fn forward_checkout(home: &Home, config: &Config, commit: Option<&str>) -> F
         ));
     };
     let main = home.expand(&project.main);
+    let ssh = headwork_adapters::ssh::batch_command_in(&main);
     let git = |args: &[&str]| -> Result<timed::Ran, String> {
         timed::run(
             Command::new("git")
                 .args(args)
                 .current_dir(&main)
                 .env("GIT_TERMINAL_PROMPT", "0")
-                .env(
-                    "GIT_SSH_COMMAND",
-                    "ssh -o BatchMode=yes -o ConnectTimeout=10",
-                ),
+                .env("GIT_SSH_COMMAND", &ssh),
             GIT_TIMEOUT,
         )
         .map_err(|error| error.to_string())
