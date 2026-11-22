@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use headwork_adapters::git::{GitHost, PrInfo, PrState};
+use headwork_core::TaskState;
 use headwork_core::guard::DEFAULT_BRANCHES;
 use headwork_core::lifecycle::PrEnd;
 use headwork_store::{PrSeen, Store, Task};
@@ -18,43 +19,56 @@ pub struct PrLookup {
 }
 
 impl PrLookup {
-    /// Any open one makes the task's end [`PrEnd::Open`], else any merged one [`PrEnd::Merged`], else any closed one
-    /// [`PrEnd::Closed`], else [`PrEnd::None`].
+    /// Any open one makes the task's end [`PrEnd::Open`]; else the newest one decides, [`PrEnd::Merged`] or
+    /// [`PrEnd::Closed`], so a later pull request closed without a merge does not read as merged; else [`PrEnd::None`].
     #[must_use]
     pub fn end(&self) -> PrEnd {
         self.pick().map_or(PrEnd::None, |(end, _)| end)
     }
 
-    /// The pull request that decides [`Self::end`].
+    /// The pull request that decides [`Self::end`]: the newest open one, else the newest.
     #[must_use]
     pub fn deciding(&self) -> Option<&PrInfo> {
         self.pick().map(|(_, pr)| pr)
     }
 
     fn pick(&self) -> Option<(PrEnd, &PrInfo)> {
-        [
-            (PrState::Open, PrEnd::Open),
-            (PrState::Merged, PrEnd::Merged),
-            (PrState::Closed, PrEnd::Closed),
-        ]
-        .into_iter()
-        .find_map(|(state, end)| {
-            self.seen
-                .iter()
-                .find(|pr| pr.state == state)
-                .map(|pr| (end, pr))
+        let open = self.seen.iter().rev().find(|pr| pr.state == PrState::Open);
+        open.or_else(|| self.seen.last()).map(|pr| {
+            let end = match pr.state {
+                PrState::Open => PrEnd::Open,
+                PrState::Merged => PrEnd::Merged,
+                PrState::Closed => PrEnd::Closed,
+            };
+            (end, pr)
         })
+    }
+}
+
+/// Whether the host says the pull request was opened before the task was queued at `queued_at`.
+///
+/// Such a pull request belongs to an earlier task whose branch had the same name. Compared to the second; a time
+/// missing on either side is never before.
+#[must_use]
+pub fn opened_before(pr: &PrInfo, queued_at: &str) -> bool {
+    let second = |time: &str| time.get(..19).map(str::to_owned);
+    match (pr.created_at.as_deref().and_then(second), second(queued_at)) {
+        (Some(opened), Some(queued)) => opened < queued,
+        _ => false,
     }
 }
 
 /// Asks the git host now for the task's pull requests and records each.
 ///
 /// It reads those recorded for the task (reported by the worker or seen before), the one of its worktree's stored
-/// branch and the one of the branch checked out in its folder. A task in the main checkout has none.
+/// branch and the one of the branch checked out in its folder. A recorded pull request already merged is not asked
+/// again: a merge is final. A branch's pull request opened before the task was queued is an earlier task's and is left
+/// out. A closed task is asked only about its recorded pull requests not merged yet (a queued task may wait on them),
+/// never about its branches, whose names a later task may reuse. A task in the main checkout has none.
 ///
 /// # Errors
 ///
-/// Fails when the store or the git host fails.
+/// Fails when the store or the git host fails, including a recorded URL the host cannot resolve.
 pub fn lookup(
     store: &mut Store,
     env: &Env<'_>,
@@ -65,11 +79,47 @@ pub fn lookup(
         return Ok(PrLookup { seen: Vec::new() });
     }
     let mut seen: Vec<PrInfo> = Vec::new();
-    for url in store.pr_urls_of(task.id)? {
-        if let Some(pr) = git.pr_by_url(&url)? {
-            seen.push(pr);
+    let mut fresh: Vec<PrInfo> = Vec::new();
+    for recorded in store.recorded_prs(task.id)? {
+        if recorded.state == PrState::Merged.as_str() {
+            seen.push(PrInfo {
+                repo: recorded.repo,
+                number: recorded.number,
+                url: recorded.url,
+                state: PrState::Merged,
+                created_at: None,
+            });
+        } else if let Some(pr) = git.pr_by_url(&recorded.url)? {
+            seen.push(pr.clone());
+            fresh.push(pr);
         }
     }
+    if task.state != TaskState::Closed {
+        for pr in branch_prs(store, env, git, task)? {
+            if !seen.iter().any(|known| known.url == pr.url) {
+                seen.push(pr.clone());
+                fresh.push(pr);
+            }
+        }
+    }
+    for pr in &fresh {
+        store.record_pr(
+            task.id,
+            &PrSeen {
+                repo: &pr.repo,
+                number: pr.number,
+                url: &pr.url,
+                state: pr.state.as_str(),
+            },
+            env.actor,
+        )?;
+    }
+    Ok(PrLookup { seen })
+}
+
+/// The pull requests of the task's stored branch and of the branch checked out in its folder, those opened before the
+/// task left out.
+fn branch_prs(store: &Store, env: &Env<'_>, git: &dyn GitHost, task: &Task) -> Result<Vec<PrInfo>> {
     let dir = env.task_dir(task)?;
     let dir = if dir.is_dir() {
         dir
@@ -87,26 +137,16 @@ pub fn lookup(
     {
         branches.push(current);
     }
+    let mut found: Vec<PrInfo> = Vec::new();
     for branch in &branches {
         if let Some(pr) = git.pr_for_branch(&dir, branch)?
-            && !seen.iter().any(|known| known.url == pr.url)
+            && !opened_before(&pr, &task.queued_at)
+            && !found.iter().any(|known| known.url == pr.url)
         {
-            seen.push(pr);
+            found.push(pr);
         }
     }
-    for pr in &seen {
-        store.record_pr(
-            task.id,
-            &PrSeen {
-                repo: &pr.repo,
-                number: pr.number,
-                url: &pr.url,
-                state: pr.state.as_str(),
-            },
-            env.actor,
-        )?;
-    }
-    Ok(PrLookup { seen })
+    Ok(found)
 }
 
 /// Asks the git host again for the pull requests of queued tasks' ending dependencies not counted merged yet.
@@ -143,11 +183,12 @@ mod tests {
             number,
             url: format!("https://github.com/o/r/pull/{number}"),
             state,
+            created_at: None,
         }
     }
 
     #[test]
-    fn the_end_prefers_open_then_merged_then_closed() {
+    fn the_end_prefers_an_open_one_then_the_newest() {
         let cases = [
             (vec![], PrEnd::None, None),
             (vec![pr(1, PrState::Closed)], PrEnd::Closed, Some(1)),
@@ -162,9 +203,19 @@ mod tests {
                 Some(2),
             ),
             (
+                vec![pr(1, PrState::Open), pr(2, PrState::Merged)],
+                PrEnd::Open,
+                Some(1),
+            ),
+            (
                 vec![pr(1, PrState::Merged), pr(2, PrState::Merged)],
                 PrEnd::Merged,
-                Some(1),
+                Some(2),
+            ),
+            (
+                vec![pr(1, PrState::Merged), pr(2, PrState::Closed)],
+                PrEnd::Closed,
+                Some(2),
             ),
         ];
         for (seen, end, number) in cases {
@@ -177,5 +228,29 @@ mod tests {
                 lookup.seen
             );
         }
+    }
+
+    #[test]
+    fn a_pull_request_opened_before_the_task_was_queued_is_an_earlier_tasks() {
+        let queued = "2026-11-22T08:11:05.502Z";
+        let opened = |at: Option<&str>| PrInfo {
+            created_at: at.map(str::to_owned),
+            ..pr(1, PrState::Merged)
+        };
+        let cases = [
+            (Some("2026-11-21T10:00:00Z"), true),
+            (Some("2026-11-22T08:11:04Z"), true),
+            (Some("2026-11-22T08:11:05Z"), false),
+            (Some("2026-11-22T09:00:00Z"), false),
+            (None, false),
+            (Some("bad"), false),
+        ];
+        for (at, before) in cases {
+            assert_eq!(opened_before(&opened(at), queued), before, "{at:?}");
+        }
+        assert!(
+            !opened_before(&opened(Some("2026-11-21T10:00:00Z")), "t"),
+            "a queue time that is not one"
+        );
     }
 }

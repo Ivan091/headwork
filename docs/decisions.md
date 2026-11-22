@@ -174,7 +174,8 @@ and the reason.
 - 2026-11-14 Merged tasks close after `watch.merged_grace_min` (10) with the lifecycle's own guard (not `keep`, no
   waiting ask, report sent). "Report sent" is a recorded `SendMessage` of any session of the task; the job guard is
   false until jobs exist (milestone 6).
-- 2026-11-14 Pull requests are found with `gh pr view <branch> --json number,state,url` run in the task's folder
+- 2026-11-14 Pull requests are found with `gh pr view <branch> --json number,state,url` (since 2026-11-22 also
+  `createdAt`) run in the task's folder
   (the main checkout when the worktree is gone), recorded in `prs`. An open one moves `working` to `in_review`, a
   merged one on to `merged` (`working` goes through `in_review` in one tick), a closed one sends `in_review` back to
   `working`. A repository outside `allowed_repos` never opens a review. Tasks in the main checkout have no branch and
@@ -588,7 +589,8 @@ and the reason.
   `review-opened` also applies in `merged` (a later pull request takes the task back to `in_review`), and `merged` →
   `closing` needs every pull request settled: the worker's own close refuses while any is open, in `merged` too. Close
   and the tick share one lookup (`ops/prs.rs`): the URLs recorded for the task, the stored branch and the branch checked
-  out in the task's folder, so a renamed branch is found; any open one decides, else any merged, else any closed. The
+  out in the task's folder, so a renamed branch is found; any open one decides, else any merged, else any closed
+  (since 2026-11-22: any open one, else the newest). The
   tick reconciles `merged` tasks as well. The merged grace counts only once the session has also been quiet for the
   grace with no tool call running (`watch::merged_grace_over`), so an enforced tick never closes a lead that keeps
   working after its first merge. Worktree removal also deletes the empty branch checked out in the folder when the
@@ -1130,3 +1132,45 @@ and the reason.
   and the folder trust dialog are left out for now: no hook marks the end of a permission prompt for tools outside the
   plugin's `PostToolUse` matcher, so a mark could outlive the prompt, and the trust dialog belongs to a session not yet
   started.
+- 2026-11-22 Pull request rows are the task's (audit O2, `pr-rows-by-task`). `prs` is keyed by `(task_id, url)`
+  instead of `(repo, number)`, so a task that names a pull request number another task once had (a re-created
+  repository, or two tasks naming one pull request) gets a row of its own and never updates the other's. SQLite cannot
+  drop a table constraint, so the migration rebuilds the table, keeping every row and its id (row order is "oldest
+  first").
+- 2026-11-22 The rows of the old `Ivan091/headwork` are moved, not frozen. The repository was re-created at
+  2026-11-22T08:50:40Z (`gh repo view --json createdAt`); the old one is now `Ivan091/headwork-archive`. The migration
+  cannot ask GitHub, so it decides from the store alone: a row of `Ivan091/headwork` whose URL an event of its task
+  named (a `report`, a `pr-state`, a close) before that moment is an archive pull request, and so is a row no event
+  names whose task was queued before it. Such a row gets the archive's repository and URL
+  (`https://github.com/Ivan091/headwork-archive/pull/<n>`), and a `pr-moved` event says so. Moving keeps the truth: the
+  archive URL still resolves, where marking the rows merged would invent a state (task 166's #71, #75, #77 and #79 were
+  `open`). The number alone could not decide (the old repository had reached #79, the new one reuses #1 to #79), nor
+  the task's close time (task 166 ran across the re-creation and recorded both old and new pull requests); on the live
+  store the event times split the rows cleanly, every old one named before 08:52 and every new one after. The cutoff
+  and repository names are fixed in the migration because it fixes one machine's data; on any other store no row
+  matches.
+- 2026-11-22 A merged pull request is not asked about again, and a closed task's branches are not looked up. A merge
+  is final, so `prs::lookup` takes a recorded `merged` row from the store instead of `gh`. A closed task is looked up
+  only by `refresh_dependencies`, for a queued task waiting on it; it then asks about its recorded rows that are not
+  merged (a dependency closed from `in_review` still counts once they merge, as before) and never about its branches,
+  whose names a later task may reuse. The audit asked that closed tasks not be refreshed at all; that would leave such
+  a dependent queued for ever, so this narrower rule was taken.
+- 2026-11-22 `gh` answering "Could not resolve to a Repository" or "Could not resolve to a PullRequest" is an error,
+  not "no pull request" (`git::means_no_pr`). Only "no pull requests found" (a branch without one) is `None`. A recorded
+  URL that stops resolving is a re-created or renamed repository or a mistyped report, and reading it as "none" let a
+  close go ahead without it; as an error it stops the close and is a `tick-error` until someone looks.
+- 2026-11-22 A branch's pull request opened before its task was queued is left out (audit O10). `gh pr view <branch>`
+  answers the newest pull request of the branch, which for a reused slug is an earlier task's, possibly merged. `gh` now
+  also gives `createdAt`, and the lookup drops a branch's pull request opened before the task's `queued_at` (compared
+  to the second; a time missing on either side keeps it). Recorded URLs are not filtered: the worker named them. Tasks
+  adopted by `headwork import`, whose pull requests predate their rows, are all closed.
+- 2026-11-22 With no open pull request, the newest one decides (audit O10). It was "any merged one", so a later pull
+  request closed unmerged still read as merged; now a task whose newest pull request was closed without a merge goes
+  back to `working` (`changes-requested`) like a task with a single closed one. "Newest" is the order the lookup saw
+  them in: recorded rows oldest first, then a branch's not recorded yet. An open one still wins, and the deciding pull
+  request is the newest of its kind.
+- 2026-11-22 Reports and pull requests (audit O10). A report that names a pull request already recorded for the task
+  leaves its state alone (it used to reset it to `open`, so a re-report took a merged row back), and only `gh` changes
+  a row's state. The `report` tool compares the pull request's repository with `allowed_repos` ignoring case, as close
+  and the tick do. A `review` report from a task already `in_review` records the pull request without trying
+  `review-opened`, which the lifecycle refuses there and which logged a `refused` event at every further report.

@@ -71,6 +71,8 @@ pub struct PrInfo {
     pub url: String,
     /// Where it is.
     pub state: PrState,
+    /// When it was opened, as the host writes it (RFC 3339), when the host told.
+    pub created_at: Option<String>,
 }
 
 /// A git host that knows pull requests.
@@ -79,7 +81,8 @@ pub trait GitHost: fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`GitHostError`] when the host cannot answer; a branch without a pull request is `Ok(None)`.
+    /// Returns [`GitHostError`] when the host cannot answer; a branch without a pull request is `Ok(None)`. A
+    /// repository or pull request the host cannot resolve is an error, never `Ok(None)`.
     fn pr_for_branch(&self, dir: &Path, branch: &str) -> Result<Option<PrInfo>, GitHostError>;
 
     /// The pull request at `url`, as it stands now; the URL's host (github.com or a GitHub Enterprise one) picks where
@@ -87,7 +90,9 @@ pub trait GitHost: fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`GitHostError`] when the host cannot answer; an unknown pull request is `Ok(None)`.
+    /// Returns [`GitHostError`] when the host cannot answer, including when it cannot resolve the URL's repository or
+    /// pull request: a URL that once named a pull request and no longer resolves is something to look into, not a
+    /// pull request that never was.
     fn pr_by_url(&self, url: &str) -> Result<Option<PrInfo>, GitHostError>;
 }
 
@@ -114,10 +119,13 @@ impl Default for Gh {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawPr {
     number: i64,
     state: String,
     url: String,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 /// How long one `gh` call may take before it is ended and reported as a failure, so a hung `gh` never holds up the
@@ -138,7 +146,7 @@ pub fn interpret_view(
 ) -> Result<Option<PrInfo>, GitHostError> {
     if !success {
         let message = stderr.trim().to_owned();
-        if message.contains("no pull requests found") || message.contains("Could not resolve") {
+        if means_no_pr(&message) {
             return Ok(None);
         }
         return Err(GitHostError::Failed {
@@ -159,7 +167,7 @@ pub fn interpret_view(
 
 impl Gh {
     fn view(&self, dir: Option<&Path>, target: &str) -> Result<Option<PrInfo>, GitHostError> {
-        let args = ["pr", "view", target, "--json", "number,state,url"];
+        let args = ["pr", "view", target, "--json", "number,state,url,createdAt"];
         let shown = args.join(" ");
         let mut command = Command::new(&self.program);
         command.args(args);
@@ -187,7 +195,16 @@ impl GitHost for Gh {
     }
 }
 
-/// Parses the JSON of `gh pr view --json number,state,url`.
+/// Whether a failed `gh pr view` said only that the branch has no pull request.
+///
+/// Anything else, `Could not resolve to a Repository` or `Could not resolve to a PullRequest` among them, is a failure
+/// to report.
+#[must_use]
+pub fn means_no_pr(stderr: &str) -> bool {
+    stderr.contains("no pull requests found")
+}
+
+/// Parses the JSON of `gh pr view --json number,state,url,createdAt`.
 ///
 /// # Errors
 ///
@@ -204,6 +221,7 @@ pub fn parse_pr(text: &str) -> Result<PrInfo, serde_json::Error> {
         number: raw.number,
         url: raw.url,
         state,
+        created_at: raw.created_at,
     })
 }
 
@@ -272,12 +290,19 @@ mod tests {
             assert_eq!(pr.state, expected, "{state}");
             assert_eq!(pr.number, 7);
         }
-        for stderr in [
-            "no pull requests found for branch \"x\"\n",
-            "GraphQL: Could not resolve to a PullRequest with the number of 9.",
-        ] {
-            assert_eq!(viewed(false, "", stderr).unwrap(), None, "{stderr}");
-        }
+        assert_eq!(
+            viewed(false, "", "no pull requests found for branch \"x\"\n").unwrap(),
+            None,
+            "no pull request"
+        );
+        assert!(matches!(
+            viewed(
+                false,
+                "",
+                "GraphQL: Could not resolve to a PullRequest with the number of 9."
+            ),
+            Err(GitHostError::Failed { .. })
+        ));
         assert!(matches!(
             viewed(false, "", "HTTP 502: Bad Gateway"),
             Err(GitHostError::Failed { message, .. }) if message == "HTTP 502: Bad Gateway"
@@ -315,9 +340,39 @@ mod tests {
                     number: 7,
                     url: url.to_owned(),
                     state: PrState::Merged,
+                    created_at: None,
                 },
                 "{url}"
             );
         }
+    }
+
+    #[test]
+    fn only_a_branch_without_a_pull_request_reads_as_none() {
+        assert!(
+            means_no_pr("no pull requests found for branch \"sand\""),
+            "a branch without one"
+        );
+        for message in [
+            "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)",
+            "GraphQL: Could not resolve to a PullRequest with the number of 71. (repository.pullRequest)",
+            "could not resolve host: github.com",
+            "HTTP 502",
+        ] {
+            assert!(!means_no_pr(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_time_a_pull_request_opened_is_read_when_given() {
+        let pr = parse_pr(
+            r#"{"number":8,"state":"OPEN","url":"https://github.com/o/r/pull/8","createdAt":"2026-11-22T11:32:32Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pr.created_at.as_deref(),
+            Some("2026-11-22T11:32:32Z"),
+            "given"
+        );
     }
 }

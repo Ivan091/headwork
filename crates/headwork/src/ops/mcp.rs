@@ -1354,6 +1354,7 @@ impl<'a> Server<'a> {
             .record_report(task.id, session, &status, &summary, &links, pr.as_ref())?;
         let mut moved = None;
         if status == "review"
+            && task.state != TaskState::InReview
             && let Some(pr) = &pr
         {
             let repo_allowed = self
@@ -1364,7 +1365,7 @@ impl<'a> Server<'a> {
                     project
                         .allowed_repos
                         .iter()
-                        .any(|repo| repo.as_str() == pr.repo)
+                        .any(|repo| repo.as_str().eq_ignore_ascii_case(&pr.repo))
                 });
             match self.store.transition(
                 task.id,

@@ -35,7 +35,7 @@ pub use records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
     WorktreeRow,
 };
-pub use reports::{AddedRule, EVENT_REPORT, NewPr};
+pub use reports::{AddedRule, EVENT_REPORT, NewPr, RecordedPr};
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
 pub use waiting::{EVENT_SESSION_WAITING, WaitingCandidate};

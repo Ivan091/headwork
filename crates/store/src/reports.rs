@@ -22,6 +22,19 @@ pub struct NewPr {
     pub url: String,
 }
 
+/// A pull request recorded for a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedPr {
+    /// `owner/name`.
+    pub repo: String,
+    /// The pull request number.
+    pub number: i64,
+    /// The URL.
+    pub url: String,
+    /// `open`, `merged` or `closed`, as last seen.
+    pub state: String,
+}
+
 /// A soft rule added with `rule_add`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AddedRule {
@@ -37,6 +50,9 @@ pub struct AddedRule {
 
 impl Store {
     /// Records a report: an event, the task's last report, and the pull request it names.
+    ///
+    /// A pull request already recorded for the task keeps the state last seen: a report never takes a merged one back
+    /// to `open`. A pull request another task recorded gets a row of this task's own.
     ///
     /// # Errors
     ///
@@ -58,7 +74,7 @@ impl Store {
         if let Some(pr) = pr {
             tx.execute(
                 "INSERT INTO prs (task_id, repo, number, url, state) VALUES (?1, ?2, ?3, ?4, 'open')
-                 ON CONFLICT (repo, number) DO UPDATE SET url = excluded.url, state = 'open'",
+                 ON CONFLICT (task_id, url) DO UPDATE SET repo = excluded.repo, number = excluded.number",
                 params![task.0, pr.repo, pr.number, pr.url],
             )?;
         }
@@ -77,16 +93,23 @@ impl Store {
         Ok(())
     }
 
-    /// The URLs of every pull request recorded for the task, oldest first.
+    /// Every pull request recorded for the task, oldest first.
     ///
     /// # Errors
     ///
     /// Returns a read error.
-    pub fn pr_urls_of(&self, task: TaskId) -> Result<Vec<String>, StoreError> {
+    pub fn recorded_prs(&self, task: TaskId) -> Result<Vec<RecordedPr>, StoreError> {
         let mut statement = self
             .conn
-            .prepare("SELECT url FROM prs WHERE task_id = ?1 ORDER BY id")?;
-        let rows = statement.query_map(params![task.0], |row| row.get(0))?;
+            .prepare("SELECT repo, number, url, state FROM prs WHERE task_id = ?1 ORDER BY id")?;
+        let rows = statement.query_map(params![task.0], |row| {
+            Ok(RecordedPr {
+                repo: row.get(0)?,
+                number: row.get(1)?,
+                url: row.get(2)?,
+                state: row.get(3)?,
+            })
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
