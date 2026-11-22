@@ -1047,6 +1047,109 @@ fn a_park_collects_the_recap_a_session_writes_during_it() {
 }
 
 #[test]
+fn a_park_adopts_only_the_recap_the_orchestrator_wrote_in_its_latest_turn() {
+    let (mut store, _) = store();
+    let session = "orchestrator-1";
+    store
+        .record_session(
+            &NewSession {
+                id: session.to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    let recap = |body| NewRecap {
+        task_id: None,
+        session_id: Some(session),
+        kind: RecapKind::Session,
+        body,
+    };
+    let prompt = |store: &mut Store| {
+        store
+            .append_event(
+                Actor::Hook,
+                None,
+                Some(session),
+                "prompt",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+    };
+    store
+        .add_recap(&recap("before any prompt"), Actor::Orchestrator)
+        .unwrap();
+    let first = store.begin_park(300, Actor::User).unwrap();
+    assert_eq!(
+        store
+            .adopt_orchestrator_recap(first.id, session, Actor::User)
+            .unwrap(),
+        None,
+        "no turn of its own is known, so nothing is adopted"
+    );
+    store.finish_park(first.id, Actor::User).unwrap();
+    store
+        .finish_resume(Some(first.id), "recaps/park-1.md", Actor::User)
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    prompt(&mut store);
+    let id = store
+        .add_recap(&recap("this turn"), Actor::Orchestrator)
+        .unwrap();
+    let second = store.begin_park(300, Actor::User).unwrap();
+    assert_eq!(
+        store
+            .adopt_orchestrator_recap(second.id, session, Actor::User)
+            .unwrap(),
+        Some(id),
+        "the recap of the turn that started the park"
+    );
+    let found = store
+        .orchestrator_park_recap(second.id, session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.body, "this turn", "attached to the park");
+    assert_eq!(
+        store
+            .adopt_orchestrator_recap(second.id, session, Actor::User)
+            .unwrap(),
+        None,
+        "a recap already in a park is not adopted again"
+    );
+}
+
+#[test]
+fn a_session_records_the_surface_it_runs_in() {
+    let (mut store, _) = store();
+    store
+        .record_session(
+            &NewSession {
+                id: "orchestrator-1".to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    store
+        .set_session_surface("orchestrator-1", "surf-1", Actor::User)
+        .unwrap();
+    let (row, _) = store.session("orchestrator-1").unwrap().unwrap();
+    assert_eq!(row.host_surface.as_deref(), Some("surf-1"), "recorded");
+    assert_eq!(row.host_workspace, None, "the workspace is left alone");
+}
+
+#[test]
 fn jobs_keep_their_command_line_and_move_through_states() {
     let (mut store, config) = store();
     let task = create(&mut store, &config, "me-sim", "sand");

@@ -394,7 +394,9 @@ pub fn orchestrator_prompt(start: &OrchestratorStart) -> String {
 ///
 /// It gets its identity in the environment and returns the exit code of `claude`. The Remote Control name is
 /// `start.name` (`orchestrator` by default) for a new session and the recorded one for a session brought back; the
-/// agent is `start.agent`, else [`orchestrator_agent`]. The folder is recorded so a resume can start it there again.
+/// agent is `start.agent`, else [`orchestrator_agent`]. The folder is recorded so a resume can start it there again,
+/// and a new session records the host surface it runs in (the host's surface variable), so a park can ask it for its
+/// recap; a session brought back gets its surface from the resume that placed it.
 ///
 /// # Errors
 ///
@@ -431,6 +433,13 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
     let dir = std::env::current_dir().context("finding the current folder")?;
     store.set_session_dir(&id, &super::slashed(&dir))?;
     store.set_session_mode(&id, start.mode, Actor::User)?;
+    if start.origin == OrchestratorOrigin::New
+        && let Some(surface) = std::env::var(config.machine.host.surface_var())
+            .ok()
+            .filter(|surface| !surface.is_empty())
+    {
+        store.set_session_surface(&id, &surface, Actor::User)?;
+    }
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let plugin_dir = plugin_dir(home, &config);
     let prompt = orchestrator_prompt(start);

@@ -27,6 +27,16 @@ fn project(name: &str) -> ProjectName {
 }
 
 #[test]
+fn each_host_names_the_variable_that_tells_a_program_its_surface() {
+    for (host, var) in [
+        (HostKind::Wmux, "WMUX_SURFACE_ID"),
+        (HostKind::Cmux, "CMUX_SURFACE_ID"),
+    ] {
+        assert_eq!(host.surface_var(), var, "{host:?}");
+    }
+}
+
+#[test]
 fn fixture_parses_with_all_three_projects() {
     let config = machine();
     assert_eq!(config.machine.host, HostKind::Wmux, "host");

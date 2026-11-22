@@ -809,6 +809,7 @@ fn park_asks_the_root_for_a_recap_and_leaves_it_running_and_resume_brings_it_bac
         "the orchestrator is asked for a recap: {:?}",
         w.host.calls()
     );
+    assert_eq!(w.events_of("orchestrator-asked"), 1, "the ask is logged");
     assert!(
         is_alive(root_pid).unwrap(),
         "the orchestrator keeps running"
@@ -867,6 +868,21 @@ fn an_orchestrator_whose_transcript_is_gone_starts_fresh_and_a_running_one_is_le
     let parked_root = report.orchestrator.clone().unwrap();
     assert_eq!(parked_root.recap, RecapSource::Mechanical, "{report:?}");
     assert!(parked_root.problem.is_some(), "its pane is unknown");
+    assert_eq!(
+        w.events_of("orchestrator-unasked"),
+        1,
+        "why it was not asked is logged"
+    );
+    let mechanical = w
+        .store
+        .latest_session_recap(&orchestrator)
+        .unwrap()
+        .unwrap();
+    assert!(
+        mechanical.body.contains("its pane is unknown"),
+        "the mechanical recap says why: {}",
+        mechanical.body
+    );
 
     let opts = ResumeOptions {
         logon: false,
@@ -896,6 +912,101 @@ fn an_orchestrator_whose_transcript_is_gone_starts_fresh_and_a_running_one_is_le
         .unwrap();
     assert!(!line.contains("--resume"), "{line}");
     assert!(!line.contains(&orchestrator), "a new session: {line}");
+}
+
+impl World {
+    /// The orchestrator's prompt hook firing: the start of one of its turns.
+    fn prompted(&self, session: &str) {
+        self.store
+            .append_event(
+                Actor::Hook,
+                None,
+                Some(session),
+                "prompt",
+                &serde_json::json!({ "cross_session": false, "from": null }),
+            )
+            .unwrap();
+    }
+
+    fn orchestrator_recap(&mut self, session: &str, body: &str) {
+        self.store
+            .add_recap(
+                &NewRecap {
+                    task_id: None,
+                    session_id: Some(session),
+                    kind: RecapKind::Session,
+                    body,
+                },
+                Actor::Orchestrator,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn park_takes_the_recap_the_orchestrator_wrote_in_the_turn_that_started_it() {
+    let mut w = world("ask");
+    let (orchestrator, _, _) = w.orchestrator();
+    let surface = w.seen_in("Workspace 1", &orchestrator);
+    w.prompted(&orchestrator);
+    w.orchestrator_recap(&orchestrator, "coordinating sand before the restart");
+    let env = env!(w);
+    let started = Instant::now();
+    let report = park(&mut w.store, &env, quick(5_000)).unwrap();
+    let parked = report.orchestrator.clone().unwrap();
+    assert_eq!(parked.recap, RecapSource::Session, "{report:?}");
+    assert_eq!(parked.problem, None, "{report:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the park does not wait for a recap it already has"
+    );
+    assert!(
+        !w.host
+            .calls()
+            .iter()
+            .any(|c| c.starts_with(&format!("send {surface} "))),
+        "the orchestrator is not asked again: {:?}",
+        w.host.calls()
+    );
+    assert_eq!(w.events_of("recap-adopted"), 1, "logged");
+    let recap = w
+        .store
+        .orchestrator_park_recap(report.park, &orchestrator)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recap.kind, RecapKind::Session, "its own recap");
+    assert_eq!(
+        recap.body, "coordinating sand before the restart",
+        "its own words"
+    );
+}
+
+#[test]
+fn a_recap_from_before_the_orchestrators_latest_turn_does_not_count_and_it_is_asked() {
+    let mut w = world("ask");
+    let (orchestrator, _, _) = w.orchestrator();
+    let surface = w.seen_in("Workspace 1", &orchestrator);
+    w.orchestrator_recap(&orchestrator, "an old recap");
+    std::thread::sleep(Duration::from_millis(20));
+    w.prompted(&orchestrator);
+    let env = env!(w);
+    let report = park(&mut w.store, &env, quick(300)).unwrap();
+    let parked = report.orchestrator.clone().unwrap();
+    assert_eq!(
+        parked.recap,
+        RecapSource::Mechanical,
+        "it never answered: {report:?}"
+    );
+    assert!(
+        w.host
+            .calls()
+            .iter()
+            .any(|c| c.starts_with(&format!("send {surface} ")) && c.contains("recap")),
+        "the orchestrator is asked for a recap: {:?}",
+        w.host.calls()
+    );
+    assert_eq!(w.events_of("recap-adopted"), 0, "nothing adopted");
+    assert_eq!(w.events_of("orchestrator-asked"), 1, "the ask is logged");
 }
 
 impl World {
