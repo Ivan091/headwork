@@ -1959,7 +1959,7 @@ fn migration_15_dates_recorded_pids_and_backfills_the_end_of_ended_sessions() {
     );
 }
 
-const PR_ROWS_BY_TASK: &str = include_str!("../migrations/0016_pr_rows_by_task.sql");
+const PR_ROWS_BY_TASK: &str = include_str!("../migrations/0017_pr_rows_by_task.sql");
 
 fn new_pr(repo: &str, number: i64) -> NewPr {
     NewPr {
