@@ -749,7 +749,7 @@ impl Store {
         Ok(())
     }
 
-    /// Sets a session's state.
+    /// Sets a session's state; a move to `ended` or `gone` records the end unless one is recorded already.
     ///
     /// # Errors
     ///
@@ -767,7 +767,11 @@ impl Store {
             |row| row.get(0),
         )?;
         tx.execute(
-            &format!("UPDATE sessions SET state = ?1, last_event_at = {NOW} WHERE id = ?2"),
+            &format!(
+                "UPDATE sessions SET state = ?1, last_event_at = {NOW},
+                     ended_at = CASE WHEN ?1 IN ('ended', 'gone') THEN COALESCE(ended_at, {NOW}) ELSE ended_at END
+                 WHERE id = ?2"
+            ),
             params![state.as_str(), id],
         )?;
         insert_event(

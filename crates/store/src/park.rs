@@ -211,7 +211,7 @@ fn into_job(raw: RawJob) -> Result<JobRow, StoreError> {
     })
 }
 
-fn identity(
+pub(crate) fn identity(
     image: Option<String>,
     started: Option<i64>,
 ) -> Result<Option<ProcessIdentity>, StoreError> {
@@ -224,7 +224,7 @@ fn identity(
     }
 }
 
-fn identity_columns(
+pub(crate) fn identity_columns(
     identity: Option<&ProcessIdentity>,
 ) -> Result<(Option<&str>, Option<i64>), StoreError> {
     identity.map_or(Ok((None, None)), |id| {
@@ -838,8 +838,9 @@ impl Store {
         )?;
         tx.execute(
             &format!(
-                "UPDATE sessions SET state = 'starting', launcher_pid = NULL,
-                     claude_pid = NULL, ended_at = NULL, exit_code = NULL, started_at = {NOW} WHERE id = ?1"
+                "UPDATE sessions SET state = 'starting', launcher_pid = NULL, claude_pid = NULL, launcher_image = NULL,
+                     launcher_started = NULL, claude_image = NULL, claude_started = NULL, pids_at = NULL, ended_at = NULL,
+                     exit_code = NULL, started_at = {NOW} WHERE id = ?1"
             ),
             params![id],
         )?;

@@ -1,5 +1,6 @@
 //! Sessions as the launcher sees them, and task worktrees.
 
+use headwork_core::process::ProcessIdentity;
 use headwork_core::{Actor, PermissionMode, PlaceKind};
 use rusqlite::{OptionalExtension, params};
 
@@ -16,12 +17,14 @@ pub struct Place<'a> {
     pub kind: Option<PlaceKind>,
 }
 
+use crate::park::{identity, identity_columns};
 use crate::queries::insert_event;
 use crate::records::{SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
 
 const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code, \
-                               host_pane, host_place, permission_mode";
+                               host_pane, host_place, permission_mode, launcher_image, launcher_started, claude_image, \
+                               claude_started, pids_at";
 
 type RawSession = (
     String,
@@ -34,9 +37,26 @@ type RawSession = (
     Option<String>,
     Option<i64>,
     (Option<String>, Option<String>, Option<String>),
+    (
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    ),
 );
 
-const SESSION_WIDTH: usize = 12;
+const SESSION_WIDTH: usize = 17;
+
+/// A process the launcher is or started, with the identity read right after: what
+/// [`Store::session_launched_identified`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Launched<'a> {
+    /// The process id.
+    pub pid: u32,
+    /// Its image and start time; absent when it could not be read.
+    pub identity: Option<&'a ProcessIdentity>,
+}
 
 /// A live session's id, `claude` process and launcher process.
 pub type LivePids = (String, Option<u32>, Option<u32>);
@@ -53,6 +73,13 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
         row.get(7)?,
         row.get(8)?,
         (row.get(9)?, row.get(10)?, row.get(11)?),
+        (
+            row.get(12)?,
+            row.get(13)?,
+            row.get(14)?,
+            row.get(15)?,
+            row.get(16)?,
+        ),
     ))
 }
 
@@ -71,10 +98,16 @@ pub struct EndedSession {
     pub launcher_pid: Option<u32>,
     /// The `claude` process.
     pub claude_pid: Option<u32>,
+    /// When the launcher started, as recorded with its pid.
+    pub launcher_started: Option<u64>,
+    /// When `claude` started, as recorded with its pid.
+    pub claude_started: Option<u64>,
     /// When it started, in seconds since the unix epoch.
     pub started: Option<u64>,
     /// When it ended, in seconds since the unix epoch.
     pub ended: Option<u64>,
+    /// Its last recorded event, in seconds since the unix epoch.
+    pub last_seen: Option<u64>,
     /// The worktree folders of its task, the task's own and its helpers'; none for a main-only task or the orchestrator.
     pub folders: Vec<String>,
 }
@@ -97,6 +130,7 @@ fn into_row(raw: RawSession) -> Result<SessionRow, StoreError> {
         last_event_at,
         exit,
         (host_pane, host_place, permission_mode),
+        (launcher_image, launcher_started, claude_image, claude_started, pids_at),
     ) = raw;
     Ok(SessionRow {
         id,
@@ -108,6 +142,9 @@ fn into_row(raw: RawSession) -> Result<SessionRow, StoreError> {
         host_place: host_place.map(|word| word.parse()).transpose()?,
         launcher_pid: pid(launcher)?,
         claude_pid: pid(claude)?,
+        launcher_identity: identity(launcher_image, launcher_started)?,
+        claude_identity: identity(claude_image, claude_started)?,
+        pids_at: seconds(pids_at)?,
         last_event_at,
         exit_code: exit
             .map(|n| i32::try_from(n).map_err(|_| StoreError::OutOfRange(n)))
@@ -222,7 +259,8 @@ impl Store {
     pub fn ended_sessions(&self) -> Result<Vec<EndedSession>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT rc_name, launcher_pid, claude_pid, CAST(strftime('%s', started_at) AS INTEGER),
-                    CAST(strftime('%s', ended_at) AS INTEGER), task_id
+                    CAST(strftime('%s', ended_at) AS INTEGER), task_id, CAST(strftime('%s', last_event_at) AS INTEGER),
+                    launcher_started, claude_started
              FROM sessions WHERE state IN ('ended', 'gone') ORDER BY started_at, rowid",
         )?;
         let rows = statement
@@ -234,6 +272,8 @@ impl Store {
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    (row.get::<_, Option<i64>>(7)?, row.get::<_, Option<i64>>(8)?),
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -241,22 +281,36 @@ impl Store {
             .conn
             .prepare("SELECT path FROM worktrees WHERE task_id = ?1 ORDER BY id")?;
         rows.into_iter()
-            .map(|(name, launcher, claude, started, ended, task)| {
-                let folders = match task {
-                    Some(task) => folders
-                        .query_map(params![task], |row| row.get::<_, String>(0))?
-                        .collect::<Result<Vec<_>, _>>()?,
-                    None => Vec::new(),
-                };
-                Ok(EndedSession {
+            .map(
+                |(
                     name,
-                    launcher_pid: pid(launcher)?,
-                    claude_pid: pid(claude)?,
-                    started: seconds(started)?,
-                    ended: seconds(ended)?,
-                    folders,
-                })
-            })
+                    launcher,
+                    claude,
+                    started,
+                    ended,
+                    task,
+                    last_seen,
+                    (launcher_started, claude_started),
+                )| {
+                    let folders = match task {
+                        Some(task) => folders
+                            .query_map(params![task], |row| row.get::<_, String>(0))?
+                            .collect::<Result<Vec<_>, _>>()?,
+                        None => Vec::new(),
+                    };
+                    Ok(EndedSession {
+                        name,
+                        launcher_pid: pid(launcher)?,
+                        claude_pid: pid(claude)?,
+                        launcher_started: seconds(launcher_started)?,
+                        claude_started: seconds(claude_started)?,
+                        started: seconds(started)?,
+                        ended: seconds(ended)?,
+                        last_seen: seconds(last_seen)?,
+                        folders,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -461,7 +515,9 @@ impl Store {
             .collect())
     }
 
-    /// Records that the launcher started `claude`: both process ids, and how the launcher holds the tree.
+    /// Records that the launcher started `claude`: both process ids, and how the launcher holds the tree, without
+    /// identities; each pid is then judged by its start against the time recorded here
+    /// ([`headwork_core::process::RecordedPid`]).
     ///
     /// # Errors
     ///
@@ -473,6 +529,35 @@ impl Store {
         claude_pid: u32,
         ownership: &str,
     ) -> Result<(), StoreError> {
+        self.session_launched_identified(
+            id,
+            Launched {
+                pid: launcher_pid,
+                identity: None,
+            },
+            Launched {
+                pid: claude_pid,
+                identity: None,
+            },
+            ownership,
+        )
+    }
+
+    /// Records that the launcher started `claude`: both processes with the identities read right then, when they were
+    /// recorded, and how the launcher holds the tree. Every later kill of a session process checks that identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn session_launched_identified(
+        &mut self,
+        id: &str,
+        launcher: Launched<'_>,
+        claude: Launched<'_>,
+        ownership: &str,
+    ) -> Result<(), StoreError> {
+        let (launcher_image, launcher_started) = identity_columns(launcher.identity)?;
+        let (claude_image, claude_started) = identity_columns(claude.identity)?;
         let tx = self.conn.transaction()?;
         let task: Option<i64> = tx.query_row(
             "SELECT task_id FROM sessions WHERE id = ?1",
@@ -481,13 +566,24 @@ impl Store {
         )?;
         tx.execute(
             &format!(
-                "UPDATE sessions SET launcher_pid = ?1, claude_pid = ?2, state = 'live', last_event_at = {NOW}
-                 WHERE id = ?3"
+                "UPDATE sessions SET launcher_pid = ?1, claude_pid = ?2, launcher_image = ?3, launcher_started = ?4,
+                     claude_image = ?5, claude_started = ?6, pids_at = CAST(strftime('%s', 'now') AS INTEGER),
+                     state = 'live', last_event_at = {NOW}
+                 WHERE id = ?7"
             ),
-            params![i64::from(launcher_pid), i64::from(claude_pid), id],
+            params![
+                i64::from(launcher.pid),
+                i64::from(claude.pid),
+                launcher_image,
+                launcher_started,
+                claude_image,
+                claude_started,
+                id
+            ],
         )?;
         let data = serde_json::json!({
-            "launcher_pid": launcher_pid, "claude_pid": claude_pid, "tree": ownership,
+            "launcher_pid": launcher.pid, "claude_pid": claude.pid, "tree": ownership,
+            "launcher": launcher.identity, "claude": claude.identity,
         });
         insert_event(
             &tx,

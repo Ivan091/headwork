@@ -1078,3 +1078,34 @@ and the reason.
   `tick-hung`, raises the standing finding `tick-hung` and exits 1; a younger holder still exits 0 with "another tick is
   running". The lock is never taken from a live process. A tick that runs again resolves the finding. `doctor` check
   `tick-hung` warns on the same condition.
+- 2026-11-22 Sessions get a process identity (audit P1, migration 0015). `sessions` gained `launcher_image`,
+  `launcher_started`, `claude_image`, `claude_started` and `pids_at` (unix seconds when the pids were recorded). The
+  launcher reads both identities right after `claude` starts and records them with `session_launched_identified`;
+  `session_launched` (no identities) stays for tests and callers that cannot read them. Every check and kill of a
+  session's pids goes through `ops/session_procs.rs` (`RecordedPid::judge`, `proc::end_recorded_tree`): close
+  (`end_closing`, `ask_exit`, `finish_claimed`, `reap`), the tick (`end_processes` for spawn timeouts, leftovers and
+  runaways, the merged grace, `close_one`), park (`session_alive`, `stop_session`) and `lost::local_cause`. A reused pid
+  counts as gone: it is never signalled, waits treat it as ended, `local_cause` reports the launcher lost, and each
+  spared pid is logged as a `pid-reused` event with the image now holding it. The detached finisher's wait for the
+  launcher pid it was handed stays a bare liveness check: it only waits, bounded by its grace, and the close it then
+  runs goes through the identity.
+- 2026-11-22 Session rows without an identity (launched before 0015, adopted by `import`, or a process that could not
+  be read) are judged by time, not by image: the process under the pid counts as the session's only when it started no
+  later than `pids_at` (plus `START_SLACK_S`), since the recorded process was running when its pid was recorded and a
+  later holder started after. A start time that reads 0, or a row with no `pids_at`, never counts, so such a pid is left
+  alone. An image list (claude, headwork) was rejected: Claude Code's native build runs under its version number on
+  macOS, `node` when installed through npm, and a renamed hot-reload copy of headwork under another name. Migration
+  0015 sets `pids_at` for existing rows from the session's newest `launched` event, else its `started_at`; `import`
+  sets it at adoption.
+- 2026-11-22 `reap` uses the recorded start too: a root (launcher or `claude`) with a recorded start is alive only
+  while the process under its pid started within `START_SLACK_S` of it; without one the old rule (within
+  `ROOT_START_WINDOW_S` of the session's start) stays.
+- 2026-11-22 Every move of a session to `ended` or `gone` through `set_session_state` records
+  `ended_at = COALESCE(ended_at, now)` (audit P2); a session found gone so ends when it was found, the bound the store
+  has. Migration 0015 backfills `ended_at` of ended and gone rows without one from the session's newest event, else
+  `last_event_at`, else `started_at`. `reap` still guards a session without an end: its window closes at its last
+  recorded event (`last_event_at`, else its start) plus `UNENDED_SLACK_S` (600 s), never later than now, instead of
+  staying open until now forever. `end_task_leftovers` keeps passing no end (to skip the settle wait), so its window
+  now closes the same way; for a session the close itself ended that is a moment ago, which reaches now.
+- 2026-11-22 A process whose start time reads 0 (unknown to the system) is never an orphan root for `reap` (audit P8):
+  without a start its parent link cannot be judged.

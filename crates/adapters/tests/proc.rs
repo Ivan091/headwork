@@ -201,6 +201,56 @@ fn identify_names_a_running_process_and_nothing_once_it_ended() {
 }
 
 #[test]
+fn a_recorded_session_pid_held_by_another_process_is_never_ended() {
+    use headwork_adapters::proc::{
+        Liveness, ProcessIdentity, RecordedPid, end_recorded_tree, identify, recorded_liveness,
+    };
+    let mut child = helper("helper_sleeper")
+        .env(ROLE, "sleeper")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let found = identify(pid).expect("the child runs");
+    let other = RecordedPid {
+        pid,
+        identity: Some(ProcessIdentity {
+            image: "claude.exe".to_owned(),
+            started: found.started,
+        }),
+        recorded_at: Some(found.started),
+    };
+    assert!(
+        matches!(end_recorded_tree(&other).unwrap(), Liveness::Reused { .. }),
+        "another program holds the pid"
+    );
+    let before = RecordedPid {
+        pid,
+        identity: None,
+        recorded_at: Some(found.started - 3600),
+    };
+    assert!(
+        matches!(recorded_liveness(&before), Liveness::Reused { .. }),
+        "it started after the pid was recorded"
+    );
+    assert!(child.try_wait().unwrap().is_none(), "left running");
+    let own = RecordedPid {
+        pid,
+        identity: Some(found),
+        recorded_at: None,
+    };
+    assert_eq!(
+        end_recorded_tree(&own).unwrap(),
+        Liveness::Alive,
+        "its own process"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(child.try_wait().unwrap().is_some(), "ended");
+}
+
+#[test]
 fn git_bash_ps_links_each_shell_to_its_git_bash_parent() {
     let text = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
     50013       1   50013      37324  ?         197609 09:16:04 /usr/bin/bash
