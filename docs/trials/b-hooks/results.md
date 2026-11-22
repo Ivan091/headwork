@@ -18,3 +18,6 @@ Cmd: `claude -p --model haiku --agent trialrole --permission-mode acceptEdits "U
 - Caveat: a session that is idle gets nothing until some prompt arrives; injection is per turn, not push.
 
 Cleanup: trial-4-recv exited, workspace trial-4-hooks closed.
+
+The raw hook payloads (`proj/logs/`, with session ids and transcript paths) were removed before the repository went
+public; the results above quote what mattered from them.

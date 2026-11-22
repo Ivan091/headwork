@@ -104,3 +104,6 @@ The user chose to reboot later. A reboot ends `root` and every child, including 
    - **Duplicates:** whether any conversation is running twice, for example restored by wmux and also by the background supervisor (`root` has both a wmux pane and a background entry today).
    - **Disk:** whether C: has more free space than the 2.1 GB before (`reboot-after/disk-c.txt`).
 4. Paste the two `panes.txt` files and the answers into this file, or give them to a session working on agentctl.
+
+The `reboot-before/` snapshot (wmux session and agents, pane listing, disk state) was removed before the repository went
+public; it described one machine and is not needed to read the results above.
