@@ -2,8 +2,8 @@
 //! whole tree.
 //!
 //! On Windows a child runs inside a Job Object with kill-on-close, so closing the job, or the death of the process
-//! holding it, ends every descendant. On unix the child leads its own process group, and ending the group ends the
-//! tree.
+//! holding it, ends every descendant, except a detached program started with breakaway (`spawn_detached`). On unix
+//! the child leads its own process group, and ending the group ends the tree.
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
@@ -365,9 +365,11 @@ mod imp {
         }
     }
 
+    /// A kill-on-close job that lets a process started with `CREATE_BREAKAWAY_FROM_JOB` leave it, so a detached
+    /// program (`spawn_detached`, such as the `headwork update` a close starts) outlives the session that started it.
     fn job_for(child: &Child) -> Result<Job, String> {
         let mut info = ExtendedLimitInfo::new();
-        info.limit_kill_on_job_close();
+        info.limit_kill_on_job_close().limit_breakaway_ok();
         let job = Job::create_with_limit_info(&info).map_err(|error| error.to_string())?;
         let handle = isize::try_from(child.as_raw_handle().addr())
             .map_err(|_| "the process handle does not fit".to_owned())?;
