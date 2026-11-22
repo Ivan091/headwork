@@ -2,7 +2,7 @@
 
 Date 2026-11-13. Repo manaflow-ai/cmux, pushed 2026-11-13. Nothing was run: this PC is Windows.
 Marks: **[V]** read in the repo (files saved beside this one), **[U]** not verified, needs the Mac.
-Sources saved here: `skills_cmux_SKILL.md`, `skills_cmux_references_panes-surfaces.md`, `docs_cli-contract.md`, `docs_agent-hooks.md`, `docs_feed.md`, `docs_notifications.md`, `docs_agent-messages.md`, `docs_agent-recovery.md`, `claude-wrapper.sh` (Resources/bin/cmux-claude-wrapper), `tree.txt`.
+The trial read cmux's own docs and skills (`skills/cmux/SKILL.md`, `skills/cmux/references/panes-surfaces.md`, `docs/cli-contract.md`, `docs/agent-hooks.md`, `docs/feed.md`, `docs/notifications.md`, `docs/agent-messages.md`, `docs/agent-recovery.md`, `Resources/bin/cmux-claude-wrapper` and the repository tree). Copies were kept here during the trial and removed before the repository went public; read them in the cmux project.
 
 ## Verdict (research.md trial 5 question)
 
