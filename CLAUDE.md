@@ -134,6 +134,11 @@ no admin, running the installed `~/.local/bin/headwork.exe tick`; `headwork tick
 terminal"), and `headwork doctor` (check `tick-agent`) says whether it is loaded. Sessions run either only after the
 user's `Allow` tap naming that command; nothing installs it silently.
 
+A tick that fails in one stage records a `tick-error` finding and goes on with the next (`Run::stage`). `gh`, wmux and
+cmux calls end after 60 s. While a tick runs, `<home>/tick.started` holds its pid and start time; a run that finds the
+lock held for over 15 minutes exits 1 with `tick-hung` (a standing finding, and `doctor` check `tick-hung`) and never
+takes the lock from the live process.
+
 It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
 
 ### Panes

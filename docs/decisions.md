@@ -1059,3 +1059,22 @@ and the reason.
   also enabled in settings every hook would run twice (doctor's `plugin-twice`), so headwork reads the setting
   instead. `Home::claude_dir` (`$HEADWORK_CLAUDE_DIR`, else `$CLAUDE_CONFIG_DIR`, else `~/.claude`) is now the one
   place that finds `settings.json`, for spawn, doctor, resume and effort; tests point it at a temporary folder.
+- 2026-11-22, tick robustness (audit P7, S1, U7, P8). Each stage of the tick runs through `Run::stage`: an error is
+  recorded as a standing `tick-error` finding (`tick-error:stage:<name>`) and the next stage runs, so the asks, the queue,
+  the update poll and `record_tick` are never skipped; only a failure to record the finding (the store is gone) ends the
+  tick. The per-item host calls (`read_screen` in `stuck`, `send_key` for a trust answer, the merged-grace kill) record
+  their own `tick-error` and go on with the next task. The kill sites themselves are unchanged. `tick-error` findings
+  are swept once at the end of the tick, not after the pull request stage, so errors of later stages stand until a tick
+  runs without them.
+- 2026-11-22, call timeouts. `gh` (`GH_TIMEOUT`), wmux (`WMUX_TIMEOUT`) and cmux (`CMUX_TIMEOUT`) run through
+  `timed::run` with 60 s each (wmux's own RPC limit is 30 s). A timeout is the host's or git host's `Failed` error with
+  `` `program` did not finish within 60 s``. `gh pr view` output is read by the pure `interpret_view`, tested on
+  open, merged, closed, missing and failing fixtures.
+- 2026-11-22, the doctor `update` line says the tick polls only when a tick ran in the last 5 minutes (the same signal as
+  the `tick` check, which holds on every platform); otherwise it says only a task's close or `headwork update` starts one.
+- 2026-11-22, a hung tick. A tick writes `<home>/tick.started` (`<pid> <unix seconds>`) after taking `tick.lock` and
+  removes it when it ends (`ops/tick_lock.rs`; a separate file because a locked file cannot be read on Windows). A run
+  that finds the lock held and the stamp older than `TICK_HUNG_AFTER_S` (15 minutes, `core/src/watch.rs`) prints
+  `tick-hung`, raises the standing finding `tick-hung` and exits 1; a younger holder still exits 0 with "another tick is
+  running". The lock is never taken from a live process. A tick that runs again resolves the finding. `doctor` check
+  `tick-hung` warns on the same condition.
