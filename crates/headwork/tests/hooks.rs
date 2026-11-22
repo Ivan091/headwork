@@ -767,7 +767,7 @@ fn the_first_action_ask_of_a_spawn_grants_its_command() {
 
 #[test]
 fn the_stop_gate_wants_an_ask_or_a_report() {
-    let mut w = world("", false);
+    let mut w = world("push_window_secs = 0", false);
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.hook(
@@ -786,6 +786,30 @@ fn the_stop_gate_wants_an_ask_or_a_report() {
     );
     let rules: Vec<String> = w.denies().into_iter().map(|(_, rule)| rule).collect();
     assert_eq!(rules, ["stop-plain-question", "stop-unfinished"], "rules");
+}
+
+#[test]
+fn a_plain_reply_to_the_user_who_just_typed_is_no_silent_stop() {
+    let mut w = world("", false);
+    w.start();
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "what does the form want?" }),
+    );
+    w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "It wants the privacy URL." }),
+    );
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "and then?" }),
+    );
+    w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "Shall I check it?" }),
+    );
+    let rules: Vec<String> = w.denies().into_iter().map(|(_, rule)| rule).collect();
+    assert_eq!(rules, ["stop-plain-question"], "only the plain question");
 }
 
 #[test]
@@ -1177,7 +1201,7 @@ fn mcp_board_and_inbox_answer_both_roles() {
 
 #[test]
 fn a_blocked_or_done_report_lets_the_stop_gate_through() {
-    let mut w = world("", false);
+    let mut w = world("push_window_secs = 0", false);
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     let stop = json!({ "last_assistant_message": "Waiting on the API key." });
@@ -1802,7 +1826,7 @@ fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
 
 #[test]
 fn waiting_on_background_work_lets_the_stop_gate_through() {
-    let mut w = world("", false);
+    let mut w = world("push_window_secs = 0", false);
     w.start();
     let stop = json!({ "last_assistant_message": "Waiting for the build." });
     let post = |w: &mut World, tool: &str, input: &Value, response: &Value| {
@@ -1850,7 +1874,7 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
 
 #[test]
 fn task_notifications_close_background_work_one_by_one() {
-    let mut w = world("", false);
+    let mut w = world("push_window_secs = 0", false);
     w.start();
     let stop = json!({ "last_assistant_message": "Waiting for the agents." });
     let notice = json!({ "prompt": "<task-notification>
@@ -1879,7 +1903,10 @@ fn task_notifications_close_background_work_one_by_one() {
 
 #[test]
 fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
-    let mut w = world("enforce_rules = [\"stop-unfinished\"]", false);
+    let mut w = world(
+        "enforce_rules = [\"stop-unfinished\"]\npush_window_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     let stop = w.hook(

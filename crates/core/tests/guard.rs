@@ -886,6 +886,7 @@ fn stop_table() {
         running_job: false,
         waiting_background: false,
         waiting_part: false,
+        user_present: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -910,6 +911,23 @@ fn stop_table() {
             },
             None,
             "asked",
+        ),
+        (
+            StopFacts {
+                user_present: true,
+                ..base
+            },
+            None,
+            "a reply to the user who just typed in the pane",
+        ),
+        (
+            StopFacts {
+                user_present: true,
+                last_message: Some("Shall I go on?"),
+                ..base
+            },
+            Some(RuleId::StopPlainQuestion),
+            "a plain question to a present user",
         ),
         (
             StopFacts {
@@ -991,6 +1009,7 @@ fn stop_while_waiting_on_background_work() {
         running_job: false,
         waiting_background: true,
         waiting_part: false,
+        user_present: false,
         last_message: Some("The build runs in the background."),
     };
     assert_eq!(stop(waiting), None, "waiting on background work");
@@ -1026,6 +1045,7 @@ fn stop_while_a_job_runs() {
         running_job: true,
         waiting_background: false,
         waiting_part: false,
+        user_present: false,
         last_message: Some("Training runs; I will look at the next checkpoint."),
     };
     assert_eq!(stop(waiting), None, "waiting on its own running job");
@@ -1206,6 +1226,7 @@ fn a_lead_waiting_on_a_live_part_may_stop() {
         running_job: false,
         waiting_background: false,
         waiting_part: true,
+        user_present: false,
         last_message: Some("The review part runs; I wait for its report."),
     };
     assert_eq!(stop(waiting), None, "a lead waits for its part");

@@ -1011,6 +1011,8 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
             Some(task) if task.shape.is_lead() => store.live_parts(task.id)? > 0,
             Some(_) | None => false,
         },
+        user_present: store
+            .user_prompted_within(&call.session.id, call.env.config.hooks.push_window_secs)?,
         last_message,
     };
     let decision = check_stop(&facts);
