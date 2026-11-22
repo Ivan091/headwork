@@ -113,6 +113,15 @@ impl HostKind {
             Self::Cmux => "cmux",
         }
     }
+
+    /// The environment variable in which this host tells a program the surface it runs in.
+    #[must_use]
+    pub const fn surface_var(self) -> &'static str {
+        match self {
+            Self::Wmux => "WMUX_SURFACE_ID",
+            Self::Cmux => "CMUX_SURFACE_ID",
+        }
+    }
 }
 
 /// Who pushes notifications to the phone.

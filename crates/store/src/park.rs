@@ -988,6 +988,49 @@ impl Store {
             .transpose()
     }
 
+    /// Takes the recap the orchestrator `session` wrote in the turn that started the park `park` as its park recap:
+    /// its newest own recap outside any park, written at or after its latest prompt. The `park` tool asks the
+    /// orchestrator to write its recap first, so that recap exists before the park does. Returns the recap's id, or
+    /// `None` when there is no such recap (then the park asks the orchestrator for one).
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn adopt_orchestrator_recap(
+        &mut self,
+        park: i64,
+        session: &str,
+        actor: Actor,
+    ) -> Result<Option<i64>, StoreError> {
+        let tx = self.conn.transaction()?;
+        let recap: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM recaps
+                 WHERE session_id = ?1 AND task_id IS NULL AND park_id IS NULL AND kind = 'session'
+                   AND created_at >= (SELECT MAX(at) FROM events WHERE session_id = ?1 AND type = 'prompt')
+                 ORDER BY id DESC LIMIT 1",
+                params![session],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = recap {
+            tx.execute(
+                "UPDATE recaps SET park_id = ?1 WHERE id = ?2",
+                params![park, id],
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                None,
+                Some(session),
+                "recap-adopted",
+                &serde_json::json!({ "park": park, "recap": id }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(recap)
+    }
+
     /// The newest recap of a session, of any kind.
     ///
     /// # Errors

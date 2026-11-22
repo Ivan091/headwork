@@ -917,3 +917,15 @@ and the reason.
   else the stored one, else as before (the task's mode; `default` for the orchestrator). A worker gets it through its
   session row (`claude_command` prefers it to the task's), the orchestrator through `--mode`. A mode headwork cannot
   start a session in (`bypassPermissions`, `dontAsk`) counts as none, so the fallback applies rather than an older mode.
+- 2026-11-22 Park asks the orchestrator, and takes the recap it already wrote. Park 4 (2026-11-22) wrote a mechanical
+  recap for a managed orchestrator and did not wait: an orchestrator started with `headwork orchestrator` recorded no
+  host surface, so park looked for its pane in the host's surface states, did not find it there, skipped the notice and
+  logged nothing about why. Park also ignored the recap the orchestrator had written 36 ms before calling the `park`
+  tool (whose description asks for one first), because only recaps tagged with the park counted, and the resume summary
+  then showed the newer mechanical recap instead of it. Now a new `headwork orchestrator` records the surface the host
+  names in its environment (`HostKind::surface_var`: `WMUX_SURFACE_ID`, `CMUX_SURFACE_ID`; event `session-surface`;
+  a session brought back gets its place from the resume as before). Park first adopts the orchestrator's newest own
+  recap that is in no park and was written at or after its latest `prompt` event, the turn that started the park
+  (`Store::adopt_orchestrator_recap`, event `recap-adopted`), and then neither asks nor waits; a recap from an earlier
+  turn does not count. Otherwise it sends the notice and waits, and logs `orchestrator-asked`, or `orchestrator-unasked`
+  with the reason, which the mechanical recap repeats.

@@ -455,8 +455,8 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "park",
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
-                      panes close. It runs in the background; read `board` for the machine mode, and write your own \
-                      recap first.",
+                      panes close. It runs in the background; read `board` for the machine mode. Write your own \
+                      recap first, in the same turn: the park takes it as yours; without one it asks you for it.",
         roles: ORCHESTRATOR,
         schema: || {
             object(

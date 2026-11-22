@@ -390,6 +390,40 @@ impl Store {
         Ok(())
     }
 
+    /// Records the host surface a session runs in when only the surface is known, such as an orchestrator started by
+    /// hand in a pane the host told it about. The workspace and pane stay as they were.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_session_surface(
+        &mut self,
+        id: &str,
+        surface: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let task: Option<i64> = tx.query_row(
+            "SELECT task_id FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "UPDATE sessions SET host_surface = ?1 WHERE id = ?2",
+            params![surface, id],
+        )?;
+        insert_event(
+            &tx,
+            actor,
+            task.map(TaskId),
+            Some(id),
+            "session-surface",
+            &serde_json::json!({ "surface": surface }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The host surfaces of every session that has not ended.
     ///
     /// # Errors

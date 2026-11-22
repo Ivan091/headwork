@@ -473,6 +473,10 @@ struct OrchestratorTarget {
 
 /// Records the running orchestrator session on the park and asks it for its recap. It is not stopped: the orchestrator may be the
 /// session that asked for the park, and it tells the user when it is safe to restart.
+///
+/// A recap it wrote in the turn that started the park (the `park` tool asks for one first) is that recap, and it is
+/// not asked again. Otherwise it gets the park notice in its pane; when that cannot be done, the reason is logged
+/// (`orchestrator-unasked`) and it gets a mechanical recap at the end.
 fn begin_orchestrator(
     store: &mut Store,
     env: &Env<'_>,
@@ -482,16 +486,34 @@ fn begin_orchestrator(
         return begin_unmanaged_orchestrator(store, env, park);
     };
     store.set_park_orchestrator(park, &session.id, env.actor)?;
-    let problem = orchestrator_surface(env, &session).map_or_else(
+    if store
+        .adopt_orchestrator_recap(park, &session.id, env.actor)?
+        .is_some()
+    {
+        return Ok(Some(OrchestratorTarget {
+            session,
+            expects_recap: false,
+            problem: None,
+        }));
+    }
+    let surface = orchestrator_surface(env, &session);
+    let problem = surface.as_ref().map_or_else(
         || Some("its pane is unknown, so it was not asked for a recap".to_owned()),
         |surface| {
             env.host
-                .send_text(&surface, ORCHESTRATOR_PARK_PROMPT)
-                .and_then(|()| env.host.send_key(&surface, Key::Enter))
+                .send_text(surface, ORCHESTRATOR_PARK_PROMPT)
+                .and_then(|()| env.host.send_key(surface, Key::Enter))
                 .err()
                 .map(|error| format!("the park notice did not reach it: {error}"))
         },
     );
+    let data = serde_json::json!({ "park": park, "surface": surface, "problem": problem });
+    let kind = if problem.is_none() {
+        "orchestrator-asked"
+    } else {
+        "orchestrator-unasked"
+    };
+    store.append_event(env.actor, None, Some(&session.id), kind, &data)?;
     Ok(Some(OrchestratorTarget {
         expects_recap: problem.is_none(),
         session,
@@ -580,12 +602,17 @@ fn finish_orchestrator(
     {
         RecapSource::Session
     } else {
-        let reason = if orchestrator.expects_recap {
-            "the orchestrator wrote no recap before the deadline"
-        } else if orchestrator.problem.as_deref() == Some(UNMANAGED_PROBLEM) {
-            "the orchestrator ran outside headwork, so it could not write a recap; its conversation holds where it stood"
-        } else {
-            "the orchestrator could not be asked for a recap"
+        let reason = match orchestrator.problem.as_deref() {
+            _ if orchestrator.expects_recap => {
+                "the orchestrator wrote no recap before the deadline".to_owned()
+            }
+            Some(UNMANAGED_PROBLEM) => {
+                "the orchestrator ran outside headwork, so it could not write a recap; its \
+                conversation holds where it stood"
+                    .to_owned()
+            }
+            Some(problem) => format!("the orchestrator could not be asked for a recap: {problem}"),
+            None => "the orchestrator could not be asked for a recap".to_owned(),
         };
         let body = format!(
             "# Recap (mechanical)\n\n- {reason}\n- read the board and the inbox to see where the tasks stand\n"
