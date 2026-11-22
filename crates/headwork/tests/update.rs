@@ -17,11 +17,12 @@ use anyhow::Result;
 use headwork::home::Home;
 use headwork::ops::install::program_name;
 use headwork::ops::update::{
-    Builds, Clock, Forward, PENDING_FILE, STATE_FILE, Started, ThisBuild, UpdateEnv, UpdateLock,
-    UpdateOptions, UpdateReport, UpdateState, after, doctor_summary, expected_hash,
-    forward_checkout, update,
+    Builds, Clock, Forward, Notice, PENDING_FILE, STATE_FILE, Started, ThisBuild, TriggeredBy,
+    UpdateEnv, UpdateLock, UpdateOptions, UpdateReport, UpdateStarter, UpdateState, after,
+    close_args, doctor_summary, expected_hash, forward_checkout, take_notices, trigger, update,
 };
 use headwork_adapters::disk::FakeDisks;
+use headwork_adapters::host::fake::FakeHost;
 use headwork_adapters::release::{Asset, FakeReleases, ReleaseError, ReleaseInfo, SUMS_NAME};
 use headwork_core::update::{FailureKind, Version, parse_utc};
 use headwork_core::{Actor, Config};
@@ -182,6 +183,7 @@ struct Rig {
     releases: FakeReleases,
     builds: FakeBuilds,
     disks: FakeDisks,
+    host: FakeHost,
 }
 
 fn config_text(enabled: bool, main: &Path) -> String {
@@ -224,6 +226,7 @@ impl Rig {
             releases: FakeReleases::new(),
             builds: FakeBuilds::default(),
             disks,
+            host: FakeHost::new(),
         }
     }
 
@@ -238,6 +241,7 @@ impl Rig {
             install_dir: &self.bin,
             asset: ASSET,
             actor: Actor::User,
+            host: Some(&self.host),
         }
     }
 
@@ -268,6 +272,22 @@ impl Rig {
 
     fn state(&self) -> UpdateState {
         UpdateState::load(&self.home)
+    }
+
+    fn notified(&self) -> Vec<String> {
+        self.host
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("notify "))
+            .collect()
+    }
+
+    fn findings(&self, kind: &str) -> Vec<String> {
+        self.events(kind)
+            .into_iter()
+            .filter(|data| data["rule"] == "update-failed")
+            .map(|data| data["key"].as_str().unwrap_or_default().to_owned())
+            .collect()
     }
 }
 
@@ -1007,4 +1027,256 @@ fn the_smoke_test_reads_the_report_doctor_prints() {
         "ids and statuses"
     );
     assert!(doctor_checks("headwork: no config").is_err(), "no report");
+}
+
+#[test]
+fn a_deterministic_failure_is_told_once_and_stands_until_a_later_release_installs() {
+    let rig = Rig::new(&line("0.1.5", "aaa111"));
+    let clock = FakeClock::new(&rig.releases);
+    let (release, files) = release_files(
+        "v0.1.6",
+        "2026-11-22T11:00:00Z",
+        &line("0.1.6", "bbb222"),
+        Some("something else"),
+    );
+    rig.releases.publish(release, files);
+    let report = rig.run(&clock, plain());
+    assert!(report.failed(), "{report:?}");
+    let notified = rig.notified();
+    assert_eq!(notified.len(), 1, "one host notification: {notified:?}");
+    assert!(
+        notified[0].contains("v0.1.6") && notified[0].contains("hash"),
+        "{notified:?}"
+    );
+    assert_eq!(
+        rig.findings("finding"),
+        ["update-failed:v0.1.6"],
+        "a standing finding"
+    );
+    let notices = rig.state().notices;
+    assert_eq!(notices.len(), 1, "a notice for the orchestrator");
+    assert!(notices[0].text.contains("failed at hash"), "{notices:?}");
+    clock.advance(600);
+    let again = rig.run(&clock, plain());
+    assert!(
+        matches!(&again, UpdateReport::Skipped { reason, .. } if reason == "failed-here"),
+        "{again:?}"
+    );
+    assert_eq!(rig.notified().len(), 1, "told once");
+    assert_eq!(rig.findings("finding").len(), 1, "raised once");
+    assert_eq!(rig.state().notices.len(), 1, "no second notice");
+    let taken = take_notices(&rig.home).unwrap();
+    assert_eq!(taken.len(), 1, "taken: {taken:?}");
+    assert!(take_notices(&rig.home).unwrap().is_empty(), "taken once");
+    publish(
+        &rig.releases,
+        "v0.1.7",
+        "2026-11-22T13:00:00Z",
+        &line("0.1.7", "ccc333"),
+    );
+    let newer = rig.run(&clock, plain());
+    assert!(matches!(newer, UpdateReport::Installed { .. }), "{newer:?}");
+    assert!(
+        rig.findings("finding-cleared").is_empty(),
+        "the old build hands over before clearing anything"
+    );
+    let text = format!("0.1.7 (ccc333, schema {})", schema());
+    after(
+        &rig.env(&clock),
+        &format!("0.1.5 (aaa111, schema {})", schema()),
+        ThisBuild {
+            text: &text,
+            release: Version::from_tag("v0.1.7"),
+            commit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        rig.findings("finding-cleared"),
+        ["update-failed:v0.1.6"],
+        "the new build clears the finding"
+    );
+    assert!(
+        rig.state().notices.is_empty(),
+        "an install that changed no plugin files and ran no migration says nothing"
+    );
+}
+
+#[test]
+fn transient_failures_are_told_from_the_third_and_only_once() {
+    let rig = Rig::new(&line("0.1.5", "aaa111"));
+    let clock = FakeClock::new(&rig.releases);
+    for attempt in 1..=4 {
+        rig.releases.fail_next(ReleaseError::RateLimited {
+            what: "the newest release".to_owned(),
+            status: 403,
+        });
+        rig.run(&clock, plain());
+        let told = usize::from(attempt >= 3);
+        assert_eq!(rig.notified().len(), told, "attempt {attempt}");
+        assert_eq!(rig.state().notices.len(), told, "attempt {attempt}");
+        assert_eq!(rig.findings("finding").len(), told, "attempt {attempt}");
+        clock.advance(61);
+    }
+    assert_eq!(
+        rig.findings("finding"),
+        ["update-failed:transient"],
+        "one finding for transient failures"
+    );
+    publish(
+        &rig.releases,
+        "v0.1.5",
+        "2026-11-22T11:00:00Z",
+        &line("0.1.5", "aaa111"),
+    );
+    let report = rig.run(&clock, plain());
+    assert!(
+        matches!(report, UpdateReport::UpToDate { .. }),
+        "{report:?}"
+    );
+    assert_eq!(
+        rig.findings("finding-cleared"),
+        ["update-failed:transient"],
+        "GitHub answering again with nothing to install clears it"
+    );
+}
+
+#[test]
+fn an_install_that_migrates_or_changes_plugin_files_leaves_one_notice() {
+    let rig = Rig::new(&line("0.1.6", "bbb222"));
+    let clock = FakeClock::new(&rig.releases);
+    let text = format!("0.1.6 (bbb222, schema {})", schema());
+    let older = format!("0.1.5 (aaa111, schema {})", schema() - 1);
+    after(
+        &rig.env(&clock),
+        &older,
+        ThisBuild {
+            text: &text,
+            release: Version::from_tag("v0.1.6"),
+            commit: Some("bbb222"),
+        },
+    )
+    .unwrap();
+    let notices = rig.state().notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].text.starts_with("v0.1.6 is installed")
+            && notices[0]
+                .text
+                .contains(&format!("from schema {} to {}", schema() - 1, schema())),
+        "{notices:?}"
+    );
+    assert!(rig.notified().is_empty(), "a success sends no notification");
+    assert_eq!(take_notices(&rig.home).unwrap().len(), 1, "told");
+    assert!(take_notices(&rig.home).unwrap().is_empty(), "once");
+}
+
+#[test]
+fn notices_wait_while_an_update_holds_the_lock_and_keep_the_newest() {
+    let rig = Rig::new(&line("0.1.6", "bbb222"));
+    let notices = (0..12)
+        .map(|n| Notice {
+            at: "2026-11-22T12:00:00Z".to_owned(),
+            text: format!("notice {n}"),
+        })
+        .collect();
+    UpdateState {
+        notices,
+        ..UpdateState::default()
+    }
+    .save(&rig.home)
+    .unwrap();
+    let held = UpdateLock::try_take(&rig.home).unwrap().unwrap();
+    assert!(
+        take_notices(&rig.home).unwrap().is_empty(),
+        "an update runs: they wait"
+    );
+    drop(held);
+    let taken = take_notices(&rig.home).unwrap();
+    assert_eq!(taken.len(), 12, "all of them once the lock is free");
+    assert!(rig.state().notices.is_empty(), "emptied");
+    let clock = FakeClock::new(&rig.releases);
+    for minor in 0..12 {
+        let older = format!("0.1.5 (aaa111, schema {})", schema() - 1);
+        let text = format!("0.1.{} (bbb222, schema {})", 6 + minor, schema());
+        after(
+            &rig.env(&clock),
+            &older,
+            ThisBuild {
+                text: &text,
+                release: None,
+                commit: None,
+            },
+        )
+        .unwrap();
+    }
+    let kept = rig.state().notices;
+    assert_eq!(kept.len(), 10, "the newest ten are kept");
+    assert!(kept[9].text.contains("0.1.17"), "{kept:?}");
+}
+
+#[derive(Debug, Default)]
+struct FakeStarter {
+    fail: bool,
+    started: RefCell<Vec<Vec<String>>>,
+}
+
+impl UpdateStarter for FakeStarter {
+    fn start(&self, args: &[String]) -> Result<Started> {
+        self.started.borrow_mut().push(args.to_vec());
+        if self.fail {
+            anyhow::bail!("no such program");
+        }
+        Ok(Started {
+            pid: 77,
+            note: Some("inside the caller's job".to_owned()),
+        })
+    }
+}
+
+#[test]
+fn a_trigger_starts_a_detached_update_and_logs_it_even_when_the_start_fails() {
+    let rig = Rig::new(&line("0.1.6", "bbb222"));
+    let store = rig.home.open_store().unwrap();
+    let starter = FakeStarter::default();
+    let triggered = trigger(
+        &store,
+        &starter,
+        Actor::Worker,
+        None,
+        TriggeredBy::Close,
+        close_args(),
+    )
+    .unwrap();
+    assert_eq!(
+        starter.started.borrow()[0],
+        ["update", "--wait", "30"],
+        "the close trigger waits for the merge's release"
+    );
+    assert_eq!(triggered.started.as_ref().map(|s| s.pid), Some(77), "pid");
+    let failing = FakeStarter {
+        fail: true,
+        ..FakeStarter::default()
+    };
+    let failed = trigger(
+        &store,
+        &failing,
+        Actor::Orchestrator,
+        None,
+        TriggeredBy::Orchestrator,
+        vec!["update".to_owned()],
+    )
+    .unwrap();
+    assert!(
+        failed.started.is_none() && failed.error.as_deref() == Some("no such program"),
+        "{failed:?}"
+    );
+    drop(store);
+    let events = rig.events("update-triggered");
+    assert_eq!(events.len(), 2, "both logged: {events:?}");
+    assert_eq!(events[0]["by"], "close", "by");
+    assert_eq!(events[0]["pid"], 77, "pid");
+    assert_eq!(events[0]["note"], "inside the caller's job", "note");
+    assert_eq!(events[1]["by"], "orchestrator", "by");
+    assert_eq!(events[1]["error"], "no such program", "error");
 }

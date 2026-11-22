@@ -556,10 +556,34 @@ fn finish_claimed(
         worktree,
     };
     match store.transition(id, &Trigger::Cleaned(facts), env.actor) {
-        Ok(_) => report(store, id, None),
+        Ok(_) => {
+            update_after_close(store, env, &task);
+            report(store, id, None)
+        }
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),
         Err(error) => Err(error.into()),
     }
+}
+
+/// The close trigger of `docs/autoupdate.md`: once a task of `[update] project` is closed, with `[update] enabled`, a
+/// detached `headwork update --wait 30` installs the release its merge produces. A start that fails is logged in
+/// `update-triggered` and never fails the close.
+fn update_after_close(store: &Store, env: &Env<'_>, task: &Task) {
+    if !env.config.update.enabled || task.project() != &env.config.update.project {
+        return;
+    }
+    let starter = super::update::Detached {
+        home: env.home,
+        exe: env.exe,
+    };
+    drop(super::update::trigger(
+        store,
+        &starter,
+        env.actor,
+        Some(task.id),
+        super::update::TriggeredBy::Close,
+        super::update::close_args(),
+    ));
 }
 
 /// Records a worktree the remove command refused as `kept`, for a forced close: it stays on disk for `headwork clean`

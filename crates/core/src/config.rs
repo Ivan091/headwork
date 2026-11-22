@@ -588,8 +588,8 @@ pub struct ProjectConfig {
     /// Narrows the models.
     #[serde(default)]
     pub models: Option<ProjectModels>,
-    /// Workers of this project may run `headwork install` after their pull request merged: the project is headwork
-    /// itself.
+    /// Workers of this project may run `headwork install` to try a build and a plain `headwork update` (no `--to`): the
+    /// project is headwork itself.
     #[serde(default)]
     pub install: bool,
 }

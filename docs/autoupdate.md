@@ -1,7 +1,7 @@
 # Autoupdate: plan
 
-Status: a plan, not built (2026-11-22), reviewed once against the code. Nothing here changes the live setup until the
-user approves it and the steps below are implemented.
+Status: built (steps 1 to 6, 2026-11-22); on since <date> once enabled: nothing installs by itself until the user sets
+`[update] enabled = true` in the live config, and the tick trigger also waits for the tick to be scheduled.
 
 Goal: every merge to master becomes a release on GitHub, and each machine (Windows here, the Mac through cmux) installs
 it by itself, with no Rust toolchain, no login and no hand steps, while a broken build never replaces a working one.
@@ -177,8 +177,10 @@ tried again here until a newer one. Transient (network, GitHub's rate limit, a t
 No migration (a migration would itself break pinned launchers, decisions 2026-11-14). The working memory is
 `<home>/update.json`, written atomically: last poll, `ETag`, last failure. Findings the user must see go through the
 tick's `findings` table (`raise_finding`), which already deduplicates them. Events keep the history: `update-started`,
-`update-skipped` (only for a reason worth reading), `update-failed`, `update-installed`, `checkout-not-forwarded`.
-Downloads older than the newest three releases are deleted.
+`update-skipped` (only for a reason worth reading), `update-failed`, `update-installed`, `checkout-not-forwarded`,
+and `update-triggered` (what started a detached update: `close`, `tick` or `orchestrator`, with its arguments and pid
+or the reason it did not start). Downloads older than the newest three releases are deleted. What the orchestrator is
+still to be told waits in `update.json` as `notices` (at most ten), taken once by its next prompt.
 
 ### Reporting
 
@@ -268,11 +270,17 @@ Each a pull request through `scripts/check.sh`:
    download seam and fake releases. Built: `crates/core/src/update.rs` (the decision, versions, back-off, UTC times),
    `crates/adapters/src/release.rs` (`ReleaseSource`: `curl` and a fake) and `timed.rs`, `crates/headwork/src/ops/update.rs`
    (the runner, `--after`, the checkout step, the `doctor` check's summary), `Store::copy_to`; tests in
-   `crates/headwork/tests/update.rs`. Not yet: the host notification, the standing `update-failed` finding and the
-   orchestrator's prompt line under "Reporting", which come with step 6.
+   `crates/headwork/tests/update.rs`. The host notification, the standing `update-failed` finding and the
+   orchestrator's prompt line under "Reporting" came with step 6.
 6. **Turn it on:** the guard lift, the close trigger, the MCP tool, the convention change, then `[update]` in the live
    config with `enabled = true`, after the user's go; the tick trigger once the user schedules the tick (after the
-   breakaway trial).
+   breakaway trial). Built: `update` in `ADMIN_COMMANDS` with `plain_update` (`core/src/guard/mod.rs`), the close
+   trigger (`update_after_close` in `ops/close.rs`), the tick trigger (`Run::update` in `ops/tick.rs`, the decision
+   `poll_due` in `core/src/update.rs`, the start through `TickEnv::updates`), the orchestrator's MCP tool `update`
+   (`ops/mcp.rs`), `trigger` and `Detached` (`ops/update.rs`), and the reporting: the finding `update-failed`
+   (`FindingId::UpdateFailed`), the host notification, and the notices for the orchestrator's next prompt
+   (`take_notices`, read by the `UserPromptSubmit` hook). `CLAUDE.md` says how updates arrive now. Left to the user:
+   `[update] enabled = true` in `~/.headwork/config.toml`, and `headwork tick --install` for the tick trigger.
 
 Steps 1 and 2 need nothing from the user and can start at once.
 

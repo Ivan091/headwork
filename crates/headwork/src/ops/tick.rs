@@ -26,6 +26,7 @@ use super::close::{finish, remove_worktree, surface_present};
 use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
 use super::spawn::{Pumped, pump};
+use super::update::{self as updates, Triggered, TriggeredBy, UpdateStarter};
 use super::{Env, slashed};
 
 /// The topic of the ask about a worktree that cannot be removed.
@@ -89,6 +90,8 @@ pub struct TickEnv<'a> {
     pub temp: &'a Path,
     /// The thresholds; [`Limits::from_config`] in production.
     pub limits: Limits,
+    /// Starts a detached `headwork update` when a poll is due; [`super::update::Detached`] in production.
+    pub updates: &'a dyn UpdateStarter,
 }
 
 /// What the tick did about a finding.
@@ -129,6 +132,8 @@ pub struct TickReport {
     pub lines: Vec<Line>,
     /// What the queue started.
     pub started: Vec<Pumped>,
+    /// The `headwork update` started because a poll was due (`[update] poll_min`), when one was.
+    pub update: Option<Triggered>,
 }
 
 /// Runs one tick.
@@ -151,6 +156,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
             queue_paused: false,
             lines: Vec::new(),
             started: Vec::new(),
+            update: None,
         },
     };
     run.rules()?;
@@ -168,6 +174,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stuck()?;
     run.asks()?;
     run.queue()?;
+    run.update()?;
     run.store.record_tick()?;
     Ok(run.report)
 }
@@ -1112,6 +1119,33 @@ impl<'b> Run<'_, 'b> {
                 serde_json::json!({ "ask": ask.id.0, "age_s": ask.age_s }),
             )?;
         }
+        Ok(())
+    }
+
+    /// Starts a detached `headwork update` when a poll is due ([`headwork_core::update::poll_due`]); the tick never asks
+    /// GitHub itself. Autoupdate is not enforcement: it runs whatever `[hooks] enforce` says.
+    fn update(&mut self) -> Result<()> {
+        let env = self.env();
+        if !env.config.update.enabled {
+            return Ok(());
+        }
+        let disk = self
+            .t
+            .disks
+            .free_bytes(env.home.root())
+            .map_or(DiskLevel::Ok, |free| watch::disk_level(free, &self.limits));
+        let facts = updates::poll_facts(env.home, env.config, self.store, disk, updates::now_ms())?;
+        if !headwork_core::update::poll_due(&facts) {
+            return Ok(());
+        }
+        self.report.update = Some(updates::trigger(
+            self.store,
+            self.t.updates,
+            self.actor(),
+            None,
+            TriggeredBy::Tick,
+            vec!["update".to_owned()],
+        )?);
         Ok(())
     }
 

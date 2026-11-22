@@ -17,6 +17,7 @@ use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::tick::{
     DELETE_WORKTREE, KEEP_WORKTREE, Status, TRUST_FOLDER, TickEnv, TickReport, tick,
 };
+use headwork::ops::update::{Started, UpdateLock, UpdateStarter, UpdateState};
 use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
@@ -46,6 +47,23 @@ struct World {
     limits: Limits,
     brief: PathBuf,
     children: Vec<Child>,
+    updates: FakeStarter,
+}
+
+/// Records the updates the tick starts instead of starting them.
+#[derive(Debug, Default)]
+struct FakeStarter {
+    started: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+impl UpdateStarter for FakeStarter {
+    fn start(&self, args: &[String]) -> anyhow::Result<Started> {
+        self.started.borrow_mut().push(args.to_vec());
+        Ok(Started {
+            pid: 99,
+            note: None,
+        })
+    }
 }
 
 fn git_in(dir: &Path, args: &[&str]) {
@@ -126,6 +144,7 @@ fn world_extra(enforce: bool, max_workers: u32, extra: &str) -> World {
         limits: roomy_limits(),
         brief,
         children: Vec::new(),
+        updates: FakeStarter::default(),
     }
 }
 
@@ -179,6 +198,7 @@ fn run_tick(w: &mut World) -> TickReport {
             disks: &w.disks,
             temp: w.dir.path(),
             limits: w.limits,
+            updates: &w.updates,
         },
     )
     .unwrap()
@@ -1736,5 +1756,51 @@ fn a_part_tab_moved_out_of_its_leads_workspace_is_a_stray_tab_not_a_lost_pane() 
         !w.host.calls().iter().any(|c| c.starts_with("close-")),
         "nothing closed or moved back: {:?}",
         w.host.calls()
+    );
+}
+
+const UPDATES_ON: &str = "\n[update]\nenabled = true\nproject = \"demo\"\npoll_min = 15\n";
+
+#[test]
+fn the_tick_starts_an_update_when_a_poll_is_due_even_in_shadow_mode() {
+    let mut w = world_extra(false, 10, UPDATES_ON);
+    let report = run_tick(&mut w);
+    let update = report.update.as_ref().unwrap();
+    assert_eq!(update.args, ["update"], "a plain update");
+    assert_eq!(update.started.as_ref().map(|s| s.pid), Some(99), "pid");
+    assert_eq!(w.updates.started.borrow().len(), 1, "started once");
+    assert_eq!(count(&w, "update-triggered"), 1, "logged");
+    UpdateState {
+        last_poll: Some(headwork_core::update::format_utc(
+            headwork::ops::update::now_ms(),
+        )),
+        ..UpdateState::default()
+    }
+    .save(&w.home)
+    .unwrap();
+    let report = run_tick(&mut w);
+    assert!(report.update.is_none(), "polled just now: not due");
+    assert_eq!(w.updates.started.borrow().len(), 1, "nothing more started");
+}
+
+#[test]
+fn the_tick_starts_no_update_while_one_runs_or_the_trigger_is_off() {
+    let mut w = world_extra(false, 10, UPDATES_ON);
+    let held = UpdateLock::try_take(&w.home).unwrap().unwrap();
+    assert!(run_tick(&mut w).update.is_none(), "an update runs");
+    drop(held);
+    for extra in [
+        "",
+        "\n[update]\nenabled = false\nproject = \"demo\"\n",
+        "\n[update]\nenabled = true\nproject = \"demo\"\npoll_min = 0\n",
+    ] {
+        let mut w = world_extra(false, 10, extra);
+        assert!(run_tick(&mut w).update.is_none(), "{extra}");
+        assert!(w.updates.started.borrow().is_empty(), "{extra}");
+        assert_eq!(count(&w, "update-triggered"), 0, "{extra}");
+    }
+    assert!(
+        w.updates.started.borrow().is_empty(),
+        "nothing started while locked"
     );
 }

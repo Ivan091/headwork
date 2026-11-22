@@ -60,6 +60,11 @@ fn world(max_workers: u32) -> World {
 }
 
 fn world_removing(max_workers: u32, remove: &str) -> World {
+    world_of(max_workers, remove, "")
+}
+
+/// A world as [`world_removing`] whose config ends with these lines.
+fn world_of(max_workers: u32, remove: &str, extra: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -69,7 +74,8 @@ fn world_removing(max_workers: u32, remove: &str) -> World {
     let text = format!(
         "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"{remove}\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
-         deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n\n[watch]\nexit_grace_s = 2\n"
+         deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\nallowed_repos = [\"acme/demo\"]\n\n\
+         [watch]\nexit_grace_s = 2\n{extra}"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -169,6 +175,62 @@ fn close_removes_brief_pane_and_worktree_then_marks_closed() {
     let kinds = event_kinds(&w.store, &task);
     for kind in ["worktree-state", "transition"] {
         assert!(kinds.iter().any(|k| k == kind), "{kind} in {kinds:?}");
+    }
+}
+
+fn update_triggers(store: &Store) -> Vec<serde_json::Value> {
+    store
+        .events(EventFilter {
+            task: None,
+            limit: 500,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "update-triggered")
+        .map(|event| event.data)
+        .collect()
+}
+
+#[test]
+fn closing_a_task_of_the_update_project_starts_an_update_and_a_failed_start_never_fails_the_close()
+{
+    let mut w = world_of(
+        10,
+        "builtin",
+        "\n[update]\nenabled = true\nproject = \"demo\"\n",
+    );
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    let triggers = update_triggers(&w.store);
+    assert_eq!(triggers.len(), 1, "{triggers:?}");
+    assert_eq!(triggers[0]["by"], "close", "by");
+    assert_eq!(
+        triggers[0]["args"],
+        serde_json::json!(["update", "--wait", "30"]),
+        "waits for the merge's release"
+    );
+    assert!(
+        triggers[0]["error"].is_string() && triggers[0]["pid"].is_null(),
+        "{EXE} does not exist, so the start fails and is logged: {triggers:?}"
+    );
+}
+
+#[test]
+fn closing_starts_no_update_while_updates_are_off_or_for_another_project() {
+    for extra in [
+        "\n[update]\nenabled = false\nproject = \"demo\"\n",
+        "\n[update]\nenabled = true\nproject = \"other\"\n\n[project.other]\nmain = \"S:/other\"\n\
+         worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{main}-{slug}\"\n\
+         deliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/other\"]\n",
+    ] {
+        let mut w = world_of(10, "builtin", extra);
+        let (task, _) = spawn_task(&mut w, "sand", false, false);
+        let env = env!(w);
+        let report = close(&mut w.store, &env, task.id, None).unwrap();
+        assert_eq!(report.state, TaskState::Closed, "{report:?}");
+        assert!(update_triggers(&w.store).is_empty(), "{extra}");
     }
 }
 
