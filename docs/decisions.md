@@ -1221,3 +1221,10 @@ and the reason.
   drew a `worker-admin` would-deny (shadow review of 2026-11-22). A redirection is now no word of the command: digits
   before `>` or `<` are its descriptor, `>&2` and `2>&-` name no file, `&>` no longer ends a command, and a process
   substitution keeps its command. Checking the targets as writes stays `guard-shell-writes` (audit G2).
+- 2026-11-22 `stop-unfinished` lets a worker stop with a plain reply when the user typed a prompt into its pane within
+  `[hooks] push_window_secs` (the window `ask-push` already uses to presume the user at the screen). After the
+  subagent fix (v0.1.11), 25 of its 29 would-denies were a lead answering the user in a live conversation in its own
+  tab, as `rules/lead.md` asks it to (shadow review of 2026-11-22); a reply the user reads at once is no silent stop.
+  A plain-text question is still `stop-plain-question`, and a long turn after the prompt, a message from another
+  session or a task notification still counts as unfinished. The window is now strict, so `0` never presumes the
+  user present.

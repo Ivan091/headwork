@@ -36,6 +36,9 @@ pub struct StopFacts<'a> {
     pub waiting_background: bool,
     /// The task is a lead with a part that is not closed: it may stop and wait for the part's message.
     pub waiting_part: bool,
+    /// The user typed a prompt into the session within the push window: they are at the pane and read the reply, so
+    /// a turn that answers them in plain text is no silent stop.
+    pub user_present: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -67,7 +70,8 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         && !facts.reported
         && !facts.running_job
         && !facts.waiting_background
-        && !facts.waiting_part;
+        && !facts.waiting_part
+        && !facts.user_present;
     if unfinished {
         return Decision::deny(
             RuleId::StopUnfinished,

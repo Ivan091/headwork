@@ -280,8 +280,8 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Whether the user typed a prompt into the session within the last `seconds`; a message from another session
-    /// does not count.
+    /// Whether the user typed a prompt into the session within the last `seconds`, strictly, so `0` never holds; a
+    /// message from another session or a task notification does not count.
     ///
     /// # Errors
     ///
@@ -292,7 +292,7 @@ impl Store {
             "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND type = ?2
                  AND NOT COALESCE(json_extract(data, '$.cross_session'), 0)
                  AND NOT COALESCE(json_extract(data, '$.notification'), 0)
-                 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
+                 AND at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
             params![session, EVENT_PROMPT, since],
             |row| row.get(0),
         )?)
