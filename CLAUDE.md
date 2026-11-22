@@ -30,8 +30,8 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, inbox, spawn, drop, close, answer, queue, clean, reap, rules,
-rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, inbox, spawn, drop, close, answer, queue, clean, reap, update,
+rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -46,7 +46,8 @@ URLs, the stored branch, the branch checked out), a later pull request takes a `
 A lead gets helper worktrees for its parts from the worker tool `worktree_add` (`ops/helpers.rs`, migration 0012): made by
 the project's `worktree_new` at `worktree_path` with the part's slug, writable for the task, removed at close (one that
 holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
-the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install`;
+the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install` and
+a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`);
 `[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
 them excluded); `orchestrator_writable` gives it the edits there. A worker may write paths outside its folder only
 when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ path, kinds }]` for its task kind, and
@@ -230,7 +231,20 @@ The plugin does nothing in a session headwork did not start: its hooks run `${HE
 launcher sets `HEADWORK_EXE`. Its MCP server connects with no tools in such a session. A hook that fails (missing
 binary: exit 127, broken config: exit 1) never blocks a call, and a hook takes about 30 ms.
 
-Update the installed binary after a merge, safely while sessions run it (docs/hot-reload.md):
+Every merge is released by Actions (`release.yml`) and installed by `headwork update` (`ops/update.rs`,
+`docs/autoupdate.md`), safely while sessions run the old build (docs/hot-reload.md). With `[update] enabled`, three
+things start it, each as a detached process logged `update-triggered`: the close of any task of `[update] project`
+(`finish` starts `headwork update --wait 30`, which waits for that merge's release), the tick when its poll is due
+(every `[update] poll_min` minutes, when the tick is scheduled; the decision is `poll_due` in `core/src/update.rs`),
+and by hand: `headwork update`, or the orchestrator's MCP tool `update`. `--to <tag>` installs a given release, newer
+or older (a rollback), and is the orchestrator's and the user's only. Workers no longer build or install after a merge.
+A failure worth telling (deterministic at once, transient from its third attempt) raises the standing finding
+`update-failed` until a later release installs, sends a host notification and leaves a line for the orchestrator's next
+prompt (`update.json` `notices`, taken by the `UserPromptSubmit` hook), which pushes it to the user; an install that
+changed plugin files or migrated the store leaves a line too. Each is told once.
+
+A hand build plus `install` stays for trying a build before it merges (a later release replaces it only once one is
+published after it was installed):
 
 ```bash
 cargo build --release -p headwork

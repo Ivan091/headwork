@@ -1017,3 +1017,27 @@ and the reason.
   attribution, comment ban) and the tests of the crates it changed; tests and docs on both systems run in CI. The
   comment ban stays local only, since its checker lives in the user config. `gate.yml` cancels an older run of the same
   pull request.
+- 2026-11-22 Autoupdate turned on in code (step 6). The guard lifts `update` for workers of an `install = true` project
+  only with `--dry-run`, `--json` and `--wait <minutes>`; `--to`, `--dir` and `--after` stay denied (`--dir` could
+  install elsewhere, `--after` is the hand-over's). The close trigger fires after the `Cleaned` transition of any task
+  of `[update] project`, dropped and forced closes included, and starts `env.exe` (the program finishers run) with
+  `HEADWORK_HOME` set, since a finisher found its home through `--home`; a start that fails is logged in
+  `update-triggered` and ignored. The tick's `poll_due` reuses the decision's checks that need no network (park or
+  resume, disk below stop, a transient failure's back-off) and also waits while the update lock is held, so a tick
+  does not start a process every five minutes during a back-off or a `--wait 30`; it runs whatever `[hooks] enforce`
+  says, and `TickEnv` gained an `UpdateStarter` seam and `TickReport` an `update` field. The orchestrator's tool
+  `update` answers a dry run in-process (as the CLI would, without a host) and otherwise starts the detached update and
+  returns its pid; a start that fails is a tool error.
+- 2026-11-22 How update failures are told. The standing finding is a new `FindingId::UpdateFailed` (`update-failed`):
+  older builds tolerate it because no build reads the `findings` rows back into a `FindingId` (the `rule` column is
+  written, and matched as text by `resolve_findings`), and the `finding` events carry the rule inside their JSON data,
+  read as text. `update` raises and clears it itself, not the tick (which may not be scheduled): one key per failed
+  release (`update-failed:v0.1.9`) or `update-failed:transient`, a new failure resolving the others; the new build's
+  `update --after` clears it, and so does an update that finds nothing to install after a transient failure. The host
+  notification and the orchestrator's line go out only when the finding is new, which makes each told once. The lines
+  wait in `update.json` (`notices`, at most ten), not the event log, which has no index on the event type and would be
+  scanned at every orchestrator prompt, and not in a new table, which needs a migration; the `UserPromptSubmit` hook of
+  an orchestrator session takes them under the update lock and leaves them for the next prompt while an update runs.
+  An install leaves a line when its checkout step saw plugin files change, or when the new build's schema (from the
+  version lines) is above the replaced one's. An older build that saves `update.json` (a rollback) drops waiting
+  notices.
