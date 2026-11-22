@@ -475,6 +475,8 @@ text_enum!(
         ReviewerWrite => "reviewer-write",
         /// A lead stops while the review the user asked for has not started.
         ReviewUnstarted => "review-unstarted",
+        /// A reviewer lead stops while its review has a ready node or a resolution waits on its verdict.
+        ReviewUnfinished => "review-unfinished",
     }
 );
 

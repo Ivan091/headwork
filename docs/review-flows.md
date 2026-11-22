@@ -1,7 +1,8 @@
 # Review flows: reviews on the user's word, run by a reviewer lead with many small reviewers
 
-Status: plan of 2026-11-22. R1 (core, store, `flow check`, the `code` flow) and R2 (the trigger, `review_start`, the
-reviewer lead's part and rules, `reviewer-write`, `review-unstarted`) are built; R3 and R4 are not. It builds on leads (`docs/leads.md`): a review is a part of the task, and
+Status: plan of 2026-11-22. R1 (core, store, `flow check`, the `code` flow), R2 (the trigger, `review_start`, the
+reviewer lead's part and rules, `reviewer-write`, `review-unstarted`) and R3 (the loop tools, rounds, the dispute ask,
+`review-open`, `review-unfinished`) are built; R4 is not. It builds on leads (`docs/leads.md`): a review is a part of the task, and
 that part is the reviewer lead.
 
 ## 1. The model

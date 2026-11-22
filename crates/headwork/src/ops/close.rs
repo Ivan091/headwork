@@ -276,6 +276,7 @@ pub fn begin_own_close(
             return Err(error);
         }
     };
+    super::review_loop::cancel_open(store, &before, env.actor)?;
     for trigger in &steps {
         store.transition(id, trigger, env.actor)?;
     }
@@ -316,6 +317,20 @@ fn own_steps(
     let id = task.id;
     if task.state == TaskState::Dropped {
         return Ok(vec![Trigger::BeginClosing]);
+    }
+    if let Some(review) = store.open_review(id)? {
+        if review.task_id == id {
+            bail!(
+                "review-open: review {} of this task is {}; it must finish before you close",
+                review.id,
+                review.state
+            );
+        }
+        bail!(
+            "review-unfinished: review {} is {}; finish it with `review_finish` before you close",
+            review.id,
+            review.state
+        );
     }
     if task.state == TaskState::NeedsUser {
         bail!("{}", headwork_core::Refusal::OpenAsk);
@@ -429,6 +444,7 @@ pub fn end_closing(
 }
 
 fn begin_closing(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
+    super::review_loop::cancel_open(store, &store.task(id)?, env.actor)?;
     let task = store.task(id)?;
     let trigger = match task.state {
         TaskState::Closing | TaskState::Closed => return Ok(()),

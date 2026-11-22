@@ -24,6 +24,7 @@ pub mod relay;
 pub mod reload;
 pub mod resume;
 pub mod review;
+pub mod review_loop;
 pub mod rules;
 pub mod schedule;
 pub mod session_procs;
