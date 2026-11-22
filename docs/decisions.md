@@ -934,3 +934,16 @@ and the reason.
   (`SILENT_KIND`, `LeadsConfig::asks_before_close`) rather than a new flag or migration: a `silent` lead's close and the
   tick's merged-grace close need no `close-go`, and its rules leave out "Ask before you close". Every other kind keeps
   `[leads] ask_before_close`. A `silent` kind in the main checkout still needs to be listed as main-only like any kind.
+- 2026-11-22 Review flows, the plan (`docs/review-flows.md`, nothing built). The user asked for reviews started by
+  their word (`review 1` to `review 3`, the number setting how strong the review and the pushback are), run by many
+  small specialized reviewers as fresh-context subagents under a reviewer lead of its own, with more flows (graphs)
+  for other kinds of tasks later. The user chose: the reviewer lead is a part of kind `review` in the task's workspace;
+  a flow is a TOML graph headwork tracks node by node through MCP tools (not Claude Code Workflow scripts, which
+  headwork would see only at the end and a park would lose mid-run); the implementing lead fixes or disputes each
+  finding, the reviewer lead re-checks, level 3 runs a second round and unsettled disputes go to the user in one ask;
+  the level sets breadth, depth and pushback together. Taken without asking: the trigger is the `UserPromptSubmit`
+  hook matching `review [<flow>] <level> [<focus>]` in a lead's own prompt, and `review_start` is refused without such
+  a request, so reviews start only on the user's word; the review reads a detached worktree headwork makes at the
+  pinned commit, not one from the project's `worktree_new`; the reviewer lead runs on Sonnet by default while the nodes
+  carry the judgement; sessions pass findings and resolutions by `SendMessage`, the tools returning the text and the
+  address; the first flows are `code` and `plan`.
