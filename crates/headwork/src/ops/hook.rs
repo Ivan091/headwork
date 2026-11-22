@@ -320,7 +320,8 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     {
         lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
     }
-    let waiting = waiting_parts(store, call.task)?;
+    let mut waiting = waiting_parts(store, call.task)?;
+    waiting.push_str(&update_notices(call));
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
@@ -335,6 +336,21 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         "headwork: your rules changed (version {version}); they replace the earlier ones.\n\n{rules}{waiting}"
     );
     Ok(HookReply::context(HookEvent::UserPromptSubmit, &text))
+}
+
+/// For the orchestrator, the lines updates left for it (a failed update, plugin files or the schema changed by an
+/// install), each told once (`docs/autoupdate.md`, "Reporting"). Empty for every other session.
+fn update_notices(call: &Call<'_>) -> String {
+    if call.session.role != Role::Orchestrator {
+        return String::new();
+    }
+    super::update::take_notices(call.env.home)
+        .iter()
+        .fold(String::new(), |mut text, line| {
+            text.push_str("\nheadwork: ");
+            text.push_str(line);
+            text
+        })
 }
 
 /// For a lead, one line per part that waits on the user (its state is `needs_user` or an ask of it waits), so the

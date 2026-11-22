@@ -31,7 +31,7 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, inbox, spawn, drop, close, answer, queue, clean, reap, rules,
-rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
+rule_add, rule_retire, job_status, job_forget, update, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -230,7 +230,14 @@ The plugin does nothing in a session headwork did not start: its hooks run `${HE
 launcher sets `HEADWORK_EXE`. Its MCP server connects with no tools in such a session. A hook that fails (missing
 binary: exit 127, broken config: exit 1) never blocks a call, and a hook takes about 30 ms.
 
-Update the installed binary after a merge, safely while sessions run it (docs/hot-reload.md):
+Every merge to `master` is released by Actions and installed by `headwork update` (`docs/autoupdate.md`) once
+`[update] enabled = true`: the tick starts it every `[update] poll_min` minutes, the close of any task of `[update]
+project` starts `update --wait 30`, and the orchestrator's MCP tool `update` (optionally `to` a tag) starts it by hand.
+Each runs detached, output in `<home>/update.log`, logged as `update-started`. A failed update is a standing tick
+finding `update-failed` with a host notification, a `doctor` warning, and one line in the orchestrator's next prompt
+(`<home>/update-notices.txt`), which also tells of an install that changed plugin files or the store schema. Workers no longer build
+and install after a merge. A worker of an `install = true` project may still run `headwork install` to try a build
+before it merges, and plain `headwork update` (never `--to`). By hand, safely while sessions run it (docs/hot-reload.md):
 
 ```bash
 cargo build --release -p headwork

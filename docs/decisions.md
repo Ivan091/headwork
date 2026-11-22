@@ -1017,3 +1017,12 @@ and the reason.
   attribution, comment ban) and the tests of the crates it changed; tests and docs on both systems run in CI. The
   comment ban stays local only, since its checker lives in the user config. `gate.yml` cancels an older run of the same
   pull request.
+- 2026-11-22 Autoupdate step 6, turning it on. Taken without asking: the tick does not ask GitHub itself; it starts a
+  detached `headwork update` once `[update] poll_min` passed since `update.json`'s last poll and the lock is free, and
+  the update's own decision (off, park, disk, back-off, up to date) ends it quickly when there is nothing to do. The
+  close trigger fires for every task of `[update] project` that reaches `closed`, dropped ones included, since `--wait`
+  costs only `ETag` hits. The orchestrator's lines go through a file (`<home>/update-notices.txt`) that updates append
+  and the hook renames aside before reading, not through `update.json`, so a prompt never overwrites an update's
+  state. Each failure is told once: a latched one at its first attempt, a transient one at its third. The MCP tool takes
+  `to` (a rollback), which a worker's `update --to` may not; workers of an `install = true` project may run plain
+  `update`.

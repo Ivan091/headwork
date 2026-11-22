@@ -556,10 +556,46 @@ fn finish_claimed(
         worktree,
     };
     match store.transition(id, &Trigger::Cleaned(facts), env.actor) {
-        Ok(_) => report(store, id, None),
+        Ok(_) => {
+            start_update(store, env, &task)?;
+            report(store, id, None)
+        }
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),
         Err(error) => Err(error.into()),
     }
+}
+
+/// How long the update a closed task starts waits for the release of its merge, which lands some minutes after it.
+pub const CLOSE_UPDATE_WAIT_MIN: u64 = 30;
+
+/// Starts `headwork update --wait 30`, detached, when `[update]` is on and the closed task belongs to `[update]
+/// project`: the close trigger of `docs/autoupdate.md`, which covers merges by headwork's own workers without the tick.
+/// A start that fails is logged as `update-started` with the error and never fails the close.
+fn start_update(store: &Store, env: &Env<'_>, task: &Task) -> Result<()> {
+    if !env.config.update.enabled || task.project() != &env.config.update.project {
+        return Ok(());
+    }
+    if let Err(error) = super::update::start_detached(
+        store,
+        &super::update::DetachedUpdates,
+        env.home,
+        env.exe,
+        super::update::UpdateTrigger::Close,
+        super::update::UpdateRequest {
+            wait_min: Some(CLOSE_UPDATE_WAIT_MIN),
+            to: None,
+        },
+        env.actor,
+    ) {
+        store.append_event(
+            env.actor,
+            Some(task.id),
+            None,
+            "update-unstarted",
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        )?;
+    }
+    Ok(())
 }
 
 /// Records a worktree the remove command refused as `kept`, for a forced close: it stays on disk for `headwork clean`

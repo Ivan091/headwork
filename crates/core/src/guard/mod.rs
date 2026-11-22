@@ -35,8 +35,10 @@ pub const BUILD_TOOLS: &[&str] = &[
 /// Git subcommands the orchestrator may not run.
 const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
 
-/// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user. A
-/// worker may run only `close` of its own task and `reap --dry-run` among them.
+/// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user.
+///
+/// A worker may run only `close` of its own task and `reap --dry-run` among them, and a worker of an `install = true`
+/// project also `install` and `update` without `--to` (a rollback stays the orchestrator's and the user's).
 pub const ADMIN_COMMANDS: &[&str] = &[
     "spawn",
     "queue",
@@ -53,6 +55,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "finish",
     "exited",
     "install",
+    "update",
     "reap",
 ];
 
@@ -486,6 +489,9 @@ fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
         return None;
     }
     if sub == "install" && scope.may_install {
+        return None;
+    }
+    if sub == "update" && scope.may_install && !args.iter().any(|arg| arg.starts_with("--to")) {
         return None;
     }
     if sub == "reap" && args.iter().any(|arg| arg == "--dry-run") {

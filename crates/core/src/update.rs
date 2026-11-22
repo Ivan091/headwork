@@ -383,6 +383,18 @@ pub const fn knows_store(release_schema: u32, store_schema: u32) -> bool {
     release_schema >= store_schema
 }
 
+/// Whether the tick starts `headwork update` now: updates are on, the tick trigger is not turned off with
+/// `poll_min = 0`, and GitHub was not asked within the last `poll_min` minutes (or never).
+#[must_use]
+pub fn tick_polls(enabled: bool, poll_min: u32, last_poll_ms: Option<u64>, now_ms: u64) -> bool {
+    if !enabled || poll_min == 0 {
+        return false;
+    }
+    last_poll_ms.is_none_or(|last| {
+        now_ms.saturating_sub(last) >= u64::from(poll_min).saturating_mul(60_000)
+    })
+}
+
 /// Reads a UTC time as GitHub writes it, `2026-11-22T10:15:30Z` (fractions and `+hh:mm` offsets too), into
 /// milliseconds since the Unix epoch; `None` for anything else or a time before 1970.
 #[must_use]
@@ -492,6 +504,26 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tick_polls_only_when_on_and_due() {
+        let minute = 60_000;
+        let cases = [
+            (false, 15, None, 0, false),
+            (true, 0, None, 0, false),
+            (true, 15, None, 0, true),
+            (true, 15, Some(0), 14 * minute, false),
+            (true, 15, Some(0), 15 * minute, true),
+            (true, 15, Some(20 * minute), minute, false),
+        ];
+        for (enabled, poll_min, last, now, polls) in cases {
+            assert_eq!(
+                tick_polls(enabled, poll_min, last, now),
+                polls,
+                "enabled {enabled}, poll_min {poll_min}, last {last:?}, now {now}"
+            );
+        }
+    }
 
     const MIN: u64 = 60_000;
     const NOW: u64 = 1_000 * MIN;

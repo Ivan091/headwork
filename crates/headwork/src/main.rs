@@ -1552,6 +1552,7 @@ fn tick_command(
                 disks: &disks,
                 temp: &temp,
                 limits: Limits::from_config(&ctx.config.watch),
+                updates: &headwork::ops::update::DetachedUpdates,
             },
         )
     })?;

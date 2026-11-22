@@ -122,6 +122,41 @@ fn only_a_project_that_installs_lets_its_workers_install() {
 }
 
 #[test]
+fn a_project_that_installs_lets_its_workers_update_but_not_roll_back() {
+    let mut scope = worker("sand");
+    let table: &[(&str, bool, Option<RuleId>)] = &[
+        ("headwork update", false, Some(RuleId::WorkerAdmin)),
+        (
+            "headwork update --dry-run",
+            false,
+            Some(RuleId::WorkerAdmin),
+        ),
+        ("headwork update", true, None),
+        ("headwork update --wait 30", true, None),
+        ("headwork update --dry-run --json", true, None),
+        (
+            "headwork update --to v0.1.3",
+            true,
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --to=v0.1.3",
+            true,
+            Some(RuleId::WorkerAdmin),
+        ),
+        ("headwork update --version", false, None),
+    ];
+    for (command, may_install, expected) in table {
+        scope.may_install = *may_install;
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *expected,
+            "{command}, may_install {may_install}"
+        );
+    }
+}
+
+#[test]
 fn the_orchestrator_commits_in_its_notes_repository_but_not_in_projects_inside_it() {
     let mut scope = orchestrator();
     scope.cwd = "S:/Code".to_owned();

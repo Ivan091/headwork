@@ -17,6 +17,7 @@ use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::tick::{
     DELETE_WORKTREE, KEEP_WORKTREE, Status, TRUST_FOLDER, TickEnv, TickReport, tick,
 };
+use headwork::ops::update::{Started, StoredFailure, UpdateStarter, UpdateState};
 use headwork_adapters::disk::FakeDisks;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
@@ -46,6 +47,36 @@ struct World {
     limits: Limits,
     brief: PathBuf,
     children: Vec<Child>,
+    updates: FakeUpdates,
+}
+
+/// Records the updates the tick starts instead of starting them.
+#[derive(Debug, Default)]
+struct FakeUpdates(std::sync::Mutex<Vec<Option<u64>>>);
+
+impl UpdateStarter for FakeUpdates {
+    fn start_update(
+        &self,
+        _home: &Home,
+        _program: &Path,
+        wait_min: Option<u64>,
+        _to: Option<headwork_core::update::Version>,
+    ) -> anyhow::Result<Started> {
+        self.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("poisoned"))?
+            .push(wait_min);
+        Ok(Started {
+            pid: 4242,
+            note: None,
+        })
+    }
+}
+
+impl FakeUpdates {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
 }
 
 fn git_in(dir: &Path, args: &[&str]) {
@@ -126,6 +157,7 @@ fn world_extra(enforce: bool, max_workers: u32, extra: &str) -> World {
         limits: roomy_limits(),
         brief,
         children: Vec::new(),
+        updates: FakeUpdates::default(),
     }
 }
 
@@ -179,6 +211,7 @@ fn run_tick(w: &mut World) -> TickReport {
             disks: &w.disks,
             temp: w.dir.path(),
             limits: w.limits,
+            updates: &w.updates,
         },
     )
     .unwrap()
@@ -1737,4 +1770,102 @@ fn a_part_tab_moved_out_of_its_leads_workspace_is_a_stray_tab_not_a_lost_pane() 
         "nothing closed or moved back: {:?}",
         w.host.calls()
     );
+}
+
+#[test]
+fn the_tick_starts_an_update_only_when_updates_are_on_and_a_poll_is_due() {
+    let mut w = world_extra(false, 2, "");
+    run_tick(&mut w);
+    assert_eq!(w.updates.count(), 0, "[update] is off by default");
+
+    let mut w = world_extra(false, 2, "\n[update]\nenabled = true\nproject = \"demo\"\n");
+    let report = run_tick(&mut w);
+    assert_eq!(
+        w.updates.count(),
+        1,
+        "never polled: the tick starts one, in shadow mode too"
+    );
+    assert_eq!(
+        w.updates.0.lock().unwrap()[0],
+        None,
+        "the tick does not wait for a release"
+    );
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|l| l.rule == FindingId::UpdateStarted),
+        "{:?}",
+        report.lines
+    );
+
+    let state = UpdateState {
+        last_poll: Some(headwork_core::update::format_utc(now_ms())),
+        ..UpdateState::default()
+    };
+    state.save(&w.home).unwrap();
+    run_tick(&mut w);
+    assert_eq!(w.updates.count(), 1, "GitHub was just asked: no new update");
+}
+
+#[test]
+fn a_failing_update_stands_until_it_clears() {
+    let mut w = world_extra(false, 2, "");
+    let state = UpdateState {
+        last_failure: Some(StoredFailure {
+            tag: headwork_core::update::Version::from_tag("v0.1.9"),
+            kind: headwork_core::update::FailureKind::Deterministic,
+            step: "smoke".to_owned(),
+            attempts: 1,
+            at: headwork_core::update::format_utc(now_ms()),
+            error: "doctor failed".to_owned(),
+        }),
+        ..UpdateState::default()
+    };
+    state.save(&w.home).unwrap();
+    let report = run_tick(&mut w);
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|l| l.rule == FindingId::UpdateFailed && l.status == Status::Standing),
+        "{:?}",
+        report.lines
+    );
+    let told = |w: &World| {
+        w.host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("notify") && c.contains("update failed"))
+            .count()
+    };
+    assert_eq!(
+        told(&w),
+        1,
+        "a new failure notifies once: {:?}",
+        w.host.calls()
+    );
+    run_tick(&mut w);
+    assert_eq!(told(&w), 1, "a standing failure does not notify again");
+
+    UpdateState::default().save(&w.home).unwrap();
+    let report = run_tick(&mut w);
+    assert!(
+        !report
+            .lines
+            .iter()
+            .any(|l| l.rule == FindingId::UpdateFailed),
+        "{:?}",
+        report.lines
+    );
+}
+
+fn now_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
 }

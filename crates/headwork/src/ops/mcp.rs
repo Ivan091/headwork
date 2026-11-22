@@ -456,6 +456,25 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "update",
+        description: "Install headwork's newest release from GitHub in the background, smoke-tested against a copy of \
+                      the store first; `to` installs that release instead, newer or older (a rollback). Read \
+                      `headwork doctor` (check `update`) or the event log for the result; a failure comes back in your \
+                      next prompt.",
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "to": {
+                        "type": "string",
+                        "description": "A release tag such as v0.1.7; the newest release when absent.",
+                    },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "park",
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
                       panes close. It runs in the background; read `board` for the machine mode. Write your own \
@@ -682,14 +701,7 @@ impl<'a> Server<'a> {
             "close" => self.close_task(args),
             "answer" => self.answer(args),
             "queue" => self.queue(args),
-            "clean" => {
-                let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
-                let options = super::clean::CleanOptions {
-                    dry_run: flag("dry_run"),
-                    gc: flag("gc"),
-                };
-                to_text(&super::clean::clean(self.store, &self.env, options)?)
-            }
+            "clean" => self.clean(args),
             "reap" => {
                 let options = super::reap::ReapOptions {
                     dry_run: args
@@ -746,6 +758,7 @@ impl<'a> Server<'a> {
             "job_forget" => self.job_forget(&session, role, args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
+            "update" => self.start_update(args),
             other => bail!("unknown tool `{other}`"),
         }
     }
@@ -884,6 +897,39 @@ impl<'a> Server<'a> {
         to_text(
             &json!({ "started": command, "pid": pid, "read": "`board` shows the machine mode" }),
         )
+    }
+
+    fn clean(&mut self, args: &Value) -> Result<String> {
+        let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let options = super::clean::CleanOptions {
+            dry_run: flag("dry_run"),
+            gc: flag("gc"),
+        };
+        to_text(&super::clean::clean(self.store, &self.env, options)?)
+    }
+
+    fn start_update(&self, args: &Value) -> Result<String> {
+        let to = match args.get("to").and_then(Value::as_str) {
+            Some(text) => Some(
+                headwork_core::update::Version::from_tag(text)
+                    .ok_or_else(|| anyhow!("`{text}` is not a release tag such as v0.1.7"))?,
+            ),
+            None => None,
+        };
+        let started = super::update::start_detached(
+            self.store,
+            &super::update::DetachedUpdates,
+            self.env.home,
+            self.env.exe,
+            super::update::UpdateTrigger::Orchestrator,
+            super::update::UpdateRequest { wait_min: None, to },
+            self.env.actor,
+        )?;
+        to_text(&json!({
+            "started": "update",
+            "pid": started.pid,
+            "read": "`headwork doctor` (check `update`) or `headwork log` for the result",
+        }))
     }
 
     fn own_task(&self, session: &str) -> Result<Task> {

@@ -390,6 +390,10 @@ text_enum!(
         OrphanPart => "orphan-part",
         /// A part's tab runs outside its lead's workspace (the user moved it).
         StrayTab => "stray-tab",
+        /// The tick started `headwork update`: updates are on and `[update] poll_min` passed since GitHub was asked.
+        UpdateStarted => "update-started",
+        /// The newest update failed in a way the user should see; it stands until an update succeeds.
+        UpdateFailed => "update-failed",
         /// The tick could not look at something it checks, such as the git host or a volume.
         TickError => "tick-error",
     }

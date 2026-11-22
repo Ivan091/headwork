@@ -15,6 +15,7 @@ use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
+use headwork_core::update::{self, Version};
 use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
 use headwork_core::{
     Actor, AskState, FindingId, MachineMode, SessionState, TaskShape, TaskState, Trigger,
@@ -26,6 +27,9 @@ use super::close::{finish, remove_worktree, surface_present};
 use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
 use super::spawn::{Pumped, pump};
+use super::update::{
+    Clock as _, SystemClock, UpdateRequest, UpdateStarter, UpdateState, UpdateTrigger,
+};
 use super::{Env, slashed};
 
 /// The topic of the ask about a worktree that cannot be removed.
@@ -89,6 +93,8 @@ pub struct TickEnv<'a> {
     pub temp: &'a Path,
     /// The thresholds; [`Limits::from_config`] in production.
     pub limits: Limits,
+    /// Starts `headwork update`; [`super::update::DetachedUpdates`] in production.
+    pub updates: &'a dyn UpdateStarter,
 }
 
 /// What the tick did about a finding.
@@ -168,6 +174,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stuck()?;
     run.asks()?;
     run.queue()?;
+    run.updates()?;
     run.store.record_tick()?;
     Ok(run.report)
 }
@@ -889,6 +896,66 @@ impl<'b> Run<'_, 'b> {
             }
         }
         Ok(out)
+    }
+
+    /// Reports a failing update as a standing finding (with a host notification when it is new), and starts a
+    /// detached `headwork update` when `[update]` is on and `poll_min` passed since GitHub was asked. Updating is not
+    /// an enforcement action, so it runs in shadow mode too (`docs/autoupdate.md`, "What starts it").
+    fn updates(&mut self) -> Result<()> {
+        let env = self.env();
+        let state = UpdateState::load(env.home);
+        if let Some(failure) = state.failure_to_report() {
+            let tag = failure.tag.map(Version::tag);
+            let key = format!(
+                "update-failed:{}",
+                tag.clone().unwrap_or_else(|| failure.step.clone())
+            );
+            let detail = serde_json::json!({
+                "tag": tag,
+                "step": failure.step,
+                "kind": failure.kind.as_str(),
+                "attempts": failure.attempts,
+                "error": failure.error,
+            });
+            let notice = format!(
+                "headwork update failed at {} ({}): {}",
+                failure.step,
+                tag.as_deref().unwrap_or("the newest release"),
+                failure.error
+            );
+            self.standing(
+                &key,
+                FindingId::UpdateFailed,
+                None,
+                Status::Standing,
+                &detail,
+                Some(&notice),
+            )?;
+        }
+        self.sweep(FindingId::UpdateFailed)?;
+        let config = &env.config.update;
+        let last = state.last_poll.as_deref().and_then(update::parse_utc);
+        if !update::tick_polls(config.enabled, config.poll_min, last, SystemClock.now_ms())
+            || super::update::running(env.home)?
+        {
+            return Ok(());
+        }
+        match super::update::start_detached(
+            self.store,
+            self.t.updates,
+            env.home,
+            env.exe,
+            UpdateTrigger::Tick,
+            UpdateRequest::default(),
+            self.actor(),
+        ) {
+            Ok(started) => self.applied(
+                FindingId::UpdateStarted,
+                None,
+                serde_json::json!({ "pid": started.pid, "note": started.note }),
+            ),
+            Err(error) => self.error("update", None, &format!("{error:#}")),
+        }
     }
 
     fn disks(&mut self) -> Result<()> {

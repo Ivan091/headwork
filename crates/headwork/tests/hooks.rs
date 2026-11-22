@@ -1086,6 +1086,7 @@ fn mcp_tools_follow_the_role() {
             "recap",
             "job_status",
             "job_forget",
+            "update",
             "park",
             "resume"
         ],
@@ -2401,4 +2402,40 @@ fn a_lead_hears_on_its_next_prompt_which_part_waits_for_the_user() {
             .contains(&"status".to_owned()),
         "not a worker's"
     );
+}
+
+#[test]
+fn the_orchestrator_hears_an_update_notice_once_and_workers_never() {
+    let mut w = world("", false);
+    w.start();
+    headwork::ops::update::add_notice(&w.home, "headwork update failed at smoke").unwrap();
+    let prompt = json!({ "prompt": "hello" });
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "a worker is not told"
+    );
+    w.store
+        .record_session(
+            &NewSession {
+                id: "orch".to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    w.session = "orch".to_owned();
+    let told = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(
+        told.contains("headwork: headwork update failed at smoke"),
+        "{told}"
+    );
+    let again = w.hook(HookEvent::UserPromptSubmit, &prompt);
+    let again = again.stdout.unwrap_or_default();
+    assert!(!again.contains("update failed"), "told once: {again}");
 }

@@ -504,6 +504,11 @@ fn transient_failures_are_reported_from_the_third() {
         doctor_summary(&rig.home, &rig.config).0,
         "doctor warns from the third"
     );
+    let told = headwork::ops::update::take_notices(&rig.home);
+    assert!(
+        told.len() == 1 && told[0].contains("update failed"),
+        "the orchestrator hears the third: {told:?}"
+    );
 }
 
 #[test]
@@ -661,6 +666,11 @@ fn a_failing_smoke_test_installs_nothing() {
         rig.installed(),
         line("0.1.5", "aaa111"),
         "nothing installed"
+    );
+    let told = headwork::ops::update::take_notices(&rig.home);
+    assert!(
+        told.len() == 1 && told[0].contains("smoke"),
+        "the orchestrator hears it: {told:?}"
     );
 }
 
@@ -1007,4 +1017,51 @@ fn the_smoke_test_reads_the_report_doctor_prints() {
         "ids and statuses"
     );
     assert!(doctor_checks("headwork: no config").is_err(), "no report");
+}
+
+#[test]
+fn an_install_tells_the_orchestrator_only_about_plugin_files_and_schema_changes() {
+    use headwork::ops::update::{Forward, installed_notices};
+    let forwarded = |plugin_changed| Forward::Forwarded {
+        from: "a".to_owned(),
+        to: "b".to_owned(),
+        plugin_changed,
+    };
+    let old = "0.1.5 (aaa, schema 14)";
+    let same = "0.1.6 (bbb, schema 14)";
+    let migrated = "0.1.6 (bbb, schema 15)";
+    assert!(
+        installed_notices(old, same, &forwarded(false)).is_empty(),
+        "nothing to tell"
+    );
+    assert!(
+        installed_notices(old, same, &Forward::AlreadyThere).is_empty(),
+        "nothing to tell"
+    );
+    let plugin = installed_notices(old, same, &forwarded(true));
+    assert!(
+        plugin.len() == 1 && plugin[0].contains("plugin files changed"),
+        "{plugin:?}"
+    );
+    let schema = installed_notices(old, migrated, &forwarded(false));
+    assert!(
+        schema.len() == 1 && schema[0].contains("schema 14 to 15"),
+        "{schema:?}"
+    );
+}
+
+#[test]
+fn a_failed_update_leaves_one_line_for_the_orchestrator() {
+    use headwork::ops::update::{add_notice, take_notices};
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(Some(dir.path().to_path_buf())).unwrap();
+    assert!(take_notices(&home).is_empty(), "none yet");
+    add_notice(&home, "one").unwrap();
+    add_notice(&home, "two\nlines").unwrap();
+    assert_eq!(
+        take_notices(&home),
+        vec!["one".to_owned(), "two lines".to_owned()],
+        "in order, one line each"
+    );
+    assert!(take_notices(&home).is_empty(), "taken once");
 }

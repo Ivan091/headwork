@@ -58,6 +58,10 @@ pub const LOCK_WAIT: Duration = Duration::from_secs(60);
 pub const POLL_EVERY: Duration = Duration::from_secs(60);
 /// A transient failure is reported (event, `doctor` warning) from this many attempts in a row on.
 pub const REPORT_TRANSIENT_FROM: u32 = 3;
+/// Lines for the orchestrator's next prompt: updates append them, its `UserPromptSubmit` hook takes them.
+pub const NOTICES_FILE: &str = "update-notices.txt";
+/// Where a detached update writes its output.
+pub const LOG_FILE: &str = "update.log";
 
 /// The lock file, held while an update runs; released when dropped.
 #[derive(Debug)]
@@ -919,6 +923,12 @@ fn record_failure(
     };
     state.result(now, report.to_string());
     state.save(env.home)?;
+    if first_to_report(kind, next.attempts) {
+        add_notice(
+            env.home,
+            &format!("headwork update failed, the old build runs on; tell the user: {report}"),
+        )?;
+    }
     if kind == FailureKind::Deterministic || next.attempts >= REPORT_TRANSIENT_FROM {
         match store {
             Some(store) => store.append_event(env.actor, None, None, "update-failed", &data)?,
@@ -1339,6 +1349,9 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
         &serde_json::json!({ "tag": tag, "from": from, "to": this.text, "checkout": checkout }),
     )?;
     drop(store);
+    for line in installed_notices(from, this.text, &checkout) {
+        add_notice(env.home, &line)?;
+    }
     let mut state = UpdateState::load(env.home);
     let pending = env.home.root().join(PENDING_FILE);
     let asked = pending.exists();
@@ -1362,6 +1375,191 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
         checkout,
         again,
     })
+}
+
+/// Whether a failure is the first the user should hear of: a latched one at once, a transient one at its
+/// [`REPORT_TRANSIENT_FROM`]th attempt, so a failing release is told once, not at every retry.
+const fn first_to_report(kind: FailureKind, attempts: u32) -> bool {
+    match kind {
+        FailureKind::Deterministic => attempts == 1,
+        FailureKind::Transient => attempts == REPORT_TRANSIENT_FROM,
+    }
+}
+
+/// The orchestrator's lines about an install: only when plugin files changed or the store schema moved, the two
+/// things running sessions do not pick up by themselves.
+#[must_use]
+pub fn installed_notices(from: &str, to: &str, checkout: &Forward) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Forward::Forwarded {
+        plugin_changed: true,
+        ..
+    } = checkout
+    {
+        lines.push(format!(
+            "headwork {to} installed and its plugin files changed: sessions started before it keep the old hooks until \
+             park and resume; tell the user"
+        ));
+    }
+    let schema = |text: &str| BuildLine::parse(&format!("headwork {text}")).map(|line| line.schema);
+    if let (Some(old), Some(new)) = (schema(from), schema(to))
+        && old != new
+    {
+        lines.push(format!(
+            "headwork {to} installed and migrated the store from schema {old} to {new} (backup in <home>/backups); \
+             launchers started before it may need `headwork close <name>` to finish"
+        ));
+    }
+    lines
+}
+
+/// Appends a line for the orchestrator's next prompt.
+///
+/// # Errors
+///
+/// Fails when the file cannot be written.
+pub fn add_notice(home: &Home, line: &str) -> Result<()> {
+    use std::io::Write as _;
+    let path = home.root().join(NOTICES_FILE);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    writeln!(file, "{}", line.replace('\n', " "))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Takes the lines waiting for the orchestrator's next prompt and leaves none.
+///
+/// The file is renamed aside before it is read, so a line an update appends meanwhile waits for the next prompt instead of being lost.
+#[must_use]
+pub fn take_notices(home: &Home) -> Vec<String> {
+    let path = home.root().join(NOTICES_FILE);
+    let taken = home
+        .root()
+        .join(format!("{NOTICES_FILE}.{}.taken", std::process::id()));
+    if std::fs::rename(&path, &taken).is_err() {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(&taken).unwrap_or_default();
+    drop(std::fs::remove_file(&taken));
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// What started an update, for the event log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateTrigger {
+    /// The tick, once `[update] poll_min` passed.
+    Tick,
+    /// A task of `[update] project` closed.
+    Close,
+    /// The orchestrator's MCP tool `update`.
+    Orchestrator,
+}
+
+/// Starts `headwork update` as a process of its own.
+pub trait UpdateStarter: fmt::Debug {
+    /// Starts `<program> update` on `home`, with `--wait <wait_min>` or `--to <tag>` when given, detached so it
+    /// outlives the caller.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the program does not start.
+    fn start_update(
+        &self,
+        home: &Home,
+        program: &Path,
+        wait_min: Option<u64>,
+        to: Option<Version>,
+    ) -> Result<Started>;
+}
+
+/// The real start: output appended to `<home>/update.log`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DetachedUpdates;
+
+impl UpdateStarter for DetachedUpdates {
+    fn start_update(
+        &self,
+        home: &Home,
+        program: &Path,
+        wait_min: Option<u64>,
+        to: Option<Version>,
+    ) -> Result<Started> {
+        let path = home.root().join(LOG_FILE);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let err = log
+            .try_clone()
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut command = Command::new(program);
+        command.arg("update");
+        if let Some(minutes) = wait_min {
+            command.args(["--wait", &minutes.to_string()]);
+        }
+        if let Some(tag) = to {
+            command.args(["--to", &tag.tag()]);
+        }
+        command.env(HOME_VAR, home.root()).current_dir(home.root());
+        let (pid, note) = proc::spawn_detached_to(&mut command, log.into(), err.into())?;
+        Ok(Started { pid, note })
+    }
+}
+
+/// What a detached update is asked to do beyond a plain `headwork update`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UpdateRequest {
+    /// `--wait <minutes>`.
+    pub wait_min: Option<u64>,
+    /// `--to <tag>`.
+    pub to: Option<Version>,
+}
+
+/// Starts a detached `headwork update` and records `update-started` (or the error) in the event log.
+///
+/// # Errors
+///
+/// Fails when the program does not start or the event cannot be written.
+pub fn start_detached(
+    store: &Store,
+    updates: &dyn UpdateStarter,
+    home: &Home,
+    program: &Path,
+    trigger: UpdateTrigger,
+    request: UpdateRequest,
+    actor: Actor,
+) -> Result<Started> {
+    let started = updates.start_update(home, program, request.wait_min, request.to);
+    let data = match &started {
+        Ok(started) => serde_json::json!({
+            "trigger": trigger,
+            "pid": started.pid,
+            "note": started.note,
+            "wait_min": request.wait_min,
+            "to": request.to.map(Version::tag),
+        }),
+        Err(error) => serde_json::json!({ "trigger": trigger, "error": format!("{error:#}") }),
+    };
+    store.append_event(actor, None, None, "update-started", &data)?;
+    started
+}
+
+/// Whether an update holds `<home>/update.lock` now.
+///
+/// # Errors
+///
+/// Fails when the lock file cannot be opened.
+pub fn running(home: &Home) -> Result<bool> {
+    Ok(UpdateLock::try_take(home)?.is_none())
 }
 
 fn newer_release(env: &UpdateEnv<'_>, state: &mut UpdateState, this: Option<Version>) -> bool {
