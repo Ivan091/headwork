@@ -976,3 +976,8 @@ and the reason.
   so it would call a dirty tree clean, and it would relink every worktree build on each commit. The string is built at
   run time (clap's `string` feature), so the CLI parses through `Cli::command().version(..)` and `from_arg_matches`;
   usage errors still exit 2, which the launcher's exit hand-off relies on. `doctor`'s `binary` check shows it.
+- 2026-11-22 Token usage (plan in `docs/usage.md`): read Claude's transcripts, one row per API response keyed by
+  `message.id`, instead of Claude Code's OpenTelemetry export or the status line, because transcripts are exact, need no
+  collector, split out subagents and reach back as far as Claude keeps them. The user chose an API-price estimate from
+  `config.toml`, every session on the machine (others as `unmanaged`), 90 days of per-response rows then a daily
+  roll-up, and `usage`, `board`, `status` and close as the views.
