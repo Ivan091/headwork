@@ -934,9 +934,3 @@ and the reason.
   (`SILENT_KIND`, `LeadsConfig::asks_before_close`) rather than a new flag or migration: a `silent` lead's close and the
   tick's merged-grace close need no `close-go`, and its rules leave out "Ask before you close". Every other kind keeps
   `[leads] ask_before_close`. A `silent` kind in the main checkout still needs to be listed as main-only like any kind.
-- 2026-11-22 Autoupdate (`docs/autoupdate.md`, a plan): every merge to master is released by GitHub Actions (Windows
-  x86_64 and macOS arm64, gated by `check.sh` on both) and each machine installs the newest release with `headwork
-  update`, smoke-tested against a copy of the store first, rather than building origin/master locally. The user chose a
-  public repository so the runners are free (a release per merge on a private one would need about 11,000 to 13,000
-  minutes a month against 2,000 included) and downloads need no login; the history is rewritten first (author e-mail
-  addresses, `Claude-Session:` trailers, raw trial artefacts and the copied cmux files) and the code is licensed MIT.
