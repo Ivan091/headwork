@@ -1,6 +1,6 @@
 //! Sessions as the launcher sees them, and task worktrees.
 
-use headwork_core::{Actor, PlaceKind};
+use headwork_core::{Actor, PermissionMode, PlaceKind};
 use rusqlite::{OptionalExtension, params};
 
 /// Where the host put a session.
@@ -21,7 +21,7 @@ use crate::records::{SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
 
 const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code, \
-                               host_pane, host_place";
+                               host_pane, host_place, permission_mode";
 
 type RawSession = (
     String,
@@ -33,10 +33,10 @@ type RawSession = (
     Option<i64>,
     Option<String>,
     Option<i64>,
-    (Option<String>, Option<String>),
+    (Option<String>, Option<String>, Option<String>),
 );
 
-const SESSION_WIDTH: usize = 11;
+const SESSION_WIDTH: usize = 12;
 
 /// A live session's id, `claude` process and launcher process.
 pub type LivePids = (String, Option<u32>, Option<u32>);
@@ -52,7 +52,7 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession> {
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
-        (row.get(9)?, row.get(10)?),
+        (row.get(9)?, row.get(10)?, row.get(11)?),
     ))
 }
 
@@ -96,7 +96,7 @@ fn into_row(raw: RawSession) -> Result<SessionRow, StoreError> {
         claude,
         last_event_at,
         exit,
-        (host_pane, host_place),
+        (host_pane, host_place, permission_mode),
     ) = raw;
     Ok(SessionRow {
         id,
@@ -112,10 +112,46 @@ fn into_row(raw: RawSession) -> Result<SessionRow, StoreError> {
         exit_code: exit
             .map(|n| i32::try_from(n).map_err(|_| StoreError::OutOfRange(n)))
             .transpose()?,
+        permission_mode: permission_mode.map(|word| word.parse()).transpose()?,
     })
 }
 
 impl Store {
+    /// Records the permission mode a session is in; an event marks a change.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn set_session_mode(
+        &mut self,
+        id: &str,
+        mode: PermissionMode,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE sessions SET permission_mode = ?1 WHERE id = ?2 AND permission_mode IS NOT ?1",
+            params![mode.as_str(), id],
+        )?;
+        if changed > 0 {
+            let task: Option<i64> = tx.query_row(
+                "SELECT task_id FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                task.map(TaskId),
+                Some(id),
+                "session-mode",
+                &serde_json::json!({ "mode": mode.as_str() }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// A task's latest session.
     ///
     /// # Errors

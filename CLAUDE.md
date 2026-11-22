@@ -186,7 +186,8 @@ See `docs/decisions.md` (2026-11-18, folder trust).
 Before restarting the computer, tell the orchestrator "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
 up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, then
 closes the panes and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
-back with the same Claude sessions (names, Remote Control, recaps), registered jobs restart, and
+back with the same Claude sessions (names, Remote Control, recaps, and the permission mode each was last in: its
+transcript's last `permissionMode`, else the one its hooks reported), registered jobs restart, and
 `<home>/recaps/park-<id>.md` is the summary for the orchestrator. Nothing installs a logon task. To resume at logon the user
 would run:
 

@@ -22,7 +22,7 @@ use headwork_core::guard::{
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{
-    Actor, AskKind, Config, Role, SessionState, TaskState, is_orchestrator_address,
+    Actor, AskKind, Config, PermissionMode, Role, SessionState, TaskState, is_orchestrator_address,
 };
 use headwork_store::{
     EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk,
@@ -193,6 +193,13 @@ pub fn run_hook(
         return Ok(HookReply::default());
     };
     store.touch_session(&session.id)?;
+    if let Some(mode) = input
+        .get("permission_mode")
+        .and_then(Value::as_str)
+        .and_then(|word| word.parse::<PermissionMode>().ok())
+    {
+        store.set_session_mode(&session.id, mode, Actor::Hook)?;
+    }
     let task = session.task_id.map(|id| store.task(id)).transpose()?;
     let call = Call {
         env,
