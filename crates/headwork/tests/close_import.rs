@@ -69,7 +69,7 @@ fn world_removing(max_workers: u32, remove: &str) -> World {
     let text = format!(
         "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"{remove}\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
-         deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n"
+         deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\n\n[watch]\nexit_grace_s = 2\n"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -818,6 +818,79 @@ fn a_self_close_of_a_session_from_before_hot_reload_starts_a_backup_finisher() {
         launcher.kill().unwrap_or(());
         launcher.wait().unwrap();
     }
+}
+
+fn short_lived(seconds: u32) -> std::process::Child {
+    if cfg!(windows) {
+        Command::new("ping")
+            .args(["-n", &(seconds + 1).to_string(), "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("sleep")
+            .arg(seconds.to_string())
+            .spawn()
+            .unwrap()
+    }
+}
+
+#[test]
+fn close_types_exit_and_kills_only_a_claude_that_stays() {
+    let mut w = world(10);
+    for (slug, stays) in [("stays", true), ("leaves", false)] {
+        let (task, _) = spawn_task(&mut w, slug, false, false);
+        let session = w.store.session_of(task.id).unwrap().unwrap();
+        let surface = session.host_surface.clone().unwrap();
+        let mut launcher = short_lived(1);
+        let mut claude = if stays { sleeper() } else { short_lived(1) };
+        w.store
+            .session_launched(&session.id, launcher.id(), claude.id(), "job")
+            .unwrap();
+        let env = env!(w);
+        close(&mut w.store, &env, task.id, None).unwrap();
+        let calls = w.host.calls();
+        assert!(
+            calls.contains(&format!("send {surface} /exit")),
+            "{slug}: /exit typed into the pane: {calls:?}"
+        );
+        assert!(
+            calls.contains(&format!("send-key {surface} Enter")),
+            "{slug}: and sent: {calls:?}"
+        );
+        let kinds = event_kinds(&w.store, &task);
+        assert!(kinds.iter().any(|k| k == "exit-asked"), "{slug}: {kinds:?}");
+        assert_eq!(
+            kinds.iter().any(|k| k == "exit-ignored"),
+            stays,
+            "{slug}: only a claude that stays is ended by force: {kinds:?}"
+        );
+        assert!(claude.wait().is_ok(), "{slug}: claude is gone");
+        launcher.kill().unwrap_or(());
+        launcher.wait().unwrap();
+    }
+}
+
+#[test]
+fn close_types_nothing_into_a_pane_whose_claude_is_already_gone() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "gone", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let mut launcher = short_lived(4);
+    let mut claude = short_lived(1);
+    claude.wait().unwrap();
+    w.store
+        .session_launched(&session.id, launcher.id(), claude.id(), "job")
+        .unwrap();
+    let env = env!(w);
+    close(&mut w.store, &env, task.id, None).unwrap();
+    let calls = w.host.calls();
+    assert!(
+        !calls.iter().any(|c| c.ends_with(" /exit")),
+        "no /exit for a dead claude: {calls:?}"
+    );
+    launcher.kill().unwrap_or(());
+    launcher.wait().unwrap();
 }
 
 fn stale_job(w: &mut World, task: &Task, pid: u32, policy: ParkPolicy) -> i64 {

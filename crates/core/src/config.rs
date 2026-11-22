@@ -358,6 +358,10 @@ pub struct WatchConfig {
     pub merged_grace_min: u32,
     /// Seconds a closing task may keep processes alive before the tick ends them.
     pub closing_grace_s: u32,
+    /// Seconds `close` gives a session's `claude` to leave after it typed `/exit` into its pane, before it ends the
+    /// process tree; 0 skips `/exit`. Claude Code archives its Remote Control session at claude.ai as it exits, which a
+    /// killed process never does, so a killed session stays listed in the Claude app.
+    pub exit_grace_s: u32,
     /// Folders the runaway check watches; `{temp}` stands for the temp folder, and folders of live tasks are always watched.
     pub roots: Vec<String>,
 }
@@ -374,6 +378,7 @@ impl Default for WatchConfig {
             ask_remind_min: 120,
             merged_grace_min: 10,
             closing_grace_s: 60,
+            exit_grace_s: 15,
             roots: Vec::new(),
         }
     }
