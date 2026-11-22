@@ -1296,3 +1296,10 @@ and the reason.
   roll-up runs in the tick's `usage` stage whenever rows older than `[usage] keep_days` exist (cheap on the `at`
   index, so at most once a day in effect), cuts on a UTC day boundary so no day is split between the tables, and a
   reread skips lines on or before the last summed day (`MAX(day)` of `usage_daily`). `keep_days = 0` never rolls up.
+- 2026-11-22 Dashboard plan (`docs/dashboard.md`). The agent graph is a page `headwork dash` serves on loopback from
+  the binary, read only (`query_only`), drawn with a vendored Cytoscape.js (compound nodes for a task around its lead
+  and parts, force layout), served by synchronous `tiny_http` so no async runtime joins the build. Live view by
+  server-sent events over new `events` ids; replay rebuilds the graph at a time from row start and end times and the
+  newest `transition` at or before it. A real Neo4j and an Obsidian vault were set aside as later exports. The one
+  data gap, a message's recipient, is closed by `to` and a short `summary` on the `SendMessage` `tool-used` event,
+  never the body.
