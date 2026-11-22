@@ -174,6 +174,15 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize, depth: usize) {
             let _ = write!(text, " {surface}");
         }
         match (session.host_place, &session.host_pane) {
+            (Some(PlaceKind::Pane), _)
+                if t.shape == TaskShape::Lead && session.host_workspace.is_some() =>
+            {
+                let _ = write!(
+                    text,
+                    " in its own workspace {}",
+                    session.host_workspace.as_deref().unwrap_or_default()
+                );
+            }
             (Some(PlaceKind::Pane), Some(pane)) => {
                 let _ = write!(text, " in its own pane {pane}");
             }
@@ -862,6 +871,45 @@ mod tests {
         assert!(text.contains("surf-own in its own pane pane-1"), "{text}");
         assert!(text.contains("surf-stacked as a tab of pane-1"), "{text}");
         assert!(text.contains("surf-tabbed as a tab\n"), "{text}");
+    }
+
+    #[test]
+    fn board_shows_a_lead_in_its_own_workspace() {
+        let (mut store, config) = store();
+        let lead = shaped(&mut store, &config, "big", headwork_core::TaskShape::Lead);
+        let id = "00000000-0000-0000-0000-0000000000aa".to_owned();
+        store
+            .record_session(
+                &NewSession {
+                    id: id.clone(),
+                    task_id: Some(lead.id),
+                    role: Role::Worker,
+                    rc_name: lead.name.to_string(),
+                    host: "wmux".to_owned(),
+                    host_workspace: None,
+                    host_surface: None,
+                },
+                Actor::User,
+            )
+            .unwrap();
+        store
+            .set_session_place(
+                &id,
+                &Place {
+                    workspace: "ws-lead",
+                    surface: "surf-lead",
+                    pane: Some("pane-9"),
+                    kind: Some(PlaceKind::Pane),
+                },
+                Actor::User,
+            )
+            .unwrap();
+        let text = super::board(&store.board(false).unwrap(), 10);
+        assert!(
+            text.contains("surf-lead in its own workspace ws-lead"),
+            "{text}"
+        );
+        assert!(!text.contains("pane-9"), "{text}");
     }
 
     #[test]
