@@ -38,9 +38,11 @@ use crate::home::{CLAUDE_JSON_VAR, HOME_VAR, Home};
 /// The lock one update holds while it runs; `headwork install` waits for it too.
 pub const LOCK_FILE: &str = "update.lock";
 
-/// How long a run waits for the lock before it reports that an update is running. A real update holds it for minutes;
-/// the grace covers a lock that was just released but is still shared with a child process between its `fork` and
-/// `exec` (an `flock` on unix belongs to the open file, which a forked child shares until `exec` closes it).
+/// How long a run waits for the lock before it reports that an update is running.
+///
+/// A real update holds it for minutes; the grace covers a lock that was just released but is still shared with a
+/// child process between its `fork` and `exec` (an `flock` on unix belongs to the open file, which a forked child
+/// shares until `exec` closes it).
 pub const LOCK_GRACE: Duration = Duration::from_secs(2);
 /// Touched by an update that found the lock taken, so the holder runs again.
 pub const PENDING_FILE: &str = "update.pending";
