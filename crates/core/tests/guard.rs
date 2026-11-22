@@ -474,6 +474,17 @@ fn worker_git_outside_table() {
         ("git -C /elsewhere fetch", None),
         ("git -C /elsewhere branch", None),
         ("git -C /elsewhere branch --list 'f*'", None),
+        ("git -C /elsewhere branch -a", None),
+        ("git -C /elsewhere branch -a --contains abc", None),
+        (
+            "git -C /elsewhere tag -a v1 -m x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C /elsewhere tag -s v1",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        ("git -C /elsewhere tag v1", Some(RuleId::WorkerGitOutside)),
         ("git -C /elsewhere worktree list", None),
         ("git -C /elsewhere stash list", None),
         (
