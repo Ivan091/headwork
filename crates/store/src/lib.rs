@@ -35,7 +35,7 @@ pub use records::{
     WorktreeRow,
 };
 pub use reports::{AddedRule, EVENT_REPORT, NewPr};
-pub use sessions::{EndedSession, LivePids, Place};
+pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
 
 /// The SQL expression for the current time, UTC, with milliseconds.

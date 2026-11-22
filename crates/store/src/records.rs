@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use headwork_core::process::{ProcessIdentity, RecordedPid};
 use headwork_core::{
     Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, PlaceKind, ProjectName,
     SessionState, Slug, TaskName, TaskShape, TaskSnapshot, TaskState,
@@ -134,12 +135,50 @@ pub struct SessionRow {
     pub launcher_pid: Option<u32>,
     /// The `claude` process.
     pub claude_pid: Option<u32>,
+    /// The launcher's image and start time, read when it was recorded.
+    pub launcher_identity: Option<ProcessIdentity>,
+    /// `claude`'s image and start time, read when it was recorded.
+    pub claude_identity: Option<ProcessIdentity>,
+    /// When the pids were recorded, in seconds since the unix epoch.
+    pub pids_at: Option<u64>,
     /// The last hook event.
     pub last_event_at: Option<String>,
     /// The exit code of `claude`, once it ended.
     pub exit_code: Option<i32>,
     /// The permission mode the session was last seen in, which a resume starts it in again.
     pub permission_mode: Option<PermissionMode>,
+}
+
+impl SessionRow {
+    fn recorded(
+        &self,
+        pid: Option<u32>,
+        identity: Option<&ProcessIdentity>,
+    ) -> Option<RecordedPid> {
+        pid.map(|pid| RecordedPid {
+            pid,
+            identity: identity.cloned(),
+            recorded_at: self.pids_at,
+        })
+    }
+
+    /// The `claude` process as recorded, to judge against what runs under its pid now.
+    #[must_use]
+    pub fn claude(&self) -> Option<RecordedPid> {
+        self.recorded(self.claude_pid, self.claude_identity.as_ref())
+    }
+
+    /// The launcher process as recorded, to judge against what runs under its pid now.
+    #[must_use]
+    pub fn launcher(&self) -> Option<RecordedPid> {
+        self.recorded(self.launcher_pid, self.launcher_identity.as_ref())
+    }
+
+    /// Both recorded processes, `claude` first.
+    #[must_use]
+    pub fn processes(&self) -> Vec<RecordedPid> {
+        self.claude().into_iter().chain(self.launcher()).collect()
+    }
 }
 
 /// An ask.

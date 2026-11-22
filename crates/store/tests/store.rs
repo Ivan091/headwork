@@ -16,8 +16,8 @@ use headwork_core::{
     TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
-    BACKUP_DIR, Backup, EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession,
-    NewTask, Place, Store, StoreError, Task,
+    BACKUP_DIR, Backup, EventFilter, FABLE_ALLOW, Launched, MIGRATIONS, NewAsk, NewJob, NewRecap,
+    NewSession, NewTask, Place, Store, StoreError, Task,
 };
 
 fn config() -> Config {
@@ -1820,5 +1820,141 @@ fn dropping_a_lead_drops_its_live_parts_and_a_part_drops_alone() {
     assert!(
         matches!(error, StoreError::Refused { .. }),
         "twice: {error}"
+    );
+}
+
+#[test]
+fn a_launched_session_records_both_identities_and_a_resume_clears_them() {
+    let (mut store, _, id) = hook_world();
+    let launcher = ProcessIdentity {
+        image: "headwork.exe".to_owned(),
+        started: 1_000,
+    };
+    let claude = ProcessIdentity {
+        image: "claude.exe".to_owned(),
+        started: 1_001,
+    };
+    store
+        .session_launched_identified(
+            &id,
+            Launched {
+                pid: 100,
+                identity: Some(&launcher),
+            },
+            Launched {
+                pid: 101,
+                identity: Some(&claude),
+            },
+            "job",
+        )
+        .unwrap();
+    let (row, _) = store.session(&id).unwrap().unwrap();
+    assert_eq!(
+        row.launcher().map(|p| (p.pid, p.identity)),
+        Some((100, Some(launcher))),
+        "launcher"
+    );
+    assert_eq!(
+        row.claude().map(|p| (p.pid, p.identity)),
+        Some((101, Some(claude))),
+        "claude"
+    );
+    assert!(row.pids_at.is_some_and(|at| at > 1_700_000_000), "{row:?}");
+    assert_eq!(
+        row.processes().iter().map(|p| p.pid).collect::<Vec<_>>(),
+        [101, 100],
+        "claude first"
+    );
+    store.session_resumed(&id, Actor::User).unwrap();
+    let (row, _) = store.session(&id).unwrap().unwrap();
+    assert!(row.processes().is_empty(), "no pids after a resume");
+    assert_eq!(
+        (row.launcher_identity, row.claude_identity, row.pids_at),
+        (None, None, None),
+        "nor identities"
+    );
+    store.session_launched(&id, 200, 201, "job").unwrap();
+    let (row, _) = store.session(&id).unwrap().unwrap();
+    assert_eq!(
+        row.claude()
+            .map(|p| (p.pid, p.identity, p.recorded_at.is_some())),
+        Some((201, None, true)),
+        "a launch without identities still records when"
+    );
+}
+
+#[test]
+fn a_session_found_gone_or_ended_records_its_end_once() {
+    for state in [SessionState::Gone, SessionState::Ended] {
+        let (mut store, _, id) = hook_world();
+        store.session_launched(&id, 100, 101, "job").unwrap();
+        let ended_at = |store: &Store| {
+            store
+                .ended_sessions()
+                .unwrap()
+                .first()
+                .and_then(|s| s.ended)
+        };
+        store.set_session_state(&id, state, Actor::Tick).unwrap();
+        let first = ended_at(&store);
+        assert!(first.is_some(), "{state}: an end is recorded");
+        let seen = store.ended_sessions().unwrap()[0].last_seen;
+        assert!(seen.is_some(), "{state}: the last event is read");
+        store
+            .set_session_state(&id, SessionState::Gone, Actor::Tick)
+            .unwrap();
+        assert_eq!(ended_at(&store), first, "{state}: the end is kept");
+    }
+    let (mut store, _, id) = hook_world();
+    store.session_launched(&id, 100, 101, "job").unwrap();
+    store
+        .set_session_state(&id, SessionState::Live, Actor::Tick)
+        .unwrap();
+    assert!(store.ended_sessions().unwrap().is_empty(), "not ended");
+}
+
+#[test]
+fn migration_15_dates_recorded_pids_and_backfills_the_end_of_ended_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 14);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO sessions (id, role, rc_name, runtime, host, launcher_pid, claude_pid, state, started_at, last_event_at)
+         VALUES ('launched', 'worker', 'me-sim-a', 'pane', 'wmux', 10, 11, 'live', '2026-11-20T10:00:00.000Z',
+                 '2026-11-20T11:00:00.000Z'),
+                ('imported', 'worker', 'me-sim-b', 'pane', 'wmux', NULL, 12, 'live', '2026-11-20T09:00:00.000Z', NULL),
+                ('gone', 'worker', 'me-sim-c', 'pane', 'wmux', 13, 14, 'gone', '2026-11-20T09:00:00.000Z',
+                 '2026-11-20T13:00:00.000Z'),
+                ('quiet', 'worker', 'me-sim-d', 'pane', 'wmux', NULL, NULL, 'ended', '2026-11-20T09:00:00.000Z', NULL);
+         INSERT INTO events (at, actor, session_id, type, data) VALUES
+                ('2026-11-20T10:00:05.000Z', 'worker', 'launched', 'launched', '{}'),
+                ('2026-11-20T10:30:00.000Z', 'hook', 'launched', 'tool', '{}'),
+                ('2026-11-20T12:00:00.000Z', 'tick', 'gone', 'session-state', '{}');",
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    let pids_at = |id: &str| store.session(id).unwrap().unwrap().0.pids_at;
+    assert_eq!(
+        pids_at("launched"),
+        Some(1_795_168_805),
+        "from the launch event"
+    );
+    assert_eq!(pids_at("imported"), Some(1_795_165_200), "from the start");
+    assert_eq!(pids_at("quiet"), None, "no pids, no date");
+    let ended: Vec<(String, Option<u64>)> = store
+        .ended_sessions()
+        .unwrap()
+        .into_iter()
+        .map(|s| (s.name, s.ended))
+        .collect();
+    assert_eq!(
+        ended,
+        [
+            ("me-sim-c".to_owned(), Some(1_795_176_000)),
+            ("me-sim-d".to_owned(), Some(1_795_165_200)),
+        ],
+        "the last event, else the start"
     );
 }

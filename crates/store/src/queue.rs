@@ -176,8 +176,9 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO sessions (id, task_id, role, rc_name, runtime, host, host_workspace, host_surface, claude_pid,
-                     state, started_at, last_event_at)
-                 VALUES (?1, ?2, ?3, ?4, 'pane', ?5, ?6, ?7, ?8, 'live', {NOW}, {NOW})"
+                     pids_at, state, started_at, last_event_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pane', ?5, ?6, ?7, ?8, CASE WHEN ?8 IS NULL THEN NULL
+                     ELSE CAST(strftime('%s', 'now') AS INTEGER) END, 'live', {NOW}, {NOW})"
             ),
             params![
                 adopt.session_id,
