@@ -278,6 +278,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Act on review flows: the graphs of reviewers a review runs (`docs/review-flows.md`).
+    Flow {
+        #[command(subcommand)]
+        action: FlowAction,
+    },
     /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
     Doctor {
         /// The Claude config folder.
@@ -423,6 +428,20 @@ enum JobAction {
         /// Why it is over; recorded in the job's note and the event log.
         #[arg(long)]
         reason: String,
+    },
+}
+
+/// What `flow` does.
+#[derive(Debug, Subcommand)]
+enum FlowAction {
+    /// Validate every flow, or one: ids unique, the graph acyclic, prompts present, models allowed, levels 1 to 3
+    /// defined. Exits 1 on a problem.
+    Check {
+        /// One flow's name; every flow when absent.
+        name: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -603,6 +622,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return rule_test(&probe, json, out);
         }
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
+        Command::Flow {
+            action: FlowAction::Check { name, json },
+        } => return flow_check_command(name.as_deref(), json, out),
         Command::Orchestrator {
             name,
             agent,
@@ -750,6 +772,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Doctor { .. }
+        | Command::Flow { .. }
         | Command::Orchestrator { .. }
         | Command::Hook { .. }
         | Command::Mcp { .. }
@@ -1741,6 +1764,30 @@ fn launch_command(home: &Home, task: i64, flags: (bool, bool, bool)) -> Result<E
     let code = headwork::ops::launch::launch(home, TaskId(task), mode)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+fn flow_check_command(name: Option<&str>, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let mut reports = headwork::ops::flows::check_all(home.root(), &config.models.allowed);
+    if let Some(name) = name {
+        reports.retain(|report| report.name == name);
+        if reports.is_empty() {
+            anyhow::bail!("no flow `{name}`");
+        }
+    }
+    if json {
+        json_out(out, &reports)?;
+    } else {
+        out.write_all(render::flows_checked(&reports).as_bytes())?;
+    }
+    Ok(
+        if reports.iter().all(headwork::ops::flows::FlowReport::ok) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        },
+    )
 }
 
 fn doctor_command(

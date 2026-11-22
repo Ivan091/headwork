@@ -294,6 +294,129 @@ text_enum!(
 );
 
 text_enum!(
+    /// Where a review is (`docs/review-flows.md`, section 7).
+    ReviewState, "review state" {
+        /// The user asked for it; the lead has not started it.
+        Requested => "requested",
+        /// The reviewer lead runs the flow's nodes.
+        Running => "running",
+        /// The findings went to the implementing lead.
+        Delivered => "delivered",
+        /// The reviewer lead re-checks the fixes and weighs the disputes.
+        Rechecking => "rechecking",
+        /// Disputes the reviewer lead could not settle wait on the user.
+        Asking => "asking",
+        /// Finished.
+        Done => "done",
+        /// Ended before it finished: the lead closed or the user dropped the review part.
+        Cancelled => "cancelled",
+    }
+);
+
+impl ReviewState {
+    /// Whether the review is still open: every state but `done` and `cancelled`.
+    #[must_use]
+    pub const fn is_open(self) -> bool {
+        !matches!(self, Self::Done | Self::Cancelled)
+    }
+}
+
+text_enum!(
+    /// Where one node instance of a review round is.
+    NodeState, "review node state" {
+        /// Its inputs are done; it waits for the reviewer lead to take it.
+        Ready => "ready",
+        /// Handed to a subagent.
+        Running => "running",
+        /// Its findings or verdict are in.
+        Done => "done",
+        /// The subagent failed; the round goes on without it.
+        Failed => "failed",
+    }
+);
+
+impl NodeState {
+    /// Whether the instance is over, its result in or given up.
+    #[must_use]
+    pub const fn is_over(self) -> bool {
+        matches!(self, Self::Done | Self::Failed)
+    }
+}
+
+text_enum!(
+    /// How much a review finding weighs.
+    Severity, "finding severity" {
+        /// A defect with a concrete failing scenario.
+        Important => "important",
+        /// A minor issue.
+        Nit => "nit",
+        /// A doubt about the approach or the scope.
+        Doubt => "doubt",
+    }
+);
+
+text_enum!(
+    /// What a verify node concluded about one finding.
+    FindingVerdict, "finding verdict" {
+        /// The finding holds.
+        Confirmed => "confirmed",
+        /// The finding may hold; it goes on.
+        Plausible => "plausible",
+        /// The finding does not hold; it is dropped.
+        Rejected => "rejected",
+    }
+);
+
+impl FindingVerdict {
+    /// Whether a finding with this verdict reaches the implementing lead.
+    #[must_use]
+    pub const fn passes(self) -> bool {
+        matches!(self, Self::Confirmed | Self::Plausible)
+    }
+}
+
+text_enum!(
+    /// Where a delivered finding stands between the implementing lead and the reviewer lead.
+    Resolution, "finding resolution" {
+        /// Delivered; the implementing lead has not answered it.
+        Open => "open",
+        /// The lead says it fixed it; the re-check is due.
+        Fixed => "fixed",
+        /// The re-check found the fix good.
+        FixAccepted => "fix-accepted",
+        /// The lead disputes it with a reason; the reviewer lead weighs it.
+        Disputed => "disputed",
+        /// The reviewer lead accepted the dispute.
+        DisputeAccepted => "dispute-accepted",
+        /// The re-check found the fix wanting; the finding is open again.
+        FixRejected => "fix-rejected",
+        /// The dispute went to the user.
+        Asked => "asked",
+        /// The user kept the finding.
+        UserKept => "user-kept",
+        /// The user dropped the finding.
+        UserDropped => "user-dropped",
+    }
+);
+
+impl Resolution {
+    /// Whether the finding waits on the implementing lead: open, its fix rejected, or kept by the user.
+    #[must_use]
+    pub const fn awaits_lead(self) -> bool {
+        matches!(self, Self::Open | Self::FixRejected | Self::UserKept)
+    }
+
+    /// Whether the finding is settled for good.
+    #[must_use]
+    pub const fn is_settled(self) -> bool {
+        matches!(
+            self,
+            Self::FixAccepted | Self::DisputeAccepted | Self::UserDropped
+        )
+    }
+}
+
+text_enum!(
     /// A session's role.
     Role, "role" {
         /// The coordinating session.
