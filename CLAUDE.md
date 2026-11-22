@@ -66,7 +66,10 @@ adopted that run in the task's worktrees, which `close` ends at once) and, on Wi
 or a registered job, nor what they started or what started them; Git Bash shells take their parents from Git Bash's `ps -el`. The orchestrator's `close` takes
 `force` for a task stuck in `closing` whose pull requests are all merged and that has no live job (`close_forced` in
 `ops/close.rs`), and for a dropped task with none: a worktree the remove command refuses is recorded `kept` instead of
-blocking. A closing task whose session ended frees its worker slot. Asks the tick raises have no dialog: `headwork
+blocking. A closing task whose session ended frees its worker slot, and so does a session that waits in its own
+`AskUserQuestion` while running no shell, job, background subagent or part (`core/src/slots.rs`, `ops/waiting.rs`,
+`sessions.waiting_since`): queued tasks may then start until all sessions reach `max_workers` plus `[machine]
+idle_overflow`, and an answered session works again at once, over the cap if need be. Asks the tick raises have no dialog: `headwork
 answer` or the orchestrator's `answer` tool answers them by id (`ops/answer.rs`), recording who answered.
 Leads (`docs/leads.md`) start with L1: a task's shape (`core/src/lead.rs`: `Lead`, `Part { parent }`, `Plain`, from
 `tasks.parent_id` and `tasks.lead`, migration 0013), `[leads]` (`enabled`, off for now; `max_parts`; `part_title`), a

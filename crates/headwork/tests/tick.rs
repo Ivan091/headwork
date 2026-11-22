@@ -48,6 +48,7 @@ struct World {
     brief: PathBuf,
     children: Vec<Child>,
     updates: FakeStarter,
+    slots: headwork::ops::waiting::FakeSlots,
 }
 
 /// Records the updates the tick starts instead of starting them.
@@ -146,6 +147,7 @@ fn world_extra(enforce: bool, max_workers: u32, extra: &str) -> World {
         brief,
         children: Vec::new(),
         updates: FakeStarter::default(),
+        slots: headwork::ops::waiting::FakeSlots::default(),
     }
 }
 
@@ -200,6 +202,7 @@ fn run_tick(w: &mut World) -> TickReport {
             temp: w.dir.path(),
             limits: w.limits,
             updates: &w.updates,
+            slots: &w.slots,
         },
     )
     .unwrap()

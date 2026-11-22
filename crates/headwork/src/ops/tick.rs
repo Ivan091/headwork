@@ -92,6 +92,9 @@ pub struct TickEnv<'a> {
     pub limits: Limits,
     /// Starts a detached `headwork update` when a poll is due; [`super::update::Detached`] in production.
     pub updates: &'a dyn UpdateStarter,
+    /// The processes, to tell whether a session that waits on the user runs anything; [`super::waiting::LiveSlots`]
+    /// in production.
+    pub slots: &'a dyn super::waiting::SlotProbe,
 }
 
 /// What the tick did about a finding.
@@ -173,6 +176,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("runaway", Run::runaway)?;
     run.stage("stuck", Run::stuck)?;
     run.stage("asks", Run::asks)?;
+    run.stage("waiting", Run::waiting)?;
     run.stage("queue", Run::queue)?;
     run.stage("update", Run::update)?;
     run.sweep(FindingId::TickError)?;
@@ -1186,6 +1190,12 @@ impl<'b> Run<'_, 'b> {
             TriggeredBy::Tick,
             vec!["update".to_owned()],
         )?);
+        Ok(())
+    }
+
+    fn waiting(&mut self) -> Result<()> {
+        let actor = self.actor();
+        super::waiting::recheck_all(self.store, self.t.slots, actor)?;
         Ok(())
     }
 

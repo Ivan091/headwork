@@ -68,8 +68,16 @@ pub(crate) fn board(board: &Board, max_workers: u32) -> String {
         .map(|task| task.asks.len())
         .sum::<usize>()
         + board.other_asks.len();
+    let idle = if board.waiting_workers == 0 {
+        String::new()
+    } else {
+        format!(
+            " (+{} waiting on the user, slot freed)",
+            board.waiting_workers
+        )
+    };
     let mut text = format!(
-        "machine {} · {} of {max_workers} slots · {asks} {} waiting\n",
+        "machine {} · {} of {max_workers} slots{idle} · {asks} {} waiting\n",
         board.machine,
         board.live_workers,
         if asks == 1 { "ask" } else { "asks" },

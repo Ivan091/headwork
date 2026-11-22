@@ -16,7 +16,9 @@ use TaskState as S;
 
 const FREE: StartFacts = StartFacts {
     live_workers: 2,
+    waiting_workers: 0,
     max_workers: 10,
+    idle_overflow: 4,
     project_live: 1,
     project_cap: Some(3),
     main_only_kind_busy: false,
@@ -196,6 +198,35 @@ fn closed_is_final() {
 
 fn refused_start(facts: StartFacts) -> Refusal {
     apply(&task(S::Queued), &Trigger::Start(facts)).unwrap_err()
+}
+
+#[test]
+fn waiting_sessions_free_slots_up_to_the_overflow() {
+    assert_eq!(
+        refused_start(StartFacts {
+            live_workers: 7,
+            waiting_workers: 7,
+            ..FREE
+        }),
+        Refusal::OverflowFull {
+            max: 10,
+            overflow: 4,
+            waiting: 7
+        },
+        "waiting sessions free slots only up to the overflow"
+    );
+    assert!(
+        apply(
+            &task(S::Queued),
+            &Trigger::Start(StartFacts {
+                live_workers: 7,
+                waiting_workers: 6,
+                ..FREE
+            })
+        )
+        .is_ok(),
+        "a waiting session's slot goes to a queued task"
+    );
 }
 
 #[test]
@@ -701,7 +732,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
         Just(FableGate::Waiting)
     ];
     (
-        0..12_u32,
+        (0..12_u32, 0..8_u32, 0..4_u32),
         0..5_u32,
         proptest::option::of(1..4_u32),
         any::<bool>(),
@@ -712,7 +743,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
     )
         .prop_map(
             |(
-                live_workers,
+                (live_workers, waiting_workers, idle_overflow),
                 project_live,
                 project_cap,
                 main_only_kind_busy,
@@ -722,7 +753,9 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
                 machine,
             )| StartFacts {
                 live_workers,
+                waiting_workers,
                 max_workers: 10,
+                idle_overflow,
                 project_live,
                 project_cap,
                 main_only_kind_busy,
@@ -844,6 +877,7 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
         Trigger::Start(f) => {
             matches!(f.machine, MachineMode::Normal | MachineMode::Resuming)
                 && f.live_workers < f.max_workers
+                && f.live_workers + f.waiting_workers < f.max_workers + f.idle_overflow
                 && f.project_cap.is_none_or(|cap| f.project_live < cap)
                 && !f.main_only_kind_busy
                 && f.part_slots

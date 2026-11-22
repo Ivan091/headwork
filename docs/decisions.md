@@ -1078,3 +1078,24 @@ and the reason.
   `tick-hung`, raises the standing finding `tick-hung` and exits 1; a younger holder still exits 0 with "another tick is
   running". The lock is never taken from a live process. A tick that runs again resolves the finding. `doctor` check
   `tick-hung` warns on the same condition.
+- 2026-11-22 Waiting sessions free their slot. The user asked that a worker which waits for an answer and does no
+  work stop holding a `max_workers` slot. A session waits when an ask of its own waits in its dialog (kinds question,
+  review: an `AskUserQuestion`, a lead's `Close` question included) and works when `claude` runs a shell straight (a
+  `Bash`, `PowerShell` or `Monitor` command, `core::slots::SHELL_IMAGES`; `cmd` is left out because Claude Code starts
+  MCP servers through `cmd /c` on Windows), a registered job of the task runs, a part of the lead is not closed, or a
+  background `Bash`, `Monitor`, `Agent` or `Workflow` of this turn has not sent its notification (`turn_so_far`'s
+  `background`, audit G3; an agent runs inside `claude`, so no process tells when it ends). The `PreToolUse` hook of an
+  `AskUserQuestion` checks the session (its `claude` is the nearest one above the hook) and sets
+  `sessions.waiting_since` (migration 0015); every later hook call of the session clears it; the tick checks every
+  running session with a waiting ask again, so a shell that ends during the dialog frees the slot at the next tick. A
+  task counts as waiting only while its newest session is marked and that ask still waits, so a mark the hooks failed
+  to clear dies with the ask. How the slot comes back was the user's pick, "overflow with a limit": a queued task
+  starts while fewer than `max_workers` sessions work and all sessions together, waiting ones included, are fewer than
+  `max_workers` plus `[machine] idle_overflow` (default 4, 0 keeps today's behaviour; refusal `OverflowFull`); an
+  answered session works again at once, over the cap if need be, and the queue waits until the count is under it. The
+  project cap counts working sessions only; a main-only kind and `max_parts` still count waiting ones, since those
+  guard a checkout and a lead's tabs, not the machine. When a mark frees a slot and a task is queued, the hook starts
+  a detached `headwork queue` (event `queue-triggered`), so the slot is taken before the next tick. Permission prompts
+  and the folder trust dialog are left out for now: no hook marks the end of a permission prompt for tools outside the
+  plugin's `PostToolUse` matcher, so a mark could outlive the prompt, and the trust dialog belongs to a session not yet
+  started.
