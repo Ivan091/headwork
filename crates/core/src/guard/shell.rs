@@ -2,8 +2,9 @@
 //!
 //! The parser splits a command line into simple commands at `;`, `&`, `|`, newlines, parentheses and backticks outside
 //! quotes, and each simple command into words with quotes and backslashes removed. It strips leading assignments and
-//! wrappers such as `env`, `sudo` and `rtk`, and descends into `bash -c "<script>"`. Here-document bodies are data,
-//! not commands, and are skipped up to their terminator. It is a pattern matcher for
+//! wrappers such as `env`, `sudo` and `rtk`, and descends into `bash -c "<script>"`. Redirections (`2>&1`, `>> log`,
+//! `&> /dev/null`, `< input`) are dropped with their targets, so they never read as arguments, and the `&` of `2>&1`
+//! does not end a command. Here-document bodies are data, not commands, and are skipped up to their terminator. It is a pattern matcher for
 //! hooks, not a shell: anything it cannot see stays allowed.
 
 use std::iter::Peekable;
@@ -193,101 +194,151 @@ enum Quote {
     Double,
 }
 
+/// The commands and words [`split`] has read so far.
+#[derive(Debug, Default)]
+struct Builder {
+    commands: Vec<Vec<String>>,
+    words: Vec<String>,
+    word: String,
+    in_word: bool,
+    redirect_target: bool,
+}
+
+impl Builder {
+    fn push(&mut self, c: char) {
+        self.word.push(c);
+        self.in_word = true;
+    }
+
+    /// Ends the word being read; a redirection's target is dropped instead of kept.
+    fn end_word(&mut self) {
+        if self.in_word {
+            let done = std::mem::take(&mut self.word);
+            if !std::mem::take(&mut self.redirect_target) {
+                self.words.push(done);
+            }
+            self.in_word = false;
+        }
+    }
+
+    fn end_command(&mut self) {
+        self.end_word();
+        self.redirect_target = false;
+        self.commands.push(std::mem::take(&mut self.words));
+    }
+
+    /// Starts a redirection at its first `>` or `<`: digits read just before it are its descriptor, not a word.
+    fn redirect(&mut self, chars: &mut Peekable<Chars<'_>>) {
+        if self.in_word && !self.word.is_empty() && self.word.bytes().all(|b| b.is_ascii_digit()) {
+            self.word.clear();
+            self.in_word = false;
+        } else {
+            self.end_word();
+        }
+        self.redirect_target = redirection(chars);
+    }
+
+    fn finish(mut self) -> Vec<Vec<String>> {
+        self.end_command();
+        self.commands
+            .into_iter()
+            .map(|words| {
+                words
+                    .into_iter()
+                    .filter(|word| word != "$")
+                    .collect::<Vec<_>>()
+            })
+            .filter(|words| !words.is_empty())
+            .collect()
+    }
+}
+
 /// Splits a line into simple commands, each a list of words.
 fn split(line: &str) -> Vec<Vec<String>> {
-    let mut commands = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
+    let mut out = Builder::default();
     let mut quote = Quote::None;
     let mut heredocs: Vec<Heredoc> = Vec::new();
     let mut chars = line.chars().peekable();
-    let end_word = |words: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
-        if *in_word {
-            words.push(std::mem::take(word));
-            *in_word = false;
-        }
-    };
     while let Some(c) = chars.next() {
         match quote {
             Quote::Single => {
                 if c == '\'' {
                     quote = Quote::None;
                 } else {
-                    word.push(c);
+                    out.push(c);
                 }
             }
             Quote::Double => match c {
                 '"' => quote = Quote::None,
                 '\\' => match chars.peek() {
                     Some(&next @ ('"' | '\\' | '$' | '`')) => {
-                        word.push(next);
+                        out.push(next);
                         chars.next();
                     }
-                    _ => word.push(c),
+                    _ => out.push(c),
                 },
-                _ => word.push(c),
+                _ => out.push(c),
             },
             Quote::None => match c {
                 '\'' => {
                     quote = Quote::Single;
-                    in_word = true;
+                    out.in_word = true;
                 }
                 '"' => {
                     quote = Quote::Double;
-                    in_word = true;
+                    out.in_word = true;
                 }
                 '\\' => {
                     if let Some(next) = chars.next()
                         && next != '\n'
                     {
-                        word.push(next);
-                        in_word = true;
+                        out.push(next);
                     }
                 }
-                '#' if !in_word => {
+                '#' if !out.in_word => {
                     for skipped in chars.by_ref() {
                         if skipped == '\n' {
                             break;
                         }
                     }
-                    end_word(&mut words, &mut word, &mut in_word);
-                    commands.push(std::mem::take(&mut words));
+                    out.end_command();
                     skip_heredocs(&mut chars, &mut heredocs);
                 }
                 '<' if chars.next_if_eq(&'<').is_some() => {
-                    end_word(&mut words, &mut word, &mut in_word);
+                    out.end_word();
                     heredocs.extend(heredoc_start(&mut chars));
                 }
                 '\n' => {
-                    end_word(&mut words, &mut word, &mut in_word);
-                    commands.push(std::mem::take(&mut words));
+                    out.end_command();
                     skip_heredocs(&mut chars, &mut heredocs);
                 }
-                ';' | '&' | '|' | '(' | ')' | '`' | '{' | '}' => {
-                    end_word(&mut words, &mut word, &mut in_word);
-                    commands.push(std::mem::take(&mut words));
+                '>' | '<' => out.redirect(&mut chars),
+                '&' if chars.next_if_eq(&'>').is_some() => {
+                    out.end_word();
+                    out.redirect_target = redirection(&mut chars);
                 }
-                c if c.is_whitespace() => end_word(&mut words, &mut word, &mut in_word),
-                c => {
-                    word.push(c);
-                    in_word = true;
-                }
+                ';' | '&' | '|' | '(' | ')' | '`' | '{' | '}' => out.end_command(),
+                c if c.is_whitespace() => out.end_word(),
+                c => out.push(c),
             },
         }
     }
-    end_word(&mut words, &mut word, &mut in_word);
-    commands.push(words);
-    commands
-        .into_iter()
-        .map(|words| {
-            words
-                .into_iter()
-                .filter(|word| word != "$")
-                .collect::<Vec<_>>()
-        })
-        .filter(|words| !words.is_empty())
-        .collect()
+    out.finish()
+}
+
+/// Reads the rest of a redirection operator after its first `>` or `<`: a second `>` or a `|` (`>>`, `>|`), then
+/// `&` with a descriptor (`>&2`, `2>&-`). Returns whether the next word is the redirection's target, a file the
+/// command line names but that is no argument; a process substitution (`>(...)`) has none.
+fn redirection(chars: &mut Peekable<Chars<'_>>) -> bool {
+    chars.next_if(|c| matches!(c, '>' | '|'));
+    if chars.next_if_eq(&'&').is_some() {
+        let mut descriptor = false;
+        while chars.next_if(|c| c.is_ascii_digit() || *c == '-').is_some() {
+            descriptor = true;
+        }
+        return !descriptor;
+    }
+    chars.peek() != Some(&'(')
 }
 
 /// A here-document whose body starts at the next line.
@@ -380,6 +431,32 @@ mod tests {
     }
 
     #[test]
+    fn redirections_are_no_arguments() {
+        assert_eq!(
+            programs("headwork update --wait 15 2>&1 | tail -5"),
+            ["headwork update --wait 15", "tail -5"],
+            "2>&1 neither splits the command nor stays a word"
+        );
+        assert_eq!(
+            programs(
+                "git branch -a 2>/dev/null >> out.txt; cat < in.txt &> log &>>log2 >&2 echo >&log3"
+            ),
+            ["git branch -a", "cat echo"],
+            "targets go with their operators"
+        );
+        assert_eq!(
+            programs("a 2> err b > \"x y\" c && d"),
+            ["a b c", "d"],
+            "quoted targets go whole"
+        );
+        assert_eq!(
+            programs("diff <(git show a) >(tee x) && run &"),
+            ["diff", "git show a", "tee x", "run"],
+            "process substitutions keep their commands"
+        );
+    }
+
+    #[test]
     fn strips_wrappers_and_assignments() {
         assert_eq!(
             programs("FOO=1 rtk bypass env -u X BAR=2 git push"),
@@ -442,7 +519,7 @@ mod tests {
     fn heredoc_bodies_are_not_commands() {
         assert_eq!(
             programs("cat <<'EOF' > notes.md\ncargo build --release\ngit push\nEOF\nls"),
-            ["cat > notes.md", "ls"],
+            ["cat", "ls"],
             "the body is data"
         );
         assert_eq!(
