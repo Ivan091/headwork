@@ -93,6 +93,10 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             | TaskStatus::Parked
             | TaskStatus::Dropped => format!("{task}: {status}"),
         };
+        let line = match &top.review {
+            Some(review) => format!("{line}, in review (level {})", review.level),
+            None => line,
+        };
         out.push(StatusLine {
             task,
             status,

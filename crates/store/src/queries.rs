@@ -914,6 +914,7 @@ impl Store {
                 models,
                 session: self.session_of(task.id)?,
                 pr: self.latest_pr(task.id)?,
+                review: self.review_summary(task.id)?,
                 asks: task_asks,
                 task,
             });

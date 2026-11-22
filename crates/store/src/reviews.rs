@@ -119,6 +119,44 @@ impl FindingCounts {
     }
 }
 
+/// An open review in one line's worth of numbers, for `board` and `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewSummary {
+    /// The review.
+    pub id: i64,
+    /// The flow.
+    pub flow: String,
+    /// The level.
+    pub level: Level,
+    /// The round.
+    pub round: u8,
+    /// Where it is.
+    pub state: ReviewState,
+    /// Node instances of the round that are over.
+    pub nodes_done: u32,
+    /// Node instances of the round that run.
+    pub nodes_running: u32,
+    /// Findings of the round.
+    pub findings: u32,
+}
+
+impl std::fmt::Display for ReviewSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "review {} {}, level {}, round {}: {}, {} node(s) done, {} running, {} finding(s)",
+            self.id,
+            self.flow,
+            self.level,
+            self.round,
+            self.state,
+            self.nodes_done,
+            self.nodes_running,
+            self.findings
+        )
+    }
+}
+
 /// Why a review was not recorded or moved.
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewError {
@@ -409,6 +447,41 @@ impl Store {
     /// Returns a read error.
     pub fn open_review(&self, task: TaskId) -> Result<Option<ReviewRow>, StoreError> {
         open_review_in(&self.conn, task)
+    }
+
+    /// The open review a task leads, summed up for `board` and `status`; `None` when it leads none.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn review_summary(&self, task: TaskId) -> Result<Option<ReviewSummary>, StoreError> {
+        let Some(review) =
+            open_review_in(&self.conn, task)?.filter(|review| review.task_id == task)
+        else {
+            return Ok(None);
+        };
+        let count = |sql: &str| -> Result<u32, StoreError> {
+            let n: i64 = self
+                .conn
+                .query_row(sql, params![review.id, review.round], |row| row.get(0))?;
+            u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
+        };
+        Ok(Some(ReviewSummary {
+            id: review.id,
+            flow: review.flow.clone(),
+            level: review.level,
+            round: review.round,
+            state: review.state,
+            nodes_done: count(
+                "SELECT COUNT(*) FROM review_nodes WHERE review_id = ?1 AND round = ?2 AND state IN ('done', 'failed')",
+            )?,
+            nodes_running: count(
+                "SELECT COUNT(*) FROM review_nodes WHERE review_id = ?1 AND round = ?2 AND state = 'running'",
+            )?,
+            findings: count(
+                "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2",
+            )?,
+        }))
     }
 
     /// Every review of a task, oldest first.

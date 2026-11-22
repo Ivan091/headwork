@@ -212,6 +212,9 @@ fn task_line(
         }
     }
     text.push('\n');
+    if let Some(review) = &task.review {
+        let _ = writeln!(text, "      {review}");
+    }
     for ask in &task.asks {
         ask_line(text, ask);
     }

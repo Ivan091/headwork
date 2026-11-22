@@ -202,6 +202,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(deprecated_keys_check(d));
         if let Ok(config) = &config {
             checks.push(unenforced_keys_check(config));
+            checks.push(flows_check(d, config));
         }
     }
     let store = store_check(d, &mut checks);
@@ -274,6 +275,31 @@ fn trust_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check 
         )
     };
     Check::ok("trust", detail)
+}
+
+/// Every review flow, built-in and the home's, validated as `headwork flow check` does; a broken one fails while
+/// reviews are on and warns while they are off.
+fn flows_check(d: &Doctor<'_>, config: &Config) -> Check {
+    let reports = super::flows::check_all(d.home.root(), &config.models.allowed);
+    let broken: Vec<String> = reports
+        .iter()
+        .filter(|report| !report.ok())
+        .map(|report| format!("{} ({})", report.name, report.problems.join("; ")))
+        .collect();
+    if broken.is_empty() {
+        let names: Vec<&str> = reports.iter().map(|report| report.name.as_str()).collect();
+        return Check::ok(
+            "flows",
+            format!("{} flow(s) valid: {}", names.len(), names.join(", ")),
+        );
+    }
+    let detail = format!("broken flows: {}", broken.join(", "));
+    let fix = "fix or remove the file under <home>/flows; `headwork flow check` shows each problem";
+    if config.reviews.enabled {
+        Check::fail("flows", detail, fix)
+    } else {
+        Check::warn("flows", detail, fix)
+    }
 }
 
 fn unenforced_keys_check(config: &Config) -> Check {

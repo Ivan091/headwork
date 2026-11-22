@@ -650,3 +650,30 @@ fn a_free_lock_or_a_fresh_one_is_fine() {
         "a tick that just began"
     );
 }
+
+#[test]
+fn a_broken_flow_override_warns_while_reviews_are_off_and_fails_while_on() {
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "flows"),
+        Status::Ok,
+        "{}",
+        detail(&report, "flows")
+    );
+    assert!(
+        detail(&report, "flows").contains("code, plan"),
+        "{}",
+        detail(&report, "flows")
+    );
+    let flows = install.home.root().join("flows");
+    std::fs::create_dir_all(&flows).unwrap();
+    std::fs::write(flows.join("code.toml"), "name = \"code\"\n").unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "flows"), Status::Warn, "reviews off");
+    let path = install.home.root().join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n[reviews]\nenabled = true\n")).unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "flows"), Status::Fail, "reviews on");
+}

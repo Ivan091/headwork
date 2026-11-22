@@ -119,6 +119,11 @@ the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` i
 (`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
 `review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
 review.
+R4 surfaces them: `board` prints a lead's open review under it (`Store::review_summary`), `status` ends its line with
+`in review (level N)`, `doctor` validates every flow (check `flows`: a broken one fails while reviews are on, warns while
+off), and the built-in `plan` flow (target `files`) reviews plan documents; the event log carries `review-requested`,
+`review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`, `review-answer`, `review-finish`,
+`review-cancel` and `review-refused`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

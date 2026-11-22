@@ -50,7 +50,8 @@ fn flow_check_passes_the_built_in_flows() {
         stderr(&output)
     );
     assert!(
-        stdout(&output).contains("[ok  ] code         built-in"),
+        stdout(&output).contains("[ok  ] code         built-in")
+            && stdout(&output).contains("[ok  ] plan         built-in"),
         "{}",
         stdout(&output)
     );
