@@ -13,7 +13,6 @@ use anyhow::Result;
 use headwork_adapters::disk::{Disks, large_files, volume_of};
 use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
-use headwork_adapters::proc;
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
 use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
 use headwork_core::{
@@ -25,6 +24,7 @@ use serde::Serialize;
 use super::close::{finish, remove_worktree, surface_present};
 use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
+use super::session_procs;
 use super::spawn::{Pumped, pump};
 use super::update::{self as updates, Triggered, TriggeredBy, UpdateStarter};
 use super::{Env, slashed};
@@ -291,18 +291,10 @@ impl<'b> Run<'_, 'b> {
         }
     }
 
-    fn end_processes(session: &SessionRow) -> Result<bool> {
-        let mut ended = false;
-        for pid in [session.claude_pid, session.launcher_pid]
-            .into_iter()
-            .flatten()
-        {
-            if proc::is_alive(pid)? {
-                proc::kill_tree(pid)?;
-                ended = true;
-            }
-        }
-        Ok(ended)
+    fn end_processes(&self, task: Option<TaskId>, session: &SessionRow) -> Result<bool> {
+        let ended = session_procs::end_all(session)?;
+        ended.log(self.store, self.actor(), task, &session.id)?;
+        Ok(ended.any)
     }
 
     fn rules(&mut self) -> Result<()> {
@@ -350,7 +342,7 @@ impl<'b> Run<'_, 'b> {
                     .set_session_state(&session.id, SessionState::Gone, actor)?;
                 if self.enforce {
                     let shape = self.store.task(id)?.shape;
-                    self.end_session(shape, session)?;
+                    self.end_session(id, shape, session)?;
                 }
             }
             self.applied(
@@ -479,8 +471,13 @@ impl<'b> Run<'_, 'b> {
         Ok(())
     }
 
-    fn end_session(&self, shape: TaskShape<TaskId>, session: &SessionRow) -> Result<()> {
-        Self::end_processes(session)?;
+    fn end_session(
+        &self,
+        id: TaskId,
+        shape: TaskShape<TaskId>,
+        session: &SessionRow,
+    ) -> Result<()> {
+        self.end_processes(Some(id), session)?;
         if let Some(surface) = session.host_surface.as_deref() {
             let workspace = session
                 .host_workspace
@@ -527,7 +524,7 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn lost_cause(&self, id: TaskId, session: &SessionRow) -> Result<Option<LostCause>> {
-        if let Some(cause) = lost::local_cause(session)? {
+        if let Some(cause) = lost::local_cause(session) {
             return Ok(Some(cause));
         }
         if self.report.host_up
@@ -716,22 +713,16 @@ impl<'b> Run<'_, 'b> {
             {
                 continue;
             }
-            if let Some(session) = self.store.session_of(id)? {
-                let target = session.claude_pid.or(session.launcher_pid);
-                if let Some(pid) = target
-                    && let Err(error) = proc::is_alive(pid).and_then(|alive| {
-                        if alive {
-                            proc::kill_tree(pid).map(drop)
-                        } else {
-                            Ok(())
-                        }
-                    })
-                {
-                    self.error(
+            if let Some(session) = self.store.session_of(id)?
+                && let Some(target) = session.claude().or_else(|| session.launcher())
+            {
+                match session_procs::end(&[target]) {
+                    Ok(ended) => ended.log(self.store, actor, Some(id), &session.id)?,
+                    Err(error) => self.error(
                         &format!("merged-grace-kill:{}", task.name),
                         Some(id),
-                        &error.to_string(),
-                    )?;
+                        &format!("{error:#}"),
+                    )?,
                 }
             }
             self.applied(
@@ -774,12 +765,7 @@ impl<'b> Run<'_, 'b> {
 
     fn close_one(&mut self, id: TaskId) -> Result<()> {
         let session = self.store.session_of(id)?;
-        let alive = session.as_ref().is_some_and(|session| {
-            [session.claude_pid, session.launcher_pid]
-                .into_iter()
-                .flatten()
-                .any(|pid| proc::is_alive(pid).unwrap_or(true))
-        });
+        let alive = session.as_ref().is_some_and(session_procs::any_runs);
         if alive {
             let age = self.store.task_age_s(id)?;
             if age < self.limits.closing_grace {
@@ -787,7 +773,7 @@ impl<'b> Run<'_, 'b> {
             }
             let detail = serde_json::json!({ "closing_for_s": age });
             if let Some(session) = session.filter(|_| self.enforce) {
-                Self::end_processes(&session)?;
+                self.end_processes(Some(id), &session)?;
                 return self.applied(FindingId::LeftoverProcess, Some(id), detail);
             }
             let key = format!("leftover:{}", self.name(id)?);
@@ -1044,7 +1030,10 @@ impl<'b> Run<'_, 'b> {
         let wants_end = task.is_some() && (!live || volume_stopped);
         let (status, ended) = match (&task, wants_end, self.enforce) {
             (Some(task), true, true) => match self.store.session_of(task.id)? {
-                Some(session) => (Status::Applied, Self::end_processes(&session)?),
+                Some(session) => (
+                    Status::Applied,
+                    self.end_processes(Some(task.id), &session)?,
+                ),
                 None => (Status::Standing, false),
             },
             (Some(_), true, false) => (Status::Shadow, false),

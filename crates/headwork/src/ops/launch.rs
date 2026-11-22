@@ -15,7 +15,7 @@ use headwork_adapters::runtime::{
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role, TaskState};
-use headwork_store::{SessionRow, Store, Task, TaskId};
+use headwork_store::{Launched, SessionRow, Store, Task, TaskId};
 
 use super::reload::{EVENT_BUILD, build_event};
 use super::{Env, close};
@@ -278,7 +278,7 @@ fn start(
         Ownership::ProcessGroup => "process-group".to_owned(),
         Ownership::Unowned(reason) => format!("unowned: {reason}"),
     };
-    store.session_launched(&session.id, std::process::id(), child.pid(), &tree)?;
+    record_launch(store, &session.id, &child, &tree)?;
     record_build(store, Some(task.id), &session.id, &exe)?;
     if plugin_dir(home, config).is_some() {
         return Ok(child);
@@ -297,6 +297,27 @@ fn start(
         )?;
     }
     Ok(child)
+}
+
+/// Records both processes of a session with their identities, read right after `claude` started, so that every later
+/// kill can tell them from programs that take their pids over.
+fn record_launch(store: &mut Store, session: &str, child: &OwnedChild, tree: &str) -> Result<()> {
+    let launcher = std::process::id();
+    let launcher_identity = proc::identify(launcher);
+    let claude_identity = proc::identify(child.pid());
+    store.session_launched_identified(
+        session,
+        Launched {
+            pid: launcher,
+            identity: launcher_identity.as_ref(),
+        },
+        Launched {
+            pid: child.pid(),
+            identity: claude_identity.as_ref(),
+        },
+        tree,
+    )?;
+    Ok(())
 }
 
 /// Records which build this launcher runs and which program its hooks and MCP server call ([`super::reload`]).
@@ -483,7 +504,7 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
         Ownership::ProcessGroup => "process-group".to_owned(),
         Ownership::Unowned(reason) => format!("unowned: {reason}"),
     };
-    store.session_launched(&id, std::process::id(), child.pid(), &tree)?;
+    record_launch(&mut store, &id, &child, &tree)?;
     record_build(&store, None, &id, &exe)?;
     drop(store);
     let status = child.wait();

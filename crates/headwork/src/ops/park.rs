@@ -10,7 +10,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use headwork_adapters::host::{Key, SurfaceId};
-use headwork_adapters::proc;
 use headwork_core::config::ParkPolicy;
 use headwork_core::lifecycle::{ParkedFacts, Trigger};
 use headwork_core::{JobState, MachineMode, RecapKind, SessionState, TaskShape, TaskState};
@@ -199,9 +198,9 @@ fn target_alive(target: &Target) -> bool {
 pub(super) fn session_alive(session: &SessionRow) -> bool {
     matches!(session.state, SessionState::Live | SessionState::Starting)
         && session
-            .claude_pid
-            .or(session.launcher_pid)
-            .is_some_and(|pid| proc::is_alive(pid).unwrap_or(true))
+            .claude()
+            .or_else(|| session.launcher())
+            .is_some_and(|process| super::session_procs::runs(&process))
 }
 
 fn begin_sessions(store: &mut Store, env: &Env<'_>) -> Result<Vec<Target>> {
@@ -394,7 +393,7 @@ fn finish_session(
         &facts,
     )?;
     let snapshot = snapshot_worktree(store, env, &task)?;
-    let problem = stop_session(store, env, task.shape, target.session.as_ref())?;
+    let problem = stop_session(store, env, task.id, task.shape, target.session.as_ref())?;
     store.transition(
         task.id,
         &Trigger::Parked(ParkedFacts {
@@ -438,6 +437,7 @@ fn ref_exists(dir: &Path, reference: &str) -> bool {
 fn stop_session(
     store: &mut Store,
     env: &Env<'_>,
+    id: TaskId,
     shape: TaskShape<TaskId>,
     session: Option<&SessionRow>,
 ) -> Result<Option<String>> {
@@ -446,17 +446,10 @@ fn stop_session(
     };
     let mut problem =
         (!close_pane(env, shape, session)?).then(|| "the pane is still open".to_owned());
-    let pids: Vec<u32> = [session.claude_pid, session.launcher_pid]
-        .into_iter()
-        .flatten()
-        .collect();
-    for pid in &pids {
-        if proc::is_alive(*pid)? {
-            proc::kill_tree(*pid)?;
-        }
-    }
+    let records = session.processes();
+    super::session_procs::end(&records)?.log(store, env.actor, Some(id), &session.id)?;
     let gone = wait_until(Duration::from_secs(10), || {
-        pids.iter().all(|pid| !proc::is_alive(*pid).unwrap_or(true))
+        !records.iter().any(super::session_procs::runs)
     });
     if !gone {
         problem = Some("processes of the session are still alive".to_owned());

@@ -1460,3 +1460,52 @@ fn an_orchestrator_whose_transcript_is_gone_comes_back_in_the_mode_its_hooks_rep
         .unwrap();
     assert!(line.contains("--mode auto --summary"), "{line}");
 }
+
+fn record_reused(store: &mut Store, session: &str, launcher: u32, claude: u32) {
+    let earlier = |pid: u32| {
+        headwork_adapters::proc::identify(pid).map(|now| headwork_core::process::ProcessIdentity {
+            started: now.started - 3600,
+            ..now
+        })
+    };
+    let (launcher_identity, claude_identity) = (earlier(launcher), earlier(claude));
+    store
+        .session_launched_identified(
+            session,
+            headwork_store::Launched {
+                pid: launcher,
+                identity: launcher_identity.as_ref(),
+            },
+            headwork_store::Launched {
+                pid: claude,
+                identity: claude_identity.as_ref(),
+            },
+            "job",
+        )
+        .unwrap();
+}
+
+#[test]
+fn park_leaves_a_program_that_took_a_sessions_pid_over_alone() {
+    let mut w = world("ask");
+    let (sand, session, pid) = w.working("sand");
+    record_reused(&mut w.store, &session, pid, pid);
+    let env = env!(w);
+    park(&mut w.store, &env, quick(200)).unwrap();
+    assert_eq!(w.state(&sand), TaskState::Parked, "parked");
+    assert!(
+        is_alive(pid).unwrap(),
+        "the program holding the pid runs on"
+    );
+    let reused = w
+        .store
+        .events(EventFilter {
+            task: Some(sand.id),
+            limit: 200,
+        })
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "pid-reused")
+        .count();
+    assert!(reused >= 1, "logged");
+}

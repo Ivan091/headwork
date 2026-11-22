@@ -1858,3 +1858,94 @@ fn the_tick_starts_no_update_while_one_runs_or_the_trigger_is_off() {
         "nothing started while locked"
     );
 }
+
+fn record_reused(store: &mut Store, session: &str, launcher: u32, claude: u32) {
+    let earlier = |pid: u32| {
+        headwork_adapters::proc::identify(pid).map(|now| headwork_core::process::ProcessIdentity {
+            started: now.started - 3600,
+            ..now
+        })
+    };
+    let (launcher_identity, claude_identity) = (earlier(launcher), earlier(claude));
+    store
+        .session_launched_identified(
+            session,
+            headwork_store::Launched {
+                pid: launcher,
+                identity: launcher_identity.as_ref(),
+            },
+            headwork_store::Launched {
+                pid: claude,
+                identity: claude_identity.as_ref(),
+            },
+            "job",
+        )
+        .unwrap();
+}
+
+#[test]
+fn enforcing_leaves_a_closing_tasks_reused_pids_alone_and_closes_it() {
+    let mut w = world_with(true, 10);
+    w.limits.closing_grace = 0;
+    let mut child = sleeper();
+    let task = closing_with(&mut w, "sand", child.id());
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    record_reused(&mut w.store, &session.id, child.id(), child.id());
+    let report = run_tick(&mut w);
+    assert!(
+        !rules(&report).contains(&(FindingId::LeftoverProcess, Status::Applied)),
+        "nothing of the session runs: {:?}",
+        report.lines
+    );
+    assert_eq!(state(&w, &task), TaskState::Closed, "closed at once");
+    assert!(
+        is_alive(child.id()).unwrap(),
+        "the program holding the pid runs on"
+    );
+    assert!(count(&w, "pid-reused") >= 1, "logged");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn a_merged_grace_close_leaves_a_reused_pid_alone() {
+    let mut w = world_with(true, 10);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let pid = session.claude_pid.unwrap();
+    let launcher = sleeper();
+    let own = headwork_adapters::proc::identify(launcher.id());
+    let earlier =
+        headwork_adapters::proc::identify(pid).map(|now| headwork_core::process::ProcessIdentity {
+            started: now.started - 3600,
+            ..now
+        });
+    w.store
+        .session_launched_identified(
+            &session.id,
+            headwork_store::Launched {
+                pid: launcher.id(),
+                identity: own.as_ref(),
+            },
+            headwork_store::Launched {
+                pid,
+                identity: earlier.as_ref(),
+            },
+            "job",
+        )
+        .unwrap();
+    w.children.push(launcher);
+    reported(&w, &task, &session.id);
+    w.limits.merged_grace = 0;
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report)[0],
+        (FindingId::MergedGrace, Status::Applied),
+        "closing"
+    );
+    assert!(
+        is_alive(pid).unwrap(),
+        "the program holding the pid runs on"
+    );
+    assert!(count(&w, "pid-reused") >= 1, "logged");
+}

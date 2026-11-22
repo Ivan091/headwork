@@ -30,6 +30,7 @@ use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
 use super::hook::{Git, GitProbe};
+use super::session_procs;
 use super::{Env, slashed};
 
 /// How long `close` waits for a launcher to finish after its `claude` was ended.
@@ -378,11 +379,9 @@ pub fn end_closing(
     let task = store.task(id)?;
     remove_brief(env, &task.brief_path);
     if let Some(session) = store.session_of(id)?
-        && let Some(launcher) = session
-            .launcher_pid
-            .filter(|pid| proc::is_alive(*pid).unwrap_or(false))
+        && let Some(launcher) = session.launcher().filter(session_procs::runs)
     {
-        let target = session.claude_pid.unwrap_or(launcher);
+        let target = session.claude().unwrap_or_else(|| launcher.clone());
         let left = ask_exit(store, env, id, &session)?;
         if own_session == Some(session.id.as_str()) {
             store.append_event(
@@ -394,10 +393,10 @@ pub fn end_closing(
             )?;
             if pinned(store, &session.id)? {
                 let _logged: Result<()> =
-                    start_finisher(store, env, id, &session.id, launcher, "backup-finisher");
+                    start_finisher(store, env, id, &session.id, launcher.pid, "backup-finisher");
             }
             if !left {
-                proc::kill_tree(target)?;
+                session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
             }
             return report(
                 store,
@@ -406,11 +405,9 @@ pub fn end_closing(
             );
         }
         if !left {
-            proc::kill_tree(target)?;
+            session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
         }
-        wait_until(LAUNCHER_GRACE, || {
-            !proc::is_alive(launcher).unwrap_or(false)
-        });
+        wait_until(LAUNCHER_GRACE, || !session_procs::runs(&launcher));
     }
     finish(store, env, id)
 }
@@ -519,23 +516,13 @@ fn finish_claimed(
     let mut pane_gone = true;
     if let Some(session) = &session {
         pane_gone = close_pane(env, task.shape, session)?;
-        for pid in [session.claude_pid, session.launcher_pid]
-            .into_iter()
-            .flatten()
-        {
-            if proc::is_alive(pid)? {
-                proc::kill_tree(pid)?;
-            }
-        }
+        session_procs::end_all(session)?.log(store, env.actor, Some(id), &session.id)?;
     }
-    let pids: Vec<u32> = session
-        .iter()
-        .flat_map(|s| [s.claude_pid, s.launcher_pid])
-        .flatten()
-        .collect();
-    let processes_gone = wait_until(PROCESS_GRACE, || {
-        pids.iter().all(|pid| !proc::is_alive(*pid).unwrap_or(true))
-    });
+    let records = session
+        .as_ref()
+        .map(SessionRow::processes)
+        .unwrap_or_default();
+    let processes_gone = wait_until(PROCESS_GRACE, || !records.iter().any(session_procs::runs));
     finalize_jobs(store, env, id)?;
     let worktree = if processes_gone {
         store.end_task_sessions(id, env.actor)?;
@@ -837,8 +824,8 @@ pub fn reap(store: &mut Store, env: &Env<'_>) -> Result<Vec<CloseReport>> {
     for id in store.tasks_in(TaskState::Closing)? {
         let launcher_alive = store
             .session_of(id)?
-            .and_then(|s| s.launcher_pid)
-            .is_some_and(|pid| proc::is_alive(pid).unwrap_or(true));
+            .and_then(|s| s.launcher())
+            .is_some_and(|launcher| session_procs::runs(&launcher));
         if !launcher_alive {
             out.push(finish(store, env, id)?);
         }
@@ -932,10 +919,10 @@ const EXIT_COMMAND: &str = "/exit";
 /// Fails when the store fails.
 fn ask_exit(store: &Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> Result<bool> {
     let grace = env.config.watch.exit_grace_s;
-    let (Some(pid), Some(surface)) = (session.claude_pid, session.host_surface.as_deref()) else {
+    let (Some(claude), Some(surface)) = (session.claude(), session.host_surface.as_deref()) else {
         return Ok(false);
     };
-    if grace == 0 || !proc::is_alive(pid).unwrap_or(false) {
+    if grace == 0 || !session_procs::runs(&claude) {
         return Ok(false);
     }
     let surface = SurfaceId(surface.to_owned());
@@ -961,7 +948,7 @@ fn ask_exit(store: &Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> R
         &serde_json::json!({ "grace_s": grace }),
     )?;
     let left = wait_until(Duration::from_secs(u64::from(grace)), || {
-        !proc::is_alive(pid).unwrap_or(false)
+        !session_procs::runs(&claude)
     });
     if !left {
         store.append_event(

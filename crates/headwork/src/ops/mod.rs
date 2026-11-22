@@ -24,6 +24,7 @@ pub mod reload;
 pub mod resume;
 pub mod rules;
 pub mod schedule;
+pub mod session_procs;
 pub mod shadow;
 pub mod spawn;
 pub mod status;

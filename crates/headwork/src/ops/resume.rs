@@ -542,7 +542,7 @@ enum OrchestratorPlan {
     /// This session comes back: the one the park found running, or one a crash cut off.
     Back {
         /// The session.
-        session: SessionRow,
+        session: Box<SessionRow>,
         /// It was cut off by a crash, not parked.
         crash: bool,
     },
@@ -579,7 +579,7 @@ fn orchestrator_to_resume(
         return Ok(store
             .session(&id)?
             .map(|(session, _)| OrchestratorPlan::Back {
-                session,
+                session: Box::new(session),
                 crash: false,
             }));
     }
@@ -588,7 +588,7 @@ fn orchestrator_to_resume(
         None => park::unmanaged_orchestrator(store, env)?.map(|(session, _)| session),
     };
     Ok(session.map(|session| OrchestratorPlan::Back {
-        session,
+        session: Box::new(session),
         crash: true,
     }))
 }

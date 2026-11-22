@@ -5,7 +5,6 @@
 //! before it prints, so a task whose session ended never shows as running even when no tick is scheduled.
 
 use anyhow::Result;
-use headwork_adapters::proc;
 use headwork_core::{MachineMode, RecapKind, SessionState, TaskState, Trigger};
 use headwork_store::{SessionRow, Store, StoreError, TaskId};
 use serde::Serialize;
@@ -44,21 +43,19 @@ impl LostCause {
     }
 }
 
-/// What can be told about a session without asking the terminal host: its recorded state and its processes.
-///
-/// # Errors
-///
-/// Fails when a process cannot be queried.
-pub fn local_cause(session: &SessionRow) -> Result<Option<LostCause>> {
+/// What can be told about a session without asking the terminal host: its recorded state and its processes. A
+/// launcher whose pid another program now holds counts as gone.
+#[must_use]
+pub fn local_cause(session: &SessionRow) -> Option<LostCause> {
     if matches!(session.state, SessionState::Ended | SessionState::Gone) {
-        return Ok(Some(LostCause::SessionEnded));
+        return Some(LostCause::SessionEnded);
     }
-    if let Some(pid) = session.launcher_pid.or(session.claude_pid)
-        && !proc::is_alive(pid)?
+    if let Some(process) = session.launcher().or_else(|| session.claude())
+        && !super::session_procs::runs(&process)
     {
-        return Ok(Some(LostCause::Launcher));
+        return Some(LostCause::Launcher);
     }
-    Ok(None)
+    None
 }
 
 /// Moves a running task whose session is lost to `interrupted` and returns whether it moved.
@@ -110,7 +107,7 @@ pub fn reconcile(store: &mut Store, env: &Env<'_>) -> Result<Vec<Lost>> {
             let Some(session) = store.session_of(id)? else {
                 continue;
             };
-            let Some(cause) = local_cause(&session)? else {
+            let Some(cause) = local_cause(&session) else {
                 continue;
             };
             if mark(store, env, id, &session, cause)? {

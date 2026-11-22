@@ -1221,3 +1221,58 @@ fn force_is_refused_while_a_job_runs_or_for_a_worker() {
         "unchanged"
     );
 }
+
+fn record_reused(store: &mut Store, session: &str, launcher: u32, claude: u32) {
+    let earlier = |pid: u32| {
+        headwork_adapters::proc::identify(pid).map(|now| headwork_core::process::ProcessIdentity {
+            started: now.started - 3600,
+            ..now
+        })
+    };
+    let (launcher_identity, claude_identity) = (earlier(launcher), earlier(claude));
+    store
+        .session_launched_identified(
+            session,
+            headwork_store::Launched {
+                pid: launcher,
+                identity: launcher_identity.as_ref(),
+            },
+            headwork_store::Launched {
+                pid: claude,
+                identity: claude_identity.as_ref(),
+            },
+            "job",
+        )
+        .unwrap();
+}
+
+#[test]
+fn close_leaves_programs_that_took_a_sessions_pids_over_alone() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "reused", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    record_reused(&mut w.store, &session.id, launcher.id(), claude.id());
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(
+        report.state,
+        TaskState::Closed,
+        "the pids count as gone: {report:?}"
+    );
+    let calls = w.host.calls();
+    assert!(
+        !calls.iter().any(|c| c.ends_with(" /exit")),
+        "no /exit for a claude whose pid another program holds: {calls:?}"
+    );
+    for child in [&mut launcher, &mut claude] {
+        assert!(child.try_wait().unwrap().is_none(), "left running");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    let reused = event_kinds(&w.store, &task)
+        .iter()
+        .filter(|kind| *kind == "pid-reused")
+        .count();
+    assert_eq!(reused, 2, "both pids are logged");
+}
