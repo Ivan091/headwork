@@ -3,6 +3,7 @@
 //! Every state change goes through [`Store`], which asks [`headwork_core`] for the decision and writes the result and
 //! its event in one transaction. Refusals are logged as events too, so a wrong deny can be debugged from the log.
 
+mod backup;
 mod error;
 mod hooks;
 mod migrate;
@@ -19,6 +20,7 @@ use std::path::Path;
 use headwork_core::{Actor, MachineMode};
 use rusqlite::{Connection, TransactionBehavior, params};
 
+pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use error::StoreError;
 pub use hooks::{
     EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_USER_ONLY_ALLOWED,
@@ -65,10 +67,15 @@ fn enter_wal(conn: &Connection) -> Result<(), StoreError> {
 #[derive(Debug)]
 pub struct Store {
     conn: Connection,
+    backup: Option<Backup>,
 }
 
 impl Store {
     /// Opens or creates the store at `path`, in WAL mode, and migrates it.
+    ///
+    /// Before migrating an existing store older than this build, it copies it to [`BACKUP_DIR`] beside `path`
+    /// (`state-<from>-to-<to>-<millis>-<pid>.db`, the newest [`BACKUPS_KEPT`] kept); [`Store::backup`] tells what
+    /// happened. A failed copy does not stop the migration: a store this build cannot open would stop every hook.
     ///
     /// Many processes share one file (the CLI, launchers, hooks, MCP servers, the tick), so a writer waits up to
     /// [`BUSY_TIMEOUT`] for another instead of failing, and every transaction starts `IMMEDIATE`: it takes the write
@@ -83,7 +90,10 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
         enter_wal(&conn)?;
-        Self::prepare(conn)
+        let backup = backup::before_migrating(&conn, path);
+        let mut store = Self::prepare(conn)?;
+        store.backup = backup;
+        Ok(store)
     }
 
     /// Opens a fresh store in memory, for tests.
@@ -100,7 +110,13 @@ impl Store {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.set_transaction_behavior(TransactionBehavior::Immediate);
         migrate(&mut conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn, backup: None })
+    }
+
+    /// The copy [`Store::open`] took before migrating, or why it could not; `None` when nothing was migrated.
+    #[must_use]
+    pub const fn backup(&self) -> Option<&Backup> {
+        self.backup.as_ref()
     }
 
     /// The schema version.

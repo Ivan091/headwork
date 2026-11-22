@@ -71,3 +71,11 @@ cargo build --release -p headwork
 target/release/headwork.exe install          # into ~/.local/bin, safe while the old one runs
 headwork doctor                              # check `builds`: who still runs what
 ```
+
+## The store copies itself before migrating
+
+The first process that opens a store older than its build, whichever it is (a hand install, a hook of a running
+session right after a swap, an update), copies it with `VACUUM INTO` to `<home>/backups/state-<from>-to-<to>-<millis>-<pid>.db`
+before applying any migration, and keeps the newest three (`crates/store/src/backup.rs`). `headwork install` prints the
+copy it made. To go back after a bad migration: stop the sessions, install a build of the old schema, and put the copy
+back as `state.db` (events since the copy are lost). A copy that cannot be made does not stop the migration.

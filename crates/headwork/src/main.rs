@@ -1216,22 +1216,26 @@ fn install_command(dir: &str, json: bool, out: &mut impl Write) -> Result<ExitCo
     let home = Home::locate()?;
     let source = std::env::current_exe().context("finding the headwork program")?;
     let report = install(&source, &home.expand(dir), verify_installed)?;
-    let sessions = if home.root().join("state.db").exists() {
+    let (sessions, backup) = if home.root().join("state.db").exists() {
         let store = home.open_store()?;
-        reload::classify(
+        let sessions = reload::classify(
             &store.live_sessions_with_event(reload::EVENT_BUILD)?,
             |exe| Stamp::of(exe).ok(),
-        )
+        );
+        (sessions, store.backup().map(ToString::to_string))
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
     if json {
         json_out(
             out,
-            &serde_json::json!({ "install": report, "sessions": sessions }),
+            &serde_json::json!({ "install": report, "sessions": sessions, "backup": backup }),
         )?;
     } else {
         out.write_all(render::installed(&report, &sessions).as_bytes())?;
+        if let Some(backup) = backup {
+            writeln!(out, "{backup}")?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

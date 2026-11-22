@@ -16,8 +16,8 @@ use headwork_core::{
     TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
-    EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession, NewTask, Place,
-    Store, StoreError, Task,
+    BACKUP_DIR, Backup, EventFilter, FABLE_ALLOW, MIGRATIONS, NewAsk, NewJob, NewRecap, NewSession,
+    NewTask, Place, Store, StoreError, Task,
 };
 
 fn config() -> Config {
@@ -100,6 +100,99 @@ fn reopening_keeps_data_and_newer_schemas_are_refused() {
     assert!(
         matches!(error, StoreError::SchemaTooNew { found: 99, .. }),
         "{error}"
+    );
+}
+
+fn old_store(path: &Path, version: usize) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    for sql in &MIGRATIONS[..version] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", i64::try_from(version).unwrap())
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (name, main_path, config_hash) VALUES ('me-sim', 'S:/m', 'h')",
+    )
+    .unwrap();
+}
+
+#[test]
+fn opening_an_older_store_copies_it_before_migrating() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let from = MIGRATIONS.len() - 1;
+    old_store(&path, from);
+    let store = Store::open(&path).unwrap();
+    let backup = store.backup().cloned();
+    assert!(
+        matches!(backup, Some(Backup::Made { .. })),
+        "a copy is made: {backup:?}"
+    );
+    let Some(Backup::Made {
+        path: copy,
+        from: copied,
+        to,
+    }) = backup
+    else {
+        return;
+    };
+    assert_eq!(
+        copied,
+        i64::try_from(from).unwrap(),
+        "the old version is copied"
+    );
+    assert_eq!(to, store.schema_version().unwrap(), "the store is migrated");
+    assert_eq!(
+        copy.parent(),
+        Some(dir.path().join(BACKUP_DIR).as_path()),
+        "beside the store"
+    );
+    let conn = rusqlite::Connection::open(&copy).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        version, copied,
+        "the copy holds the schema before the migration"
+    );
+    let projects: i64 = conn
+        .query_row("SELECT count(*) FROM projects", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(projects, 1, "the copy holds the data");
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened.backup(),
+        None,
+        "a current store is not copied again"
+    );
+}
+
+#[test]
+fn a_new_store_is_not_copied() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("state.db")).unwrap();
+    assert_eq!(store.backup(), None, "nothing to copy");
+    assert!(!dir.path().join(BACKUP_DIR).exists(), "no backup folder");
+}
+
+#[test]
+fn a_failed_copy_does_not_stop_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, MIGRATIONS.len() - 1);
+    std::fs::write(dir.path().join(BACKUP_DIR), "a file where the folder goes").unwrap();
+    let store = Store::open(&path).unwrap();
+    assert!(
+        matches!(store.backup(), Some(Backup::Failed { .. })),
+        "the failure is told: {:?}",
+        store.backup()
+    );
+    assert_eq!(
+        store.schema_version().unwrap(),
+        i64::try_from(MIGRATIONS.len()).unwrap(),
+        "the store is migrated anyway"
     );
 }
 
