@@ -1008,7 +1008,9 @@ impl<'a> Server<'a> {
     fn scoped_board(&self, session: &str, role: Role, all: bool) -> Result<Board> {
         let mut board = self.store.board(all)?;
         if let Some(ids) = self.group(session, role)? {
+            let own = self.own_task(session)?;
             board.tasks.retain(|entry| ids.contains(&entry.task.id));
+            board.projects.retain(|row| &row.name == own.project());
             board.other_asks.clear();
         }
         Ok(board)
