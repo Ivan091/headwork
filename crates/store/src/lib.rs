@@ -12,6 +12,7 @@ mod queries;
 mod queue;
 mod records;
 mod reports;
+mod reviews;
 mod sessions;
 mod tick;
 mod usage;
@@ -37,6 +38,9 @@ pub use records::{
     WorktreeRow,
 };
 pub use reports::{AddedRule, EVENT_REPORT, NewPr, RecordedPr};
+pub use reviews::{
+    EVENT_REVIEW_REQUESTED, FindingCounts, FindingRow, NewFinding, ReviewError, ReviewRow,
+};
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
 pub use usage::{FileMark, UsageBatch, UsageQuery, UsageTag, UsageTotal};
