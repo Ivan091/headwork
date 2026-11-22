@@ -215,6 +215,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     if let Ok(config) = &config {
         checks.push(enforce_check(config));
         checks.push(disk_check(d, config));
+        checks.push(update_check(d, config));
     }
     if let Ok(config) = &config {
         checks.push(trust_check(d, config, store.as_ref()));
@@ -728,6 +729,20 @@ fn disk_check(d: &Doctor<'_>, config: &Config) -> Check {
             format!("cannot read free space of {}: {error}", slashed(probe)),
             "check the volume",
         ),
+    }
+}
+
+fn update_check(d: &Doctor<'_>, config: &Config) -> Check {
+    let (failing, detail) = super::update::doctor_summary(d.home, config);
+    if failing {
+        Check::warn(
+            "update",
+            detail,
+            "the installed build runs on; a latched release is tried again only when a newer one is published, or by \
+             `headwork update --to <tag>`; `headwork log` shows the update-failed events",
+        )
+    } else {
+        Check::ok("update", detail)
     }
 }
 

@@ -108,6 +108,14 @@ kebab_name!(
     ProjectName
 );
 
+impl ProjectName {
+    /// `headwork`, the project `[update]` names when it names none.
+    #[must_use]
+    pub fn headwork() -> Self {
+        Self("headwork".to_owned())
+    }
+}
+
 kebab_name!(
     /// A task's slug within its project, such as `sand-cascade`.
     Slug

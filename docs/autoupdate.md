@@ -264,7 +264,11 @@ Each a pull request through `scripts/check.sh`:
 5. **`headwork update`:** `[update]` config, `core/src/update.rs` with table tests, `ops/update.rs` (lock and pending,
    GitHub query, download and hash, smoke test, install, `--after`, checkout fast-forward, `--wait`, `--to`),
    `update.json`, events, the `doctor` check, `install` waiting for the lock. CLI tests on a temporary home with a fake
-   download seam and fake releases.
+   download seam and fake releases. Built: `crates/core/src/update.rs` (the decision, versions, back-off, UTC times),
+   `crates/adapters/src/release.rs` (`ReleaseSource`: `curl` and a fake) and `timed.rs`, `crates/headwork/src/ops/update.rs`
+   (the runner, `--after`, the checkout step, the `doctor` check's summary), `Store::copy_to`; tests in
+   `crates/headwork/tests/update.rs`. Not yet: the host notification, the standing `update-failed` finding and the
+   orchestrator's prompt line under "Reporting", which come with step 6.
 6. **Turn it on:** the guard lift, the close trigger, the MCP tool, the convention change, then `[update]` in the live
    config with `enabled = true`, after the user's go; the tick trigger once the user schedules the tick (after the
    breakaway trial).

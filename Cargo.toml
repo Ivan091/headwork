@@ -19,6 +19,7 @@ categories = ["command-line-utilities", "development-tools"]
 headwork-core = { path = "crates/core" }
 headwork-store = { path = "crates/store" }
 headwork-adapters = { path = "crates/adapters" }
+sha2 = "0.11.1"
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }

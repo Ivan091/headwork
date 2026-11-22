@@ -119,6 +119,18 @@ impl Store {
         self.backup.as_ref()
     }
 
+    /// Copies the whole store to a new file at `path` with `VACUUM INTO`, consistent while other processes write it;
+    /// `headwork update` smoke-tests a release against such a copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error, such as when `path` already exists.
+    pub fn copy_to(&self, path: &Path) -> Result<(), StoreError> {
+        self.conn
+            .execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+        Ok(())
+    }
+
     /// The schema version.
     ///
     /// # Errors
