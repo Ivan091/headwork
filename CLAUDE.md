@@ -106,7 +106,8 @@ Token usage (`docs/usage.md`) is read from Claude Code's transcripts by `ops/usa
 and role when written, sessions headwork did not start as `unmanaged`. The `Stop` and `SessionEnd` hooks and the tick's
 last stage read new lines; `board` and `status` show each task's tokens, a close logs `usage-total`, and the
 orchestrator has a `usage` tool. `[usage.prices."<model or prefix>"]` (dollars per million tokens) turns them into an
-estimate at API list prices, never a bill.
+estimate at API list prices, never a bill. The tick sums rows older than `[usage] keep_days` (90) per day into
+`usage_daily`, and a helper `claude` gets a `--session-id` recorded in a `helper-session` event.
 
 ## Commands
 

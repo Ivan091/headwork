@@ -837,6 +837,13 @@ impl<'a> Server<'a> {
         if registration.argv.is_empty() {
             bail!("`argv` is empty: name the program to run");
         }
+        let mut program = registration.argv;
+        if headwork_core::usage::fresh_claude(&program) {
+            let helper = uuid::Uuid::new_v4().to_string();
+            program.splice(1..1, ["--session-id".to_owned(), helper.clone()]);
+            self.store
+                .record_helper_session(task.id, &helper, &program, self.env.actor)?;
+        }
         let (row, _) = self
             .store
             .session(session)?
@@ -851,7 +858,7 @@ impl<'a> Server<'a> {
             Some(cwd) => std::path::PathBuf::from(cwd),
             None => self.env.task_dir(&task)?,
         };
-        let surface = super::place::open_helper(&self.env, &workspace, &dir, &registration.argv)?;
+        let surface = super::place::open_helper(&self.env, &workspace, &dir, &program)?;
         to_text(&json!({ "surface": surface.as_str(), "workspace": workspace.as_str() }))
     }
 

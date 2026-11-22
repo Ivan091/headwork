@@ -415,6 +415,31 @@ impl fmt::Display for Estimate {
     }
 }
 
+/// The `claude` flags that pick the session's id themselves: a helper started with one keeps that session's own tag.
+const SESSION_FLAGS: [&str; 5] = ["--session-id", "--resume", "-r", "--continue", "-c"];
+
+/// Whether `argv` starts a fresh `claude` session that a `--session-id` can name: its program is `claude` (any folder,
+/// any extension) and no flag already picks the session.
+#[must_use]
+pub fn fresh_claude(argv: &[String]) -> bool {
+    let Some(program) = argv.first() else {
+        return false;
+    };
+    let is_claude = Path::new(program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("claude"));
+    is_claude
+        && !argv.iter().skip(1).any(|arg| {
+            SESSION_FLAGS.iter().any(|flag| {
+                arg == flag
+                    || arg
+                        .strip_prefix(flag)
+                        .is_some_and(|rest| rest.starts_with('='))
+            })
+        })
+}
+
 /// Shortens a token count for a narrow column: `950`, `12k`, `1.2M`, `3.4B`.
 #[must_use]
 pub fn short_count(count: u64) -> String {
@@ -743,6 +768,29 @@ mod tests {
             "$0.00",
             "a model that spent nothing needs no price"
         );
+    }
+
+    #[test]
+    fn only_a_fresh_claude_gets_a_session_id() {
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let cases = [
+            (argv(&["claude"]), true),
+            (argv(&["C:/bin/claude.exe", "--model", "haiku"]), true),
+            (argv(&["Claude"]), true),
+            (argv(&["claude", "--resume", "abc"]), false),
+            (argv(&["claude", "--session-id=abc"]), false),
+            (argv(&["claude", "-c"]), false),
+            (argv(&["bash", "-c", "claude"]), false),
+            (argv(&[]), false),
+        ];
+        for (argv, expected) in cases {
+            assert_eq!(fresh_claude(&argv), expected, "{argv:?}");
+        }
     }
 
     #[test]
