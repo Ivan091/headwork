@@ -36,7 +36,9 @@ job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and fo
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
-`core/src/watch.rs`, its memory in migration 0004). A running task whose session ended or whose launcher is gone
+`core/src/watch.rs`, its memory in migration 0004). `close` types `/exit` into a session's pane and waits up to
+`[watch] exit_grace_s` before it kills `claude`, so Claude Code archives the Remote Control session and it leaves the
+Claude app's list (`docs/decisions.md`, 2026-11-22). A running task whose session ended or whose launcher is gone
 becomes `interrupted` through `ops/lost.rs`, called by the `SessionEnd` hook, `board` and the tick alike.
 A task may deliver in several pull requests: close and the tick find them through one lookup (`ops/prs.rs`: recorded
 URLs, the stored branch, the branch checked out), a later pull request takes a `merged` task back to `in_review`, and

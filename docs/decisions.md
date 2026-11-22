@@ -947,3 +947,13 @@ and the reason.
   pinned commit, not one from the project's `worktree_new`; the reviewer lead runs on Sonnet by default while the nodes
   carry the judgement; sessions pass findings and resolutions by `SendMessage`, the tools returning the text and the
   address; the first flows are `code` and `plan`.
+- 2026-11-22 Closed sessions leave the Claude app. Closed workers stayed listed in the Claude app (Remote Control)
+  because `close` ended `claude` with `taskkill /T /F`, which skips the teardown where Claude Code archives its Remote
+  Control session at claude.ai (`[remote-bridge] Torn down (archive=200)` in its debug log). A trial with throwaway
+  `--remote-control` sessions showed that `/exit` typed into the pane archives the session when idle, mid-turn and
+  mid-tool-call alike, and exits within a second. So `close` (`ask_exit` in `ops/close.rs`) types `/exit` and Enter into
+  the session's pane first, waits up to `[watch] exit_grace_s` (default 15, 0 skips it) for `claude` to be gone, and
+  kills the tree only when it stays (events `exit-asked`, `exit-ignored`, `exit-unasked`). Calling the archive endpoint
+  ourselves was rejected: it is undocumented and needs the user's OAuth token. Park still ends sessions without `/exit`,
+  so resume brings them back unarchived. Sessions closed before this change are archived by hand (⋯ → Archive in
+  claude.ai/code or Desktop).

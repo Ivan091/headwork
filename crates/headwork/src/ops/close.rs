@@ -3,7 +3,9 @@
 //!
 //! The order is the one today's `close-child.sh` learned: everything else first, the pane (or the workspace it leaves
 //! empty) next, ending the program last, because a worker usually closes itself from inside the pane being closed.
-//! Under headwork a self-close ends `claude`'s tree, which takes the calling command with it; the launcher sees
+//! Under headwork a close first types `/exit` into the session's pane, so `claude` leaves on its own and archives its
+//! Remote Control session at claude.ai, and ends `claude`'s tree only when it has not left within `[watch]
+//! exit_grace_s`. A self-close's exit takes the calling command with it; the launcher sees
 //! `claude` exit with the task `closing`, starts a detached `headwork finish` that outlives the pane, and closes its
 //! own pane as its last act. `finish` waits for the launcher to be gone, removes the worktree, verifies, and marks the
 //! task `closed`.
@@ -14,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_adapters::git::GitHost;
-use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
+use headwork_adapters::host::{Key, SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::{TaskVars, WorktreeCommand};
@@ -381,6 +383,7 @@ pub fn end_closing(
             .filter(|pid| proc::is_alive(*pid).unwrap_or(false))
     {
         let target = session.claude_pid.unwrap_or(launcher);
+        let left = ask_exit(store, env, id, &session)?;
         if own_session == Some(session.id.as_str()) {
             store.append_event(
                 env.actor,
@@ -393,14 +396,18 @@ pub fn end_closing(
                 let _logged: Result<()> =
                     start_finisher(store, env, id, &session.id, launcher, "backup-finisher");
             }
-            proc::kill_tree(target)?;
+            if !left {
+                proc::kill_tree(target)?;
+            }
             return report(
                 store,
                 id,
                 Some("the launcher finishes the close".to_owned()),
             );
         }
-        proc::kill_tree(target)?;
+        if !left {
+            proc::kill_tree(target)?;
+        }
         wait_until(LAUNCHER_GRACE, || {
             !proc::is_alive(launcher).unwrap_or(false)
         });
@@ -885,6 +892,63 @@ fn pinned(store: &Store, session: &str) -> Result<bool> {
     Ok(store
         .session_event(session, super::reload::EVENT_BUILD)?
         .is_none())
+}
+
+/// What `close` types into a session's pane to have `claude` leave on its own.
+const EXIT_COMMAND: &str = "/exit";
+
+/// Asks a session's `claude` to exit by typing `/exit` into its pane, and waits up to `[watch] exit_grace_s` for it to
+/// be gone. Claude Code archives its Remote Control session at claude.ai while it exits, even in the middle of a turn
+/// or a tool call, so the session leaves the Claude app's list; a killed `claude` stays listed. Returns whether it
+/// left; when it did not (no pane or pid known, the host refused the keys, or the grace ran out), the caller ends the
+/// process tree.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+fn ask_exit(store: &Store, env: &Env<'_>, id: TaskId, session: &SessionRow) -> Result<bool> {
+    let grace = env.config.watch.exit_grace_s;
+    let (Some(pid), Some(surface)) = (session.claude_pid, session.host_surface.as_deref()) else {
+        return Ok(false);
+    };
+    if grace == 0 || !proc::is_alive(pid).unwrap_or(false) {
+        return Ok(false);
+    }
+    let surface = SurfaceId(surface.to_owned());
+    if let Err(error) = env
+        .host
+        .send_text(&surface, EXIT_COMMAND)
+        .and_then(|()| env.host.send_key(&surface, Key::Enter))
+    {
+        store.append_event(
+            env.actor,
+            Some(id),
+            Some(&session.id),
+            "exit-unasked",
+            &serde_json::json!({ "error": error.to_string() }),
+        )?;
+        return Ok(false);
+    }
+    store.append_event(
+        env.actor,
+        Some(id),
+        Some(&session.id),
+        "exit-asked",
+        &serde_json::json!({ "grace_s": grace }),
+    )?;
+    let left = wait_until(Duration::from_secs(u64::from(grace)), || {
+        !proc::is_alive(pid).unwrap_or(false)
+    });
+    if !left {
+        store.append_event(
+            env.actor,
+            Some(id),
+            Some(&session.id),
+            "exit-ignored",
+            &serde_json::json!({ "grace_s": grace }),
+        )?;
+    }
+    Ok(left)
 }
 
 /// The detached finisher: waits for `pid` to be gone, records the end of a session its launcher could not record,
