@@ -1252,3 +1252,10 @@ and the reason.
   `usage-error` and never blocks. `board` shows each task's tokens after its PR (a lead's with its parts'), `status`
   appends them to its line, and a close logs `usage-total` (the task and its parts) and prints it after `closed`. The
   orchestrator's `usage` tool reads the changed transcripts first, like the CLI.
+- 2026-11-22 Usage U3. A price is read as dollars per million tokens and kept as an integer of millionths of a dollar
+  (`core::usage::Price`), so the config stays comparable (`Eq`) and sums stay exact; a negative, non-finite or
+  above-a-million price is a config error. Unset prices of a model are zero. An estimate prints `$4.10`, `$4.10+?`
+  when part of the tokens came from a model without a price, and `?` when none was priced; a model that spent nothing
+  needs no price. `board` and `status` print the estimate only once `[usage.prices]` holds a price, so a machine
+  without a price table sees no row of `?`; `headwork usage` always has the column and lists the unpriced models under
+  the table, and `doctor` warns (check `usage-prices`) about models of the last 7 days without one.

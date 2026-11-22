@@ -591,3 +591,24 @@ fn update_refuses_unknown_keys_and_bad_values() {
         assert!(matches!(error, ConfigError::Parse { .. }), "{bad}: {error}");
     }
 }
+
+#[test]
+fn usage_prices_parse_and_bad_ones_are_refused() {
+    let config = Config::parse("[machine]\nhost = \"wmux\"\n", "minimal").unwrap();
+    assert_eq!(config.usage.keep_days, 90, "default retention");
+    assert!(config.usage.prices.is_empty(), "no prices by default");
+    let text = "[machine]\nhost = \"wmux\"\n\n[usage]\nkeep_days = 30\n\n[usage.prices.\"claude-opus\"]\ninput = 15.0\noutput = 75\n";
+    let config = Config::parse(text, "prices").unwrap();
+    assert_eq!(config.usage.keep_days, 30, "retention");
+    let opus = config.usage.price_for("claude-opus-5-5").unwrap();
+    assert_eq!(opus.input.micros(), 15_000_000, "input");
+    assert_eq!(opus.output.micros(), 75_000_000, "an integer price");
+    assert_eq!(opus.cache_read.micros(), 0, "unset is zero");
+    let negative = text.replace("input = 15.0", "input = -1.0");
+    assert!(
+        Config::parse(&negative, "negative").is_err(),
+        "a negative price"
+    );
+    let unknown = text.replace("input = 15.0", "inptu = 15.0");
+    assert!(Config::parse(&unknown, "typo").is_err(), "an unknown key");
+}

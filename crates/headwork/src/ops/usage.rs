@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, bail};
 use headwork_core::UsageGroup;
-use headwork_core::usage::{Tokens, agent_type, parse_line, transcript_of};
+use headwork_core::usage::{Estimate, UsageConfig, agent_type, parse_line, transcript_of};
 use headwork_store::{FileMark, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal};
 use serde::Serialize;
 
@@ -240,14 +240,9 @@ pub fn task_total(store: &Store, task: TaskId) -> Result<UsageTotal> {
 }
 
 fn sum<'a>(rows: impl Iterator<Item = &'a UsageTotal>) -> UsageTotal {
-    let mut total = UsageTotal {
-        key: "total".to_owned(),
-        responses: 0,
-        tokens: Tokens::default(),
-    };
+    let mut total = UsageTotal::named("total");
     for row in rows {
-        total.responses = total.responses.saturating_add(row.responses);
-        total.tokens += row.tokens;
+        total.add(row);
     }
     total
 }
@@ -275,11 +270,43 @@ pub struct UsageReport {
     /// The task asked for.
     pub task: Option<String>,
     /// One line per group, largest first.
-    pub rows: Vec<UsageTotal>,
+    pub rows: Vec<UsageRow>,
     /// Every row summed.
-    pub total: UsageTotal,
+    pub total: UsageRow,
+    /// Models that spent tokens and have no price in `[usage.prices]`.
+    pub unpriced: Vec<String>,
     /// What the read before the report did, when one ran.
     pub ingest: Option<IngestReport>,
+}
+
+/// One group's total with its estimate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageRow {
+    /// The numbers.
+    #[serde(flatten)]
+    pub total: UsageTotal,
+    /// The estimate at API list prices.
+    pub estimate: Estimate,
+    /// The estimate as printed: `$4.10`, `$4.10+?` or `?`.
+    pub dollars: String,
+}
+
+impl UsageRow {
+    /// Prices a total.
+    #[must_use]
+    pub fn priced(total: UsageTotal, prices: &UsageConfig) -> Self {
+        let estimate = prices.estimate(
+            total
+                .models
+                .iter()
+                .map(|(model, tokens)| (model.as_str(), tokens)),
+        );
+        Self {
+            dollars: estimate.to_string(),
+            total,
+            estimate,
+        }
+    }
 }
 
 /// Sums the stored usage as `options` asks.
@@ -287,7 +314,7 @@ pub struct UsageReport {
 /// # Errors
 ///
 /// Fails when `since` is not a time, the task is unknown or the store cannot be read.
-pub fn report(store: &Store, options: &UsageOptions) -> Result<UsageReport> {
+pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Result<UsageReport> {
     let since = options
         .since
         .as_deref()
@@ -310,12 +337,16 @@ pub fn report(store: &Store, options: &UsageOptions) -> Result<UsageReport> {
         tasks,
         unmanaged: options.unmanaged,
     })?;
-    let total = sum(rows.iter());
+    let total = UsageRow::priced(sum(rows.iter()), prices);
     Ok(UsageReport {
         by: options.by,
         since,
         task: options.task.clone(),
-        rows,
+        unpriced: total.estimate.unpriced.clone(),
+        rows: rows
+            .into_iter()
+            .map(|row| UsageRow::priced(row, prices))
+            .collect(),
         total,
         ingest: None,
     })

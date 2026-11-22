@@ -306,6 +306,9 @@ pub struct Config {
     /// Installing releases with `headwork update` (`docs/autoupdate.md`).
     #[serde(default)]
     pub update: UpdateConfig,
+    /// Token usage: how long per-response rows stay and the price table for the estimate (`docs/usage.md`).
+    #[serde(default)]
+    pub usage: crate::usage::UsageConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,

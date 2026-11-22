@@ -956,7 +956,14 @@ fn board(
     if json {
         json_out(out, &board)?;
     } else {
-        out.write_all(render::board(&board, ctx.config.machine.max_workers.get()).as_bytes())?;
+        out.write_all(
+            render::board(
+                &board,
+                ctx.config.machine.max_workers.get(),
+                &ctx.config.usage,
+            )
+            .as_bytes(),
+        )?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -969,7 +976,7 @@ fn status_command(
     out: &mut impl Write,
 ) -> Result<ExitCode> {
     ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
-    let lines = headwork::ops::status::status(store, all)?;
+    let lines = headwork::ops::status::status(store, all, &ctx.config.usage)?;
     if json {
         json_out(out, &lines)?;
     } else {
@@ -1838,7 +1845,7 @@ fn usage_command(
             usage::ingest(store, &files, from_start)
         })
         .transpose()?;
-    let mut report = usage::report(store, options)?;
+    let mut report = usage::report(store, options, &ctx.config.usage)?;
     report.ingest = ingested;
     if json {
         let mut value = serde_json::to_value(&report)?;

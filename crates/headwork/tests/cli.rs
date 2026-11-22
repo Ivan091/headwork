@@ -424,3 +424,57 @@ fn usage_reads_transcripts_once_and_groups_them() {
     let wrong = headwork(home.path(), &["usage", "--by", "colour"]);
     assert!(!wrong.status.success(), "an unknown grouping is refused");
 }
+
+#[test]
+fn usage_estimates_priced_models_and_lists_the_rest() {
+    let home = home_with_fixture();
+    let config = fixture("config.toml")
+        + "\n[usage.prices.\"claude-opus\"]\ninput = 15.0\ncache_read = 1.5\ncache_write_1h = 30.0\noutput = 75.0\n";
+    std::fs::write(home.path().join("config.toml"), config).unwrap();
+    let folder = home.path().join(".claude/projects/S--w");
+    std::fs::create_dir_all(&folder).unwrap();
+    let haiku = assistant_line("m2", 1, 1000, 0).replace("claude-opus-5-5", "claude-haiku-5-5");
+    let lines = [assistant_line("m1", 1, 1_000_000, 100_000), haiku];
+    std::fs::write(folder.join("0a.jsonl"), lines.join("\n") + "\n").unwrap();
+
+    let output = headwork(home.path(), &["usage", "--by", "model", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let dollars: Vec<(&str, &str)> = json["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap(),
+                row["dollars"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        dollars,
+        [("unmanaged", "$22.50+?")],
+        "one unmanaged line, part priced: {json}"
+    );
+    assert_eq!(
+        json["unpriced"],
+        serde_json::json!(["claude-haiku-5-5"]),
+        "{json}"
+    );
+
+    let text = stdout(&headwork(
+        home.path(),
+        &["usage", "--by", "model", "--unmanaged", "--no-read"],
+    ));
+    assert!(text.contains("$22.50"), "opus priced: {text}");
+    assert!(
+        text.contains("no price in [usage.prices] for: claude-haiku-5-5"),
+        "listed: {text}"
+    );
+
+    let doctor = stdout(&headwork(home.path(), &["doctor", "--json"]));
+    assert!(
+        doctor.contains("claude-haiku-5-5"),
+        "doctor warns about the unpriced model: {doctor}"
+    );
+}

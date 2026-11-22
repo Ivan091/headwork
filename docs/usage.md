@@ -1,6 +1,6 @@
 # Usage: tokens spent by every Claude session
 
-Status: plan of 2026-11-22; U1 built (`headwork usage`, migration 0018); U2 built (hook and tick reads, `board` and `status` tokens, the orchestrator's `usage` tool, `usage-total` at close); U3 and U4 to come. The user's request: "a logging system to track how much tokens are spent by
+Status: plan of 2026-11-22; U1 built (`headwork usage`, migration 0018); U2 built (hook and tick reads, `board` and `status` tokens, the orchestrator's `usage` tool, `usage-total` at close); U3 built (`[usage.prices]`, the estimate in every view, doctor check `usage-prices`); U4 to come. The user's request: "a logging system to track how much tokens are spent by
 type and so on". The user's answers to the open points are in section 10 and are worked into the sections above.
 
 ## 1. What to answer

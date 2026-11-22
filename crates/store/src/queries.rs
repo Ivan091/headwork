@@ -904,13 +904,14 @@ impl Store {
                 .filter(|ask| ask.task_id == Some(task.id))
                 .cloned()
                 .collect();
-            let task_tokens = if task.shape.is_lead() {
+            let models = if task.shape.is_lead() {
                 tokens.tree(task.id)
             } else {
                 tokens.own(task.id)
             };
             board_tasks.push(BoardTask {
-                tokens: task_tokens,
+                tokens: crate::usage::all_models(&models).total(),
+                models,
                 session: self.session_of(task.id)?,
                 pr: self.latest_pr(task.id)?,
                 asks: task_asks,
