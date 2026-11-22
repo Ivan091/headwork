@@ -1032,6 +1032,64 @@ fn the_turn_counts_from_the_last_prompt() {
 }
 
 #[test]
+fn background_work_stays_open_until_each_notification_arrives() {
+    let (store, task, id) = hook_world();
+    let event = |kind: &str, data: serde_json::Value| {
+        store
+            .append_event(Actor::Hook, Some(task.id), Some(&id), kind, &data)
+            .unwrap();
+    };
+    event("prompt", serde_json::json!({ "notification": false }));
+    let started = serde_json::json!({ "tool": "Agent", "background": true });
+    event("tool-used", started.clone());
+    event("tool-used", started);
+    assert!(store.turn_so_far(&id).unwrap().background, "two running");
+    event("prompt", serde_json::json!({ "notification": true }));
+    assert!(
+        store.turn_so_far(&id).unwrap().background,
+        "one notification leaves one running"
+    );
+    event("prompt", serde_json::json!({ "notification": true }));
+    assert!(!store.turn_so_far(&id).unwrap().background, "both reported");
+    event("prompt", serde_json::json!({ "notification": false }));
+    event(
+        "tool-used",
+        serde_json::json!({ "tool": "Agent", "background": true }),
+    );
+    event("prompt", serde_json::json!({ "notification": true }));
+    event("prompt", serde_json::json!({ "notification": true }));
+    assert!(
+        !store.turn_so_far(&id).unwrap().background,
+        "a notification of an older turn never reopens work"
+    );
+}
+
+#[test]
+fn a_notification_is_no_user_prompt() {
+    let (store, task, id) = hook_world();
+    store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            Some(&id),
+            "prompt",
+            &serde_json::json!({ "cross_session": false, "notification": true }),
+        )
+        .unwrap();
+    assert!(!store.user_prompted_within(&id, 120).unwrap());
+    store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            Some(&id),
+            "prompt",
+            &serde_json::json!({ "cross_session": false, "notification": false }),
+        )
+        .unwrap();
+    assert!(store.user_prompted_within(&id, 120).unwrap());
+}
+
+#[test]
 fn recent_tool_calls_and_open_asks() {
     let (mut store, task, id) = hook_world();
     assert!(

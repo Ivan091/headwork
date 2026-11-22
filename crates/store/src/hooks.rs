@@ -291,6 +291,7 @@ impl Store {
         Ok(self.conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND type = ?2
                  AND NOT COALESCE(json_extract(data, '$.cross_session'), 0)
+                 AND NOT COALESCE(json_extract(data, '$.notification'), 0)
                  AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?3))",
             params![session, EVENT_PROMPT, since],
             |row| row.get(0),
@@ -335,14 +336,16 @@ impl Store {
         Ok(open.len())
     }
 
-    /// What the session did since its last prompt.
+    /// What the session did since the user's last prompt (task notifications do not start a turn). Background work
+    /// counts as running while more of it started than notifications arrived since then.
     ///
     /// # Errors
     ///
     /// Returns a read error.
     pub fn turn_so_far(&self, session: &str) -> Result<TurnSoFar, StoreError> {
         let since: i64 = self.conn.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id = ?1 AND type = ?2",
+            "SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id = ?1 AND type = ?2
+                 AND NOT COALESCE(json_extract(data, '$.notification'), 0)",
             params![session, EVENT_PROMPT],
             |row| row.get(0),
         )?;
@@ -366,12 +369,19 @@ impl Store {
             params![session, since, crate::EVENT_REPORT],
             |row| row.get(0),
         )?;
-        let background: bool = self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND id > ?2 AND type = ?3
-                 AND json_extract(data, '$.background') = 1)",
+        let started: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND id > ?2 AND type = ?3
+                 AND json_extract(data, '$.background') = 1",
             params![session, since, EVENT_TOOL],
             |row| row.get(0),
         )?;
+        let finished: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE session_id = ?1 AND id > ?2 AND type = ?3
+                 AND json_extract(data, '$.notification') = 1",
+            params![session, since, EVENT_PROMPT],
+            |row| row.get(0),
+        )?;
+        let background = started > finished;
         Ok(TurnSoFar {
             background,
             reported,

@@ -29,5 +29,6 @@
 - When the task is finished (every pull request merged, every part closed), ask the user before you close: an
   `AskUserQuestion` headed `Close`, naming what was delivered, with the options "Close it (Recommended)" and "Keep it
   open". Send the report to `{orchestrator}` first, so the ask is the last thing before `done`.
+  Send a `PushNotification` with the question just before you ask, so the phone hears it.
 - Call `done` only after the user picked "Close it"; until then `done` is refused (`lead-close-unasked`). When they keep
   it open, take the next work they type in your tab and ask again when it is finished.
