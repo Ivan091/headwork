@@ -957,3 +957,15 @@ and the reason.
   ourselves was rejected: it is undocumented and needs the user's OAuth token. Park still ends sessions without `/exit`,
   so resume brings them back unarchived. Sessions closed before this change are archived by hand (⋯ → Archive in
   claude.ai/code or Desktop).
+- 2026-11-22 Autoupdate (`docs/autoupdate.md`, a plan): every merge to master is released by GitHub Actions (Windows
+  x86_64 and macOS arm64, gated by `check.sh` on both) and each machine installs the newest release with `headwork
+  update`, smoke-tested against a copy of the store first, rather than building origin/master locally. The user chose a
+  public repository so the runners are free (a release per merge on a private one would need about 11,000 to 13,000
+  minutes a month against 2,000 included) and downloads need no login; the history is rewritten first (author e-mail
+  addresses, `Claude-Session:` trailers, raw trial artefacts and the copied cmux files) and the code is licensed MIT.
+- 2026-11-22 The store copies itself before migrating (autoupdate step 1): `Store::open` takes the copy, not the
+  installer, because any process may be the first to open an older store after a swap (a hook usually wins). `VACUUM
+  INTO` rather than a file copy, because the store is in WAL mode and other processes write it. Two processes may race;
+  a copy whose `user_version` is no longer the old one is thrown away. A failed copy is reported (`Store::backup`,
+  printed by `install`) but does not stop the migration: a store the new build refuses would stop every hook. No event
+  is logged: no actor fits a store open, and a new actor word would break older builds reading the log.
