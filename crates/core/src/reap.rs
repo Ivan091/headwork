@@ -32,6 +32,10 @@ pub const IDLE_CPU_PERMILLE: u64 = 10;
 /// How long after a session ended, in seconds, its leftovers are left alone, so a closing launcher can finish.
 pub const SETTLE_S: u64 = 60;
 
+/// How long after its last recorded event, in seconds, a session found without an end may still have started
+/// processes; its window closes there instead of staying open until now.
+pub const UNENDED_SLACK_S: u64 = 600;
+
 /// How far, in seconds, a session's launcher or `claude` may have started from the session's recorded start.
 pub const ROOT_START_WINDOW_S: u64 = 120;
 
@@ -73,6 +77,9 @@ pub struct EndedSession {
     pub started: u64,
     /// When it ended, in seconds since the unix epoch; absent when it was found gone without an end.
     pub ended: Option<u64>,
+    /// Its last recorded event, in seconds since the unix epoch; with [`UNENDED_SLACK_S`] it closes the window of a
+    /// session without an end.
+    pub last_seen: Option<u64>,
     /// The folders only its task uses (its worktree and helper worktrees, never a main checkout), each as recorded and
     /// as the system resolves it.
     pub folders: Vec<String>,
@@ -236,7 +243,7 @@ impl<'a> Tree<'a> {
 
     /// The processes of an ended session's tree that still run.
     fn session_members(&self, session: &EndedSession, now: u64) -> BTreeSet<u32> {
-        let end = session.ended.unwrap_or(now);
+        let end = window_end(session, now);
         let from = session.started.saturating_sub(START_SLACK_S);
         let until = end.saturating_add(START_SLACK_S);
         let mut members = BTreeSet::new();
@@ -300,6 +307,20 @@ impl<'a> Tree<'a> {
     }
 }
 
+/// Where an ended session's window closes: its end, else its last recorded event (or its start) plus
+/// [`UNENDED_SLACK_S`], never later than now.
+#[must_use]
+pub fn window_end(session: &EndedSession, now: u64) -> u64 {
+    session.ended.unwrap_or_else(|| {
+        session
+            .last_seen
+            .unwrap_or(session.started)
+            .max(session.started)
+            .saturating_add(UNENDED_SLACK_S)
+            .min(now)
+    })
+}
+
 /// Decides which processes `reap` ends and which leftovers it leaves, and why.
 #[must_use]
 pub fn plan(facts: &Facts<'_>) -> Plan {
@@ -336,7 +357,11 @@ pub fn plan(facts: &Facts<'_>) -> Plan {
         .procs
         .iter()
         .filter(|_| facts.shells_known && facts.parents_kept)
-        .filter(|p| ORPHAN_IMAGES.contains(&stem(&p.image).as_str()) && tree.parent(p).is_none())
+        .filter(|p| {
+            p.started != 0
+                && ORPHAN_IMAGES.contains(&stem(&p.image).as_str())
+                && tree.parent(p).is_none()
+        })
         .filter(|p| !taken.contains(&p.pid) && !protected.contains(&p.pid))
         .collect();
     for root in orphan_roots {
@@ -398,6 +423,7 @@ mod tests {
             roots: roots.to_vec(),
             started,
             ended,
+            last_seen: None,
             folders: Vec::new(),
         }
     }
@@ -726,5 +752,60 @@ mod tests {
             parents_kept: true,
         });
         assert_eq!(ended(&plan), vec![10], "{plan:?}");
+    }
+
+    #[test]
+    fn a_session_without_an_end_closes_its_window_after_its_last_event() {
+        let at = |ended, last_seen| EndedSession {
+            last_seen,
+            ..session(&[1], 50_000, ended)
+        };
+        let cases = [
+            (at(Some(60_000), Some(55_000)), 60_000),
+            (at(None, Some(55_000)), 55_000 + UNENDED_SLACK_S),
+            (at(None, None), 50_000 + UNENDED_SLACK_S),
+            (at(None, Some(40_000)), 50_000 + UNENDED_SLACK_S),
+            (at(None, Some(NOW)), NOW),
+        ];
+        for (session, expected) in cases {
+            assert_eq!(window_end(&session, NOW), expected, "{session:?}");
+        }
+        let procs = [
+            p(10, Some(1), "bash.exe", 55_100),
+            p(11, Some(1), "bash.exe", 55_000 + UNENDED_SLACK_S + 100),
+        ];
+        let sessions = [at(None, Some(55_000))];
+        let plan = plan(&Facts {
+            now: NOW,
+            procs: &procs,
+            sessions: &sessions,
+            jobs: &[],
+            shells_known: false,
+            parents_kept: true,
+        });
+        assert_eq!(
+            ended(&plan),
+            vec![10],
+            "a later child of the dead launcher is not the session's: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn a_shell_whose_start_time_reads_zero_is_no_orphan() {
+        let old = NOW - IDLE_AFTER_S - 100;
+        let procs = [
+            p(10, Some(999), "bash.exe", 0),
+            p(11, Some(998), "tail.exe", old),
+        ];
+        let plan = plan(&Facts {
+            now: NOW,
+            procs: &procs,
+            sessions: &[],
+            jobs: &[],
+            shells_known: true,
+            parents_kept: true,
+        });
+        assert_eq!(ended(&plan), vec![11], "{plan:?}");
+        assert!(plan.spare.is_empty(), "{plan:?}");
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! Windows reuses process ids, so a pid stored hours ago may now belong to an unrelated program. A job records the
 //! identity of its process (image name and start time) when the pid is stored, and every later check compares it with
-//! what runs under that pid now. Only a process that matches may be signalled.
+//! what runs under that pid now. Only a process that matches may be signalled. A session records the same for its
+//! launcher and its `claude` ([`RecordedPid`]).
 
 use std::path::Path;
 
@@ -87,6 +88,44 @@ pub fn judge(
     }
 }
 
+/// A process a session recorded: its pid, the identity read when it was recorded, and when that was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedPid {
+    /// The process id.
+    pub pid: u32,
+    /// Its image and start time, read when the pid was recorded; absent for a session recorded before identities were
+    /// kept, or when the process could not be read.
+    pub identity: Option<ProcessIdentity>,
+    /// When the pid was recorded, in seconds since the unix epoch.
+    pub recorded_at: Option<u64>,
+}
+
+impl RecordedPid {
+    /// Judges what runs under the pid now.
+    ///
+    /// With an identity the image and the start time must both match, as for a job. Without one the process counts as
+    /// the recorded one only when it started no later than the pid was recorded: the recorded process was running
+    /// then, so a program that took its pid over started after. A start time that reads 0 (unknown), or a pid with no
+    /// record time, never counts: such a process is left alone.
+    #[must_use]
+    pub fn judge(&self, current: Option<ProcessIdentity>) -> Liveness {
+        if self.identity.is_some() {
+            return judge(self.identity.as_ref(), &[], current);
+        }
+        let Some(now) = current else {
+            return Liveness::Gone;
+        };
+        let started_before = self
+            .recorded_at
+            .is_some_and(|at| now.started != 0 && now.started <= at.saturating_add(START_SLACK_S));
+        if started_before {
+            Liveness::Alive
+        } else {
+            Liveness::Reused { now }
+        }
+    }
+}
+
 fn stem(image: &str) -> String {
     let name = image.rsplit(['/', '\\']).next().unwrap_or(image);
     Path::new(name).file_stem().map_or_else(
@@ -107,7 +146,7 @@ fn plausible_for(argv: &[String], image: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Liveness, ProcessIdentity, judge};
+    use super::{Liveness, ProcessIdentity, RecordedPid, judge};
 
     fn id(image: &str, started: u64) -> ProcessIdentity {
         ProcessIdentity {
@@ -196,5 +235,53 @@ mod tests {
             note.contains("38260") && note.contains("firefox.exe"),
             "{note}"
         );
+    }
+
+    #[test]
+    fn a_recorded_session_pid_is_judged_by_identity_else_by_start_before_the_record() {
+        let known = RecordedPid {
+            pid: 7,
+            identity: Some(id("claude.exe", 1000)),
+            recorded_at: Some(1002),
+        };
+        let bare = RecordedPid {
+            identity: None,
+            ..known.clone()
+        };
+        let untimed = RecordedPid {
+            recorded_at: None,
+            ..bare.clone()
+        };
+        let reused = |image: &str, started| Liveness::Reused {
+            now: id(image, started),
+        };
+        let cases = [
+            (&known, None, Liveness::Gone),
+            (&known, Some(id("claude.exe", 1000)), Liveness::Alive),
+            (
+                &known,
+                Some(id("claude.exe", 900)),
+                reused("claude.exe", 900),
+            ),
+            (&known, Some(id("wmux.exe", 1000)), reused("wmux.exe", 1000)),
+            (&bare, None, Liveness::Gone),
+            (&bare, Some(id("anything.exe", 990)), Liveness::Alive),
+            (&bare, Some(id("anything.exe", 1003)), Liveness::Alive),
+            (&bare, Some(id("wmux.exe", 1004)), reused("wmux.exe", 1004)),
+            (&bare, Some(id("idle.exe", 0)), reused("idle.exe", 0)),
+            (
+                &untimed,
+                Some(id("claude.exe", 990)),
+                reused("claude.exe", 990),
+            ),
+            (&untimed, None, Liveness::Gone),
+        ];
+        for (record, current, expected) in cases {
+            assert_eq!(
+                record.judge(current.clone()),
+                expected,
+                "{record:?} {current:?}"
+            );
+        }
     }
 }
