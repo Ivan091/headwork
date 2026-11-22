@@ -70,7 +70,7 @@ pub struct ShadowReport {
 
 /// Turns `--since` into an instant in UTC: a span back from now (`90m`, `24h`, `7d`), or an RFC 3339 date and time or
 /// a plain date.
-fn since_instant(store: &Store, text: &str) -> Result<String> {
+pub(crate) fn since_instant(store: &Store, text: &str) -> Result<String> {
     let text = text.trim();
     let span = text.char_indices().last().and_then(|(at, unit)| {
         let seconds: u64 = match unit {

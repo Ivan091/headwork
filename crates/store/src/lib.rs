@@ -14,6 +14,7 @@ mod records;
 mod reports;
 mod sessions;
 mod tick;
+mod usage;
 mod waiting;
 
 use std::path::Path;
@@ -38,6 +39,7 @@ pub use records::{
 pub use reports::{AddedRule, EVENT_REPORT, NewPr, RecordedPr};
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
+pub use usage::{FileMark, UsageBatch, UsageQuery, UsageTag, UsageTotal};
 pub use waiting::{EVENT_SESSION_WAITING, WaitingCandidate};
 
 /// The SQL expression for the current time, UTC, with milliseconds.

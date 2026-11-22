@@ -1237,3 +1237,12 @@ and the reason.
 
 - 2026-11-22, a lead reads "in its own workspace": the CLI board derives it from the task's shape (lead) and the stored
   `host_workspace` instead of a new `host_place` value, so no migration; plain tasks keep "in its own pane".
+- 2026-11-22 Usage U1 (`docs/usage.md`). `headwork usage` reads every transcript changed since its last read before
+  it reports (a walk of `~/.claude/projects` with one `stat` per file, under a second once read), so the numbers are
+  current before U2's hooks and tick reads land; `--no-read` skips it and `--backfill` rereads every file from its
+  start, which the response-id key makes safe. `usage_files` keeps the modification time as milliseconds
+  (`mtime_ms INTEGER`), not text. `--unmanaged` breaks sessions outside headwork down by the grouping, and by folder for
+  task groupings; without it they are one `unmanaged` line. Rows without a task (the orchestrator) group by their role
+  under task groupings. A summed day of `usage_daily` counts in a `--since` window when it starts at or after it. The
+  first backfill on this machine read 583 transcripts (1.4 GB) in 15 s; a task's total matched a hand count of its
+  transcripts to the token.

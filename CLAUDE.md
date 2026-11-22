@@ -95,6 +95,9 @@ before you close" while it is on. A task of kind `silent` (`SILENT_KIND`) never 
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
+Token usage (`docs/usage.md`) is read from Claude Code's transcripts by `ops/usage.rs` (pure parsing in
+`core/src/usage.rs`, rows in migration 0018): one row per API response keyed by its id, tagged with the session's task
+and role when written, sessions headwork did not start as `unmanaged`.
 
 ## Commands
 
@@ -125,6 +128,7 @@ cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # i
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts
 cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
+cargo run -p headwork -- usage [--by task|model|role|agent|day|...] [--since 7d] [--task N] [--unmanaged] [--backfill] [--gaps]   # tokens by type (docs/usage.md)
 cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
 
