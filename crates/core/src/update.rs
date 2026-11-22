@@ -327,23 +327,16 @@ pub enum UpdateStep {
 /// Decides what `headwork update` does with these facts.
 #[must_use]
 pub fn decide(facts: &UpdateFacts) -> UpdateStep {
-    if !facts.enabled && !facts.requested {
-        return UpdateStep::Skip(SkipReason::Off);
-    }
-    if matches!(facts.machine, MachineMode::Parking | MachineMode::Resuming) {
-        return UpdateStep::Skip(SkipReason::Machine(facts.machine));
-    }
-    if facts.disk == DiskLevel::Stop {
-        return UpdateStep::Skip(SkipReason::DiskStop);
-    }
-    if !facts.requested
-        && let Some(failure) = facts.last_failure
-        && failure.kind == FailureKind::Transient
-    {
-        let until = failure.at_ms.saturating_add(backoff_ms(failure.attempts));
-        if until > facts.now_ms {
-            return UpdateStep::Wait { until };
-        }
+    let local = Local {
+        enabled: facts.enabled,
+        requested: facts.requested,
+        last_failure: facts.last_failure,
+        machine: facts.machine,
+        disk: facts.disk,
+        now_ms: facts.now_ms,
+    };
+    if let Some(step) = local.ruled_out() {
+        return step;
     }
     let Some(release) = facts.release else {
         return UpdateStep::UpToDate;
@@ -374,6 +367,88 @@ pub fn decide(facts: &UpdateFacts) -> UpdateStep {
         }
         Installed::Dev { .. } => UpdateStep::Skip(SkipReason::DevBuild),
     }
+}
+
+/// The facts that need no network: whether anything rules an update out before GitHub is asked.
+struct Local {
+    enabled: bool,
+    requested: bool,
+    last_failure: Option<Failure>,
+    machine: MachineMode,
+    disk: DiskLevel,
+    now_ms: u64,
+}
+
+impl Local {
+    fn ruled_out(&self) -> Option<UpdateStep> {
+        if !self.enabled && !self.requested {
+            return Some(UpdateStep::Skip(SkipReason::Off));
+        }
+        if matches!(self.machine, MachineMode::Parking | MachineMode::Resuming) {
+            return Some(UpdateStep::Skip(SkipReason::Machine(self.machine)));
+        }
+        if self.disk == DiskLevel::Stop {
+            return Some(UpdateStep::Skip(SkipReason::DiskStop));
+        }
+        if !self.requested
+            && let Some(failure) = self.last_failure
+            && failure.kind == FailureKind::Transient
+        {
+            let until = failure.at_ms.saturating_add(backoff_ms(failure.attempts));
+            if until > self.now_ms {
+                return Some(UpdateStep::Wait { until });
+            }
+        }
+        None
+    }
+}
+
+/// What the tick looks at before it starts `headwork update` (`docs/autoupdate.md`, "What starts it").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PollFacts {
+    /// `[update] enabled`.
+    pub enabled: bool,
+    /// `[update] poll_min`; `0` turns the tick trigger off.
+    pub poll_min: u32,
+    /// When GitHub was last asked, from `update.json`, in milliseconds since the Unix epoch; `None` when never.
+    pub last_poll_ms: Option<u64>,
+    /// The last failure, from `update.json`.
+    pub last_failure: Option<Failure>,
+    /// The machine mode.
+    pub machine: MachineMode,
+    /// How full the home folder's volume is.
+    pub disk: DiskLevel,
+    /// An update holds its lock now.
+    pub running: bool,
+    /// Now, in milliseconds since the Unix epoch.
+    pub now_ms: u64,
+}
+
+/// Whether the tick starts `headwork update`; the tick never asks GitHub itself.
+///
+/// It does when updates are on, the tick trigger is on, no update runs, nothing rules an update out before GitHub is
+/// asked (a park or resume, a full disk, the back-off after a transient failure), and the last poll is `poll_min`
+/// minutes old or there was none.
+#[must_use]
+pub fn poll_due(facts: &PollFacts) -> bool {
+    if !facts.enabled || facts.poll_min == 0 || facts.running {
+        return false;
+    }
+    let local = Local {
+        enabled: facts.enabled,
+        requested: false,
+        last_failure: facts.last_failure,
+        machine: facts.machine,
+        disk: facts.disk,
+        now_ms: facts.now_ms,
+    };
+    if local.ruled_out().is_some() {
+        return false;
+    }
+    let every = u64::from(facts.poll_min).saturating_mul(60_000);
+    facts
+        .last_poll_ms
+        .is_none_or(|last| facts.now_ms >= last && facts.now_ms - last >= every)
 }
 
 /// Whether a release whose build knows `release_schema` may open a store at `store_schema`: a release that knows an
@@ -747,6 +822,132 @@ mod tests {
         ];
         for (name, facts, step) in cases {
             assert_eq!(decide(&facts), step, "{name}");
+        }
+    }
+
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one row per branch of the poll")]
+    fn the_tick_polls_only_when_due_and_nothing_rules_it_out() {
+        let due = PollFacts {
+            enabled: true,
+            poll_min: 15,
+            last_poll_ms: Some(NOW - 15 * MIN),
+            last_failure: None,
+            machine: MachineMode::Normal,
+            disk: DiskLevel::Ok,
+            running: false,
+            now_ms: NOW,
+        };
+        let cases: Vec<(&str, PollFacts, bool)> = vec![
+            ("the last poll is poll_min old", due, true),
+            (
+                "never polled",
+                PollFacts {
+                    last_poll_ms: None,
+                    ..due
+                },
+                true,
+            ),
+            (
+                "polled a minute too recently",
+                PollFacts {
+                    last_poll_ms: Some(NOW - 14 * MIN),
+                    ..due
+                },
+                false,
+            ),
+            (
+                "a poll in the future (a clock change) waits",
+                PollFacts {
+                    last_poll_ms: Some(NOW + MIN),
+                    ..due
+                },
+                false,
+            ),
+            (
+                "updates off",
+                PollFacts {
+                    enabled: false,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "poll_min 0 turns the tick trigger off",
+                PollFacts {
+                    poll_min: 0,
+                    last_poll_ms: None,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "an update runs",
+                PollFacts {
+                    running: true,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "a park",
+                PollFacts {
+                    machine: MachineMode::Parking,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "a resume",
+                PollFacts {
+                    machine: MachineMode::Resuming,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "a full disk",
+                PollFacts {
+                    disk: DiskLevel::Stop,
+                    ..due
+                },
+                false,
+            ),
+            (
+                "a disk warning still polls",
+                PollFacts {
+                    disk: DiskLevel::Warn,
+                    ..due
+                },
+                true,
+            ),
+            (
+                "a transient failure backs off",
+                PollFacts {
+                    last_failure: Some(failure(None, FailureKind::Transient, 1, 2 * MIN)),
+                    ..due
+                },
+                false,
+            ),
+            (
+                "after the back-off it polls",
+                PollFacts {
+                    last_failure: Some(failure(None, FailureKind::Transient, 1, 5 * MIN)),
+                    ..due
+                },
+                true,
+            ),
+            (
+                "a latched failure does not stop the poll: a newer release may be out",
+                PollFacts {
+                    last_failure: Some(failure(Some(6), FailureKind::Deterministic, 1, MIN)),
+                    ..due
+                },
+                true,
+            ),
+        ];
+        for (name, facts, want) in cases {
+            assert_eq!(poll_due(&facts), want, "{name}");
         }
     }
 
