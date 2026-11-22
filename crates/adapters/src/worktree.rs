@@ -362,6 +362,93 @@ impl Worktrees {
         self.git(&["worktree", "remove", path])
     }
 
+    /// Makes a detached worktree at `path` on `revision`, with no branch: the read-only checkout a review reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git refuses or fails.
+    pub fn add_detached(&self, path: &str, revision: &str) -> Result<(), WorktreeError> {
+        self.git(&["worktree", "add", "--detach", path, revision])
+    }
+
+    /// Removes the detached worktree at `path`, changes and all: a review's checkout holds nothing of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git refuses or fails.
+    pub fn remove_detached(&self, path: &str) -> Result<(), WorktreeError> {
+        self.git(&["worktree", "remove", "--force", path])
+    }
+
+    /// Moves the detached worktree at `path` to `revision`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git refuses or fails.
+    pub fn move_detached(&self, path: &str, revision: &str) -> Result<(), WorktreeError> {
+        self.git(&["-C", path, "checkout", "--detach", revision])
+    }
+
+    /// The commit `revision` names in the repository at `dir`, in full.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot resolve it.
+    pub fn resolve(&self, dir: &Path, revision: &str) -> Result<String, WorktreeError> {
+        let output = self.output(
+            Command::new("git").arg("-C").arg(dir).args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{revision}^{{commit}}"),
+            ]),
+            "git rev-parse",
+        )?;
+        Ok(output.trim().to_owned())
+    }
+
+    /// The merge base of two revisions in the repository at `dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git finds none or fails.
+    pub fn merge_base(&self, dir: &Path, one: &str, other: &str) -> Result<String, WorktreeError> {
+        let output = self.output(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["merge-base", one, other]),
+            "git merge-base",
+        )?;
+        Ok(output.trim().to_owned())
+    }
+
+    /// The files that differ between two revisions in the repository at `dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails.
+    pub fn changed_files(
+        &self,
+        dir: &Path,
+        base: &str,
+        head: &str,
+    ) -> Result<Vec<String>, WorktreeError> {
+        let output = self.output(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["diff", "--name-only", base, head]),
+            "git diff --name-only",
+        )?;
+        Ok(output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
+    }
+
     /// Forgets the worktrees whose folder is gone.
     ///
     /// # Errors

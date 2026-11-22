@@ -39,6 +39,8 @@ pub struct StopFacts<'a> {
     /// The user typed a prompt into the session within the push window: they are at the pane and read the reply, so
     /// a turn that answers them in plain text is no silent stop.
     pub user_present: bool,
+    /// The task is a lead whose user asked for a review that it has not started with `review_start`.
+    pub review_requested: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -60,6 +62,12 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
             RuleId::StopPlainQuestion,
             "your turn ends with a question in plain text, which notifies nobody: ask it with AskUserQuestion \
              (concrete numbered options, recommendation first)",
+        );
+    }
+    if facts.review_requested {
+        return Decision::deny(
+            RuleId::ReviewUnstarted,
+            "the user asked for a review: call the headwork `review_start` tool before you stop",
         );
     }
     let unfinished = facts.role == Role::Worker

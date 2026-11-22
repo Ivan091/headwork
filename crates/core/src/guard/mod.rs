@@ -198,6 +198,10 @@ pub enum ToolCall<'a> {
 
 /// What the guard knows about the calling session.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent fact about the session"
+)]
 pub struct Scope {
     /// The role; `None` for an unmanaged session, which the guard always allows.
     pub role: Option<Role>,
@@ -243,6 +247,8 @@ pub struct Scope {
     pub orchestrator_repos: Vec<GuardPath>,
     /// Folders inside those repositories that hold project checkouts, where the orchestrator still owns no git.
     pub orchestrator_repo_excludes: Vec<GuardPath>,
+    /// The session is a reviewer lead (a part of kind `review`): it reads, and writes nothing but the scratchpad.
+    pub reviewer: bool,
 }
 
 impl Scope {
@@ -277,6 +283,23 @@ pub fn check_tool(scope: &Scope, call: &ToolCall<'_>) -> Decision {
 
 fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
     let target = scope.places.resolve(&scope.cwd, path);
+    if role == Role::Worker && scope.reviewer {
+        let scratch = scope
+            .places
+            .temp
+            .as_deref()
+            .is_some_and(|temp| target.is_within(&GuardPath::new(temp)));
+        if !scratch {
+            return Decision::deny(
+                RuleId::ReviewerWrite,
+                format!(
+                    "a reviewer lead reads and never edits: {tool} on {path} is outside the scratchpad; findings go \
+                     back through `review_node_done`, fixes are the implementing lead's"
+                ),
+            );
+        }
+        return Decision::Allow;
+    }
     let granted = role == Role::Worker
         && scope
             .extra_writable
@@ -428,6 +451,11 @@ fn check_worker_command(
     if let Some(decision) = check_admin(scope, command) {
         return decision;
     }
+    if scope.reviewer
+        && let Some(decision) = check_reviewer_command(command)
+    {
+        return decision;
+    }
     if background
         && let Some(pattern) = scope.long_jobs.iter().find(|pattern| command.runs(pattern))
     {
@@ -462,6 +490,37 @@ fn check_worker_command(
         "push" => check_push(scope, &args, on_default),
         _ => Decision::Allow,
     }
+}
+
+/// A reviewer lead's command that changes something: a git write, a pull request, a build.
+fn check_reviewer_command(command: &SimpleCommand) -> Option<Decision> {
+    let name = command.program_name();
+    let what = if name == "git" {
+        let (sub, args) = git_subcommand(command)?;
+        is_git_write(&sub, &args).then(|| format!("`git {sub}`"))
+    } else if name == "gh" {
+        let args: Vec<&str> = command.args().iter().map(String::as_str).collect();
+        matches!(
+            args.as_slice(),
+            [
+                "pr",
+                "create" | "merge" | "edit" | "close" | "comment" | "review",
+                ..
+            ]
+        )
+        .then(|| format!("`gh {}`", args.join(" ")))
+    } else {
+        BUILD_TOOLS
+            .contains(&name.as_str())
+            .then(|| format!("`{name}` builds"))
+    }?;
+    Some(Decision::deny(
+        RuleId::ReviewerWrite,
+        format!(
+            "a reviewer lead reads and never changes the repository: {what} is the implementing lead's; your subagents \
+             read the review worktree and you hand their findings back with `review_node_done`"
+        ),
+    ))
 }
 
 /// A worker running an orchestrator command of the headwork CLI, other than closing its own task.

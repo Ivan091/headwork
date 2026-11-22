@@ -76,7 +76,7 @@ const ORCHESTRATOR: &[Role] = &[Role::Orchestrator];
 const WORKER: &[Role] = &[Role::Worker];
 
 /// The worker tools only a lead's session sees and may call.
-const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop"];
+const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start"];
 
 const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -462,6 +462,14 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "review_start",
+        description: "A lead's tool: start the review the user asked for with `review <level>` in your tab. It pins \
+                      your HEAD (commit everything first), makes a read-only worktree for it and starts the reviewer \
+                      lead as your part `review`. Refused when the user asked for none.",
+        roles: WORKER,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
         name: "part_drop",
         description: "A lead's tool: drop one of your parts and close it.",
         roles: WORKER,
@@ -719,14 +727,7 @@ impl<'a> Server<'a> {
             "inbox" => self.inbox(&session, role),
             "status" => self.status(args),
             "usage" => self.usage(args),
-            "part_spawn" => {
-                let lead = self.own_task(&session)?;
-                self.part_spawn(&lead, args)
-            }
-            "part_drop" => {
-                let lead = self.own_task(&session)?;
-                self.part_drop(&lead, args)
-            }
+            "part_spawn" | "part_drop" | "review_start" => self.lead_tool(name, &session, args),
             "spawn" => self.spawn(args),
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
@@ -794,6 +795,16 @@ impl<'a> Server<'a> {
             "update" => self.update(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
+            other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn lead_tool(&mut self, name: &str, session: &str, args: &Value) -> Result<String> {
+        let lead = self.own_task(session)?;
+        match name {
+            "part_spawn" => self.part_spawn(&lead, args),
+            "part_drop" => self.part_drop(&lead, args),
+            "review_start" => to_text(&super::review::start(self.store, &self.env, &lead)?),
             other => bail!("unknown tool `{other}`"),
         }
     }

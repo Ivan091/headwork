@@ -24,7 +24,7 @@ pub mod watch;
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{
     Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
-    SILENT_KIND, UpdateConfig,
+    REVIEW_KIND, ReviewsConfig, SILENT_KIND, UpdateConfig,
 };
 pub use guard::{Decision, Verdict};
 pub use lead::{

@@ -23,6 +23,7 @@ pub mod recap;
 pub mod relay;
 pub mod reload;
 pub mod resume;
+pub mod review;
 pub mod rules;
 pub mod schedule;
 pub mod session_procs;

@@ -59,6 +59,7 @@ fn worker(branch: &str) -> Scope {
         may_install: false,
         orchestrator_repos: Vec::new(),
         orchestrator_repo_excludes: Vec::new(),
+        reviewer: false,
     }
 }
 
@@ -887,6 +888,7 @@ fn stop_table() {
         waiting_background: false,
         waiting_part: false,
         user_present: false,
+        review_requested: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -1010,6 +1012,7 @@ fn stop_while_waiting_on_background_work() {
         waiting_background: true,
         waiting_part: false,
         user_present: false,
+        review_requested: false,
         last_message: Some("The build runs in the background."),
     };
     assert_eq!(stop(waiting), None, "waiting on background work");
@@ -1046,6 +1049,7 @@ fn stop_while_a_job_runs() {
         waiting_background: false,
         waiting_part: false,
         user_present: false,
+        review_requested: false,
         last_message: Some("Training runs; I will look at the next checkpoint."),
     };
     assert_eq!(stop(waiting), None, "waiting on its own running job");
@@ -1227,6 +1231,7 @@ fn a_lead_waiting_on_a_live_part_may_stop() {
         waiting_background: false,
         waiting_part: true,
         user_present: false,
+        review_requested: false,
         last_message: Some("The review part runs; I wait for its report."),
     };
     assert_eq!(stop(waiting), None, "a lead waits for its part");
@@ -1245,5 +1250,97 @@ fn a_lead_waiting_on_a_live_part_may_stop() {
         }),
         Some(RuleId::StopUnfinished),
         "without a live part the stop is unfinished"
+    );
+}
+
+#[test]
+fn a_reviewer_lead_reads_and_writes_only_the_scratchpad() {
+    let scope = Scope {
+        reviewer: true,
+        own_delivery: false,
+        ..worker("HEAD")
+    };
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("git diff abc def", None),
+        ("git -C S:/Code/me-sim/me-sim-sand log --oneline", None),
+        ("git show HEAD:src/lib.rs", None),
+        ("rg foo src", None),
+        ("git commit -m x", Some(RuleId::ReviewerWrite)),
+        ("git checkout --detach abc", Some(RuleId::ReviewerWrite)),
+        ("git push origin x", Some(RuleId::ReviewerWrite)),
+        ("git stash", Some(RuleId::ReviewerWrite)),
+        ("cargo test", Some(RuleId::ReviewerWrite)),
+        ("gh pr comment 3 --body x", Some(RuleId::ReviewerWrite)),
+        ("gh pr view 3", None),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
+    }
+    let edit = |path| ToolCall::Write { tool: "Edit", path };
+    assert_eq!(
+        rule(&check_tool(
+            &scope,
+            &edit("S:/Code/me-sim/me-sim-sand/src/lib.rs")
+        )),
+        Some(RuleId::ReviewerWrite),
+        "its own worktree is read-only"
+    );
+    assert_eq!(
+        rule(&check_tool(
+            &scope,
+            &edit("C:/Users/User/AppData/Local/Temp/claude/x/scratchpad/notes.md")
+        )),
+        None,
+        "the scratchpad is writable"
+    );
+    let plain = worker("sand");
+    assert_eq!(
+        rule(&check_tool(&plain, &bash("cargo test"))),
+        None,
+        "a plain worker builds"
+    );
+}
+
+#[test]
+fn a_lead_with_an_unstarted_review_may_not_stop() {
+    let facts = StopFacts {
+        role: Role::Worker,
+        task: Some(TaskState::Working),
+        blocked_in_row: 0,
+        asked: false,
+        messaged: true,
+        reported: true,
+        keep: false,
+        running_job: false,
+        waiting_background: false,
+        waiting_part: true,
+        user_present: true,
+        review_requested: true,
+        last_message: Some("Starting the review."),
+    };
+    assert_eq!(
+        stop(facts),
+        Some(RuleId::ReviewUnstarted),
+        "every other excuse still refuses"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            review_requested: false,
+            ..facts
+        }),
+        None,
+        "without it the stop passes"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            blocked_in_row: MAX_BLOCKS,
+            ..facts
+        }),
+        None,
+        "the block cap still lets it go"
     );
 }

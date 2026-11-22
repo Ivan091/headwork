@@ -471,6 +471,10 @@ text_enum!(
         StopUnfinished => "stop-unfinished",
         /// A session ends its turn with a plain-text question.
         StopPlainQuestion => "stop-plain-question",
+        /// A reviewer lead (a part of kind `review`) edits a file outside the scratchpad, or runs a git write or a build.
+        ReviewerWrite => "reviewer-write",
+        /// A lead stops while the review the user asked for has not started.
+        ReviewUnstarted => "review-unstarted",
     }
 );
 
