@@ -5,3 +5,4 @@
 
 pub mod home;
 pub mod ops;
+pub mod version;

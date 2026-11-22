@@ -240,7 +240,7 @@ Each a pull request through `scripts/check.sh`:
 
 1. **Store backup before migrating** (`Store::open`). Useful on its own. Built: `crates/store/src/backup.rs`.
 2. **Version in the binary** (`option_env!` for `HEADWORK_VERSION` and `HEADWORK_COMMIT`, the schema in `--version`) and
-   `doctor` showing it.
+   `doctor` showing it. Built: `crates/headwork/src/version.rs`.
 3. **Going public:** a `LICENSE` (MIT) and `license = "MIT"` in `Cargo.toml`, the history rewrite above, then the user
    changes the visibility.
 4. **The release workflow** (and the read-only pull request gate); the first release proves it.
