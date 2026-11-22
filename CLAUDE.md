@@ -335,5 +335,10 @@ so every worktree of a clone uses it). `scripts/check.sh` fails when a commit si
 `scripts/test-attribution.sh` tests the patterns. History is not rewritten.
 
 Never commit to `master`. Each change goes on a kebab-case branch, with single-line Conventional Commits and no AI
-attribution, through a pull request that passes `scripts/check.sh`, then is merged. There is no CI on GitHub: the local
-gate is the only one. Use the global `contribute` and `ship` skills; this repository has no ship script of its own yet.
+attribution, through a pull request that passes `scripts/check.sh`, then is merged. The local gate stays required;
+GitHub Actions runs it again on Windows and macOS for every pull request (`.github/workflows/gate.yml`, read-only), and
+every push to `master` is gated, built and published as release `v0.1.<run>` with both binaries and `SHA256SUMS`
+(`.github/workflows/release.yml`, `docs/autoupdate.md`). In CI `check.sh` skips the comment ban, whose checker lives in
+the user config. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
+and commits use the GitHub noreply address. Use the global `contribute` and `ship` skills; this repository has no ship
+script of its own yet.
