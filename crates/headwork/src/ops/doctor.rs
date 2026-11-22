@@ -219,6 +219,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     }
     if let Ok(config) = &config {
         checks.push(trust_check(d, config, store.as_ref()));
+        if let Some(store) = &store {
+            checks.push(usage_prices_check(config, store));
+        }
     }
     if let Some(store) = &store {
         checks.extend(store_checks(d, store));
@@ -747,6 +750,50 @@ fn disk_check(d: &Doctor<'_>, config: &Config) -> Check {
             format!("cannot read free space of {}: {error}", slashed(probe)),
             "check the volume",
         ),
+    }
+}
+
+/// How far back `usage-prices` looks for models that spent tokens.
+const USAGE_PRICES_WINDOW_S: u64 = 7 * 86_400;
+
+/// A warning for models that spent tokens in the last 7 days and have no price in `[usage.prices]`, so their
+/// estimates show `?` (`docs/usage.md`, section 6).
+fn usage_prices_check(config: &Config, store: &Store) -> Check {
+    let models = store.instant_ago(USAGE_PRICES_WINDOW_S).and_then(|since| {
+        store.usage_totals(&headwork_store::UsageQuery {
+            by: headwork_core::UsageGroup::Model,
+            since: Some(since),
+            tasks: None,
+            unmanaged: true,
+        })
+    });
+    match models {
+        Ok(models) => {
+            let unpriced: Vec<String> = models
+                .into_iter()
+                .filter(|row| row.tokens.total() > 0 && config.usage.price_for(&row.key).is_none())
+                .map(|row| row.key)
+                .collect();
+            if unpriced.is_empty() {
+                Check::ok(
+                    "usage-prices",
+                    format!(
+                        "{} priced models; every model of the last 7 days has a price",
+                        config.usage.prices.len()
+                    ),
+                )
+            } else {
+                Check::warn(
+                    "usage-prices",
+                    format!(
+                        "no price for models seen in the last 7 days: {}",
+                        unpriced.join(", ")
+                    ),
+                    "add `[usage.prices.\"<model or prefix>\"]` with the API list prices to config.toml; their estimates show ?",
+                )
+            }
+        }
+        Err(error) => Check::warn("usage-prices", format!("{error}"), "check the store"),
     }
 }
 

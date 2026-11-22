@@ -1052,7 +1052,11 @@ impl<'a> Server<'a> {
 
     fn status(&mut self, args: &Value) -> Result<String> {
         super::lost::reconcile(self.store, &self.env)?;
-        to_text(&super::status::status(self.store, flag(args, "all"))?)
+        to_text(&super::status::status(
+            self.store,
+            flag(args, "all"),
+            &self.env.config.usage,
+        )?)
     }
 
     fn usage(&mut self, args: &Value) -> Result<String> {
@@ -1065,7 +1069,7 @@ impl<'a> Server<'a> {
         };
         let files = super::usage::transcripts(self.env.home.claude_dir());
         let ingested = super::usage::ingest(self.store, &files, false)?;
-        let mut report = super::usage::report(self.store, &options)?;
+        let mut report = super::usage::report(self.store, &options, &self.env.config.usage)?;
         report.ingest = Some(ingested);
         to_text(&report)
     }

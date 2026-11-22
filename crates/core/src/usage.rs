@@ -3,10 +3,12 @@
 //! Every assistant line of a transcript carries the API response's `usage`. A response with several content blocks is
 //! written once per block with the same numbers, so the response's id is the key that makes every read idempotent.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::ops::AddAssign;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::vocabulary::{Role, UsageRole};
@@ -226,6 +228,190 @@ pub const fn usage_role(session: Role, lead: bool, part: bool) -> UsageRole {
         Role::Worker if lead => UsageRole::Lead,
         Role::Worker if part => UsageRole::Part,
         Role::Worker => UsageRole::Worker,
+    }
+}
+
+/// Millionths of a dollar per million tokens: a list price such as `15.0`, kept as an integer so the config stays
+/// comparable and sums stay exact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct Price(u64);
+
+/// The most a price may be, in dollars per million tokens; anything above is a typo.
+const MAX_PRICE: f64 = 1_000_000.0;
+
+impl Price {
+    /// A price in millionths of a dollar per million tokens.
+    #[must_use]
+    pub const fn from_micros(micros: u64) -> Self {
+        Self(micros)
+    }
+
+    /// Millionths of a dollar per million tokens.
+    #[must_use]
+    pub const fn micros(self) -> u64 {
+        self.0
+    }
+
+    /// Millionths of a dollar for `count` tokens at this price.
+    #[must_use]
+    pub fn of(self, count: u64) -> u64 {
+        let micros = u128::from(count).saturating_mul(u128::from(self.0)) / 1_000_000;
+        u64::try_from(micros).unwrap_or(u64::MAX)
+    }
+}
+
+/// A price that is not a number of dollars from 0 to a million.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a price must be dollars per million tokens, from 0 to 1000000")]
+pub struct BadPrice;
+
+impl TryFrom<f64> for Price {
+    type Error = BadPrice;
+
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is checked to be finite and within 0..=1e12 before the cast"
+    )]
+    fn try_from(dollars: f64) -> Result<Self, Self::Error> {
+        if !dollars.is_finite() || !(0.0..=MAX_PRICE).contains(&dollars) {
+            return Err(BadPrice);
+        }
+        Ok(Self((dollars * 1_000_000.0).round() as u64))
+    }
+}
+
+impl From<Price> for f64 {
+    fn from(price: Price) -> Self {
+        let whole = u32::try_from(price.0 / 1_000_000).unwrap_or(u32::MAX);
+        let part = u32::try_from(price.0 % 1_000_000).unwrap_or(0);
+        Self::from(whole) + Self::from(part) / 1_000_000.0
+    }
+}
+
+/// `[usage.prices."<model>"]`: dollars per million tokens of each type, and per thousand web searches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ModelPrices {
+    /// Uncached input.
+    pub input: Price,
+    /// Five-minute cache writes.
+    pub cache_write_5m: Price,
+    /// One-hour cache writes.
+    pub cache_write_1h: Price,
+    /// Cache reads.
+    pub cache_read: Price,
+    /// Output, thinking included.
+    pub output: Price,
+    /// Dollars per thousand web searches.
+    pub web_search_per_1000: Price,
+}
+
+impl ModelPrices {
+    /// Millionths of a dollar for `tokens` at these prices.
+    #[must_use]
+    pub fn cost(&self, tokens: &Tokens) -> u64 {
+        let searches = u128::from(tokens.web_searches)
+            .saturating_mul(u128::from(self.web_search_per_1000.micros()))
+            / 1000;
+        [
+            self.input.of(tokens.input),
+            self.cache_write_5m.of(tokens.cache_write_5m),
+            self.cache_write_1h.of(tokens.cache_write_1h),
+            self.cache_read.of(tokens.cache_read),
+            self.output.of(tokens.output),
+            u64::try_from(searches).unwrap_or(u64::MAX),
+        ]
+        .into_iter()
+        .fold(0, u64::saturating_add)
+    }
+}
+
+/// `[usage]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct UsageConfig {
+    /// Days the per-response rows stay before the tick sums them per day.
+    pub keep_days: u32,
+    /// Prices by model name or model name prefix.
+    pub prices: BTreeMap<String, ModelPrices>,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            keep_days: 90,
+            prices: BTreeMap::new(),
+        }
+    }
+}
+
+impl UsageConfig {
+    /// The prices of `model`: its own entry, else the longest configured prefix of its name (`claude-opus` covers every
+    /// Opus).
+    #[must_use]
+    pub fn price_for(&self, model: &str) -> Option<&ModelPrices> {
+        self.prices.get(model).or_else(|| {
+            self.prices
+                .iter()
+                .filter(|(name, _)| model.starts_with(name.as_str()))
+                .max_by_key(|(name, _)| name.len())
+                .map(|(_, prices)| prices)
+        })
+    }
+
+    /// The estimate for tokens spent by several models.
+    #[must_use]
+    pub fn estimate<'a>(
+        &self,
+        by_model: impl IntoIterator<Item = (&'a str, &'a Tokens)>,
+    ) -> Estimate {
+        let mut estimate = Estimate::default();
+        for (model, tokens) in by_model {
+            match self.price_for(model) {
+                Some(prices) => {
+                    estimate.micros = estimate.micros.saturating_add(prices.cost(tokens));
+                }
+                None if tokens.total() > 0 => estimate.unpriced.push(model.to_owned()),
+                None => {}
+            }
+        }
+        estimate.unpriced.sort();
+        estimate.unpriced.dedup();
+        estimate
+    }
+}
+
+/// An estimate at API list prices, never a bill.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Estimate {
+    /// Millionths of a dollar, for the priced models.
+    pub micros: u64,
+    /// Models that spent tokens and have no price.
+    pub unpriced: Vec<String>,
+}
+
+impl Estimate {
+    /// Adds another estimate.
+    pub fn add(&mut self, other: &Self) {
+        self.micros = self.micros.saturating_add(other.micros);
+        self.unpriced.extend(other.unpriced.iter().cloned());
+        self.unpriced.sort();
+        self.unpriced.dedup();
+    }
+}
+
+impl fmt::Display for Estimate {
+    /// `$4.10`; `?` when nothing was priced but something spent; `$4.10+?` when part was not priced.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cents = self.micros.saturating_add(5000) / 10_000;
+        match (self.micros, self.unpriced.is_empty()) {
+            (0, false) => f.write_str("?"),
+            (_, true) => write!(f, "${}.{:02}", cents / 100, cents % 100),
+            (_, false) => write!(f, "${}.{:02}+?", cents / 100, cents % 100),
+        }
     }
 }
 
@@ -467,6 +653,96 @@ mod tests {
         assert_eq!(sum.total(), 210, "total");
         assert_eq!(sum.cache_hit_permille(), Some(450), "90 of 200 input");
         assert_eq!(Tokens::default().cache_hit_permille(), None, "no input");
+    }
+
+    fn prices(input: f64, output: f64) -> ModelPrices {
+        ModelPrices {
+            input: Price::try_from(input).unwrap_or_default(),
+            output: Price::try_from(output).unwrap_or_default(),
+            cache_read: Price::try_from(1.5).unwrap_or_default(),
+            web_search_per_1000: Price::try_from(10.0).unwrap_or_default(),
+            ..ModelPrices::default()
+        }
+    }
+
+    #[test]
+    fn prices_are_read_and_bad_ones_refused() {
+        assert_eq!(
+            Price::try_from(15.0).map(Price::micros),
+            Ok(15_000_000),
+            "whole"
+        );
+        assert_eq!(
+            Price::try_from(0.3).map(Price::micros),
+            Ok(300_000),
+            "fraction"
+        );
+        assert_eq!(Price::try_from(-1.0), Err(BadPrice), "negative");
+        assert_eq!(Price::try_from(f64::NAN), Err(BadPrice), "not a number");
+        assert_eq!(Price::try_from(2e6), Err(BadPrice), "a typo");
+        assert!(
+            (f64::from(Price::from_micros(3_750_000)) - 3.75).abs() < 1e-9,
+            "back to dollars"
+        );
+    }
+
+    #[test]
+    fn costs_sum_every_type() {
+        let tokens = Tokens {
+            input: 1_000_000,
+            cache_read: 2_000_000,
+            output: 100_000,
+            web_searches: 3,
+            ..Tokens::default()
+        };
+        assert_eq!(
+            prices(15.0, 75.0).cost(&tokens),
+            15_000_000 + 3_000_000 + 7_500_000 + 30_000,
+            "every type"
+        );
+    }
+
+    #[test]
+    fn models_match_exactly_then_by_the_longest_prefix() {
+        let config = UsageConfig {
+            keep_days: 90,
+            prices: [
+                ("claude".to_owned(), prices(1.0, 1.0)),
+                ("claude-opus".to_owned(), prices(15.0, 75.0)),
+                ("claude-opus-5-5".to_owned(), prices(5.0, 25.0)),
+            ]
+            .into(),
+        };
+        let input = |model: &str| config.price_for(model).map(|prices| prices.input.micros());
+        assert_eq!(input("claude-opus-5-5"), Some(5_000_000), "exact");
+        assert_eq!(input("claude-opus-4-1"), Some(15_000_000), "longest prefix");
+        assert_eq!(input("claude-haiku-5-5"), Some(1_000_000), "shorter prefix");
+        assert_eq!(input("gpt"), None, "none");
+    }
+
+    #[test]
+    fn estimates_list_unpriced_models_and_print_dollars() {
+        let config = UsageConfig {
+            keep_days: 90,
+            prices: [("claude-opus".to_owned(), prices(15.0, 75.0))].into(),
+        };
+        let spent = Tokens {
+            input: 100_000,
+            ..Tokens::default()
+        };
+        let priced = config.estimate([("claude-opus-5-5", &spent)]);
+        assert_eq!(priced.to_string(), "$1.50", "priced");
+        let mixed = config.estimate([("claude-opus-5-5", &spent), ("claude-haiku-5-5", &spent)]);
+        assert_eq!(mixed.to_string(), "$1.50+?", "part priced");
+        assert_eq!(mixed.unpriced, ["claude-haiku-5-5"], "listed");
+        let none = config.estimate([("claude-haiku-5-5", &spent)]);
+        assert_eq!(none.to_string(), "?", "nothing priced");
+        let idle = config.estimate([("claude-haiku-5-5", &Tokens::default())]);
+        assert_eq!(
+            idle.to_string(),
+            "$0.00",
+            "a model that spent nothing needs no price"
+        );
     }
 
     #[test]

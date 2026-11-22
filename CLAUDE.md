@@ -99,7 +99,8 @@ Token usage (`docs/usage.md`) is read from Claude Code's transcripts by `ops/usa
 `core/src/usage.rs`, rows in migration 0018): one row per API response keyed by its id, tagged with the session's task
 and role when written, sessions headwork did not start as `unmanaged`. The `Stop` and `SessionEnd` hooks and the tick's
 last stage read new lines; `board` and `status` show each task's tokens, a close logs `usage-total`, and the
-orchestrator has a `usage` tool.
+orchestrator has a `usage` tool. `[usage.prices."<model or prefix>"]` (dollars per million tokens) turns them into an
+estimate at API list prices, never a bill.
 
 ## Commands
 

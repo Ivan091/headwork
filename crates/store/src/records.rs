@@ -223,6 +223,9 @@ pub struct BoardTask {
     pub pr: Option<PrRow>,
     /// The tokens it spent (`docs/usage.md`); a lead's include its parts'.
     pub tokens: u64,
+    /// The same by the model that spent them, for the estimate.
+    #[serde(skip)]
+    pub models: crate::usage::ByModel,
 }
 
 /// The whole board.

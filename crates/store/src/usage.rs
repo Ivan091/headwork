@@ -86,27 +86,65 @@ pub struct UsageTotal {
     /// The numbers.
     #[serde(flatten)]
     pub tokens: Tokens,
+    /// The numbers by the model that spent them, for the estimate.
+    #[serde(skip)]
+    pub models: ByModel,
 }
 
-/// Every task's token total, its own and with its parts'.
+/// Tokens by the model that spent them.
+pub type ByModel = BTreeMap<String, Tokens>;
+
+impl UsageTotal {
+    /// An empty total named `key`.
+    #[must_use]
+    pub fn named(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            responses: 0,
+            tokens: Tokens::default(),
+            models: ByModel::new(),
+        }
+    }
+
+    /// Adds another total's numbers.
+    pub fn add(&mut self, other: &Self) {
+        self.responses = self.responses.saturating_add(other.responses);
+        self.tokens += other.tokens;
+        for (model, tokens) in &other.models {
+            *self.models.entry(model.clone()).or_default() += *tokens;
+        }
+    }
+}
+
+/// Every task's tokens by model, its own and with its parts'.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskTokens {
-    own: BTreeMap<TaskId, u64>,
-    tree: BTreeMap<TaskId, u64>,
+    own: BTreeMap<TaskId, ByModel>,
+    tree: BTreeMap<TaskId, ByModel>,
 }
 
 impl TaskTokens {
-    /// The task's own tokens.
+    /// The task's own tokens by model.
     #[must_use]
-    pub fn own(&self, task: TaskId) -> u64 {
-        self.own.get(&task).copied().unwrap_or(0)
+    pub fn own(&self, task: TaskId) -> ByModel {
+        self.own.get(&task).cloned().unwrap_or_default()
     }
 
-    /// The task's tokens with its parts'.
+    /// The task's tokens by model, with its parts'.
     #[must_use]
-    pub fn tree(&self, task: TaskId) -> u64 {
-        self.tree.get(&task).copied().unwrap_or(0)
+    pub fn tree(&self, task: TaskId) -> ByModel {
+        self.tree.get(&task).cloned().unwrap_or_default()
     }
+}
+
+/// The sum of every model's tokens.
+#[must_use]
+pub fn all_models(by_model: &ByModel) -> Tokens {
+    let mut sum = Tokens::default();
+    for tokens in by_model.values() {
+        sum += *tokens;
+    }
+    sum
 }
 
 fn stored(count: u64) -> i64 {
@@ -339,26 +377,35 @@ impl Store {
             .conn
             .prepare(&format!(
                 "{ROWS}
-                 SELECT r.task_id, t.parent_id,
-                        SUM(r.input + r.cache_write_5m + r.cache_write_1h + r.cache_read + r.output)
+                 SELECT r.task_id, t.parent_id, r.model, {TOKEN_SUMS}
                  FROM r JOIN tasks t ON t.id = r.task_id
-                 GROUP BY r.task_id"
+                 GROUP BY r.task_id, r.model"
             ))?
             .query_map([], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<i64>>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(2)?,
+                    read_tokens(row, 3)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut tokens = TaskTokens::default();
-        for (task, parent, sum) in rows {
-            let sum = read_count(sum)?;
-            tokens.own.insert(TaskId(task), sum);
+        for (task, parent, model, sums) in rows {
+            let (_, sum) = tokens_of(sums)?;
+            *tokens
+                .own
+                .entry(TaskId(task))
+                .or_default()
+                .entry(model.clone())
+                .or_default() += sum;
             for tree in [Some(task), parent].into_iter().flatten() {
-                let entry = tokens.tree.entry(TaskId(tree)).or_insert(0);
-                *entry = entry.saturating_add(sum);
+                *tokens
+                    .tree
+                    .entry(TaskId(tree))
+                    .or_default()
+                    .entry(model.clone())
+                    .or_default() += sum;
             }
         }
         Ok(tokens)
@@ -401,28 +448,44 @@ impl Store {
              SELECT CASE WHEN r.role = 'unmanaged' THEN {unmanaged_key}
                          WHEN r.task_id IS NULL THEN {no_task_key}
                          ELSE {key} END AS k,
+                    r.model,
                     {TOKEN_SUMS}
              FROM r LEFT JOIN tasks t ON t.id = r.task_id
              {filter}
-             GROUP BY k
-             ORDER BY SUM(r.input + r.cache_write_5m + r.cache_write_1h + r.cache_read + r.output) DESC, k"
+             GROUP BY k, r.model"
         );
         let rows = self
             .conn
             .prepare(&sql)?
             .query_map(params_from_iter(values), |row| {
-                Ok((row.get::<_, Option<String>>(0)?, read_tokens(row, 1)?))
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    read_tokens(row, 2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(key, sums)| {
-                let (responses, tokens) = tokens_of(sums)?;
-                Ok(UsageTotal {
-                    key: key.unwrap_or_else(|| "-".to_owned()),
-                    responses,
-                    tokens,
-                })
-            })
-            .collect()
+        let mut totals: BTreeMap<String, UsageTotal> = BTreeMap::new();
+        for (key, model, sums) in rows {
+            let (responses, tokens) = tokens_of(sums)?;
+            let key = key.unwrap_or_else(|| "-".to_owned());
+            let total = totals.entry(key.clone()).or_insert_with(|| UsageTotal {
+                key,
+                responses: 0,
+                tokens: Tokens::default(),
+                models: ByModel::new(),
+            });
+            total.responses = total.responses.saturating_add(responses);
+            total.tokens += tokens;
+            *total.models.entry(model).or_default() += tokens;
+        }
+        let mut totals: Vec<UsageTotal> = totals.into_values().collect();
+        totals.sort_by(|a, b| {
+            b.tokens
+                .total()
+                .cmp(&a.tokens.total())
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        Ok(totals)
     }
 }

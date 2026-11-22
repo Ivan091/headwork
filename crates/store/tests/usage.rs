@@ -15,6 +15,7 @@ use headwork_core::{
 };
 use headwork_store::{
     FileMark, NewSession, NewTask, Store, Task, TaskId, UsageBatch, UsageQuery, UsageTag,
+    all_models,
 };
 
 fn config() -> Config {
@@ -355,9 +356,21 @@ fn a_leads_tokens_roll_up_its_parts() {
         &[line("m2", "2026-11-22T10:00:00.000Z", "m", 1, 1)],
     );
     let tokens = store.usage_task_tokens().unwrap();
-    assert_eq!(tokens.own(lead.id), 20, "the lead's own");
-    assert_eq!(tokens.tree(lead.id), 32, "with its part");
-    assert_eq!(tokens.own(part.id), 12, "the part's own");
+    assert_eq!(
+        all_models(&tokens.own(lead.id)).total(),
+        20,
+        "the lead's own"
+    );
+    assert_eq!(
+        all_models(&tokens.tree(lead.id)).total(),
+        32,
+        "with its part"
+    );
+    assert_eq!(
+        all_models(&tokens.own(part.id)).total(),
+        12,
+        "the part's own"
+    );
     let board = store.board(false).unwrap();
     let shown: Vec<(String, u64)> = board
         .tasks

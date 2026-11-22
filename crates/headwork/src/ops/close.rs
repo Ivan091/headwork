@@ -592,6 +592,9 @@ fn record_usage_total(store: &Store, env: &Env<'_>, id: TaskId) {
     let mut data = serde_json::to_value(total.tokens).unwrap_or_default();
     data["responses"] = total.responses.into();
     data["total"] = total.tokens.total().into();
+    if let Some(estimate) = super::status::estimate(&env.config.usage, &total.models) {
+        data["estimate"] = estimate.into();
+    }
     drop(store.append_event(env.actor, Some(id), None, EVENT_USAGE_TOTAL, &data));
 }
 

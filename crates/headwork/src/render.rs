@@ -16,11 +16,10 @@ use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::status::StatusLine;
 use headwork::ops::tick::TickReport;
-use headwork::ops::usage::UsageReport;
+use headwork::ops::usage::{UsageReport, UsageRow};
 use headwork_core::reap::{Reason as ReapReason, Spare};
-use headwork_core::usage::short_count;
+use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{PlaceKind, TaskShape};
-use headwork_store::UsageTotal;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
@@ -64,7 +63,7 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
 
 /// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
 #[must_use]
-pub(crate) fn board(board: &Board, max_workers: u32) -> String {
+pub(crate) fn board(board: &Board, max_workers: u32, prices: &UsageConfig) -> String {
     let asks = board
         .tasks
         .iter()
@@ -110,7 +109,7 @@ pub(crate) fn board(board: &Board, max_workers: u32) -> String {
             text.push_str("  no tasks\n");
         }
         for (task, depth) in tree(&tasks) {
-            task_line(&mut text, task, width, depth);
+            task_line(&mut text, task, width, depth, prices);
         }
     }
     if !board.other_asks.is_empty() {
@@ -141,7 +140,13 @@ fn tree<'a>(tasks: &[&'a BoardTask]) -> Vec<(&'a BoardTask, usize)> {
     rows
 }
 
-fn task_line(text: &mut String, task: &BoardTask, width: usize, depth: usize) {
+fn task_line(
+    text: &mut String,
+    task: &BoardTask,
+    width: usize,
+    depth: usize,
+    prices: &UsageConfig,
+) {
     let t = &task.task;
     let name = t.name.to_string();
     let (indent, width) = if depth == 0 {
@@ -201,6 +206,9 @@ fn task_line(text: &mut String, task: &BoardTask, width: usize, depth: usize) {
     }
     if task.tokens > 0 {
         let _ = write!(text, " · {} tokens", short_count(task.tokens));
+        if let Some(estimate) = headwork::ops::status::estimate(prices, &task.models) {
+            let _ = write!(text, " {estimate}");
+        }
     }
     text.push('\n');
     for ask in &task.asks {
@@ -232,7 +240,16 @@ pub(crate) fn statuses(lines: &[StatusLine]) -> String {
     let mut text = String::new();
     for line in lines {
         if line.tokens > 0 {
-            let _ = writeln!(text, "{} · {} tokens", line.line, short_count(line.tokens));
+            let estimate = line
+                .estimate
+                .as_ref()
+                .map_or_else(String::new, |estimate| format!(" {estimate}"));
+            let _ = writeln!(
+                text,
+                "{} · {} tokens{estimate}",
+                line.line,
+                short_count(line.tokens)
+            );
         } else {
             let _ = writeln!(text, "{}", line.line);
         }
@@ -572,17 +589,17 @@ pub(crate) fn shadowed(report: &ShadowReport) -> String {
     text
 }
 
-fn usage_row(text: &mut String, row: &UsageTotal, width: usize) {
-    let tokens = &row.tokens;
+fn usage_row(text: &mut String, row: &UsageRow, width: usize) {
+    let tokens = &row.total.tokens;
     let hit = tokens
         .cache_hit_permille()
         .map_or_else(|| "-".to_owned(), |permille| format!("{}%", permille / 10));
     let web = tokens.web_searches.saturating_add(tokens.web_fetches);
     let _ = writeln!(
         text,
-        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}",
-        row.key,
-        short_count(row.responses),
+        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}  {:>9}",
+        row.total.key,
+        short_count(row.total.responses),
         short_count(tokens.input),
         short_count(tokens.cache_write_5m),
         short_count(tokens.cache_write_1h),
@@ -592,6 +609,7 @@ fn usage_row(text: &mut String, row: &UsageTotal, width: usize) {
         short_count(tokens.total()),
         hit,
         short_count(web),
+        row.dollars,
     );
 }
 
@@ -647,13 +665,13 @@ pub(crate) fn usage(report: &UsageReport) -> String {
     let width = report
         .rows
         .iter()
-        .map(|row| row.key.chars().count())
+        .map(|row| row.total.key.chars().count())
         .chain([report.by.as_str().len(), "total".len()])
         .max()
         .unwrap_or(0);
     let _ = writeln!(
         text,
-        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}",
+        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}  {:>9}",
         report.by.as_str(),
         "resp",
         "input",
@@ -664,13 +682,21 @@ pub(crate) fn usage(report: &UsageReport) -> String {
         "think",
         "total",
         "hit",
-        "web"
+        "web",
+        "estimate"
     );
     for row in &report.rows {
         usage_row(&mut text, row, width);
     }
     if report.rows.len() > 1 {
         usage_row(&mut text, &report.total, width);
+    }
+    if !report.unpriced.is_empty() {
+        let _ = writeln!(
+            text,
+            "no price in [usage.prices] for: {} (estimates at API list prices, never a bill)",
+            report.unpriced.join(", ")
+        );
     }
     text
 }
@@ -899,7 +925,11 @@ mod tests {
         store
             .create_task(&config, &new, Actor::Orchestrator)
             .unwrap();
-        let text = super::board(&store.board(false).unwrap(), 10);
+        let text = super::board(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+        );
         assert!(text.contains("opus   xhigh  "), "{text}");
         let log = super::events(
             &store
@@ -945,7 +975,11 @@ mod tests {
         task(&mut store, &config, "me-sim", "other");
         let part = headwork_core::TaskShape::Part { parent: lead.id };
         shaped(&mut store, &config, "big-review", part);
-        let text = super::board(&store.board(false).unwrap(), 10);
+        let text = super::board(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+        );
         let rows: Vec<&str> = text.lines().filter(|line| line.contains(" #")).collect();
         assert_eq!(rows.len(), 3, "{text}");
         assert!(
@@ -957,7 +991,14 @@ mod tests {
             "{text}"
         );
         assert!(rows[2].contains("me-sim-other"), "{text}");
-        let lines = super::statuses(&headwork::ops::status::status(&store, false).unwrap());
+        let lines = super::statuses(
+            &headwork::ops::status::status(
+                &store,
+                false,
+                &headwork_core::usage::UsageConfig::default(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             lines, "me-sim-big: queued\nme-sim-other: queued\n",
             "one line per top-level task"
@@ -1001,7 +1042,11 @@ mod tests {
         place("own", Some("pane-1"), Some(PlaceKind::Pane));
         place("stacked", Some("pane-1"), Some(PlaceKind::Tab));
         place("tabbed", None, Some(PlaceKind::Tab));
-        let text = super::board(&store.board(false).unwrap(), 10);
+        let text = super::board(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+        );
         assert!(text.contains("surf-own in its own pane pane-1"), "{text}");
         assert!(text.contains("surf-stacked as a tab of pane-1"), "{text}");
         assert!(text.contains("surf-tabbed as a tab\n"), "{text}");
@@ -1038,7 +1083,11 @@ mod tests {
                 Actor::User,
             )
             .unwrap();
-        let text = super::board(&store.board(false).unwrap(), 10);
+        let text = super::board(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+        );
         assert!(
             text.contains("surf-lead in its own workspace ws-lead"),
             "{text}"
@@ -1058,7 +1107,11 @@ mod tests {
             options: vec!["Good, ship it".to_owned(), "Drop it".to_owned()],
         };
         store.open_ask(&ask, Actor::Hook).unwrap();
-        let text = super::board(&store.board(false).unwrap(), 10);
+        let text = super::board(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+        );
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines.first().copied(),
