@@ -981,3 +981,7 @@ and the reason.
   collector, split out subagents and reach back as far as Claude keeps them. The user chose an API-price estimate from
   `config.toml`, every session on the machine (others as `unmanaged`), 90 days of per-response rows then a daily
   roll-up, and `usage`, `board`, `status` and close as the views.
+- 2026-11-22 headwork went public (autoupdate step 3) as a new repository with the rewritten history rather than by a
+  force push and a visibility switch: GitHub keeps every pull request's `refs/pull/<n>/head`, which would have kept the
+  old commits (private e-mail addresses, session trailers) fetchable. The old repository is the private
+  `Ivan091/headwork-archive`; pull request numbers before the move refer to it. The code is MIT licensed.

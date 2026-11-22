@@ -227,6 +227,22 @@ It runs from a backup clone kept aside, its force push waits for the user's `All
 has a branch open, and every worktree and clone (this machine and the Mac) is re-cloned afterwards. Going public is the
 user's step in the repository settings, after the rewrite.
 
+### How it went public (2026-11-22)
+
+- The licence and the removal of the raw trial files and the copied cmux files merged first (pull request 79), so the
+  rewritten history ends in the same tree as master had.
+- A force push to the old repository would not have hidden the old history: GitHub keeps `refs/pull/<n>/head` of every
+  pull request for good, and on a public repository anyone can fetch them. So the rewritten `master` (203 commits, every
+  author the GitHub noreply address, no `Claude-Session:` trailers, the dropped files gone from every commit) went to a
+  new public repository under the old name, `Ivan091/headwork`, and the old repository became the private
+  `Ivan091/headwork-archive`, which keeps every pull request, issue and old branch and is the backup.
+- Pull request numbers in `docs/` and in commit subjects ("Merge pull request #79") refer to the archive.
+- Every clone moves to the new history with `git fetch origin` and `git reset --hard origin/master` (same files, new
+  commits); this machine's main checkout did on 2026-11-22. Branches made before the move hold the old history: rebase
+  them onto the new `master` (`git rebase --onto origin/master <old master> <branch>`) or drop them, and never push one.
+- Each clone sets `git config user.email 61829487+Ivan091@users.noreply.github.com`, so new commits do not bring a
+  private address back.
+
 ## Conventions that change, together with turning it on
 
 - Workers stop building and installing after a merge; the orchestrator's briefs and notes that ask for `cargo build`
@@ -242,7 +258,7 @@ Each a pull request through `scripts/check.sh`:
 2. **Version in the binary** (`option_env!` for `HEADWORK_VERSION` and `HEADWORK_COMMIT`, the schema in `--version`) and
    `doctor` showing it. Built: `crates/headwork/src/version.rs`.
 3. **Going public:** a `LICENSE` (MIT) and `license = "MIT"` in `Cargo.toml`, the history rewrite above, then the user
-   changes the visibility.
+   changes the visibility. Done 2026-11-22, see "How it went public".
 4. **The release workflow** (and the read-only pull request gate); the first release proves it.
 5. **`headwork update`:** `[update]` config, `core/src/update.rs` with table tests, `ops/update.rs` (lock and pending,
    GitHub query, download and hash, smoke test, install, `--after`, checkout fast-forward, `--wait`, `--to`),
