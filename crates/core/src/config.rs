@@ -320,6 +320,10 @@ pub struct MachineConfig {
     /// At most this many worker sessions at once. `max_children` is its deprecated spelling.
     #[serde(default = "default_max_workers", alias = "max_children")]
     pub max_workers: NonZeroU32,
+    /// How many sessions past `max_workers` may stay open while sessions that wait on the user, running nothing else,
+    /// give up their slot (`core::slots`); 0 keeps every waiting session in its slot.
+    #[serde(default = "default_idle_overflow")]
+    pub idle_overflow: u32,
     /// Sessions start with Remote Control.
     #[serde(default = "yes")]
     pub remote_control: bool,
@@ -664,6 +668,10 @@ const fn default_max_workers() -> NonZeroU32 {
         Some(ten) => ten,
         None => NonZeroU32::MIN,
     }
+}
+
+const fn default_idle_overflow() -> u32 {
+    4
 }
 
 /// The placeholders `[leads] part_title` may use.

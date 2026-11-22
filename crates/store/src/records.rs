@@ -228,8 +228,10 @@ pub struct BoardTask {
 pub struct Board {
     /// The machine mode.
     pub machine: MachineMode,
-    /// Tasks that take a worker slot.
+    /// Tasks that take a worker slot: their sessions work.
     pub live_workers: u32,
+    /// Tasks whose sessions wait on the user, run nothing else and so gave up their slot.
+    pub waiting_workers: u32,
     /// Known projects.
     pub projects: Vec<ProjectRow>,
     /// Tasks, by project and queue order.

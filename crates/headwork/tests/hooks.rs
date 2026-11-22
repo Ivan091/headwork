@@ -19,6 +19,7 @@ use headwork::ops::rules::{
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::update::{Notice, UpdateState};
+use headwork::ops::waiting::FakeSlots;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
@@ -53,6 +54,7 @@ struct World {
     prs: FakeGit,
     task: Task,
     session: String,
+    slots: FakeSlots,
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -136,6 +138,7 @@ fn world_of(hooks: &str, project: &str, keep: bool, kind: &str) -> World {
         prs: FakeGit::new(),
         task,
         session,
+        slots: FakeSlots::hook_of_claude(false),
     }
 }
 
@@ -153,6 +156,7 @@ impl World {
             git: &self.git,
             exe: Path::new(EXE),
             temp: &temp,
+            slots: &self.slots,
         };
         let session = self.session.clone();
         run_hook(&mut self.store, &env, event, &session, input).unwrap()
@@ -2544,5 +2548,137 @@ fn update_notices_reach_the_orchestrators_next_prompt_once() {
     assert!(
         again.stdout.is_none_or(|out| !out.contains("v0.1.9")),
         "told once"
+    );
+}
+
+fn ask_and_board(w: &mut World) -> (u32, u32) {
+    w.pre("AskUserQuestion", &ask_input(&["Ship", "Hold"], "Ship"));
+    let board = w.store.board(false).unwrap();
+    (board.live_workers, board.waiting_workers)
+}
+
+#[test]
+fn a_worker_waiting_on_the_user_with_nothing_running_frees_its_slot() {
+    let mut w = world("", false);
+    w.start();
+    assert_eq!(w.store.board(false).unwrap().live_workers, 1, "working");
+    assert_eq!(ask_and_board(&mut w), (0, 1), "the ask frees the slot");
+    w.post("AskUserQuestion", &json!({ "answers": "Ship" }));
+    let board = w.store.board(false).unwrap();
+    assert_eq!(
+        (board.live_workers, board.waiting_workers),
+        (1, 0),
+        "the answer takes it back"
+    );
+    let marks: Vec<bool> = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "session-waiting")
+        .map(|event| event.data["waiting"].as_bool().unwrap())
+        .collect();
+    assert_eq!(marks, [true, false], "marked, then cleared");
+}
+
+#[test]
+fn a_worker_typed_past_its_ask_takes_its_slot_back() {
+    let mut w = world("", false);
+    w.start();
+    assert_eq!(ask_and_board(&mut w), (0, 1), "waiting");
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "do it another way" }),
+    );
+    let board = w.store.board(false).unwrap();
+    assert_eq!(
+        (board.live_workers, board.waiting_workers),
+        (1, 0),
+        "working again"
+    );
+}
+
+#[test]
+fn a_worker_running_a_shell_or_a_background_agent_keeps_its_slot() {
+    let mut w = world("", false);
+    w.start();
+    w.slots.set_shell(true);
+    assert_eq!(ask_and_board(&mut w), (1, 0), "a background shell is work");
+    w.post("AskUserQuestion", &json!({ "answers": "Ship" }));
+    w.slots.set_shell(false);
+    w.post(
+        "Agent",
+        &json!({ "status": "async_launched", "agentId": "a1" }),
+    );
+    assert_eq!(
+        ask_and_board(&mut w),
+        (1, 0),
+        "a background agent this turn is work"
+    );
+}
+
+#[test]
+fn the_tick_frees_the_slot_once_the_shell_ends() {
+    let mut w = world("", false);
+    w.start();
+    w.slots.set_shell(true);
+    assert_eq!(ask_and_board(&mut w), (1, 0), "busy");
+    w.slots.set_shell(false);
+    let freed = headwork::ops::waiting::recheck_all(&mut w.store, &w.slots, Actor::Tick).unwrap();
+    assert_eq!(freed, 1, "one session freed");
+    let board = w.store.board(false).unwrap();
+    assert_eq!(
+        (board.live_workers, board.waiting_workers),
+        (0, 1),
+        "waiting now"
+    );
+}
+
+#[test]
+fn a_freed_slot_runs_the_queue_when_a_task_waits() {
+    let mut w = world_in("", "max_workers = 1", false);
+    w.start();
+    let brief = w.dir.path().join("brief.md");
+    let request = SpawnRequest {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new("next").unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+        },
+        brief: &brief,
+        depends_on: None,
+        permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
+    };
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    let (next, _) = spawn(&mut w.store, &env, &request).unwrap();
+    assert_eq!(
+        w.store.task(next.id).unwrap().state,
+        TaskState::Queued,
+        "the project is full"
+    );
+    assert_eq!(ask_and_board(&mut w), (0, 1), "waiting");
+    assert_eq!(w.slots.pumps(), 1, "the queue runs");
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    let started = headwork::ops::spawn::pump(&mut w.store, &env).unwrap();
+    assert_eq!(started.len(), 1, "one queued task tried");
+    assert_eq!(
+        w.store.task(next.id).unwrap().state,
+        TaskState::Spawning,
+        "it takes the freed slot"
     );
 }

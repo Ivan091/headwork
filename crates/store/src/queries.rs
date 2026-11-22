@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use crate::records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, Task, TaskId,
 };
+use crate::waiting::DIALOG_ASK_KINDS;
 use crate::{NOW, Store, StoreError};
 
 /// The answer to a Fable approval ask that lets the task start.
@@ -269,20 +270,39 @@ struct LiveTask {
     state: TaskState,
     in_main: bool,
     session_over: bool,
+    waiting: bool,
 }
 
 impl LiveTask {
+    /// Its session is starting, running or closing, waiting on the user or not: it holds its pane and checkout.
     const fn holds_slot(&self) -> bool {
         self.state.holds_slot(self.session_over)
+    }
+
+    /// It holds a slot and works: its session does not wait on the user with nothing else running.
+    const fn works(&self) -> bool {
+        self.holds_slot() && !self.waiting
+    }
+
+    /// It holds a slot only to wait on the user, running nothing else.
+    const fn waits(&self) -> bool {
+        self.holds_slot() && self.waiting
     }
 }
 
 fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
     let mut statement = conn.prepare(
-        "SELECT t.id, t.parent_id, t.project, t.kind, t.state, t.in_main,
-                COALESCE((SELECT s.state IN ('ended', 'gone') FROM sessions s WHERE s.task_id = t.id
-                          ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 1)
-         FROM tasks t WHERE t.state <> 'closed'",
+        &format!(
+            "SELECT t.id, t.parent_id, t.project, t.kind, t.state, t.in_main,
+                    COALESCE((SELECT s.state IN ('ended', 'gone') FROM sessions s WHERE s.task_id = t.id
+                              ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 1),
+                    COALESCE((SELECT s.waiting_since IS NOT NULL AND EXISTS (SELECT 1 FROM asks a
+                                  WHERE a.session_id = s.id AND a.state IN ('pending', 'open')
+                                    AND a.kind IN {DIALOG_ASK_KINDS})
+                              FROM sessions s WHERE s.task_id = t.id
+                              ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 0)
+             FROM tasks t WHERE t.state <> 'closed'"
+        ),
     )?;
     let rows = statement
         .query_map([], |row| {
@@ -292,13 +312,13 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
                 row.get(3)?,
                 row.get::<_, String>(4)?,
                 row.get(5)?,
-                row.get(6)?,
+                (row.get(6)?, row.get(7)?),
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(
-            |((id, parent_id), project, kind, state, in_main, session_over)| {
+            |((id, parent_id), project, kind, state, in_main, (session_over, waiting))| {
                 Ok(LiveTask {
                     id,
                     parent_id,
@@ -307,6 +327,7 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
                     state: state.parse()?,
                     in_main,
                     session_over,
+                    waiting,
                 })
             },
         )
@@ -516,17 +537,15 @@ impl Store {
         let task = load_task(&self.conn, id)?;
         let live = live_tasks(&self.conn)?;
         let slots = live.iter().filter(|other| other.holds_slot());
+        let working = live.iter().filter(|other| other.works());
         let project = task.project().as_str();
         let project_config = config.project(task.project());
         Ok(StartFacts {
-            live_workers: count(slots.clone().count())?,
+            live_workers: count(working.clone().count())?,
+            waiting_workers: count(live.iter().filter(|other| other.waits()).count())?,
             max_workers: config.machine.max_workers.get(),
-            project_live: count(
-                slots
-                    .clone()
-                    .filter(|other| other.project == project)
-                    .count(),
-            )?,
+            idle_overflow: config.machine.idle_overflow,
+            project_live: count(working.filter(|other| other.project == project).count())?,
             project_cap: project_config
                 .and_then(|p| p.max_workers)
                 .map(std::num::NonZeroU32::get),
@@ -894,7 +913,8 @@ impl Store {
         let live = live_tasks(&self.conn)?;
         Ok(Board {
             machine: machine_mode(&self.conn)?,
-            live_workers: count(live.iter().filter(|task| task.holds_slot()).count())?,
+            live_workers: count(live.iter().filter(|task| task.works()).count())?,
+            waiting_workers: count(live.iter().filter(|task| task.waits()).count())?,
             projects: self.projects()?,
             tasks: board_tasks,
             other_asks: asks

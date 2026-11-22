@@ -637,3 +637,24 @@ mod imp {
             .is_none_or(|process| process.status() == ProcessStatus::Zombie)
     }
 }
+
+/// Every process with the parent the system recorded, without Git Bash's own links: fast enough for a hook. A program a
+/// process started straight, as `claude` starts a shell, always names it as its parent.
+#[must_use]
+pub fn processes() -> Vec<headwork_core::reap::Proc> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    system
+        .processes()
+        .values()
+        .map(|process| headwork_core::reap::Proc {
+            pid: process.pid().as_u32(),
+            parent: process.parent().map(sysinfo::Pid::as_u32),
+            image: process.name().to_string_lossy().into_owned(),
+            started: process.start_time(),
+            cpu_ms: 0,
+            cwd: None,
+        })
+        .collect()
+}

@@ -38,6 +38,7 @@ use headwork::ops::update::{
     LOCK_WAIT, SystemBuilds, SystemClock, ThisBuild, UpdateEnv, UpdateLock, UpdateOptions, after,
     update,
 };
+use headwork::ops::waiting::LiveSlots;
 use headwork::ops::{Env, host_for};
 use headwork_adapters::disk::SystemDisks;
 use headwork_adapters::git::Gh;
@@ -1406,6 +1407,10 @@ fn answer_hook(event: HookEvent, session: &str) -> Result<headwork::ops::hook::H
     let host = host_for(&config)?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let temp = std::env::temp_dir();
+    let slots = LiveSlots {
+        home: &home,
+        exe: &exe,
+    };
     let env = HookEnv {
         home: &home,
         config: &config,
@@ -1413,6 +1418,7 @@ fn answer_hook(event: HookEvent, session: &str) -> Result<headwork::ops::hook::H
         git: &Git,
         exe: &exe,
         temp: &temp,
+        slots: &slots,
     };
     run_hook(&mut store, &env, event, session, &input)
 }
@@ -1443,6 +1449,10 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
     let host = host_for(&config)?;
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let temp = std::env::temp_dir();
+    let slots = LiveSlots {
+        home: &home,
+        exe: &exe,
+    };
     let env = HookEnv {
         home: &home,
         config: &config,
@@ -1450,6 +1460,7 @@ fn rule_test(probe: &RuleProbe<'_>, json: bool, out: &mut impl Write) -> Result<
         git: &Git,
         exe: &exe,
         temp: &temp,
+        slots: &slots,
     };
     let cwd = match (&probe.cwd, &task) {
         (Some(cwd), _) => cwd.clone(),
@@ -1557,6 +1568,10 @@ fn tick_command(
         home: ctx.home,
         exe: ctx.exe,
     };
+    let slots = LiveSlots {
+        home: ctx.home,
+        exe: ctx.exe,
+    };
     let report = ctx.with_actor(Actor::Tick, |env| {
         tick(
             store,
@@ -1567,6 +1582,7 @@ fn tick_command(
                 temp: &temp,
                 limits: Limits::from_config(&ctx.config.watch),
                 updates: &updates,
+                slots: &slots,
             },
         )
     })?;
