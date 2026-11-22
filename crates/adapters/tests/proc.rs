@@ -191,6 +191,11 @@ fn identify_names_a_running_process_and_nothing_once_it_ended() {
     );
     child.kill().unwrap();
     child.wait().unwrap();
+    drop(child);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while identify(pid).is_some() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(identify(pid), None, "gone");
     assert_eq!(liveness(pid, Some(&found), &argv), Liveness::Gone, "gone");
 }
