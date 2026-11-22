@@ -992,3 +992,20 @@ and the reason.
   release`, newer pending runs replace older pending ones). `gate.yml` runs `check.sh` read-only on pull requests. The
   comment checker is the user's (`~/.claude/skills/no-comments`), not vendored into a public repository, so `check.sh`
   skips that step when `CI` is set and the local gate keeps enforcing it.
+- 2026-11-22 `headwork update` (autoupdate step 5). Taken without asking: `[update]` is checked only while `enabled`
+  (its project configured with an `allowed_repos` entry; the first entry is the repository), so the default
+  `project = "headwork"` never breaks a config without that project. `--to` is the user's explicit word: it installs
+  with updates off, during a back-off and after the release failed here, but not during a park, a resume or below
+  `disk_stop_gb`. The decision runs once before GitHub is asked (off, machine, disk, back-off need no network), then
+  with the release. A transient failure is reported (event, `doctor` warning) only from its third attempt in a row; a
+  deterministic one at once, and it stays latched in `update.json` until a newer release installs. The API request
+  runs `curl -sSL --include` (status and `ETag` read from the headers, `If-None-Match` sent when an `ETag` is kept),
+  not `-f`, so a `304`, `404` and `403`/`429` are told apart; file downloads use `--fail`. The smoke test runs the
+  installed build's `doctor --json` first, then the release's, on the same scratch home (the config and a `VACUUM
+  INTO` copy of the store, `HEADWORK_CLAUDE_JSON` pointed into it so the trust check never writes the live file), so
+  the copy is still at the installed schema for the first; only checks that fail with the release and pass with the
+  installed build fail the update. The hand-over `update --after` takes the lock afresh (waiting up to 60 s) once the
+  old process released it, rather than inheriting it, since a file lock ends with its process. No new actor, finding
+  or event word that older builds would fail to parse: events are logged as `user`; the host notification, the
+  standing finding and the orchestrator's prompt line wait for step 6. `update` takes `--dir` like `install`, which
+  lets tests point it away from `~/.local/bin`.

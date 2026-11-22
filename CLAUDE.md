@@ -19,7 +19,7 @@ crates/
   store/                headwork-store: SQLite (rusqlite, bundled), numbered migrations, queries
   adapters/             headwork-adapters: process trees (Job Objects), the terminal host (wmux, cmux, fake), the git host (gh,
                         fake), disks, the claude
-                        runtime, worktrees
+                        runtime, worktrees, releases (curl, fake), timed runs
   headwork/             the binary: CLI (board, log, spawn, queue, close, import, launch, hook, mcp, tick, install) over a small
                         lib (home, ops)
 plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
@@ -109,6 +109,7 @@ cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over without touching any process
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
+cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # install the newest GitHub release, smoke-tested (docs/autoupdate.md)
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts
 cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
