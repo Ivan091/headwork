@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 use super::close::{begin_own_close, close, close_dropped_part, close_forced, end_closing};
 use super::jobs::{self, Registration};
+use super::review_loop;
 use super::rules;
 use super::spawn::{SpawnRequest, pump, spawn, spawn_shaped};
 use super::{Env, close::reap};
@@ -76,7 +77,16 @@ const ORCHESTRATOR: &[Role] = &[Role::Orchestrator];
 const WORKER: &[Role] = &[Role::Worker];
 
 /// The worker tools only a lead's session sees and may call.
-const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start"];
+const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start", "review_resolve"];
+
+/// The worker tools only a reviewer lead (a part of kind `review`) sees and may call.
+const REVIEWER_TOOLS: &[&str] = &[
+    "review_next",
+    "review_node_done",
+    "review_deliver",
+    "review_verdict",
+    "review_finish",
+];
 
 const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -470,6 +480,114 @@ const TOOLS: &[ToolDef] = &[
         schema: || object(json!({}), &[]),
     },
     ToolDef {
+        name: "review_resolve",
+        description: "A lead's tool: answer every finding the reviewer lead sent you, after committing the fixes. Each \
+                      item is the finding's number, `fixed` (note: the commit) or `disputed` (note: the reason; at \
+                      level 2 and 3 with evidence). It pins your new HEAD for the re-check.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "action": { "type": "string", "enum": ["fixed", "disputed"] },
+                                "note": { "type": "string" },
+                            },
+                            "required": ["id", "action", "note"],
+                        },
+                    },
+                }),
+                &["items"],
+            )
+        },
+    },
+    ToolDef {
+        name: "review_next",
+        description: "A reviewer lead's tool: the nodes of your review that may start now, each with its model and the \
+                      exact prompt for its fresh subagent; they are marked running. Empty while running nodes hold \
+                      the rest back; `next` says what to do.",
+        roles: WORKER,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
+        name: "review_node_done",
+        description: "A reviewer lead's tool: hand back one node's result. A plain node gives `findings` (a list of \
+                      {file, line, severity, summary, scenario}; empty when it found nothing); a node that runs once \
+                      per finding gives `item` (the finding's number) and `verdict`; a subagent that failed gives \
+                      `failed` with why.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "node": { "type": "string" },
+                    "item": { "type": "integer" },
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "file": { "type": ["string", "null"] },
+                                "line": { "type": ["integer", "null"] },
+                                "severity": { "type": "string", "enum": ["important", "nit", "doubt"] },
+                                "summary": { "type": "string" },
+                                "scenario": { "type": "string" },
+                            },
+                            "required": ["severity", "summary", "scenario"],
+                        },
+                    },
+                    "verdict": { "type": "string", "enum": ["confirmed", "plausible", "rejected"] },
+                    "failed": { "type": "string" },
+                }),
+                &["node"],
+            )
+        },
+    },
+    ToolDef {
+        name: "review_deliver",
+        description: "A reviewer lead's tool: once every node of the round is over, mark the findings that go on as \
+                      delivered and get them numbered, with the implementing lead's address to send them to.",
+        roles: WORKER,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
+        name: "review_verdict",
+        description: "A reviewer lead's tool: record your re-check of every fixed or disputed finding, each from a \
+                      fresh subagent: `fix` accepted or rejected, or `dispute` accepted or kept, with a note. headwork \
+                      applies the level's dispute rule and says what comes next.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "fix": { "type": "string", "enum": ["accepted", "rejected"] },
+                                "dispute": { "type": "string", "enum": ["accepted", "kept"] },
+                                "note": { "type": "string" },
+                            },
+                            "required": ["id"],
+                        },
+                    },
+                }),
+                &["items"],
+            )
+        },
+    },
+    ToolDef {
+        name: "review_finish",
+        description: "A reviewer lead's tool: finish the review once nothing is left to fix, re-check, ask or run; \
+                      then tell the implementing lead the outcome and close yourself with `done`.",
+        roles: WORKER,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
         name: "part_drop",
         description: "A lead's tool: drop one of your parts and close it.",
         roles: WORKER,
@@ -673,10 +791,12 @@ impl<'a> Server<'a> {
             return Vec::new();
         };
         let lead = self.is_lead();
+        let reviewer = self.is_reviewer();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
             .filter(|tool| lead || !LEAD_TOOLS.contains(&tool.name))
+            .filter(|tool| reviewer || !REVIEWER_TOOLS.contains(&tool.name))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -722,12 +842,19 @@ impl<'a> Server<'a> {
         if LEAD_TOOLS.contains(&name) && !self.is_lead() {
             bail!("`{name}` is a lead's tool; your task is not a lead");
         }
+        if REVIEWER_TOOLS.contains(&name) && !self.is_reviewer() {
+            bail!("`{name}` is a reviewer lead's tool; your task is not a review");
+        }
         match name {
             "board" => self.board(&session, role, args),
             "inbox" => self.inbox(&session, role),
             "status" => self.status(args),
             "usage" => self.usage(args),
-            "part_spawn" | "part_drop" | "review_start" => self.lead_tool(name, &session, args),
+            "part_spawn" | "part_drop" | "review_start" | "review_resolve" => {
+                self.lead_tool(name, &session, args)
+            }
+            "review_next" | "review_node_done" | "review_deliver" | "review_verdict"
+            | "review_finish" => self.reviewer_tool(name, &session, args),
             "spawn" => self.spawn(args),
             "drop" => self.drop_task(args),
             "close" => self.close_task(args),
@@ -805,7 +932,41 @@ impl<'a> Server<'a> {
             "part_spawn" => self.part_spawn(&lead, args),
             "part_drop" => self.part_drop(&lead, args),
             "review_start" => to_text(&super::review::start(self.store, &self.env, &lead)?),
+            "review_resolve" => {
+                let items: Vec<review_loop::Resolve> = items(args)?;
+                to_text(&review_loop::resolve(self.store, &self.env, &lead, &items)?)
+            }
             other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn reviewer_tool(&mut self, name: &str, session: &str, args: &Value) -> Result<String> {
+        let part = self.own_task(session)?;
+        match name {
+            "review_next" => to_text(&review_loop::next(self.store, &self.env, &part)?),
+            "review_node_done" => {
+                let done: review_loop::NodeDone =
+                    serde_json::from_value(args.clone()).map_err(|error| {
+                        anyhow!("the node's result does not have the expected shape: {error}")
+                    })?;
+                Ok(review_loop::node_done(self.store, &self.env, &part, &done)?)
+            }
+            "review_deliver" => to_text(&review_loop::deliver(self.store, &self.env, &part)?),
+            "review_verdict" => {
+                let items: Vec<review_loop::Verdict> = items(args)?;
+                to_text(&review_loop::verdict(self.store, &self.env, &part, &items)?)
+            }
+            "review_finish" => to_text(&review_loop::finish(self.store, &self.env, &part)?),
+            other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn is_reviewer(&self) -> bool {
+        match self.identity.managed() {
+            Some((session, Role::Worker)) => self
+                .own_task(session)
+                .is_ok_and(|task| task.kind == headwork_core::config::REVIEW_KIND),
+            Some(_) | None => false,
         }
     }
 
@@ -1489,6 +1650,12 @@ impl<'a> Server<'a> {
         self.closing = Some(task);
         Ok("done recorded; this session, its pane and its worktree close now".to_owned())
     }
+}
+
+fn items<T: serde::de::DeserializeOwned>(args: &Value) -> Result<Vec<T>> {
+    let items = args.get("items").cloned().unwrap_or_else(|| json!([]));
+    serde_json::from_value(items)
+        .map_err(|error| anyhow!("`items` does not have the expected shape: {error}"))
 }
 
 fn text(args: &Value, key: &str) -> Result<String> {

@@ -108,6 +108,17 @@ makes a detached worktree at the part's `worktree_path` with `git worktree add -
 `core/src/review/prompt.rs`), `rules/reviewer.md` for that part, the guard rule `reviewer-write` (a review part edits
 only the temp folder and runs no git write, `gh pr` write or build) and the stop rule `review-unstarted`; a review
 part's worktree is removed with `git worktree remove --force`, never the project's command.
+R3 is the loop (`ops/review_loop.rs`): the reviewer tools (only a task of kind `review` sees them) `review_next` (ready
+nodes with their model and exact prompt, marked running, at most `[reviews] parallel` at once), `review_node_done`
+(findings, an `each` node's verdict, or `failed`), `review_deliver` (refused while a node is open, `review-nodes-open`;
+findings a verify stage rejected stay back), `review_verdict` (fix accepted or rejected, dispute accepted or kept;
+`settle_dispute` applies the level: accept, argue back once, or ask) and `review_finish`; the lead tool `review_resolve`
+(every waiting finding fixed or disputed, committed, `review-dirty` otherwise; it pins the new HEAD and moves the review
+worktree there). The reviewer lead's ask headed `Dispute` (one question per finding, `Finding <id>:`, options "Keep
+the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` is refused while its review is open
+(`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
+`review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
+review.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

@@ -971,6 +971,15 @@ and the reason.
   `reviewer-write` also refuses `gh pr` writes (create, merge, edit, close, comment, review), and a review part may
   write only the temp folder (where the scratchpad lives), not its own worktree. `review_start` is listed for every lead
   and refuses while `[reviews] enabled` is off.
+- 2026-11-22 Review flows R3, the loop. The user's answers to the reviewer lead's `Dispute` ask reach headwork through
+  the `PostToolUse` hook, like a lead's `Close` go, never through a tool the reviewer calls, so only the user's pick
+  settles a dispute; each question names its finding as `Finding <id>`. A dispute the reviewer lead argues back on goes
+  back to the implementing lead as `open` with `argued` set, so the second time the level's `unsettled` decides. The
+  review worktree moves to the lead's new HEAD at `review_resolve`, before the re-check. Round 2 at level 3 starts only
+  when round 1 fixed something. The reviewer's tools return the next step and the address to tell (`tell`), and the
+  sessions pass the findings by `SendMessage`; headwork stores everything, so the order holds over a park. Closing the
+  lead or the review part, or dropping it, cancels the review. Instead of a "Reviews" section in `rules/lead.md`, the
+  lead learns the loop from the trigger's line and `review_start`'s `next` (see R2).
 - 2026-11-22 Closed sessions leave the Claude app. Closed workers stayed listed in the Claude app (Remote Control)
   because `close` ended `claude` with `taskkill /T /F`, which skips the teardown where Claude Code archives its Remote
   Control session at claude.ai (`[remote-bridge] Torn down (archive=200)` in its debug log). A trial with throwaway

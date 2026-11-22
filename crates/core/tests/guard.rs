@@ -889,6 +889,7 @@ fn stop_table() {
         waiting_part: false,
         user_present: false,
         review_requested: false,
+        reviewer_busy: false,
         last_message: Some("Done with step 3."),
     };
     let table: &[(StopFacts<'_>, Option<RuleId>, &str)] = &[
@@ -1013,6 +1014,7 @@ fn stop_while_waiting_on_background_work() {
         waiting_part: false,
         user_present: false,
         review_requested: false,
+        reviewer_busy: false,
         last_message: Some("The build runs in the background."),
     };
     assert_eq!(stop(waiting), None, "waiting on background work");
@@ -1050,6 +1052,7 @@ fn stop_while_a_job_runs() {
         waiting_part: false,
         user_present: false,
         review_requested: false,
+        reviewer_busy: false,
         last_message: Some("Training runs; I will look at the next checkpoint."),
     };
     assert_eq!(stop(waiting), None, "waiting on its own running job");
@@ -1232,6 +1235,7 @@ fn a_lead_waiting_on_a_live_part_may_stop() {
         waiting_part: true,
         user_present: false,
         review_requested: false,
+        reviewer_busy: false,
         last_message: Some("The review part runs; I wait for its report."),
     };
     assert_eq!(stop(waiting), None, "a lead waits for its part");
@@ -1320,6 +1324,7 @@ fn a_lead_with_an_unstarted_review_may_not_stop() {
         waiting_part: true,
         user_present: true,
         review_requested: true,
+        reviewer_busy: false,
         last_message: Some("Starting the review."),
     };
     assert_eq!(
@@ -1330,6 +1335,7 @@ fn a_lead_with_an_unstarted_review_may_not_stop() {
     assert_eq!(
         stop(StopFacts {
             review_requested: false,
+            reviewer_busy: false,
             ..facts
         }),
         None,
@@ -1342,5 +1348,46 @@ fn a_lead_with_an_unstarted_review_may_not_stop() {
         }),
         None,
         "the block cap still lets it go"
+    );
+}
+
+#[test]
+fn a_reviewer_lead_with_work_left_may_not_stop_unless_it_asks() {
+    let facts = StopFacts {
+        role: Role::Worker,
+        task: Some(TaskState::Working),
+        blocked_in_row: 0,
+        asked: false,
+        messaged: true,
+        reported: false,
+        keep: false,
+        running_job: false,
+        waiting_background: true,
+        waiting_part: false,
+        user_present: false,
+        review_requested: false,
+        reviewer_busy: true,
+        last_message: Some("Nodes are running."),
+    };
+    assert_eq!(
+        stop(facts),
+        Some(RuleId::ReviewUnfinished),
+        "ready nodes or verdicts hold it"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            asked: true,
+            ..facts
+        }),
+        None,
+        "a dispute ask lets it wait for the user"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            reviewer_busy: false,
+            ..facts
+        }),
+        None,
+        "nothing left, it may wait"
     );
 }

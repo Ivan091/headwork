@@ -181,6 +181,20 @@ pub struct HookEnv<'a> {
     pub slots: &'a dyn super::waiting::SlotProbe,
 }
 
+impl HookEnv<'_> {
+    /// The command environment a hook acts with.
+    #[must_use]
+    pub const fn ops_env(&self) -> Env<'_> {
+        Env {
+            home: self.home,
+            config: self.config,
+            host: self.host,
+            exe: self.exe,
+            actor: Actor::Hook,
+        }
+    }
+}
+
 /// Runs one hook for a managed session.
 ///
 /// # Errors
@@ -972,6 +986,13 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
             for pattern in allowed_patterns(call.env.config, asked, &response) {
                 store.allow_user_only(task.id, &call.session.id, &pattern, Actor::Hook)?;
             }
+            if task.kind == REVIEW_KIND {
+                let answers = dispute_answers(asked, &response);
+                if !answers.is_empty() {
+                    let env = call.env.ops_env();
+                    super::review_loop::answer_disputes(store, &env, task, &answers)?;
+                }
+            }
             if task.shape.is_lead() && close_go(asked, &response) {
                 store.append_event(
                     Actor::Hook,
@@ -1033,6 +1054,25 @@ const BACKGROUND_TASK_ID: &str = "backgroundTaskId";
 pub const EVENT_CLOSE_GO: &str = "close-go";
 
 /// Whether an answered ask gives the go to close: a question headed `Close` whose chosen answer starts with `Close`.
+/// The questions of an ask headed `Dispute` with the user's answer to each.
+fn dispute_answers(asked: &Value, response: &Value) -> Vec<(String, String)> {
+    let answers = response.get("answers");
+    questions(asked)
+        .into_iter()
+        .filter(|(_, header, _)| {
+            header
+                .trim()
+                .eq_ignore_ascii_case(super::review_loop::DISPUTE_HEADER)
+        })
+        .filter_map(|(question, _, _)| {
+            let answer = answers
+                .and_then(|answers| answers.get(&question))
+                .and_then(Value::as_str)?;
+            Some((question, answer.to_owned()))
+        })
+        .collect()
+}
+
 fn close_go(asked: &Value, response: &Value) -> bool {
     let answers = response.get("answers");
     questions(asked)
@@ -1117,6 +1157,13 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
             }
             Some(_) | None => false,
         },
+        reviewer_busy: match call.task {
+            Some(task) if task.kind == REVIEW_KIND => {
+                let env = call.env.ops_env();
+                super::review_loop::reviewer_busy(store, &env, task).unwrap_or(false)
+            }
+            Some(_) | None => false,
+        },
         last_message,
     };
     let decision = check_stop(&facts);
@@ -1149,13 +1196,7 @@ fn session_end(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     if session.id != call.session.id {
         return Ok(HookReply::default());
     }
-    let env = Env {
-        home: call.env.home,
-        config: call.env.config,
-        host: call.env.host,
-        exe: call.env.exe,
-        actor: Actor::Hook,
-    };
+    let env = call.env.ops_env();
     lost::mark(store, &env, task.id, &session, LostCause::SessionEnded)?;
     Ok(HookReply::default())
 }

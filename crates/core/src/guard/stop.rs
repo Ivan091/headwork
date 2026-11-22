@@ -41,6 +41,8 @@ pub struct StopFacts<'a> {
     pub user_present: bool,
     /// The task is a lead whose user asked for a review that it has not started with `review_start`.
     pub review_requested: bool,
+    /// The task is a reviewer lead whose review has a ready node, or a resolution waiting on its verdict.
+    pub reviewer_busy: bool,
     /// The last assistant message of the turn.
     pub last_message: Option<&'a str>,
 }
@@ -68,6 +70,12 @@ pub fn check_stop(facts: &StopFacts<'_>) -> Decision {
         return Decision::deny(
             RuleId::ReviewUnstarted,
             "the user asked for a review: call the headwork `review_start` tool before you stop",
+        );
+    }
+    if facts.reviewer_busy && !facts.asked {
+        return Decision::deny(
+            RuleId::ReviewUnfinished,
+            "your review has nodes ready or answers to re-check: call `review_next` or `review_verdict` before you stop",
         );
     }
     let unfinished = facts.role == Role::Worker

@@ -3106,9 +3106,9 @@ fn review_start_needs_the_user_s_request_and_a_clean_tree_then_starts_the_review
     let brief = std::fs::read_to_string(w.home.brief_path(&part.name)).unwrap();
     for wanted in [
         "level 2",
-        "### `correctness`, model opus",
-        "### `verify`",
-        "change.txt",
+        "- `correctness`, model opus",
+        "- `verify`, model opus, after",
+        "`review_next`",
         "`demo-sand`",
     ] {
         assert!(
@@ -3136,7 +3136,294 @@ fn reviewer_rules_reach_a_review_part_and_no_one_else() {
             && !text.contains("longer than a hook may inject"),
         "a lead gets its full rules and no reviewer rules: {text}"
     );
-    let mut reviewer = world_of(REVIEWS, "", false, "review");
+    let mut reviewer = world_of("\n[reviews]\nenabled = true\n", "", false, "review");
     let text = context(&reviewer.start());
-    assert!(text.contains("## You are a reviewer lead"), "{text}");
+    assert!(
+        text.contains("## You are a reviewer lead")
+            && !text.contains("longer than a hook may inject"),
+        "a review task gets its full rules with the reviewer rules: {text}"
+    );
+}
+
+/// A lead world with a review of `level` started on a committed change; returns the reviewer lead's part.
+fn started_review(w: &mut World, level: u8) -> Task {
+    w.start();
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": format!("review {level}") }),
+    );
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), "new").unwrap();
+    git(&tree, &["add", "change.txt"]);
+    git(&tree, &["commit", "-q", "-m", "change"]);
+    let (is_error, text) = w.tool(worker_identity(w), "review_start", &json!({}));
+    assert!(!is_error, "{text}");
+    part_named(w, "sand-review")
+}
+
+fn reviewer(w: &World, part: &Task) -> Identity {
+    Identity {
+        session: Some(w.store.session_of(part.id).unwrap().unwrap().id),
+        role: Some(Role::Worker),
+    }
+}
+
+fn json_of(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
+}
+
+fn finding(summary: &str) -> Value {
+    json!({ "file": "change.txt", "line": 1, "severity": "important", "summary": summary, "scenario": "it breaks" })
+}
+
+fn node_done(node: &str, extra: &Value) -> Value {
+    let mut args = json!({ "node": node });
+    args.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    args
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one level-1 review walked from start to finish"
+)]
+fn a_level_one_review_runs_its_nodes_delivers_rechecks_the_fix_and_finishes() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 1);
+    let me = reviewer(&w, &part);
+    let names = w.tool_names(me.clone());
+    assert!(
+        names.contains(&"review_next".to_owned()) && !names.contains(&"review_resolve".to_owned()),
+        "{names:?}"
+    );
+    let lead_names = w.tool_names(worker_identity(&w));
+    assert!(
+        !lead_names.contains(&"review_next".to_owned()),
+        "{lead_names:?}"
+    );
+
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    let nodes: Vec<&str> = next["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        nodes,
+        ["correctness", "tests", "rules"],
+        "level 1 runs three reviewers"
+    );
+    let prompt = next["nodes"][0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains("demo-sand-review") && prompt.contains("Answer with a JSON array"),
+        "{prompt}"
+    );
+    assert_eq!(
+        next["nodes"][0]["model"], "sonnet",
+        "the node's model at level 1"
+    );
+
+    let (is_error, text) = w.tool(me.clone(), "review_deliver", &json!({}));
+    assert!(is_error && text.contains("review-nodes-open"), "{text}");
+    for args in [
+        node_done(
+            "correctness",
+            &json!({ "findings": [finding("off by one")] }),
+        ),
+        node_done("tests", &json!({ "findings": [] })),
+        node_done("rules", &json!({ "failed": "the subagent timed out" })),
+    ] {
+        let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
+        assert!(!is_error, "{text}");
+    }
+    let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(
+        json_of(&text)["next"]
+            .as_str()
+            .unwrap()
+            .contains("review_deliver"),
+        "{text}"
+    );
+    let (is_error, text) = w.tool(me.clone(), "review_deliver", &json!({}));
+    assert!(!is_error, "{text}");
+    let delivered = json_of(&text);
+    assert_eq!(
+        delivered["tell"], "demo-sand",
+        "the implementing lead is told"
+    );
+    let id = delivered["findings"][0]["id"].as_i64().unwrap();
+    assert_eq!(delivered["findings"].as_array().unwrap().len(), 1, "{text}");
+
+    let lead = worker_identity(&w);
+    let (is_error, text) = w.tool(lead.clone(), "review_resolve", &json!({ "items": [] }));
+    assert!(is_error && text.contains("missing"), "{text}");
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), "fixed").unwrap();
+    let fix =
+        json!({ "items": [{ "id": id, "action": "fixed", "note": "fixed in the next commit" }] });
+    let (is_error, text) = w.tool(lead.clone(), "review_resolve", &fix);
+    assert!(is_error && text.contains("review-dirty"), "{text}");
+    git(&tree, &["commit", "-q", "-am", "fix"]);
+    let (is_error, text) = w.tool(lead.clone(), "review_resolve", &fix);
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        json_of(&text)["tell"],
+        "demo-sand-review",
+        "the reviewer lead is told"
+    );
+    let checkout = w.dir.path().join("demo-sand-review");
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("change.txt")).unwrap(),
+        "fixed",
+        "the review worktree follows"
+    );
+
+    let (is_error, text) = w.tool(lead, "done", &json!({ "summary": "x" }));
+    assert!(is_error && text.contains("review-open"), "{text}");
+
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_verdict",
+        &json!({ "items": [{ "id": id, "dispute": "kept" }] }),
+    );
+    assert!(is_error && text.contains("give `fix`"), "{text}");
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_verdict",
+        &json!({ "items": [{ "id": id, "fix": "accepted" }] }),
+    );
+    assert!(
+        !is_error
+            && json_of(&text)["next"]
+                .as_str()
+                .unwrap()
+                .contains("review_finish"),
+        "{text}"
+    );
+    let (is_error, text) = w.tool(me, "review_finish", &json!({}));
+    assert!(!is_error && text.contains("1 fixed"), "{text}");
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.state, ReviewState::Done, "{review:?}");
+}
+
+#[test]
+fn a_level_two_dispute_the_reviewer_keeps_goes_to_the_user_and_their_answer_settles_it() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 2);
+    let me = reviewer(&w, &part);
+    let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
+    let nodes: Vec<String> = json_of(&text)["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["node"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        nodes.len(),
+        6,
+        "six reviewers before the verifier: {nodes:?}"
+    );
+    for node in &nodes {
+        let findings = if node == "design" {
+            json!([finding("wrong layer"), finding("not a bug")])
+        } else {
+            json!([])
+        };
+        let (is_error, text) = w.tool(
+            me.clone(),
+            "review_node_done",
+            &json!({ "node": node, "findings": findings }),
+        );
+        assert!(!is_error, "{text}");
+    }
+    let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
+    let verify = json_of(&text);
+    let items: Vec<i64> = verify["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["item"].as_i64().unwrap())
+        .collect();
+    assert_eq!(items.len(), 2, "one verifier per finding: {text}");
+    assert!(
+        verify["nodes"][0]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("wrong layer"),
+        "the verifier sees its finding"
+    );
+    for (item, verdict) in items.iter().zip(["confirmed", "rejected"]) {
+        let args = json!({ "node": "verify", "item": item, "verdict": verdict });
+        let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
+        assert!(!is_error, "{text}");
+    }
+    let (_, text) = w.tool(me.clone(), "review_deliver", &json!({}));
+    let delivered = json_of(&text);
+    assert_eq!(
+        delivered["findings"].as_array().unwrap().len(),
+        1,
+        "the rejected finding stays back: {text}"
+    );
+    let id = items[0];
+    let dispute = json!({ "items": [{ "id": id, "action": "disputed", "note": "the layer is right: docs/design.md 3.2" }] });
+    let (is_error, text) = w.tool(worker_identity(&w), "review_resolve", &dispute);
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_verdict",
+        &json!({ "items": [{ "id": id, "dispute": "kept" }] }),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        json_of(&text)["next"]
+            .as_str()
+            .unwrap()
+            .contains("headed `Dispute`"),
+        "{text}"
+    );
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.state, ReviewState::Asking, "{review:?}");
+
+    let question = format!("Finding {id}: wrong layer. The lead says the layer is right. Keep it?");
+    let asked = json!({ "questions": [{ "question": question, "header": "Dispute", "options": [
+        { "label": "Keep the finding" }, { "label": "Drop it" }
+    ] }] });
+    let lead_session = std::mem::replace(&mut w.session, me.session.clone().unwrap());
+    let mut answers = serde_json::Map::new();
+    answers.insert(question, json!("Drop it"));
+    w.hook(
+        HookEvent::PostToolUse,
+        &json!({ "tool_name": "AskUserQuestion", "tool_input": asked, "tool_response": { "answers": answers } }),
+    );
+    w.session = lead_session;
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(
+        review.state,
+        ReviewState::Rechecking,
+        "the answer settles the dispute: {review:?}"
+    );
+    let (is_error, text) = w.tool(me, "review_finish", &json!({}));
+    assert!(
+        !is_error && text.contains("1 dropped by the user"),
+        "{text}"
+    );
+}
+
+#[test]
+fn closing_the_reviewer_lead_s_part_cancels_its_review() {
+    let mut w = world(REVIEWS, false);
+    let _part = started_review(&mut w, 1);
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "part_drop",
+        &json!({ "name": "review" }),
+    );
+    assert!(!is_error, "{text}");
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.state, ReviewState::Cancelled, "{review:?}");
 }

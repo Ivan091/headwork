@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use headwork_core::config::REVIEW_KIND;
 use headwork_core::review::{
-    DisputeRule, Each, FindingText, Flow, Level, ReviewTarget, ReviewTrigger, Unsettled, compose,
+    DisputeRule, Each, Flow, Level, ReviewTarget, ReviewTrigger, Unsettled,
 };
 use headwork_core::{PermissionMode, ReviewState, Slug, TaskRequest, TaskShape};
 use headwork_store::{ReviewRow, Store, Task};
@@ -32,9 +32,10 @@ const BASE_CANDIDATES: &[&str] = &[
 /// left under the hook's context limit.
 pub const LEAD_NEXT: &str = "The reviewer lead runs now as your part `review`; you may stop and wait for its findings. \
      Fix or dispute every finding it sends: a dispute gives its reason (at level 2 and 3, evidence: a test, a code \
-     reference, a doc line). Commit the fixes, then answer the reviewer lead with `SendMessage`, each finding by its \
-     number, fixed (with the commit) or disputed (with the reason); never argue outside that answer. When the review \
-     finishes, tell the user its outcome in one line.";
+     reference, a doc line). Commit the fixes, then record every answer with `review_resolve` (each finding by its \
+     number, `fixed` with the commit or `disputed` with the reason) and tell the reviewer lead with `SendMessage`; never \
+     argue outside that answer. Your `done` waits until the review finishes; then tell the user its outcome in one \
+     line.";
 
 /// A review that started.
 #[derive(Debug, Clone, Serialize)]
@@ -193,12 +194,12 @@ fn spawn_reviewer(
     result
 }
 
-/// The reviewer lead's brief: the review, the level's rules, the target, and every node at the level with the exact
-/// prompt its subagent gets.
+/// The reviewer lead's brief: the review, the level's rules, the target, and the nodes at the level; `review_next`
+/// hands out their prompts.
 ///
 /// # Errors
 ///
-/// Fails when a node's prompt file cannot be read.
+/// Never fails today; a flow whose overview cannot be written would.
 pub fn brief(
     loaded: &LoadedFlow,
     review: &ReviewRow,
@@ -207,7 +208,6 @@ pub fn brief(
 ) -> Result<String> {
     let flow = &loaded.flow;
     let level = review.level;
-    let spec = flow.level(level);
     let mut text = String::new();
     let _ = writeln!(
         text,
@@ -236,10 +236,8 @@ pub fn brief(
     );
     let _ = writeln!(
         text,
-        "\n## The nodes\n\nA node starts once every node it waits for is done; start every ready node at once, each as \
-         its own fresh `general-purpose` `Agent` subagent on the model it names, with exactly the prompt below. A node \
-         that runs once per finding gets one subagent per finding its inputs returned, with that finding filled into \
-         the placeholders."
+        "\n## The nodes\n\nheadwork hands them out with `review_next`, each with its model and exact prompt, as their \
+         inputs finish:"
     );
     for node in flow.nodes_at(level) {
         let inputs: Vec<String> = flow
@@ -250,33 +248,15 @@ pub fn brief(
         let model = node
             .model_at(level)
             .map_or_else(|| "?".to_owned(), |model| model.to_string());
-        let _ = write!(text, "\n### `{}`, model {model}", node.id);
+        let _ = write!(text, "\n- `{}`, model {model}", node.id);
         if !inputs.is_empty() {
-            let _ = write!(text, ", waits for {}", inputs.join(", "));
+            let _ = write!(text, ", after {}", inputs.join(", "));
         }
         if node.each == Some(Each::Finding) {
             let _ = write!(text, ", once per finding of its inputs");
         }
-        let prompt = loaded.prompt(node).map_err(anyhow::Error::msg)?;
-        let placeholder = node.each.map(|_| FindingText {
-            id: 0,
-            node: "<the node that reported it>".to_owned(),
-            place: Some("<file:line>".to_owned()),
-            severity: "<severity>".to_owned(),
-            summary: "<summary>".to_owned(),
-            scenario: "<scenario>".to_owned(),
-        });
-        let composed = compose(
-            node,
-            &prompt,
-            level,
-            spec,
-            target,
-            &review.focus,
-            placeholder.as_ref(),
-        );
-        let _ = writeln!(text, "\n\n~~~~text\n{composed}~~~~");
     }
+    let _ = writeln!(text, "\n\nStart with `review_next`.");
     Ok(text)
 }
 
