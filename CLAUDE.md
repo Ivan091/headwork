@@ -88,7 +88,8 @@ Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`
 ## Commands
 
 ```bash
-bash scripts/check.sh                      # the full gate; must pass before every pull request
+bash scripts/check.sh --quick              # fmt, clippy, line length, attribution, comment ban; before every push
+bash scripts/check.sh                      # the full gate, as CI runs it (adds tests and docs)
 cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks (parts indented under their lead), sessions (pane or tab), states, asks
 cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
@@ -336,10 +337,12 @@ so every worktree of a clone uses it). `scripts/check.sh` fails when a commit si
 `scripts/test-attribution.sh` tests the patterns. History is not rewritten.
 
 Never commit to `master`. Each change goes on a kebab-case branch, with single-line Conventional Commits and no AI
-attribution, through a pull request that passes `scripts/check.sh`, then is merged. The local gate stays required;
-GitHub Actions runs it again on Windows and macOS for every pull request (`.github/workflows/gate.yml`, read-only), and
-every push to `master` is gated, built and published as release `v0.1.<run>` with both binaries and `SHA256SUMS`
-(`.github/workflows/release.yml`, `docs/autoupdate.md`). In CI `check.sh` skips the comment ban, whose checker lives in
-the user config. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
+attribution, through a pull request, then is merged. Before pushing, run `bash scripts/check.sh --quick` and
+`cargo test` for the crates you changed. The required gate is GitHub Actions: `.github/workflows/gate.yml` runs the full
+`scripts/check.sh` on Windows and macOS for every pull request (read-only), and a ruleset on `master` refuses a merge
+until both `gate` jobs pass. Before merging, wait for them with `gh pr checks <url> --watch --fail-fast`; on a failure,
+read `gh run view <id> --log-failed`, fix, push and wait again. Every push to `master` is gated, built and published
+as release `v0.1.<run>` with both binaries and `SHA256SUMS` (`.github/workflows/release.yml`, `docs/autoupdate.md`). In
+CI `check.sh` skips the comment ban, whose checker lives in the user config, so `--quick` runs it locally. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
 and commits use the GitHub noreply address. Use the global `contribute` and `ship` skills; this repository has no ship
 script of its own yet.

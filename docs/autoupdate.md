@@ -30,16 +30,17 @@ What goes wrong with that:
   the guard off in every session.
 - The first open by the new build migrates the live store with no backup; the user makes those by hand
   (`~/.headwork/state.db.pre-0013`).
-- There is no CI: the local gate in the worker's worktree is the only check, and nothing checks master after two
-  merges meet.
+- There was no CI: the local gate in the worker's worktree was the only check, and nothing checked master after two
+  merges met. Since step 4 `gate.yml` gates every pull request on Windows and macOS, and since 2026-11-22 that gate is
+  required before a merge (`docs/decisions.md`).
 
 ## What stays as it is
 
 Hot reload is the install mechanism and is not changed: `install::install` (rename aside, rename in, check, clean old
 copies), the MCP relay, the exit hand-off, build records and the `builds` doctor check. Installing over the binary that
 runs the update is safe, as for any install. The built-in rules are compiled into the binary (`include_str!` in
-`ops/rules.rs`; this machine has no `~/.headwork/rules`), so they arrive with the release. The local gate stays the
-pull request gate.
+`ops/rules.rs`; this machine has no `~/.headwork/rules`), so they arrive with the release. The pull request gate is
+`gate.yml` on GitHub; locally a worker runs `scripts/check.sh --quick` and the tests of what it changed.
 
 ## Producing releases: GitHub Actions
 
