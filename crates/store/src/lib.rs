@@ -47,6 +47,7 @@ pub use records::{
 pub use reports::{AddedRule, EVENT_REPORT, NewPr, RecordedPr};
 pub use reviews::{
     EVENT_REVIEW_REQUESTED, FindingCounts, FindingRow, NewFinding, ReviewError, ReviewRow,
+    ReviewSummary,
 };
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};

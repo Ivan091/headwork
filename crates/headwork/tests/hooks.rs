@@ -3888,3 +3888,38 @@ fn the_orchestrators_board_and_status_tools_start_with_the_digest_and_a_workers_
     let (is_error, text) = w.tool(worker, "board", &json!({}));
     assert!(!is_error && !text.contains("Needs you"), "{text}");
 }
+
+#[test]
+fn board_and_status_show_a_running_review_under_its_lead() {
+    let mut w = world(REVIEWS, false);
+    let _part = started_review(&mut w, 1);
+    let summary = w.store.review_summary(w.task.id).unwrap().unwrap();
+    assert_eq!(
+        summary.to_string(),
+        "review 1 code, level 1, round 1: running, 0 node(s) done, 0 running, 0 finding(s)",
+        "the board line"
+    );
+    let board = w.store.board(false).unwrap();
+    let lead = board
+        .tasks
+        .iter()
+        .find(|entry| entry.task.id == w.task.id)
+        .unwrap();
+    assert_eq!(
+        lead.review.as_ref().map(|review| review.id),
+        Some(summary.id),
+        "on the lead's board entry"
+    );
+    let part = board
+        .tasks
+        .iter()
+        .find(|entry| entry.task.kind == "review")
+        .unwrap();
+    assert!(part.review.is_none(), "not repeated on the part");
+    let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
+    assert!(
+        lines[0].line.ends_with(", in review (level 1)"),
+        "{}",
+        lines[0].line
+    );
+}

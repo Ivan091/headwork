@@ -128,6 +128,10 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             }
             Some(_) | None => line,
         };
+        let line = match &top.review {
+            Some(review) => format!("{line}, in review (level {})", review.level),
+            None => line,
+        };
         let line = format!("{line}{}", flag_tags(&top.task));
         out.push(StatusLine {
             task,

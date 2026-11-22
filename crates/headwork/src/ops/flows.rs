@@ -57,6 +57,31 @@ pub const BUILTIN_FILES: &[(&str, &str)] = &[
         "code/verify.md",
         include_str!("../../../../flows/code/verify.md"),
     ),
+    ("plan.toml", include_str!("../../../../flows/plan.toml")),
+    (
+        "plan/feasibility.md",
+        include_str!("../../../../flows/plan/feasibility.md"),
+    ),
+    (
+        "plan/consistency.md",
+        include_str!("../../../../flows/plan/consistency.md"),
+    ),
+    (
+        "plan/open-points.md",
+        include_str!("../../../../flows/plan/open-points.md"),
+    ),
+    (
+        "plan/effort.md",
+        include_str!("../../../../flows/plan/effort.md"),
+    ),
+    (
+        "plan/challenge-scope.md",
+        include_str!("../../../../flows/plan/challenge-scope.md"),
+    ),
+    (
+        "plan/verify.md",
+        include_str!("../../../../flows/plan/verify.md"),
+    ),
 ];
 
 /// The folder of a home's own flows.
