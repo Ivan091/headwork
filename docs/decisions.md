@@ -1234,3 +1234,6 @@ and the reason.
   detached `headwork update` a close starts stayed in the session's job and died with it. The job now sets
   `limit_breakaway_ok`; only a program started with `CREATE_BREAKAWAY_FROM_JOB` (`spawn_detached`) leaves, every
   other descendant still ends with the session. Sessions started before this build keep the old job until resumed.
+
+- 2026-11-22, a lead reads "in its own workspace": the CLI board derives it from the task's shape (lead) and the stored
+  `host_workspace` instead of a new `host_place` value, so no migration; plain tasks keep "in its own pane".
