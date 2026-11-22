@@ -1213,3 +1213,6 @@ and the reason.
   needs none, and since it only forwards, a new `headwork` never needs a new launcher. `conhost --headless` stays
   out (2026-11-20). `doctor` warns (check `tick-task`) when the installed task still runs `headwork` directly.
   `tick --uninstall` leaves the launcher file; it runs nothing on its own.
+- 2026-11-22 `git branch -a` is a listing, `git tag -a` a write. The two subcommands shared one flag table, so `-a`
+  (and `-s`) counted as a write for both, and a read-only `git -C <main> branch -a` drew a `worker-git-outside`
+  would-deny (shadow review of 2026-11-22). Annotate and sign now count only for `tag`; for `branch`, `-a` lists.

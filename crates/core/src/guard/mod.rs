@@ -80,7 +80,7 @@ pub const GIT_WRITES: &[&str] = &[
     "init",
 ];
 
-/// `git branch` and `git tag` options that delete, rename, copy, force or annotate.
+/// `git branch` and `git tag` options that delete, rename, copy or force.
 const REF_WRITE_FLAGS: &[&str] = &[
     "-d",
     "-D",
@@ -93,12 +93,11 @@ const REF_WRITE_FLAGS: &[&str] = &[
     "--copy",
     "-f",
     "--force",
-    "-a",
-    "--annotate",
-    "-s",
-    "--sign",
     "--message",
 ];
+
+/// `git tag` options that annotate or sign, so make a tag; for `git branch`, `-a` lists every branch instead.
+const TAG_WRITE_FLAGS: &[&str] = &["-a", "--annotate", "-s", "--sign"];
 
 /// `git branch` and `git tag` options that make a positional argument a filter of a listing.
 const REF_LIST_FLAGS: &[&str] = &[
@@ -636,8 +635,10 @@ fn is_git_write(sub: &str, args: &[String]) -> bool {
     let first = args.first().map(String::as_str);
     match sub {
         "branch" | "tag" => {
+            let listing = has(REF_LIST_FLAGS) || (sub == "branch" && has(&["-a"]));
             has(REF_WRITE_FLAGS)
-                || (args.iter().any(|arg| !arg.starts_with('-')) && !has(REF_LIST_FLAGS))
+                || (sub == "tag" && has(TAG_WRITE_FLAGS))
+                || (args.iter().any(|arg| !arg.starts_with('-')) && !listing)
         }
         "worktree" => first.is_some_and(|action| WORKTREE_WRITES.contains(&action)),
         "stash" => !matches!(first, Some("list" | "show")),
