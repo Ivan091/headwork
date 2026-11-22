@@ -21,6 +21,7 @@ struct State {
     states: Vec<SurfaceState>,
     calls: Vec<String>,
     screens: Vec<(SurfaceId, String)>,
+    unreadable: Vec<SurfaceId>,
     stray_splits: bool,
 }
 
@@ -174,6 +175,11 @@ impl FakeHost {
         let mut state = self.state.borrow_mut();
         state.screens.retain(|(s, _)| s != surface);
         state.screens.push((surface.clone(), text.to_owned()));
+    }
+
+    /// Makes reading this surface's screen fail from now on, as a host that errors on one pane does.
+    pub fn fail_screen(&self, surface: &SurfaceId) {
+        self.state.borrow_mut().unreadable.push(surface.clone());
     }
 
     /// Marks a pane's program as exited, as if it ended by itself.
@@ -429,6 +435,12 @@ impl TerminalHost for FakeHost {
 
     fn read_screen(&self, surface: &SurfaceId, lines: u32) -> Result<String, HostError> {
         self.record(format!("read-screen {surface} {lines}"));
+        if self.state.borrow().unreadable.contains(surface) {
+            return Err(HostError::Failed {
+                command: format!("read-screen {surface}"),
+                message: "the pane does not answer".to_owned(),
+            });
+        }
         Ok(self
             .state
             .borrow()

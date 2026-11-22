@@ -1154,6 +1154,55 @@ fn a_session_with_an_unchanging_screen_is_stuck_on_the_second_look() {
 }
 
 #[test]
+fn a_pane_that_cannot_be_read_does_not_stop_the_rest_of_the_tick() {
+    let mut w = world();
+    w.limits.stuck_after = 0;
+    let (bad, bad_session) = working(&mut w, "sand");
+    let (good, good_session) = working(&mut w, "snow");
+    w.host.fail_screen(&trust_surface(&w, &bad));
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report),
+        [(FindingId::TickError, Status::Standing)],
+        "{:?}",
+        report.lines
+    );
+    assert_eq!(report.lines[0].task.as_deref(), Some(bad.name.to_string().as_str()));
+    assert!(
+        w.store.screen_sample(&good_session).unwrap().is_some(),
+        "the next pane was still looked at"
+    );
+    assert!(
+        w.store.screen_sample(&bad_session).unwrap().is_none(),
+        "the unreadable one was not"
+    );
+    assert!(
+        w.store.last_tick_age_s().unwrap().is_some(),
+        "the tick was recorded"
+    );
+    assert_eq!(state(&w, &good), TaskState::Working, "still working");
+}
+
+#[test]
+fn a_stage_that_fails_is_recorded_and_the_later_stages_still_run() {
+    let mut w = world();
+    let task = spawn_task(&mut w, "sand");
+    w.host.fail_screen(&trust_surface(&w, &task));
+    let report = run_tick(&mut w);
+    assert!(
+        rules(&report)
+            .iter()
+            .any(|(rule, _)| *rule == FindingId::TickError),
+        "{:?}",
+        report.lines
+    );
+    assert!(
+        w.store.last_tick_age_s().unwrap().is_some(),
+        "the tick was recorded"
+    );
+}
+
+#[test]
 fn a_session_that_moved_recently_is_not_stuck() {
     let mut w = world();
     working(&mut w, "sand");

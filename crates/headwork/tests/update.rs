@@ -423,7 +423,7 @@ fn a_hash_mismatch_latches_the_release_until_a_newer_one() {
         1,
         "the failure is logged"
     );
-    let (warn, detail) = doctor_summary(&rig.home, &rig.config);
+    let (warn, detail) = doctor_summary(&rig.home, &rig.config, true);
     assert!(warn, "doctor warns: {detail}");
     assert!(detail.contains("hash"), "{detail}");
     let downloads = rig.releases.downloads().len();
@@ -448,7 +448,7 @@ fn a_hash_mismatch_latches_the_release_until_a_newer_one() {
     let newer = rig.run(&clock, plain());
     assert!(matches!(newer, UpdateReport::Installed { .. }), "{newer:?}");
     assert!(
-        !doctor_summary(&rig.home, &rig.config).0,
+        !doctor_summary(&rig.home, &rig.config, true).0,
         "the warning clears"
     );
 }
@@ -477,7 +477,7 @@ fn a_transient_failure_backs_off_before_asking_again() {
         "a first transient failure is quiet"
     );
     assert!(
-        !doctor_summary(&rig.home, &rig.config).0,
+        !doctor_summary(&rig.home, &rig.config, true).0,
         "and no doctor warning"
     );
     let requests = rig.releases.requests();
@@ -522,7 +522,7 @@ fn transient_failures_are_reported_from_the_third() {
         "only the third is logged"
     );
     assert!(
-        doctor_summary(&rig.home, &rig.config).0,
+        doctor_summary(&rig.home, &rig.config, true).0,
         "doctor warns from the third"
     );
 }
@@ -1280,4 +1280,14 @@ fn a_trigger_starts_a_detached_update_and_logs_it_even_when_the_start_fails() {
     assert_eq!(events[0]["note"], "inside the caller's job", "note");
     assert_eq!(events[1]["by"], "orchestrator", "by");
     assert_eq!(events[1]["error"], "no such program", "error");
+}
+
+#[test]
+fn doctor_says_the_tick_polls_only_when_a_tick_is_running() {
+    let rig = Rig::new("0.1.5");
+    let (_, scheduled) = doctor_summary(&rig.home, &rig.config, true);
+    assert!(scheduled.contains("polled every"), "{scheduled}");
+    let (_, unscheduled) = doctor_summary(&rig.home, &rig.config, false);
+    assert!(!unscheduled.contains("polled every"), "{unscheduled}");
+    assert!(unscheduled.contains("only the close of a task"), "{unscheduled}");
 }

@@ -28,6 +28,7 @@ pub mod shadow;
 pub mod spawn;
 pub mod status;
 pub mod tick;
+pub mod tick_lock;
 pub mod title;
 pub mod trust;
 pub mod update;

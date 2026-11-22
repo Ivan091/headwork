@@ -1792,16 +1792,18 @@ fn forward_steps(
     })
 }
 
-/// What `doctor` says about updates: on or off, this build, the newest release seen and the last result; a warning
+/// What `doctor` says about updates (`tick_scheduled`: a tick ran recently, so the poll runs): on or off, this build, the newest release seen and the last result; a warning
 /// for a latched failure or a transient one from its third attempt on.
 #[must_use]
-pub fn doctor_summary(home: &Home, config: &Config) -> (bool, String) {
+pub fn doctor_summary(home: &Home, config: &Config, tick_scheduled: bool) -> (bool, String) {
     let state = UpdateState::load(home);
     let mut parts = vec![if config.update.enabled {
-        format!(
-            "on for project `{}`, polled every {} min by the tick",
-            config.update.project, config.update.poll_min
-        )
+        let how = if tick_scheduled {
+            format!("polled every {} min by the tick", config.update.poll_min)
+        } else {
+            "no tick is running, so only the close of a task or `headwork update` starts one".to_owned()
+        };
+        format!("on for project `{}`, {how}", config.update.project)
     } else {
         "off ([update] enabled = false)".to_owned()
     }];
