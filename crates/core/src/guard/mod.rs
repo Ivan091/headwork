@@ -36,7 +36,8 @@ pub const BUILD_TOOLS: &[&str] = &[
 const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
 
 /// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user. A
-/// worker may run only `close` of its own task and `reap --dry-run` among them.
+/// worker may run only `close` of its own task and `reap --dry-run` among them, and in a project with `install = true`
+/// also `install` and a plain `update`.
 pub const ADMIN_COMMANDS: &[&str] = &[
     "spawn",
     "queue",
@@ -53,6 +54,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "finish",
     "exited",
     "install",
+    "update",
     "reap",
 ];
 
@@ -235,7 +237,7 @@ pub struct Scope {
     pub allowed_user_only: Vec<String>,
     /// A worker's project main checkout, which it may fast-forward with `git pull --ff-only` after a merge.
     pub main_checkout: Option<GuardPath>,
-    /// A worker may run `headwork install`: its project is headwork itself.
+    /// A worker may run `headwork install` and a plain `headwork update`: its project is headwork itself.
     pub may_install: bool,
     /// Notes repositories the orchestrator may commit and push in.
     pub orchestrator_repos: Vec<GuardPath>,
@@ -488,6 +490,9 @@ fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
     if sub == "install" && scope.may_install {
         return None;
     }
+    if sub == "update" && scope.may_install && plain_update(args) {
+        return None;
+    }
     if sub == "reap" && args.iter().any(|arg| arg == "--dry-run") {
         return None;
     }
@@ -498,6 +503,28 @@ fn check_admin(scope: &Scope, command: &SimpleCommand) -> Option<Decision> {
              a worker only closes itself, with `headwork close <its own name>`"
         ),
     ))
+}
+
+/// Whether `headwork update` runs with only `--dry-run`, `--json` and `--wait <minutes>`: what a worker of a project
+/// that installs may run. `--to` (a chosen release, a rollback), `--dir` and `--after` stay the orchestrator's and the
+/// user's.
+fn plain_update(args: &[String]) -> bool {
+    let Some(at) = args.iter().position(|arg| arg == "update") else {
+        return false;
+    };
+    let mut rest = args.iter().skip(at + 1).map(String::as_str);
+    while let Some(arg) = rest.next() {
+        let minutes = match arg {
+            "--dry-run" | "--json" => continue,
+            "--wait" => rest.next(),
+            other => other.strip_prefix("--wait="),
+        };
+        if !minutes.is_some_and(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// The arguments a command passes to the headwork CLI: those of `headwork` under any path or extension, or those

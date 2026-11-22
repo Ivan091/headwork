@@ -122,6 +122,87 @@ fn only_a_project_that_installs_lets_its_workers_install() {
 }
 
 #[test]
+fn a_project_that_installs_lets_its_workers_run_a_plain_update_only() {
+    let table: &[(&str, Option<RuleId>, Option<RuleId>)] = &[
+        ("headwork update", Some(RuleId::WorkerAdmin), None),
+        ("headwork update --dry-run", Some(RuleId::WorkerAdmin), None),
+        ("headwork update --json", Some(RuleId::WorkerAdmin), None),
+        ("headwork update --wait 30", Some(RuleId::WorkerAdmin), None),
+        (
+            "headwork update --wait=30 --json",
+            Some(RuleId::WorkerAdmin),
+            None,
+        ),
+        (
+            "headwork.exe update --dry-run --wait 5 --json",
+            Some(RuleId::WorkerAdmin),
+            None,
+        ),
+        (
+            "cargo run -p headwork -- update --dry-run",
+            Some(RuleId::WorkerAdmin),
+            None,
+        ),
+        ("headwork update --help", None, None),
+        (
+            "headwork update --to v0.1.7",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --to=v0.1.7",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --dry-run --to v0.1.7",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --wait",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --wait --to v0.1.7",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --dir /tmp/bin",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update --after x",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+        (
+            "headwork update v0.1.7",
+            Some(RuleId::WorkerAdmin),
+            Some(RuleId::WorkerAdmin),
+        ),
+    ];
+    let mut scope = worker("sand");
+    for (command, without, with) in table {
+        scope.may_install = false;
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *without,
+            "{command} without install"
+        );
+        scope.may_install = true;
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *with,
+            "{command} with install"
+        );
+    }
+}
+
+#[test]
 fn the_orchestrator_commits_in_its_notes_repository_but_not_in_projects_inside_it() {
     let mut scope = orchestrator();
     scope.cwd = "S:/Code".to_owned();
