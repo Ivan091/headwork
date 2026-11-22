@@ -199,7 +199,12 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 The orchestrator (started with `headwork orchestrator`) is parked and resumed too: park asks it for a recap and leaves
 it running (the restart ends it), and resume reopens it in an `orchestrator` workspace in the folder it ran in, with
 the same conversation and its recorded name, at logon too and after a crash. An orchestrator that still runs is left
-alone. See `docs/decisions.md` (2026-11-14, the root parks and resumes).
+alone. An orchestrator conversation the store knows that runs outside headwork (wmux reopens Claude panes after a reboot
+with a plain `claude --resume <id>`, so the store saw it end) is found by its session id in the host's surface states:
+park records it with a mechanical recap (it has no `recap` tool), and resume, after a park or a crash, closes that pane
+and reopens the conversation under headwork. A `headwork resume` started inside a pane it is about to close (such an
+orchestrator running it through Bash) goes on as a detached process. See `docs/decisions.md` (2026-11-14, the root
+parks and resumes; 2026-11-21, an orchestrator running outside headwork).
 
 ### Migration on this machine (step 0)
 

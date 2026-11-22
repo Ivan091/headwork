@@ -478,12 +478,9 @@ fn begin_orchestrator(
     env: &Env<'_>,
     park: i64,
 ) -> Result<Option<OrchestratorTarget>> {
-    let Some(session) = store.live_orchestrator_session()? else {
-        return Ok(None);
+    let Some(session) = store.live_orchestrator_session()?.filter(session_alive) else {
+        return begin_unmanaged_orchestrator(store, env, park);
     };
-    if !session_alive(&session) {
-        return Ok(None);
-    }
     store.set_park_orchestrator(park, &session.id, env.actor)?;
     let problem = orchestrator_surface(env, &session).map_or_else(
         || Some("its pane is unknown, so it was not asked for a recap".to_owned()),
@@ -500,6 +497,62 @@ fn begin_orchestrator(
         session,
         problem,
     }))
+}
+
+/// Records an orchestrator that runs outside headwork on the park, so the resume reopens its conversation under headwork.
+/// It has no headwork tools, so it is not asked for a recap and gets a mechanical one.
+fn begin_unmanaged_orchestrator(
+    store: &mut Store,
+    env: &Env<'_>,
+    park: i64,
+) -> Result<Option<OrchestratorTarget>> {
+    let Some((session, surface)) = unmanaged_orchestrator(store, env)? else {
+        return Ok(None);
+    };
+    store.set_park_orchestrator(park, &session.id, env.actor)?;
+    store.append_event(
+        env.actor,
+        None,
+        Some(&session.id),
+        "orchestrator-unmanaged",
+        &serde_json::json!({ "surface": surface, "during": "park" }),
+    )?;
+    Ok(Some(OrchestratorTarget {
+        session,
+        expects_recap: false,
+        problem: Some(UNMANAGED_PROBLEM.to_owned()),
+    }))
+}
+
+/// Why an orchestrator found running outside headwork leaves no recap of its own.
+const UNMANAGED_PROBLEM: &str = "it runs outside headwork (restored by the host or started without `headwork \
+    orchestrator`), so it has no `recap` tool; the resume reopens its conversation under headwork";
+
+/// An orchestrator session the store knows that runs outside headwork: the host sees its Claude session in a surface,
+/// but the store does not count it as running (the host reopened it after a restart with a plain `claude --resume`,
+/// or it was started without `headwork orchestrator`). A host that does not answer counts as showing none.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub(super) fn unmanaged_orchestrator(
+    store: &Store,
+    env: &Env<'_>,
+) -> Result<Option<(SessionRow, SurfaceId)>> {
+    let Ok(states) = env.host.surface_states() else {
+        return Ok(None);
+    };
+    for state in states {
+        let Some(id) = state.session_id else {
+            continue;
+        };
+        if let Some(session) = store.orchestrator_session(&id)?
+            && !session_alive(&session)
+        {
+            return Ok(Some((session, state.surface)));
+        }
+    }
+    Ok(None)
 }
 
 /// The surface the orchestrator runs in: where headwork placed it, else where the host sees its Claude session.
@@ -529,6 +582,8 @@ fn finish_orchestrator(
     } else {
         let reason = if orchestrator.expects_recap {
             "the orchestrator wrote no recap before the deadline"
+        } else if orchestrator.problem.as_deref() == Some(UNMANAGED_PROBLEM) {
+            "the orchestrator ran outside headwork, so it could not write a recap; its conversation holds where it stood"
         } else {
             "the orchestrator could not be asked for a recap"
         };
