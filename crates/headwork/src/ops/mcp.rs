@@ -105,6 +105,33 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "usage",
+        description: concat!(
+            "Tokens spent by every Claude session, by type (input, cache writes, cache reads, output), grouped by task, ",
+            "project, kind, model, effort, role, agent, folder, day or session. Reads the transcripts changed since the ",
+            "last read first.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "by": {
+                        "type": "string",
+                        "enum": ["task", "project", "kind", "model", "effort", "role", "agent", "folder", "day", "session"],
+                        "description": "The grouping; task by default."
+                    },
+                    "since": { "type": "string", "description": "A span back from now (24h, 7d), a date or an RFC 3339 time." },
+                    "task": { "type": "string", "description": "Only this task and its parts, as <project>-<slug>." },
+                    "unmanaged": {
+                        "type": "boolean",
+                        "description": "Break sessions headwork did not start down instead of one unmanaged line."
+                    }
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "inbox",
         description: "Everything waiting on the user, oldest first, each with the worker's name.",
         roles: BOTH,
@@ -691,6 +718,7 @@ impl<'a> Server<'a> {
             "board" => self.board(&session, role, args),
             "inbox" => self.inbox(&session, role),
             "status" => self.status(args),
+            "usage" => self.usage(args),
             "part_spawn" => {
                 let lead = self.own_task(&session)?;
                 self.part_spawn(&lead, args)
@@ -1025,6 +1053,21 @@ impl<'a> Server<'a> {
     fn status(&mut self, args: &Value) -> Result<String> {
         super::lost::reconcile(self.store, &self.env)?;
         to_text(&super::status::status(self.store, flag(args, "all"))?)
+    }
+
+    fn usage(&mut self, args: &Value) -> Result<String> {
+        let word = |key| args.get(key).and_then(Value::as_str).map(str::to_owned);
+        let options = super::usage::UsageOptions {
+            by: word("by").as_deref().unwrap_or("task").parse()?,
+            since: word("since"),
+            task: word("task"),
+            unmanaged: flag(args, "unmanaged"),
+        };
+        let files = super::usage::transcripts(self.env.home.claude_dir());
+        let ingested = super::usage::ingest(self.store, &files, false)?;
+        let mut report = super::usage::report(self.store, &options)?;
+        report.ingest = Some(ingested);
+        to_text(&report)
     }
 
     fn inbox(&self, session: &str, role: Role) -> Result<String> {

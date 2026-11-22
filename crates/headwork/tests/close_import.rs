@@ -1443,3 +1443,41 @@ fn close_leaves_programs_that_took_a_sessions_pids_over_alone() {
         .count();
     assert_eq!(reused, 2, "both pids are logged");
 }
+
+#[test]
+fn close_logs_the_tasks_token_total() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    let folder = w.dir.path().join(".claude/projects/S--demo");
+    std::fs::create_dir_all(&folder).unwrap();
+    let transcript = folder.join(format!("{session}.jsonl"));
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2026-11-22T10:00:00.000Z",
+        "message": { "id": "m1", "model": "claude-haiku-5-5", "usage": { "input_tokens": 40, "output_tokens": 2 } }
+    });
+    std::fs::write(&transcript, format!("{line}\n")).unwrap();
+    headwork::ops::usage::read_transcript(&mut w.store, &transcript).unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert_eq!(
+        report.usage.map(|usage| usage.tokens.total()),
+        Some(42),
+        "in the report"
+    );
+    let events = w
+        .store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 100,
+        })
+        .unwrap();
+    let total = events
+        .iter()
+        .find(|event| event.kind == "usage-total")
+        .unwrap();
+    assert_eq!(total.data["total"], 42, "{:?}", total.data);
+    assert_eq!(total.data["input"], 40, "{:?}", total.data);
+}

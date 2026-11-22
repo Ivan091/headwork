@@ -30,7 +30,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, inbox, spawn, drop, close, answer, queue, clean, reap, update,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update,
 rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -97,7 +97,9 @@ Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`
 0007); see "Panes" below.
 Token usage (`docs/usage.md`) is read from Claude Code's transcripts by `ops/usage.rs` (pure parsing in
 `core/src/usage.rs`, rows in migration 0018): one row per API response keyed by its id, tagged with the session's task
-and role when written, sessions headwork did not start as `unmanaged`.
+and role when written, sessions headwork did not start as `unmanaged`. The `Stop` and `SessionEnd` hooks and the tick's
+last stage read new lines; `board` and `status` show each task's tokens, a close logs `usage-total`, and the
+orchestrator has a `usage` tool.
 
 ## Commands
 

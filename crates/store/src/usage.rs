@@ -4,6 +4,8 @@
 //! The response id is the key, so a reread, a crash halfway or copies of one response change nothing. A row's task and
 //! role are fixed when it is written, from the session row, so a later close or rename does not move old numbers.
 
+use std::collections::BTreeMap;
+
 use headwork_core::usage::{Tokens, UsageLine, usage_role};
 use headwork_core::{Role, UsageGroup, UsageRole};
 use rusqlite::{Transaction, params, params_from_iter};
@@ -84,6 +86,27 @@ pub struct UsageTotal {
     /// The numbers.
     #[serde(flatten)]
     pub tokens: Tokens,
+}
+
+/// Every task's token total, its own and with its parts'.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskTokens {
+    own: BTreeMap<TaskId, u64>,
+    tree: BTreeMap<TaskId, u64>,
+}
+
+impl TaskTokens {
+    /// The task's own tokens.
+    #[must_use]
+    pub fn own(&self, task: TaskId) -> u64 {
+        self.own.get(&task).copied().unwrap_or(0)
+    }
+
+    /// The task's tokens with its parts'.
+    #[must_use]
+    pub fn tree(&self, task: TaskId) -> u64 {
+        self.tree.get(&task).copied().unwrap_or(0)
+    }
 }
 
 fn stored(count: u64) -> i64 {
@@ -304,6 +327,41 @@ impl Store {
             tx.commit()?;
         }
         Ok(moved)
+    }
+
+    /// Every task's token total, across the per-response rows and the summed days.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn usage_task_tokens(&self) -> Result<TaskTokens, StoreError> {
+        let rows = self
+            .conn
+            .prepare(&format!(
+                "{ROWS}
+                 SELECT r.task_id, t.parent_id,
+                        SUM(r.input + r.cache_write_5m + r.cache_write_1h + r.cache_read + r.output)
+                 FROM r JOIN tasks t ON t.id = r.task_id
+                 GROUP BY r.task_id"
+            ))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut tokens = TaskTokens::default();
+        for (task, parent, sum) in rows {
+            let sum = read_count(sum)?;
+            tokens.own.insert(TaskId(task), sum);
+            for tree in [Some(task), parent].into_iter().flatten() {
+                let entry = tokens.tree.entry(TaskId(tree)).or_insert(0);
+                *entry = entry.saturating_add(sum);
+            }
+        }
+        Ok(tokens)
     }
 
     /// Token totals per group, across the per-response rows and the summed days alike, largest first.

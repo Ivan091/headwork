@@ -210,6 +210,48 @@ pub fn ingest(store: &mut Store, files: &[PathBuf], from_start: bool) -> Result<
     Ok(report)
 }
 
+/// Reads one session's transcript and its subagents', as the `Stop` and `SessionEnd` hooks do: the subagents' sit in
+/// `<transcript without .jsonl>/subagents`.
+///
+/// # Errors
+///
+/// Fails only when the re-tagging cannot write; unreadable files are listed in the report.
+pub fn read_transcript(store: &mut Store, transcript: &Path) -> Result<IngestReport> {
+    let mut files = vec![transcript.to_path_buf()];
+    subagent_files(&transcript.with_extension("").join("subagents"), &mut files);
+    ingest(store, &files, false)
+}
+
+/// The tokens a task and its parts spent.
+///
+/// # Errors
+///
+/// Fails when the store cannot be read.
+pub fn task_total(store: &Store, task: TaskId) -> Result<UsageTotal> {
+    let mut tasks = vec![task];
+    tasks.extend(store.parts(task)?);
+    let rows = store.usage_totals(&UsageQuery {
+        by: UsageGroup::Role,
+        since: None,
+        tasks: Some(tasks),
+        unmanaged: false,
+    })?;
+    Ok(sum(rows.iter()))
+}
+
+fn sum<'a>(rows: impl Iterator<Item = &'a UsageTotal>) -> UsageTotal {
+    let mut total = UsageTotal {
+        key: "total".to_owned(),
+        responses: 0,
+        tokens: Tokens::default(),
+    };
+    for row in rows {
+        total.responses = total.responses.saturating_add(row.responses);
+        total.tokens += row.tokens;
+    }
+    total
+}
+
 /// What `headwork usage` was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageOptions {
@@ -268,15 +310,7 @@ pub fn report(store: &Store, options: &UsageOptions) -> Result<UsageReport> {
         tasks,
         unmanaged: options.unmanaged,
     })?;
-    let mut total = UsageTotal {
-        key: "total".to_owned(),
-        responses: 0,
-        tokens: Tokens::default(),
-    };
-    for row in &rows {
-        total.responses = total.responses.saturating_add(row.responses);
-        total.tokens += row.tokens;
-    }
+    let total = sum(rows.iter());
     Ok(UsageReport {
         by: options.by,
         since,

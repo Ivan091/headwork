@@ -895,6 +895,7 @@ impl Store {
             .query_map([], RawTask::read)?
             .collect::<Result<_, _>>()?;
         let asks = self.waiting_asks()?;
+        let tokens = self.usage_task_tokens()?;
         let mut board_tasks = Vec::with_capacity(tasks.len());
         for raw in tasks {
             let task = raw.into_task()?;
@@ -903,7 +904,13 @@ impl Store {
                 .filter(|ask| ask.task_id == Some(task.id))
                 .cloned()
                 .collect();
+            let task_tokens = if task.shape.is_lead() {
+                tokens.tree(task.id)
+            } else {
+                tokens.own(task.id)
+            };
             board_tasks.push(BoardTask {
+                tokens: task_tokens,
                 session: self.session_of(task.id)?,
                 pr: self.latest_pr(task.id)?,
                 asks: task_asks,

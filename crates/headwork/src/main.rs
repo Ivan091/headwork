@@ -1151,7 +1151,20 @@ fn close_command(
         json_out(out, &report)?;
     } else {
         match &report.pending {
-            None => writeln!(out, "{} {}", report.name, report.state)?,
+            None => match report
+                .usage
+                .as_ref()
+                .filter(|usage| usage.tokens.total() > 0)
+            {
+                Some(usage) => writeln!(
+                    out,
+                    "{} {} · {} tokens",
+                    report.name,
+                    report.state,
+                    headwork_core::usage::short_count(usage.tokens.total())
+                )?,
+                None => writeln!(out, "{} {}", report.name, report.state)?,
+            },
             Some(pending) => writeln!(out, "{} {}: {pending}", report.name, report.state)?,
         }
     }

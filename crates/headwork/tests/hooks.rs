@@ -1102,6 +1102,7 @@ fn mcp_tools_follow_the_role() {
         [
             "board",
             "status",
+            "usage",
             "inbox",
             "spawn",
             "drop",
@@ -2851,4 +2852,42 @@ fn a_freed_slot_runs_the_queue_when_a_task_waits() {
         TaskState::Spawning,
         "it takes the freed slot"
     );
+}
+
+fn response(id: &str, input: u64) -> String {
+    json!({
+        "type": "assistant",
+        "timestamp": "2026-11-22T10:00:00.000Z",
+        "message": { "id": id, "model": "claude-haiku-5-5", "usage": { "input_tokens": input, "output_tokens": 1 } }
+    })
+    .to_string()
+        + "\n"
+}
+
+#[test]
+fn stop_and_session_end_read_the_sessions_usage() {
+    let mut w = world("", false);
+    w.start();
+    let folder = w.dir.path().join(".claude/projects/S--demo");
+    let subagents = folder.join(&w.session).join("subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    let transcript = folder.join(format!("{}.jsonl", w.session));
+    std::fs::write(&transcript, response("m1", 10)).unwrap();
+    std::fs::write(subagents.join("agent-a1.jsonl"), response("m2", 20)).unwrap();
+    w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "done", "transcript_path": transcript.display().to_string() }),
+    );
+    let board = w.store.board(false).unwrap();
+    assert_eq!(
+        board.tasks[0].tokens, 32,
+        "the session and its subagent after one turn"
+    );
+
+    let mut more = std::fs::read_to_string(&transcript).unwrap();
+    more.push_str(&response("m3", 100));
+    std::fs::write(&transcript, more).unwrap();
+    w.hook(HookEvent::SessionEnd, &json!({ "reason": "other" }));
+    let board = w.store.board(true).unwrap();
+    assert_eq!(board.tasks[0].tokens, 133, "found by session id at the end");
 }

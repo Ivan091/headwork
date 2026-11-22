@@ -1246,3 +1246,9 @@ and the reason.
   under task groupings. A summed day of `usage_daily` counts in a `--since` window when it starts at or after it. The
   first backfill on this machine read 583 transcripts (1.4 GB) in 15 s; a task's total matched a hand count of its
   transcripts to the token.
+- 2026-11-22 Usage U2. The `Stop` and `SessionEnd` hooks read the session's transcript (`transcript_path`, else found
+  by session id) and its subagents'; the tick reads every changed transcript as its last stage (`usage`), so
+  background subagents and sessions outside headwork are caught within five minutes. A failed read is logged as
+  `usage-error` and never blocks. `board` shows each task's tokens after its PR (a lead's with its parts'), `status`
+  appends them to its line, and a close logs `usage-total` (the task and its parts) and prints it after `closed`. The
+  orchestrator's `usage` tool reads the changed transcripts first, like the CLI.
