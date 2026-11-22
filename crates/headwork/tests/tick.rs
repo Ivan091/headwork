@@ -119,7 +119,8 @@ fn world_extra(enforce: bool, max_workers: u32, extra: &str) -> World {
     let config_text = text;
     let home = Home::at(Some(dir.path().join("home")))
         .unwrap()
-        .with_claude_json(dir.path().join(".claude.json"));
+        .with_claude_json(dir.path().join(".claude.json"))
+        .with_claude_dir(dir.path().join(".claude"));
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let hash = RuleFiles::load(&home, &config, &[], "orchestrator")
@@ -446,6 +447,7 @@ fn the_board_command_shows_a_task_whose_process_is_gone_as_interrupted() {
         .args(["board", "--json"])
         .env("HEADWORK_HOME", w.home.root())
         .env("HEADWORK_CLAUDE_JSON", w.home.root().join(".claude.json"))
+        .env("HEADWORK_CLAUDE_DIR", w.home.root().join(".claude"))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&output.stdout);

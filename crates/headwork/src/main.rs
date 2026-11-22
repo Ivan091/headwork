@@ -740,8 +740,7 @@ fn resume_command(
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map_or_else(|| home.expand("~/.claude"), PathBuf::from);
+    let claude_dir = home.claude_dir().to_path_buf();
     let opts = ResumeOptions {
         logon,
         wait_for_host: std::time::Duration::from_secs(wait),
@@ -1637,9 +1636,7 @@ fn doctor_command(
     out: &mut impl Write,
 ) -> Result<ExitCode> {
     let home = Home::locate()?;
-    let claude_dir = claude_dir
-        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| home.expand("~/.claude"));
+    let claude_dir = claude_dir.unwrap_or_else(|| home.claude_dir().to_path_buf());
     let exe = std::env::current_exe().context("finding the headwork program")?;
     let report = doctor(&Doctor {
         home: &home,

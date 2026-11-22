@@ -6,7 +6,7 @@
 //! `effortLevel` does not reach the 5.5 models. With no setting a 5.5 model runs at [`BUILT_IN`]. The choice is
 //! recorded in `docs/decisions.md`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use headwork_core::{Effort, Model};
 use serde_json::Value;
@@ -61,9 +61,7 @@ fn read(path: &Path) -> Option<Value> {
 /// The effort a session of `model` runs with in `dir`, from the settings files there and in the user's Claude folder.
 #[must_use]
 pub fn resolve(home: &Home, model: Model, dir: &Path) -> Effort {
-    let claude_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map_or_else(|| home.expand("~/.claude"), PathBuf::from);
-    let user = read(&claude_dir.join("settings.json"));
+    let user = read(&home.claude_dir().join("settings.json"));
     let project: Vec<Value> = ["settings.json", "settings.local.json"]
         .iter()
         .filter_map(|name| read(&dir.join(".claude").join(name)))

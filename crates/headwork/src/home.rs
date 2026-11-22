@@ -14,6 +14,10 @@ pub const HOME_VAR: &str = headwork_adapters::runtime::ENV_HOME;
 /// temporary file.
 pub const CLAUDE_JSON_VAR: &str = "HEADWORK_CLAUDE_JSON";
 
+/// The environment variable that names the user's Claude folder (`settings.json`) instead of the usual place; tests
+/// point it at a temporary folder.
+pub const CLAUDE_DIR_VAR: &str = "HEADWORK_CLAUDE_DIR";
+
 /// The name of a project-local overlay in a project's main checkout.
 pub const OVERLAY_FILE: &str = ".headwork.toml";
 
@@ -23,6 +27,7 @@ pub struct Home {
     root: PathBuf,
     user_dir: PathBuf,
     claude_json: PathBuf,
+    claude_dir: PathBuf,
 }
 
 impl Home {
@@ -53,10 +58,14 @@ impl Home {
                     .map(|dir| PathBuf::from(dir).join(".claude.json"))
             })
             .unwrap_or_else(|| user_dir.join(".claude.json"));
+        let claude_dir = std::env::var_os(CLAUDE_DIR_VAR)
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+            .map_or_else(|| user_dir.join(".claude"), PathBuf::from);
         Ok(Self {
             root,
             user_dir,
             claude_json,
+            claude_dir,
         })
     }
 
@@ -65,6 +74,20 @@ impl Home {
     pub fn with_claude_json(mut self, file: PathBuf) -> Self {
         self.claude_json = file;
         self
+    }
+
+    /// The same home with the user's Claude folder somewhere else.
+    #[must_use]
+    pub fn with_claude_dir(mut self, dir: PathBuf) -> Self {
+        self.claude_dir = dir;
+        self
+    }
+
+    /// The user's Claude folder, which holds `settings.json`: `$HEADWORK_CLAUDE_DIR`, else `$CLAUDE_CONFIG_DIR`, else
+    /// `~/.claude`.
+    #[must_use]
+    pub fn claude_dir(&self) -> &Path {
+        &self.claude_dir
     }
 
     /// Claude Code's state file, where folder trust is kept: `$HEADWORK_CLAUDE_JSON`, else

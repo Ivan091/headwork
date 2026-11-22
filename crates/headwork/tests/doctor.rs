@@ -95,7 +95,8 @@ fn install() -> Install {
     let root = dir.path().join("headwork-home");
     let home = Home::at(Some(root.clone()))
         .unwrap()
-        .with_claude_json(dir.path().join(".claude.json"));
+        .with_claude_json(dir.path().join(".claude.json"))
+        .with_claude_dir(dir.path().join(".claude"));
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
     write(
         &root.join("config.toml"),

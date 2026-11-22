@@ -1053,3 +1053,9 @@ and the reason.
 - 2026-11-22, the lead's Close ask names the push (audit G8): `rules/lead.md` "Ask before you close" now says to send a
   `PushNotification` just before the `AskUserQuestion`, as the worker rules do; most `ask-push` would-denies came from
   this step.
+- 2026-11-22 A brief no longer carries a copy of the worker rules when the plugin is enabled in the user's
+  `settings.json` (audit harness 3): spawn appends them only when no session loads the plugin, neither through
+  `hooks.plugin_dir` nor through `enabledPlugins`. Setting `plugin_dir` was the audit's first fix, but with the plugin
+  also enabled in settings every hook would run twice (doctor's `plugin-twice`), so headwork reads the setting
+  instead. `Home::claude_dir` (`$HEADWORK_CLAUDE_DIR`, else `$CLAUDE_CONFIG_DIR`, else `~/.claude`) is now the one
+  place that finds `settings.json`, for spawn, doctor, resume and effort; tests point it at a temporary folder.
