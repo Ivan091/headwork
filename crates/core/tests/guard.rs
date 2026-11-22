@@ -143,6 +143,16 @@ fn a_project_that_installs_lets_its_workers_run_a_plain_update_only() {
             Some(RuleId::WorkerAdmin),
             None,
         ),
+        (
+            "headwork update --wait 15 2>&1 | tail -5",
+            Some(RuleId::WorkerAdmin),
+            None,
+        ),
+        (
+            "headwork update --dry-run > out.txt 2>/dev/null",
+            Some(RuleId::WorkerAdmin),
+            None,
+        ),
         ("headwork update --help", None, None),
         (
             "headwork update --to v0.1.7",

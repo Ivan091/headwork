@@ -1216,3 +1216,8 @@ and the reason.
 - 2026-11-22 `git branch -a` is a listing, `git tag -a` a write. The two subcommands shared one flag table, so `-a`
   (and `-s`) counted as a write for both, and a read-only `git -C <main> branch -a` drew a `worker-git-outside`
   would-deny (shadow review of 2026-11-22). Annotate and sign now count only for `tag`; for `branch`, `-a` lists.
+- 2026-11-22 The shell parser drops redirections with their targets. `2>&1` split a command at its `&` and left `2>`
+  and `>` targets as arguments, so `headwork update --wait 15 2>&1 | tail -5` no longer looked like a plain update and
+  drew a `worker-admin` would-deny (shadow review of 2026-11-22). A redirection is now no word of the command: digits
+  before `>` or `<` are its descriptor, `>&2` and `2>&-` name no file, `&>` no longer ends a command, and a process
+  substitution keeps its command. Checking the targets as writes stays `guard-shell-writes` (audit G2).
