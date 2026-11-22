@@ -10,6 +10,15 @@
 //! opens the store after the swap: the new build may have migrated it.
 //!
 //! The working memory is `<home>/update.json` ([`UpdateState`]), written atomically; the history is in the event log.
+//!
+//! What starts an update (`docs/autoupdate.md`, "What starts it") goes through [`trigger`]: the close of a task of
+//! `[update] project` (`update --wait 30`), the tick when a poll is due ([`headwork_core::update::poll_due`]) and the
+//! orchestrator's MCP tool `update`. Each starts a detached `headwork update` and logs `update-triggered`.
+//!
+//! A failure worth telling (deterministic at once, transient from its third attempt) raises the standing finding
+//! `update-failed`, sends a host notification and leaves a notice for the orchestrator's next prompt
+//! ([`take_notices`]); an install that changed plugin files or migrated the store leaves a notice too. Each is told
+//! once; a later install clears the finding.
 
 use std::fmt;
 use std::fs::File;
@@ -20,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use headwork_adapters::disk::Disks;
+use headwork_adapters::host::TerminalHost;
 use headwork_adapters::release::{Fetched, ReleaseError, ReleaseInfo, ReleaseSource, SUMS_NAME};
 use headwork_adapters::{proc, timed};
 use headwork_core::update::{
@@ -27,13 +37,20 @@ use headwork_core::update::{
     Version,
 };
 use headwork_core::watch::{DiskLevel, Limits, disk_level};
-use headwork_core::{Actor, Config};
-use headwork_store::Store;
+use headwork_core::{Actor, Config, FindingId};
+use headwork_store::{Store, TaskId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::install;
 use crate::home::{CLAUDE_JSON_VAR, HOME_VAR, Home};
+
+/// How long the close trigger's update waits for the release of the merge that closed the task, in minutes.
+pub const CLOSE_WAIT_MIN: u64 = 30;
+/// The folder holding the installed `headwork` unless `--dir` names another.
+pub const DEFAULT_DIR: &str = "~/.local/bin";
+/// How many notices `update.json` keeps for the orchestrator; older ones are dropped.
+pub const KEPT_NOTICES: usize = 10;
 
 /// The lock one update holds while it runs; `headwork install` waits for it too.
 pub const LOCK_FILE: &str = "update.lock";
@@ -135,6 +152,15 @@ pub struct LastResult {
     pub outcome: String,
 }
 
+/// Something the orchestrator is told at its next prompt, once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notice {
+    /// When, in UTC.
+    pub at: String,
+    /// What to tell.
+    pub text: String,
+}
+
 /// `<home>/update.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateState {
@@ -153,6 +179,9 @@ pub struct UpdateState {
     /// The newest outcome.
     #[serde(default)]
     pub last_result: Option<LastResult>,
+    /// Notices waiting for the orchestrator's next prompt, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<Notice>,
 }
 
 impl UpdateState {
@@ -200,6 +229,15 @@ impl UpdateState {
         self.last_failure.as_ref().filter(|failure| {
             failure.kind == FailureKind::Deterministic || failure.attempts >= REPORT_TRANSIENT_FROM
         })
+    }
+
+    fn notice(&mut self, now_ms: u64, text: String) {
+        self.notices.push(Notice {
+            at: update::format_utc(now_ms),
+            text,
+        });
+        let extra = self.notices.len().saturating_sub(KEPT_NOTICES);
+        self.notices.drain(..extra);
     }
 
     fn result(&mut self, now_ms: u64, outcome: impl Into<String>) {
@@ -363,6 +401,8 @@ pub struct UpdateEnv<'a> {
     pub asset: &'a str,
     /// Who acts, for the event log.
     pub actor: Actor,
+    /// The terminal host, for the notification of a failure; `None` when there is none.
+    pub host: Option<&'a dyn TerminalHost>,
 }
 
 impl UpdateEnv<'_> {
@@ -605,12 +645,20 @@ pub fn update(env: &UpdateEnv<'_>, opts: UpdateOptions) -> Result<UpdateReport> 
         Some(lock)
     };
     let mut state = UpdateState::load(env.home);
-    let store = env.home.open_store()?;
+    let mut store = env.home.open_store()?;
     let local = gather(env, &store, &state, opts)?;
     let installed_text = text_of(&local.installed_line);
     let first = update::decide(&local.facts);
     if first != UpdateStep::UpToDate {
-        return finish_without_install(env, &store, &mut state, opts, first, &installed_text, None);
+        return finish_without_install(
+            env,
+            &mut store,
+            &mut state,
+            opts,
+            first,
+            &installed_text,
+            None,
+        );
     }
     let repo = env
         .config
@@ -629,7 +677,7 @@ pub fn update(env: &UpdateEnv<'_>, opts: UpdateOptions) -> Result<UpdateReport> 
         Ok(None) => {
             return finish_without_install(
                 env,
-                &store,
+                &mut store,
                 &mut state,
                 opts,
                 UpdateStep::UpToDate,
@@ -645,7 +693,7 @@ pub fn update(env: &UpdateEnv<'_>, opts: UpdateOptions) -> Result<UpdateReport> 
             if opts.dry_run {
                 bail!("asking GitHub failed: {}", failure.error);
             }
-            return record_failure(env, Some(&store), &mut state, None, failure);
+            return record_failure(env, Some(&mut store), &mut state, None, failure);
         }
     };
     let Some(mut known) = known_release(&release) else {
@@ -656,7 +704,7 @@ pub fn update(env: &UpdateEnv<'_>, opts: UpdateOptions) -> Result<UpdateReport> 
         if opts.dry_run {
             bail!("{}", failure.error);
         }
-        return record_failure(env, Some(&store), &mut state, None, failure);
+        return record_failure(env, Some(&mut store), &mut state, None, failure);
     };
     facts.release = Some(known);
     let mut step = update::decide(&facts);
@@ -696,7 +744,7 @@ const fn waits_for_newer(step: UpdateStep) -> bool {
 )]
 fn carry_out(
     env: &UpdateEnv<'_>,
-    store: Store,
+    mut store: Store,
     lock: Option<UpdateLock>,
     state: &mut UpdateState,
     opts: UpdateOptions,
@@ -716,7 +764,7 @@ fn carry_out(
         other @ (UpdateStep::UpToDate | UpdateStep::Skip(_) | UpdateStep::Wait { .. }) => {
             finish_without_install(
                 env,
-                &store,
+                &mut store,
                 state,
                 opts,
                 other,
@@ -833,7 +881,7 @@ fn ask(
 
 fn finish_without_install(
     env: &UpdateEnv<'_>,
-    store: &Store,
+    store: &mut Store,
     state: &mut UpdateState,
     opts: UpdateOptions,
     step: UpdateStep,
@@ -876,6 +924,7 @@ fn finish_without_install(
     if !opts.dry_run {
         if matches!(report, UpdateReport::UpToDate { .. }) && state.last_failure.is_some() {
             state.last_failure = None;
+            store.resolve_findings(FindingId::UpdateFailed, &[], env.actor)?;
         }
         if !matches!(report, UpdateReport::Waiting { .. }) {
             state.result(env.clock.now_ms(), report.to_string());
@@ -887,7 +936,7 @@ fn finish_without_install(
 
 fn record_failure(
     env: &UpdateEnv<'_>,
-    store: Option<&Store>,
+    store: Option<&mut Store>,
     state: &mut UpdateState,
     tag: Option<Version>,
     failure: StepFailure,
@@ -918,20 +967,72 @@ fn record_failure(
         error,
     };
     state.result(now, report.to_string());
-    state.save(env.home)?;
     if kind == FailureKind::Deterministic || next.attempts >= REPORT_TRANSIENT_FROM {
-        match store {
-            Some(store) => store.append_event(env.actor, None, None, "update-failed", &data)?,
-            None => env.home.open_store()?.append_event(
-                env.actor,
-                None,
-                None,
-                "update-failed",
-                &data,
-            )?,
+        let told = Told {
+            tag,
+            kind,
+            step,
+            data: &data,
+            report: &report,
+            now,
+        };
+        if let Some(store) = store {
+            tell_failure(env, store, state, &told)?;
+        } else {
+            tell_failure(env, &mut env.home.open_store()?, state, &told)?;
         }
     }
+    state.save(env.home)?;
     Ok(report)
+}
+
+/// A failure worth telling, as [`tell_failure`] reports it.
+struct Told<'a> {
+    tag: Option<Version>,
+    kind: FailureKind,
+    step: &'a str,
+    data: &'a serde_json::Value,
+    report: &'a UpdateReport,
+    now: u64,
+}
+
+/// Logs `update-failed` and raises the standing finding; the first time it stands, also a host notification and a
+/// notice for the orchestrator.
+fn tell_failure(
+    env: &UpdateEnv<'_>,
+    store: &mut Store,
+    state: &mut UpdateState,
+    told: &Told<'_>,
+) -> Result<()> {
+    store.append_event(env.actor, None, None, "update-failed", told.data)?;
+    let key = failure_key(told.tag, told.kind);
+    store.resolve_findings(
+        FindingId::UpdateFailed,
+        std::slice::from_ref(&key),
+        env.actor,
+    )?;
+    if store.raise_finding(&key, FindingId::UpdateFailed, None, told.data, env.actor)? {
+        let release = told
+            .tag
+            .map_or_else(|| "the newest release".to_owned(), Version::tag);
+        if let Some(host) = env.host {
+            drop(host.notify(&format!(
+                "headwork: the update to {release} failed at {}; the installed build runs on",
+                told.step
+            )));
+        }
+        state.notice(told.now, told.report.to_string());
+    }
+    Ok(())
+}
+
+/// The key of the standing `update-failed` finding: one per failed release, one for transient failures.
+fn failure_key(tag: Option<Version>, kind: FailureKind) -> String {
+    match (kind, tag) {
+        (FailureKind::Deterministic, Some(tag)) => format!("update-failed:{}", tag.tag()),
+        (FailureKind::Deterministic, None) => "update-failed:deterministic".to_owned(),
+        (FailureKind::Transient, _) => "update-failed:transient".to_owned(),
+    }
 }
 
 #[expect(
@@ -971,7 +1072,10 @@ fn install_release(
                 reason: failure.error,
             });
         }
-        Err(failure) => return record_failure(env, Some(&store), state, Some(tag), failure),
+        Err(failure) => {
+            let mut store = store;
+            return record_failure(env, Some(&mut store), state, Some(tag), failure);
+        }
     };
     drop(store);
     let builds = env.builds;
@@ -1319,7 +1423,7 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
             LOCK_WAIT.as_secs()
         );
     };
-    let store = env.home.open_store()?;
+    let mut store = env.home.open_store()?;
     let checkout = forward_checkout(env.home, env.config, this.commit);
     if let Forward::NotForwarded { reason } = &checkout {
         store.append_event(
@@ -1338,8 +1442,12 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
         "update-installed",
         &serde_json::json!({ "tag": tag, "from": from, "to": this.text, "checkout": checkout }),
     )?;
+    store.resolve_findings(FindingId::UpdateFailed, &[], env.actor)?;
     drop(store);
     let mut state = UpdateState::load(env.home);
+    if let Some(text) = install_notice(from, this, &checkout, env.home) {
+        state.notice(env.clock.now_ms(), text);
+    }
     let pending = env.home.root().join(PENDING_FILE);
     let asked = pending.exists();
     drop(std::fs::remove_file(&pending));
@@ -1362,6 +1470,214 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
         checkout,
         again,
     })
+}
+
+/// What the orchestrator is told after an install: only when plugin files changed (sessions started before keep the old
+/// hooks) or the new build migrated the store.
+fn install_notice(
+    from: &str,
+    this: ThisBuild<'_>,
+    checkout: &Forward,
+    home: &Home,
+) -> Option<String> {
+    let name = this
+        .release
+        .map_or_else(|| format!("headwork {}", this.text), Version::tag);
+    let mut parts = Vec::new();
+    if matches!(
+        checkout,
+        Forward::Forwarded {
+            plugin_changed: true,
+            ..
+        }
+    ) {
+        parts.push(format!(
+            "it changed plugin files: sessions started before {name} keep the old hooks until park and resume"
+        ));
+    }
+    let schema = |text: &str| BuildLine::parse(&format!("headwork {text}")).map(|line| line.schema);
+    if let (Some(old), Some(new)) = (schema(from), schema(this.text))
+        && new > old
+    {
+        parts.push(format!(
+            "it migrated the store from schema {old} to {new} (a copy of the old one is in {})",
+            super::slashed(&home.root().join("backups"))
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("{name} is installed; {}.", parts.join("; ")))
+}
+
+/// Takes the notices waiting for the orchestrator's next prompt, oldest first, so each is told once.
+///
+/// Empty when none wait, or while an update holds the lock: they wait for the prompt after.
+///
+/// # Errors
+///
+/// Fails when the lock or `update.json` cannot be handled.
+pub fn take_notices(home: &Home) -> Result<Vec<String>> {
+    if UpdateState::load(home).notices.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(_lock) = UpdateLock::try_take(home)? else {
+        return Ok(Vec::new());
+    };
+    let mut state = UpdateState::load(home);
+    let notices = std::mem::take(&mut state.notices);
+    if !notices.is_empty() {
+        state.save(home)?;
+    }
+    Ok(notices.into_iter().map(|notice| notice.text).collect())
+}
+
+/// What started an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TriggeredBy {
+    /// A task of `[update] project` closed.
+    Close,
+    /// The tick found a poll due.
+    Tick,
+    /// The orchestrator's MCP tool `update`.
+    Orchestrator,
+}
+
+impl TriggeredBy {
+    /// The word in the `update-triggered` event.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Close => "close",
+            Self::Tick => "tick",
+            Self::Orchestrator => "orchestrator",
+        }
+    }
+}
+
+/// Starts a detached `headwork update`; tests replace it.
+pub trait UpdateStarter: fmt::Debug {
+    /// Starts `headwork <args>` detached, so it outlives the caller.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the program does not start.
+    fn start(&self, args: &[String]) -> Result<Started>;
+}
+
+/// The real start: `exe` with `HEADWORK_HOME` at the home, in the home folder, detached.
+#[derive(Debug, Clone, Copy)]
+pub struct Detached<'a> {
+    /// The home folder the update works on.
+    pub home: &'a Home,
+    /// The `headwork` program, the one finishers run.
+    pub exe: &'a Path,
+}
+
+impl UpdateStarter for Detached<'_> {
+    fn start(&self, args: &[String]) -> Result<Started> {
+        let mut command = Command::new(self.exe);
+        command
+            .args(args)
+            .env(HOME_VAR, self.home.root())
+            .current_dir(self.home.root());
+        let (pid, note) = proc::spawn_detached(&mut command)
+            .with_context(|| format!("starting {} {}", self.exe.display(), args.join(" ")))?;
+        Ok(Started { pid, note })
+    }
+}
+
+/// A detached update a trigger started, or tried to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Triggered {
+    /// What started it.
+    pub by: TriggeredBy,
+    /// The arguments after `headwork`.
+    pub args: Vec<String>,
+    /// The process, when it started.
+    pub started: Option<Started>,
+    /// Why it did not start, when it did not.
+    pub error: Option<String>,
+}
+
+/// Starts a detached `headwork <args>` for `by` and logs `update-triggered`; a start that fails is recorded in the
+/// result and the event, not returned as an error.
+///
+/// # Errors
+///
+/// Fails only when the event cannot be logged.
+pub fn trigger(
+    store: &Store,
+    via: &dyn UpdateStarter,
+    actor: Actor,
+    task: Option<TaskId>,
+    by: TriggeredBy,
+    args: Vec<String>,
+) -> Result<Triggered> {
+    let (started, error) = match via.start(&args) {
+        Ok(process) => (Some(process), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    let triggered = Triggered {
+        by,
+        args,
+        started,
+        error,
+    };
+    store.append_event(
+        actor,
+        task,
+        None,
+        "update-triggered",
+        &serde_json::json!({
+            "by": by.as_str(),
+            "args": triggered.args,
+            "pid": triggered.started.as_ref().map(|started| started.pid),
+            "note": triggered.started.as_ref().and_then(|started| started.note.clone()),
+            "error": triggered.error,
+        }),
+    )?;
+    Ok(triggered)
+}
+
+/// The arguments of the close trigger's update: wait up to [`CLOSE_WAIT_MIN`] minutes for the merge's release.
+#[must_use]
+pub fn close_args() -> Vec<String> {
+    vec![
+        "update".to_owned(),
+        "--wait".to_owned(),
+        CLOSE_WAIT_MIN.to_string(),
+    ]
+}
+
+/// The tick's poll facts, from `update.json`, the lock, the machine mode and the disk.
+///
+/// # Errors
+///
+/// Fails when the store or the lock cannot be read.
+pub fn poll_facts(
+    home: &Home,
+    config: &Config,
+    store: &Store,
+    disk: DiskLevel,
+    now_ms: u64,
+) -> Result<update::PollFacts> {
+    let state = UpdateState::load(home);
+    let running = UpdateLock::try_take(home)?.is_none();
+    Ok(update::PollFacts {
+        enabled: config.update.enabled,
+        poll_min: config.update.poll_min,
+        last_poll_ms: state.last_poll.as_deref().and_then(update::parse_utc),
+        last_failure: state.failure(),
+        machine: store.machine_mode()?,
+        disk,
+        running,
+        now_ms,
+    })
+}
+
+/// Now, in milliseconds since the Unix epoch, by the system clock.
+#[must_use]
+pub fn now_ms() -> u64 {
+    millis_of(SystemTime::now())
 }
 
 fn newer_release(env: &UpdateEnv<'_>, state: &mut UpdateState, this: Option<Version>) -> bool {

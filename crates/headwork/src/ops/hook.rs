@@ -320,7 +320,10 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     {
         lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
     }
-    let waiting = waiting_parts(store, call.task)?;
+    let mut waiting = waiting_parts(store, call.task)?;
+    if call.session.role == Role::Orchestrator {
+        waiting.push_str(&update_notices(call.env.home));
+    }
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
     if call.session.rules_seen >= version {
@@ -356,6 +359,19 @@ fn waiting_parts(store: &Store, task: Option<&Task>) -> Result<String> {
         }
     }
     Ok(text)
+}
+
+/// For the orchestrator, one line per notice `headwork update` left (a failure worth telling, an install that changed
+/// plugin files or migrated the store), each told once; the orchestrator pushes it to the user. A notice that cannot be
+/// read now waits for the next prompt.
+fn update_notices(home: &Home) -> String {
+    let mut text = String::new();
+    for notice in super::update::take_notices(home).unwrap_or_default() {
+        text.push_str("\nheadwork update: ");
+        text.push_str(&notice);
+        text.push_str(" Tell the user with a push notification.");
+    }
+    text
 }
 
 /// Where Claude Code puts the worktrees of `Agent` subagents started with `isolation: "worktree"`, under the main

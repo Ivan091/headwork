@@ -35,9 +35,10 @@ pub const BUILD_TOOLS: &[&str] = &[
 /// Git subcommands the orchestrator may not run.
 const ORCHESTRATOR_GIT: &[&str] = &["commit", "push", "merge", "rebase", "cherry-pick", "am"];
 
-/// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user. A
-/// worker may run only `close` of its own task and `reap --dry-run` among them, and in a project with `install = true`
-/// also `install` and a plain `update`.
+/// Subcommands of the headwork CLI that change the machine's state and belong to the orchestrator or the user.
+///
+/// A worker may run only `close` of its own task and `reap --dry-run` among them, and in a project with `install =
+/// true` also `install` and a plain `update`.
 pub const ADMIN_COMMANDS: &[&str] = &[
     "spawn",
     "queue",

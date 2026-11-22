@@ -244,6 +244,26 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "update",
+        description: concat!(
+            "Install headwork's newest release (or the release `to` names, newer or older) through `headwork update`: ",
+            "a detached run that checks the download, smoke-tests it on a copy of the store, installs it and hands over ",
+            "to the new build; this returns at once with its pid, and the event log and `headwork doctor` show how it ",
+            "ended. `dry_run` answers here with the decision and changes nothing. Updates normally start by themselves ",
+            "after a headwork task closes; use this when the user asks, or for a rollback with `to`.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "to": { "type": "string", "description": "A release tag such as v0.1.7: install it, newer or older." },
+                    "dry_run": { "type": "boolean", "description": "Say what an update would do and change nothing." },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "rules",
         description: "The rules added at run time that are still active.",
         roles: ORCHESTRATOR,
@@ -692,10 +712,7 @@ impl<'a> Server<'a> {
             }
             "reap" => {
                 let options = super::reap::ReapOptions {
-                    dry_run: args
-                        .get("dry_run")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
+                    dry_run: flag(args, "dry_run"),
                 };
                 to_text(&super::reap::reap(self.store, &self.env, options)?)
             }
@@ -744,6 +761,7 @@ impl<'a> Server<'a> {
                 self.job_stop(&task, args)
             }
             "job_forget" => self.job_forget(&session, role, args),
+            "update" => self.update(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -859,6 +877,68 @@ impl<'a> Server<'a> {
                 .ok_or_else(|| anyhow!("no job {id} of yours"))?;
         }
         to_text(&jobs::forget(self.store, id, reason, self.env.actor)?)
+    }
+
+    fn update(&self, args: &Value) -> Result<String> {
+        let to = match args.get("to") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(tag)) => Some(
+                headwork_core::update::Version::from_tag(tag)
+                    .ok_or_else(|| anyhow!("`to` is `{tag}`, not a release tag such as v0.1.7"))?,
+            ),
+            Some(other) => bail!("`to` must be a release tag such as v0.1.7, not {other}"),
+        };
+        if flag(args, "dry_run") {
+            let install_dir = self.env.home.expand(super::update::DEFAULT_DIR);
+            let releases = headwork_adapters::release::Curl::default();
+            let env = super::update::UpdateEnv {
+                home: self.env.home,
+                config: self.env.config,
+                releases: &releases,
+                builds: &super::update::SystemBuilds,
+                disks: &headwork_adapters::disk::SystemDisks,
+                clock: &super::update::SystemClock,
+                install_dir: &install_dir,
+                asset: headwork_adapters::release::asset_name()?,
+                actor: self.env.actor,
+                host: None,
+            };
+            let options = super::update::UpdateOptions {
+                dry_run: true,
+                wait_min: None,
+                to,
+            };
+            return Ok(super::update::update(&env, options)?.to_string());
+        }
+        let mut command = vec!["update".to_owned()];
+        if let Some(to) = to {
+            command.extend(["--to".to_owned(), to.tag()]);
+        }
+        let detached = super::update::Detached {
+            home: self.env.home,
+            exe: self.env.exe,
+        };
+        let triggered = super::update::trigger(
+            self.store,
+            &detached,
+            self.env.actor,
+            None,
+            super::update::TriggeredBy::Orchestrator,
+            command,
+        )?;
+        match (&triggered.started, &triggered.error) {
+            (Some(started), _) => to_text(&json!({
+                "started": format!("headwork {}", triggered.args.join(" ")),
+                "pid": started.pid,
+                "note": started.note,
+                "read": "the event log (update-installed, update-failed) and `headwork doctor` (check update) say how it ended",
+            })),
+            (None, error) => bail!(
+                "`headwork {}` did not start: {}",
+                triggered.args.join(" "),
+                error.as_deref().unwrap_or("no reason given")
+            ),
+        }
     }
 
     fn start_detached(&self, command: &'static str, args: &Value) -> Result<String> {

@@ -279,7 +279,7 @@ pub(crate) fn ticked(report: &TickReport) -> String {
         text.push_str(", queue paused: disk nearly full");
     }
     text.push('\n');
-    if report.lines.is_empty() && report.started.is_empty() {
+    if report.lines.is_empty() && report.started.is_empty() && report.update.is_none() {
         text.push_str("nothing to report\n");
     }
     for line in &report.lines {
@@ -293,6 +293,22 @@ pub(crate) fn ticked(report: &TickReport) -> String {
         );
     }
     text.push_str(&pumped(&report.started));
+    if let Some(update) = &report.update {
+        let _ = match (&update.started, &update.error) {
+            (Some(started), _) => writeln!(
+                text,
+                "  started   headwork {} (pid {}): a poll was due",
+                update.args.join(" "),
+                started.pid
+            ),
+            (None, error) => writeln!(
+                text,
+                "  failed    headwork {}: {}",
+                update.args.join(" "),
+                error.as_deref().unwrap_or("it did not start")
+            ),
+        };
+    }
     text
 }
 

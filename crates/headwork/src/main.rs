@@ -247,7 +247,7 @@ enum Command {
     /// sessions pick it up by themselves.
     Install {
         /// The folder.
-        #[arg(long, default_value = "~/.local/bin")]
+        #[arg(long, default_value = headwork::ops::update::DEFAULT_DIR)]
         dir: String,
         /// Print JSON instead of text.
         #[arg(long)]
@@ -266,7 +266,7 @@ enum Command {
         #[arg(long, value_name = "TAG", value_parser = parse_tag)]
         to: Option<headwork_core::update::Version>,
         /// The folder holding the installed `headwork`.
-        #[arg(long, default_value = "~/.local/bin")]
+        #[arg(long, default_value = headwork::ops::update::DEFAULT_DIR)]
         dir: String,
         /// Finish an update as the newly installed build: the version line of the build it replaced.
         #[arg(long, hide = true, value_name = "OLD VERSION", conflicts_with_all = ["dry_run", "wait", "to"])]
@@ -1275,6 +1275,7 @@ fn update_command(
     let install_dir = home.expand(dir);
     let releases = Curl::default();
     let asset = headwork_adapters::release::asset_name()?;
+    let host = host_for(&config).ok();
     let env = UpdateEnv {
         home: &home,
         config: &config,
@@ -1285,6 +1286,7 @@ fn update_command(
         install_dir: &install_dir,
         asset,
         actor: Actor::User,
+        host: host.as_deref(),
     };
     if let Some(from) = after_from {
         let text = headwork::version::text();
@@ -1543,6 +1545,10 @@ fn tick_command(
     let git = Gh::default();
     let disks = SystemDisks;
     let temp = std::env::temp_dir();
+    let updates = headwork::ops::update::Detached {
+        home: ctx.home,
+        exe: ctx.exe,
+    };
     let report = ctx.with_actor(Actor::Tick, |env| {
         tick(
             store,
@@ -1552,6 +1558,7 @@ fn tick_command(
                 disks: &disks,
                 temp: &temp,
                 limits: Limits::from_config(&ctx.config.watch),
+                updates: &updates,
             },
         )
     })?;

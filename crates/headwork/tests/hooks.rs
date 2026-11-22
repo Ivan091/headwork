@@ -18,6 +18,7 @@ use headwork::ops::rules::{
     WORKER_RULES, platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
+use headwork::ops::update::{Notice, UpdateState};
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
@@ -1080,6 +1081,7 @@ fn mcp_tools_follow_the_role() {
             "queue",
             "clean",
             "reap",
+            "update",
             "rules",
             "rule_add",
             "rule_retire",
@@ -2400,5 +2402,117 @@ fn a_lead_hears_on_its_next_prompt_which_part_waits_for_the_user() {
         !w.tool_names(worker_identity(&w))
             .contains(&"status".to_owned()),
         "not a worker's"
+    );
+}
+
+fn all_events(w: &World, kind: &str) -> Vec<Value> {
+    w.store
+        .events(EventFilter {
+            task: None,
+            limit: 1000,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.data)
+        .collect()
+}
+
+#[test]
+fn the_update_tool_starts_a_detached_update_for_the_orchestrator_only() {
+    let mut w = world("", false);
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "update",
+        &json!({ "to": "v0.1.7" }),
+    );
+    assert!(is_error, "{EXE} does not exist: {text}");
+    assert!(text.contains("update --to v0.1.7"), "{text}");
+    let triggered = all_events(&w, "update-triggered");
+    assert_eq!(triggered.len(), 1, "{triggered:?}");
+    assert_eq!(triggered[0]["by"], "orchestrator", "by");
+    assert_eq!(
+        triggered[0]["args"],
+        json!(["update", "--to", "v0.1.7"]),
+        "args"
+    );
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "update",
+        &json!({ "to": "latest" }),
+    );
+    assert!(is_error && text.contains("not a release tag"), "{text}");
+    let (is_error, text) = w.tool(worker_identity(&w), "update", &json!({}));
+    assert!(
+        is_error && text.contains("tool of the orchestrator role"),
+        "{text}"
+    );
+    assert_eq!(
+        all_events(&w, "update-triggered").len(),
+        1,
+        "neither a bad tag nor a worker starts anything"
+    );
+}
+
+#[test]
+fn the_update_tools_dry_run_starts_nothing() {
+    let mut w = world("", false);
+    w.tool(
+        orchestrator_identity(),
+        "update",
+        &json!({ "dry_run": true }),
+    );
+    assert!(
+        all_events(&w, "update-triggered").is_empty(),
+        "a dry run answers in-process"
+    );
+}
+
+#[test]
+fn update_notices_reach_the_orchestrators_next_prompt_once() {
+    let mut w = world("", false);
+    UpdateState {
+        notices: vec![Notice {
+            at: "2026-11-22T12:00:00Z".to_owned(),
+            text: "update to v0.1.9 failed at smoke (deterministic, attempt 1): boom; the installed build runs on"
+                .to_owned(),
+        }],
+        ..UpdateState::default()
+    }
+    .save(&w.home)
+    .unwrap();
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    assert_eq!(
+        UpdateState::load(&w.home).notices.len(),
+        1,
+        "a worker's prompt leaves the notices"
+    );
+    w.store
+        .record_session(
+            &NewSession {
+                id: "orch".to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    w.session = "orch".to_owned();
+    let text = context(&w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "hi" })));
+    assert!(
+        text.contains("headwork update: update to v0.1.9 failed at smoke")
+            && text.contains("Tell the user with a push notification."),
+        "{text}"
+    );
+    assert!(UpdateState::load(&w.home).notices.is_empty(), "taken");
+    let again = w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "more" }));
+    assert!(
+        again.stdout.is_none_or(|out| !out.contains("v0.1.9")),
+        "told once"
     );
 }
