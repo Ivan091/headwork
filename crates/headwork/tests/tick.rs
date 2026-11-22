@@ -1250,6 +1250,37 @@ fn an_ask_that_waits_too_long_is_announced_again() {
 }
 
 #[test]
+fn closing_a_task_retires_the_asks_it_left_waiting() {
+    let mut w = world();
+    let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    open_ask(&mut w, &task, &session);
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Closed, "closed");
+    assert!(
+        !w.store.has_waiting_ask(task.id).unwrap(),
+        "no ask of a closed task waits on the user"
+    );
+}
+
+#[test]
+fn an_ask_left_on_a_closed_task_is_retired_and_never_announced() {
+    let mut w = world();
+    let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Closed, "closed");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    open_ask(&mut w, &task, &session);
+    w.limits.ask_remind = 0;
+    run_tick(&mut w);
+    assert!(
+        !w.store.has_waiting_ask(task.id).unwrap(),
+        "the leftover ask is retired"
+    );
+    assert!(!notified(&w, "Which one?"), "{:?}", w.host.calls());
+}
+
+#[test]
 fn a_reminder_is_not_repeated_inside_its_interval() {
     let mut w = world();
     let (task, session) = working(&mut w, "sand");

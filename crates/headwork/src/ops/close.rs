@@ -569,6 +569,7 @@ fn finish_claimed(
     };
     match store.transition(id, &Trigger::Cleaned(facts), env.actor) {
         Ok(_) => {
+            store.supersede_asks(id, env.actor)?;
             update_after_close(store, env, &task);
             report(store, id, None)
         }

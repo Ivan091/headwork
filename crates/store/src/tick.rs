@@ -235,6 +235,27 @@ impl Store {
         )?)
     }
 
+    /// Supersedes every ask still waiting on a closed task, which no session can act on any more, and returns how many
+    /// tasks had one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn supersede_asks_of_closed(&mut self, actor: Actor) -> Result<usize, StoreError> {
+        let tasks: Vec<i64> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT a.task_id FROM asks a JOIN tasks t ON t.id = a.task_id \
+                 WHERE t.state = 'closed' AND a.state IN ('pending', 'open') ORDER BY a.task_id",
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for task in &tasks {
+            self.supersede_asks(TaskId(*task), actor)?;
+        }
+        Ok(tasks.len())
+    }
+
     /// Open asks of running sessions older than `older_than_s`, oldest first, with how long ago the user was
     /// reminded.
     ///

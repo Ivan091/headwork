@@ -1132,6 +1132,8 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn asks(&mut self) -> Result<()> {
+        let actor = self.actor();
+        self.store.supersede_asks_of_closed(actor)?;
         for ask in self.store.overdue_asks(self.limits.ask_remind)? {
             if !watch::ask_due(ask.age_s, ask.since_notified_s, &self.limits) {
                 continue;
