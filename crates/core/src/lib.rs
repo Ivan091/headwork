@@ -13,6 +13,7 @@ pub mod names;
 pub mod platform;
 pub mod process;
 pub mod reap;
+pub mod slots;
 pub mod update;
 pub mod user_go;
 pub mod vocabulary;

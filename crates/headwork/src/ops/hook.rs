@@ -175,6 +175,8 @@ pub struct HookEnv<'a> {
     pub exe: &'a Path,
     /// The temp folder, where Claude's scratchpad lives.
     pub temp: &'a Path,
+    /// The processes and the queue, for the slot of a session that waits on the user.
+    pub slots: &'a dyn super::waiting::SlotProbe,
 }
 
 /// Runs one hook for a managed session.
@@ -193,6 +195,7 @@ pub fn run_hook(
         return Ok(HookReply::default());
     };
     store.touch_session(&session.id)?;
+    store.set_session_waiting(&session.id, false, Actor::Hook)?;
     if let Some(mode) = input
         .get("permission_mode")
         .and_then(Value::as_str)
@@ -665,6 +668,7 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     )?;
     if tool == "AskUserQuestion" && reply.exit == 0 {
         open_ask(store, call, tool_input)?;
+        free_slot_while_asking(store, call)?;
     }
     if tool == "SendMessage"
         && reply.exit == 0
@@ -806,6 +810,23 @@ fn open_ask(store: &mut Store, call: &Call<'_>, tool_input: &Value) -> Result<()
         if let Err(error) = shown {
             note(store, call, &json!({ "blocked-state": error.to_string() }))?;
         }
+    }
+    Ok(())
+}
+
+/// A worker that now waits on the user and runs nothing else gives up its slot, and a queued task may take it.
+fn free_slot_while_asking(store: &mut Store, call: &Call<'_>) -> Result<()> {
+    let Some(task) = call.task else {
+        return Ok(());
+    };
+    let candidate = super::waiting::Candidate {
+        session: &call.session.id,
+        task: task.id,
+        claude_pid: None,
+    };
+    let probe = call.env.slots;
+    if super::waiting::check(store, candidate, &|| probe.processes(), Actor::Hook)? {
+        super::waiting::pump_if_queued(store, probe, task.id)?;
     }
     Ok(())
 }
