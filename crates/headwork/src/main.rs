@@ -33,9 +33,14 @@ use headwork::ops::resume::{self, ResumeOptions, TaskOutcome, resume};
 use headwork::ops::shadow::shadow_report;
 use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork::ops::tick::{TickEnv, tick};
+use headwork::ops::update::{
+    LOCK_WAIT, SystemBuilds, SystemClock, ThisBuild, UpdateEnv, UpdateLock, UpdateOptions, after,
+    update,
+};
 use headwork::ops::{Env, host_for};
 use headwork_adapters::disk::SystemDisks;
 use headwork_adapters::git::Gh;
+use headwork_adapters::release::Curl;
 use headwork_core::guard::{ToolCall, check_tool};
 use headwork_core::watch::Limits;
 use headwork_core::{
@@ -244,6 +249,28 @@ enum Command {
         /// The folder.
         #[arg(long, default_value = "~/.local/bin")]
         dir: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install headwork's newest release from GitHub, smoke-tested against a copy of the store first; one update runs
+    /// at a time.
+    Update {
+        /// Print the decision and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Ask GitHub once a minute, for up to this many minutes, until a release newer than the installed build appears.
+        #[arg(long, value_name = "MINUTES", conflicts_with = "to")]
+        wait: Option<u64>,
+        /// Install this release (such as v0.1.7), newer or older; refused when it knows an older store schema.
+        #[arg(long, value_name = "TAG", value_parser = parse_tag)]
+        to: Option<headwork_core::update::Version>,
+        /// The folder holding the installed `headwork`.
+        #[arg(long, default_value = "~/.local/bin")]
+        dir: String,
+        /// Finish an update as the newly installed build: the version line of the build it replaced.
+        #[arg(long, hide = true, value_name = "OLD VERSION", conflicts_with_all = ["dry_run", "wait", "to"])]
+        after: Option<String>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -486,6 +513,21 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         Command::Install { dir, json } => return install_command(&dir, json, out),
+        Command::Update {
+            dry_run,
+            wait,
+            to,
+            dir,
+            after,
+            json,
+        } => {
+            let opts = UpdateOptions {
+                dry_run,
+                wait_min: wait,
+                to,
+            };
+            return update_command(&dir, opts, after.as_deref(), json, out);
+        }
         Command::Tick {
             install,
             uninstall,
@@ -646,6 +688,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Mcp { .. }
         | Command::Exited { .. }
         | Command::Install { .. }
+        | Command::Update { .. }
         | Command::Rule { .. } => Ok(ExitCode::SUCCESS),
     }
 }
@@ -1215,9 +1258,72 @@ fn relay_command() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn parse_tag(text: &str) -> Result<headwork_core::update::Version, String> {
+    headwork_core::update::Version::from_tag(text)
+        .ok_or_else(|| format!("`{text}` is not a release tag such as v0.1.7"))
+}
+
+fn update_command(
+    dir: &str,
+    opts: UpdateOptions,
+    after_from: Option<&str>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let install_dir = home.expand(dir);
+    let releases = Curl::default();
+    let asset = headwork_adapters::release::asset_name()?;
+    let env = UpdateEnv {
+        home: &home,
+        config: &config,
+        releases: &releases,
+        builds: &SystemBuilds,
+        disks: &SystemDisks,
+        clock: &SystemClock,
+        install_dir: &install_dir,
+        asset,
+        actor: Actor::User,
+    };
+    if let Some(from) = after_from {
+        let text = headwork::version::text();
+        let this = ThisBuild {
+            text: &text,
+            release: headwork::version::release().and_then(headwork_core::update::Version::parse),
+            commit: headwork::version::commit(),
+        };
+        let report = after(&env, from, this)?;
+        if json {
+            json_out(out, &report)?;
+        } else {
+            writeln!(out, "{report}")?;
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let report = update(&env, opts)?;
+    if json {
+        json_out(out, &report)?;
+    } else {
+        writeln!(out, "{report}")?;
+    }
+    Ok(if report.failed() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
 fn install_command(dir: &str, json: bool, out: &mut impl Write) -> Result<ExitCode> {
     let home = Home::locate()?;
     let source = std::env::current_exe().context("finding the headwork program")?;
+    let Some(_lock) = UpdateLock::take_waiting(&home, LOCK_WAIT)? else {
+        bail!(
+            "an update is running ({} stayed taken for {} s); try again when it is done",
+            home.root().join(headwork::ops::update::LOCK_FILE).display(),
+            LOCK_WAIT.as_secs()
+        );
+    };
     let report = install(&source, &home.expand(dir), verify_installed)?;
     let (sessions, backup) = if home.root().join("state.db").exists() {
         let store = home.open_store()?;

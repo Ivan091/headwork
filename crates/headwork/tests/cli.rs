@@ -292,3 +292,42 @@ fn reap_dry_run_ends_nothing_and_reports_its_plan() {
         "{text}"
     );
 }
+
+#[test]
+fn update_with_updates_off_skips_and_changes_nothing() {
+    let home = home_with_fixture();
+    let bin = tempfile::tempdir().unwrap();
+    let installed = bin
+        .path()
+        .join(format!("headwork{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_headwork"), &installed).unwrap();
+    let dir = bin.path().to_str().unwrap();
+    let output = headwork(home.path(), &["update", "--dry-run", "--dir", dir]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("updates are off"),
+        "{}",
+        stdout(&output)
+    );
+    let output = headwork(home.path(), &["update", "--json", "--dir", dir]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(json["outcome"], "skipped", "{json}");
+    assert_eq!(json["reason"], "off", "{json}");
+    assert!(
+        !home.path().join("updates").exists(),
+        "nothing is downloaded"
+    );
+}
+
+#[test]
+fn update_refuses_a_tag_that_is_not_a_release() {
+    let home = home_with_fixture();
+    let output = headwork(home.path(), &["update", "--to", "latest"]);
+    assert_eq!(output.status.code(), Some(2), "a usage error");
+    assert!(
+        stderr(&output).contains("not a release tag"),
+        "{}",
+        stderr(&output)
+    );
+}

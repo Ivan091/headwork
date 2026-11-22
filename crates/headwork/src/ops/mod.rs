@@ -30,6 +30,7 @@ pub mod status;
 pub mod tick;
 pub mod title;
 pub mod trust;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 
