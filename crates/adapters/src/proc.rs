@@ -8,7 +8,7 @@
 use std::io;
 use std::process::{Child, Command, ExitStatus};
 
-pub use headwork_core::process::{Liveness, ProcessIdentity};
+pub use headwork_core::process::{Liveness, ProcessIdentity, RecordedPid};
 
 /// Why a process operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -189,6 +189,27 @@ pub fn identify(pid: u32) -> Option<ProcessIdentity> {
 #[must_use]
 pub fn liveness(pid: u32, recorded: Option<&ProcessIdentity>, argv: &[String]) -> Liveness {
     headwork_core::process::judge(recorded, argv, identify(pid))
+}
+
+/// What runs under a session's recorded pid now, judged against what was recorded with it (see
+/// [`RecordedPid::judge`]).
+#[must_use]
+pub fn recorded_liveness(record: &RecordedPid) -> Liveness {
+    record.judge(identify(record.pid))
+}
+
+/// Ends the process tree of a session's recorded pid while the pid still names the recorded process, and never a
+/// program that took the pid over; returns what ran under the pid before.
+///
+/// # Errors
+///
+/// Returns [`ProcError::Tool`] when the system tool cannot run.
+pub fn end_recorded_tree(record: &RecordedPid) -> Result<Liveness, ProcError> {
+    let now = recorded_liveness(record);
+    if now.is_alive() {
+        imp::kill_tree(record.pid)?;
+    }
+    Ok(now)
 }
 
 /// Every running process as `headwork reap` judges them, and whether Git Bash's process list was read.
