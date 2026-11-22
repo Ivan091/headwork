@@ -62,12 +62,12 @@ This placement holds for lead tasks whatever `[layout] mode` says, because a tas
 
 ### The hosts
 
-| | cmux 0.65.2 (this Mac, tried live) | wmux 2.64.2 (Windows, from source, not tried) |
+| | cmux 0.65.2 (this Mac, tried live) | wmux 2.64.3 (Windows, tried live in L5, 2026-11-22) |
 |---|---|---|
-| a workspace per task | `workspace.create {title, cwd, focus:false}` **[V]** | `workspace.create {title, cwd}` via `new-workspace` **[V in use]**; whether it takes focus and which window it opens in is **unverified** |
-| a tab in it | `surface.create {workspace_id, initial_command, focus:false}`: lands in the workspace's pane as a new tab; the selected tab stays the same **[V]** | `agent spawn --workspace W --label L --cmd C` without `--pane` **[V in use: `helper_tab`]** |
-| tab title | `tab.action rename` **[V]** | `rename-surface` **[V in use]** |
-| close one tab | `surface.close {force:true}`; the other tabs stay **[V]** | `close-surface` **[V in use]** |
+| a workspace per task | `workspace.create {title, cwd, focus:false}` **[V]** | `workspace.create {title, cwd}` via `new-workspace` **[V]**: it does not take focus; with one window it opens there (several windows not tried) |
+| a tab in it | `surface.create {workspace_id, initial_command, focus:false}`: lands in the workspace's pane as a new tab; the selected tab stays the same **[V]** | `agent spawn --workspace W --label L --cmd C` without `--pane`: a new tab of the workspace's pane **[V]**, and it becomes the selected tab (cmux keeps the lead's) |
+| tab title | `tab.action rename` **[V]** | `rename-surface` **[V]** |
+| close one tab | `surface.close {force:true}`; the other tabs stay **[V]** | `close-surface`; the other tabs stay, the next one is selected **[V]** |
 | workspace closes | with its last surface, or `workspace.close` **[V]** | `close-workspace` **[V in use]** |
 | groups of workspaces | yes: `workspace.group.*` (section in `docs/cmux.md`) **[V]** | none: no group type or method in the source **[source]** |
 
@@ -212,10 +212,11 @@ line when the task finishes or fails. This is the "task x is finished successful
 | L2 | Placement: the lead's workspace, parts and helpers as tabs, `part_title`, `release`, resume order, retitle; fake-host tests and a live cmux test | 1 |
 | L3 | MCP and rules: `part_spawn`, `part_drop`, scoped `board` and `inbox`, `lead.md`, `{parent}`, the dispatcher `orchestrator.md`, the stop rule for a waiting lead | 1.5 |
 | L4 | Close, tick, board: drop cascade, `orphan-part` and `stray-tab` findings, blocked-part line to the lead, tree `board`, `status` command and tool | 1 |
-| L5 | Trial: one real lead with two parts on cmux, then on wmux; results in `docs/trials/` | 0.5 |
+| L5 | Trial: one real lead with two parts on cmux, then on wmux; results in `docs/trials/` (done: cmux 2026-11-21, wmux 2026-11-22, `docs/trials/e-leads/results.md`) | 0.5 |
 | | Total | about 5 |
 
-L1 first; L2 and L3 can run in parallel after it; L4 after both; L5 last. Once L3 is in, the orchestrator's
+L1 first; L2 and L3 can run in parallel after it; L4 after both; L5 last. All five are done; both trials passed. Still open: the wmux restart check
+(`docs/trials/e-leads/results.md`, "Planned: a worker survives a wmux restart") and the small trial findings. Once L3 is in, the orchestrator's
 behaviour changes for every new task; the answers in section 7 settle what it does.
 
 ## Deferred
