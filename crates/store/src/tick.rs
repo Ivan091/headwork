@@ -388,7 +388,8 @@ impl Store {
         Ok(())
     }
 
-    /// Records a task's pull request, or updates its state.
+    /// Records a task's pull request, or updates its state. A row is the task's and the URL's: another task that names
+    /// the same pull request gets a row of its own.
     ///
     /// # Errors
     ///
@@ -402,16 +403,16 @@ impl Store {
         let tx = self.conn.transaction()?;
         let before: Option<String> = tx
             .query_row(
-                "SELECT state FROM prs WHERE repo = ?1 AND number = ?2",
-                params![pr.repo, pr.number],
+                "SELECT state FROM prs WHERE task_id = ?1 AND url = ?2",
+                params![task.0, pr.url],
                 |row| row.get(0),
             )
             .optional()?;
         tx.execute(
             &format!(
                 "INSERT INTO prs (task_id, repo, number, url, state, checked_at) VALUES (?1, ?2, ?3, ?4, ?5, {NOW})
-                 ON CONFLICT(repo, number) DO UPDATE SET state = excluded.state, url = excluded.url,
-                     checked_at = {NOW}"
+                 ON CONFLICT(task_id, url) DO UPDATE SET state = excluded.state, repo = excluded.repo,
+                     number = excluded.number, checked_at = {NOW}"
             ),
             params![task.0, pr.repo, pr.number, pr.url, pr.state],
         )?;

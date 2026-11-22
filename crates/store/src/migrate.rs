@@ -22,6 +22,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_session_mode.sql"),
     include_str!("../migrations/0015_session_identity.sql"),
     include_str!("../migrations/0016_session_waiting.sql"),
+    include_str!("../migrations/0016_pr_rows_by_task.sql"),
 ];
 
 /// Applies the migrations the database lacks, each in its own immediate transaction.

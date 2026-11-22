@@ -1339,6 +1339,7 @@ fn pr(state: PrState) -> PrInfo {
         number: 5,
         url: PR_URL.to_owned(),
         state,
+        created_at: None,
     }
 }
 
@@ -1478,6 +1479,111 @@ fn an_enterprise_host_pull_request_is_recorded_and_seen_merged_by_its_url() {
         moves,
         ["session-started", "review-opened", "merged", "close"],
         "the merge is seen through the recorded enterprise URL"
+    );
+}
+
+#[test]
+fn a_review_report_matches_the_allowed_repository_whatever_its_case() {
+    let mut w = world("", false);
+    w.start();
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "report",
+        &json!({ "status": "review", "summary": "ready", "pr": "https://github.com/ivan091/DEMO/pull/12" }),
+    );
+    assert!(!is_error && text.contains("in_review"), "{text}");
+    assert_eq!(w.state(), TaskState::InReview, "state");
+}
+
+#[test]
+fn a_new_pull_request_reported_while_in_review_is_recorded_without_a_refusal() {
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    for number in [12, 13] {
+        let (is_error, text) = w.tool(
+            identity.clone(),
+            "report",
+            &json!({ "status": "review", "summary": "ready", "pr": format!("https://github.com/Ivan091/demo/pull/{number}") }),
+        );
+        assert!(!is_error && text.contains("in_review"), "{text}");
+    }
+    assert_eq!(w.state(), TaskState::InReview, "state");
+    assert_eq!(
+        w.store.recorded_prs(w.task.id).unwrap().len(),
+        2,
+        "both are recorded"
+    );
+    let refusals = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "refused")
+        .count();
+    assert_eq!(refusals, 0, "no transition is tried");
+}
+
+#[test]
+fn done_ignores_an_earlier_tasks_merged_pull_request_on_a_reused_branch() {
+    let mut w = world("", false);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    w.prs.set(
+        "sand",
+        PrInfo {
+            created_at: Some("2020-01-01T00:00:00Z".to_owned()),
+            ..pr(PrState::Merged)
+        },
+    );
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({}));
+    assert!(!is_error, "{text}");
+    let moves: Vec<String> = w.transitions().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        moves,
+        ["session-started", "finish"],
+        "the older pull request does not count as this task's merge"
+    );
+    assert!(
+        w.store.recorded_prs(w.task.id).unwrap().is_empty(),
+        "and is not recorded for it"
+    );
+}
+
+#[test]
+fn done_after_a_later_pull_request_closed_unmerged_does_not_read_as_merged() {
+    let second = "https://github.com/Ivan091/demo/pull/6";
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    for url in [PR_URL, second] {
+        let (is_error, text) = w.tool(
+            identity.clone(),
+            "report",
+            &json!({ "status": "review", "summary": "please review", "pr": url }),
+        );
+        assert!(!is_error, "{text}");
+    }
+    w.post("SendMessage", &json!({}));
+    w.prs.set("first", pr(PrState::Merged));
+    w.prs.set(
+        "second",
+        PrInfo {
+            number: 6,
+            url: second.to_owned(),
+            ..pr(PrState::Closed)
+        },
+    );
+    let (is_error, text) = w.tool(identity, "done", &json!({}));
+    assert!(!is_error, "{text}");
+    let moves: Vec<String> = w.transitions().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        moves,
+        [
+            "session-started",
+            "review-opened",
+            "changes-requested",
+            "finish"
+        ],
+        "the newest pull request, closed unmerged, decides"
     );
 }
 

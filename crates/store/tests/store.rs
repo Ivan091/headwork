@@ -16,8 +16,8 @@ use headwork_core::{
     TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
-    BACKUP_DIR, Backup, EventFilter, FABLE_ALLOW, Launched, MIGRATIONS, NewAsk, NewJob, NewRecap,
-    NewSession, NewTask, Place, Store, StoreError, Task,
+    BACKUP_DIR, Backup, EventFilter, FABLE_ALLOW, Launched, MIGRATIONS, NewAsk, NewJob, NewPr,
+    NewRecap, NewSession, NewTask, Place, PrSeen, Store, StoreError, Task, TaskId,
 };
 
 fn config() -> Config {
@@ -1547,7 +1547,7 @@ fn shaped(
     config: &Config,
     project: &str,
     slug: &str,
-    shape: headwork_core::TaskShape<headwork_store::TaskId>,
+    shape: headwork_core::TaskShape<TaskId>,
 ) -> Result<Task, StoreError> {
     let new = NewTask {
         shape,
@@ -1956,5 +1956,187 @@ fn migration_15_dates_recorded_pids_and_backfills_the_end_of_ended_sessions() {
             ("me-sim-d".to_owned(), Some(1_795_165_200)),
         ],
         "the last event, else the start"
+    );
+}
+
+const PR_ROWS_BY_TASK: &str = include_str!("../migrations/0016_pr_rows_by_task.sql");
+
+fn new_pr(repo: &str, number: i64) -> NewPr {
+    NewPr {
+        repo: repo.to_owned(),
+        number,
+        url: format!("https://github.com/{repo}/pull/{number}"),
+    }
+}
+
+fn seen<'a>(pr: &'a NewPr, state: &'a str) -> PrSeen<'a> {
+    PrSeen {
+        repo: &pr.repo,
+        number: pr.number,
+        url: &pr.url,
+        state,
+    }
+}
+
+fn pr_states(store: &Store, task: &Task) -> Vec<(String, String)> {
+    store
+        .recorded_prs(task.id)
+        .unwrap()
+        .into_iter()
+        .map(|pr| (pr.url, pr.state))
+        .collect()
+}
+
+#[test]
+fn two_tasks_that_name_one_pull_request_each_keep_a_row_of_their_own() {
+    let (mut store, config) = store();
+    let old = create(&mut store, &config, "me-sim", "old");
+    let new = create(&mut store, &config, "me-sim", "new");
+    let pr = new_pr("o/r", 71);
+    store
+        .record_report(old.id, "s1", "review", "first", &[], Some(&pr))
+        .unwrap();
+    store
+        .record_pr(old.id, &seen(&pr, "merged"), Actor::Tick)
+        .unwrap();
+    store
+        .record_report(new.id, "s2", "review", "reused", &[], Some(&pr))
+        .unwrap();
+    store
+        .record_pr(new.id, &seen(&pr, "closed"), Actor::Tick)
+        .unwrap();
+    assert_eq!(
+        pr_states(&store, &old),
+        [(pr.url.clone(), "merged".to_owned())],
+        "the first task's row is untouched"
+    );
+    assert_eq!(
+        pr_states(&store, &new),
+        [(pr.url.clone(), "closed".to_owned())],
+        "the second task has its own row"
+    );
+}
+
+#[test]
+fn reporting_a_merged_pull_request_again_keeps_it_merged() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    let pr = new_pr("o/r", 3);
+    store
+        .record_report(task.id, "s", "review", "opened", &[], Some(&pr))
+        .unwrap();
+    assert_eq!(
+        pr_states(&store, &task),
+        [(pr.url.clone(), "open".to_owned())],
+        "a new report records the pull request open"
+    );
+    store
+        .record_pr(task.id, &seen(&pr, "merged"), Actor::Tick)
+        .unwrap();
+    store
+        .record_report(task.id, "s", "review", "again", &[], Some(&pr))
+        .unwrap();
+    assert_eq!(
+        pr_states(&store, &task),
+        [(pr.url.clone(), "merged".to_owned())],
+        "the report does not take it back to open"
+    );
+}
+
+type PrRowFields = (String, i64, String, String);
+
+fn pr_rows(store: &Store, task: TaskId) -> Vec<PrRowFields> {
+    store
+        .recorded_prs(task)
+        .unwrap()
+        .into_iter()
+        .map(|pr| (pr.repo, pr.number, pr.url, pr.state))
+        .collect()
+}
+
+fn pr_row(repo: &str, number: i64, state: &str) -> PrRowFields {
+    (
+        repo.to_owned(),
+        number,
+        format!("https://github.com/{repo}/pull/{number}"),
+        state.to_owned(),
+    )
+}
+
+#[test]
+fn the_pr_rows_migration_moves_rows_named_before_the_re_creation_to_the_archive() {
+    let index = MIGRATIONS
+        .iter()
+        .position(|sql| *sql == PR_ROWS_BY_TASK)
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..index] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", i64::try_from(index).unwrap())
+            .unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO projects (name, main_path, config_hash) VALUES ('me-sim', 'S:/m', 'h');
+             INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+                 VALUES (1, 'me-sim', 'old', 'scene', 'closed', 'opus', 'b.md', '2026-11-22T08:11:05.502Z', 't'),
+                        (2, 'me-sim', 'new', 'scene', 'working', 'opus', 'b.md', '2026-11-22T09:00:00.000Z', 't'),
+                        (3, 'me-sim', 'quiet', 'scene', 'closed', 'opus', 'b.md', '2026-11-20T10:00:00.000Z', 't');
+             INSERT INTO prs (id, task_id, repo, number, url, state, checked_at) VALUES
+                 (1, 1, 'Ivan091/headwork', 71, 'https://github.com/Ivan091/headwork/pull/71', 'open', NULL),
+                 (2, 1, 'Ivan091/headwork', 1, 'https://github.com/Ivan091/headwork/pull/1', 'merged', 't'),
+                 (3, 2, 'Ivan091/headwork', 7, 'https://github.com/Ivan091/headwork/pull/7', 'open', NULL),
+                 (4, 1, 'o/r', 72, 'https://github.com/o/r/pull/72', 'merged', 't'),
+                 (5, 3, 'Ivan091/headwork', 40, 'https://github.com/Ivan091/headwork/pull/40', 'merged', 't');
+             INSERT INTO events (at, actor, task_id, session_id, type, data) VALUES
+                 ('2026-11-22T08:22:17.160Z', 'worker', 1, 's', 'report', '{"pr":"https://github.com/Ivan091/headwork/pull/71"}'),
+                 ('2026-11-22T08:30:00.000Z', 'worker', 1, 's', 'report', '{"pr":"https://github.com/o/r/pull/72"}'),
+                 ('2026-11-22T08:52:31.699Z', 'worker', 1, 's', 'report', '{"pr":"https://github.com/Ivan091/headwork/pull/1"}'),
+                 ('2026-11-22T09:10:00.000Z', 'worker', 2, 's', 'report', '{"pr":"https://github.com/Ivan091/headwork/pull/7"}');"#,
+        )
+        .unwrap();
+    }
+    let mut store = Store::open(&path).unwrap();
+    let (old, new, quiet) = (TaskId(1), TaskId(2), TaskId(3));
+    assert_eq!(
+        pr_rows(&store, old),
+        [
+            pr_row("Ivan091/headwork-archive", 71, "open"),
+            pr_row("Ivan091/headwork", 1, "merged"),
+            pr_row("o/r", 72, "merged"),
+        ],
+        "a row first named before the re-creation moves; one named after and other repositories stay"
+    );
+    assert_eq!(
+        pr_rows(&store, new),
+        [pr_row("Ivan091/headwork", 7, "open")],
+        "a task of the new repository keeps its row"
+    );
+    assert_eq!(
+        pr_rows(&store, quiet),
+        [pr_row("Ivan091/headwork-archive", 40, "merged")],
+        "a row no event names moves when its task was queued before the re-creation"
+    );
+    let moved = store
+        .events(EventFilter {
+            task: None,
+            limit: 100,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "pr-moved")
+        .count();
+    assert_eq!(moved, 2, "each move is logged");
+    let reused = new_pr("Ivan091/headwork", 71);
+    store
+        .record_report(new, "s", "review", "reused number", &[], Some(&reused))
+        .unwrap();
+    assert_eq!(
+        pr_rows(&store, new).len(),
+        2,
+        "a new pull request with an archived number gets a row of its own"
     );
 }

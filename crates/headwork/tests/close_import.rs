@@ -1132,6 +1132,7 @@ fn merged_pr(state: headwork_adapters::git::PrState) -> headwork_adapters::git::
         number: 7,
         url: "https://github.com/acme/demo/pull/7".to_owned(),
         state,
+        created_at: None,
     }
 }
 

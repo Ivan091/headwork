@@ -265,6 +265,7 @@ fn pr(state: PrState) -> PrInfo {
         number: 7,
         url: "https://github.com/acme/demo/pull/7".to_owned(),
         state,
+        created_at: None,
     }
 }
 
@@ -1654,6 +1655,7 @@ fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() 
         number: 48,
         url: "https://github.com/acme/demo/pull/48".to_owned(),
         state: PrState::Open,
+        created_at: None,
     };
     w.store
         .record_pr(
