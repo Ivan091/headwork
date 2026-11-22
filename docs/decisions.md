@@ -1009,3 +1009,11 @@ and the reason.
   or event word that older builds would fail to parse: events are logged as `user`; the host notification, the
   standing finding and the orchestrator's prompt line wait for step 6. `update` takes `--dir` like `install`, which
   lets tests point it away from `~/.local/bin`.
+- 2026-11-22 The GitHub gate is the required pull request check; this replaces "No CI on GitHub" (2026-11-21), whose
+  cost reason went with the private repository: standard runners are free for a public one. A ruleset on `master`
+  requires `gate (windows-latest)` and `gate (macos-latest)`, and delivery waits for them with `gh pr checks <url>
+  --watch --fail-fast` before `gh pr merge`, since `ship` would otherwise merge before CI ends (PR #3 merged green, but
+  nothing would have held a red one). Locally a worker runs `scripts/check.sh --quick` (fmt, clippy, line length,
+  attribution, comment ban) and the tests of the crates it changed; tests and docs on both systems run in CI. The
+  comment ban stays local only, since its checker lives in the user config. `gate.yml` cancels an older run of the same
+  pull request.

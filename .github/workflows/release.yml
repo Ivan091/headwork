@@ -29,7 +29,7 @@ jobs:
       HEADWORK_VERSION: 0.1.${{ github.run_number }}
       HEADWORK_COMMIT: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
