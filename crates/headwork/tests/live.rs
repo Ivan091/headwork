@@ -87,6 +87,7 @@ fn the_tick_sees_a_pane_no_task_owns_in_the_real_host() {
                 home: &home,
                 exe: Path::new("headwork"),
             },
+            slots: &headwork::ops::waiting::FakeSlots::default(),
         },
     );
     host.close_workspace(&workspace).unwrap();

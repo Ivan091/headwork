@@ -14,6 +14,7 @@ mod records;
 mod reports;
 mod sessions;
 mod tick;
+mod waiting;
 
 use std::path::Path;
 
@@ -37,6 +38,7 @@ pub use records::{
 pub use reports::{AddedRule, EVENT_REPORT, NewPr};
 pub use sessions::{EndedSession, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
+pub use waiting::{EVENT_SESSION_WAITING, WaitingCandidate};
 
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";

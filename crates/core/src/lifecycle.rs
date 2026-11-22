@@ -43,10 +43,15 @@ pub enum FableGate {
 /// Facts for `queued` → `spawning`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartFacts {
-    /// Tasks on the machine that take a worker slot now.
+    /// Tasks on the machine that take a worker slot now: sessions starting, working or closing, not those that wait on
+    /// the user and run nothing else (`crate::slots`).
     pub live_workers: u32,
+    /// Sessions that wait on the user, run nothing else and so gave up their slot.
+    pub waiting_workers: u32,
     /// The machine's `max_workers`.
     pub max_workers: u32,
+    /// The machine's `idle_overflow`: how many sessions past `max_workers` waiting ones may leave open.
+    pub idle_overflow: u32,
     /// Tasks of the same project that take a slot now.
     pub project_live: u32,
     /// The project's own cap, if it has one.
@@ -307,6 +312,19 @@ pub enum Refusal {
         /// The machine's cap.
         max: u32,
     },
+    /// Slots are free only because sessions wait on the user, and all sessions together reach `max_workers` plus
+    /// `idle_overflow`.
+    #[error(
+        "{waiting} waiting session(s) gave up their slots, but all sessions already reach {max} plus the overflow of {overflow}"
+    )]
+    OverflowFull {
+        /// The machine's cap.
+        max: u32,
+        /// `[machine] idle_overflow`.
+        overflow: u32,
+        /// The sessions that wait on the user.
+        waiting: u32,
+    },
     /// The project's slots are taken.
     #[error("the project's {cap} slots are taken")]
     ProjectCapReached {
@@ -563,6 +581,18 @@ pub const fn check_start(facts: &StartFacts) -> Result<(), Refusal> {
     if facts.live_workers >= facts.max_workers {
         return Err(Refusal::NoFreeSlot {
             max: facts.max_workers,
+        });
+    }
+    if !crate::slots::has_room(
+        facts.live_workers,
+        facts.waiting_workers,
+        facts.max_workers,
+        facts.idle_overflow,
+    ) {
+        return Err(Refusal::OverflowFull {
+            max: facts.max_workers,
+            overflow: facts.idle_overflow,
+            waiting: facts.waiting_workers,
         });
     }
     if let Some(cap) = facts.project_cap
