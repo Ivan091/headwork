@@ -967,22 +967,24 @@ fn record_failure(
         error,
     };
     state.result(now, report.to_string());
+    state.save(env.home)?;
     if kind == FailureKind::Deterministic || next.attempts >= REPORT_TRANSIENT_FROM {
         let told = Told {
             tag,
             kind,
             step,
             data: &data,
-            report: &report,
-            now,
         };
-        if let Some(store) = store {
-            tell_failure(env, store, state, &told)?;
+        let new = if let Some(store) = store {
+            tell_failure(env, store, &told)?
         } else {
-            tell_failure(env, &mut env.home.open_store()?, state, &told)?;
+            tell_failure(env, &mut env.home.open_store()?, &told)?
+        };
+        if new {
+            state.notice(now, report.to_string());
+            state.save(env.home)?;
         }
     }
-    state.save(env.home)?;
     Ok(report)
 }
 
@@ -992,18 +994,11 @@ struct Told<'a> {
     kind: FailureKind,
     step: &'a str,
     data: &'a serde_json::Value,
-    report: &'a UpdateReport,
-    now: u64,
 }
 
-/// Logs `update-failed` and raises the standing finding; the first time it stands, also a host notification and a
-/// notice for the orchestrator.
-fn tell_failure(
-    env: &UpdateEnv<'_>,
-    store: &mut Store,
-    state: &mut UpdateState,
-    told: &Told<'_>,
-) -> Result<()> {
+/// Logs `update-failed` and raises the standing finding; the first time it stands, also sends a host notification and
+/// returns `true`, so the caller leaves a notice for the orchestrator.
+fn tell_failure(env: &UpdateEnv<'_>, store: &mut Store, told: &Told<'_>) -> Result<bool> {
     store.append_event(env.actor, None, None, "update-failed", told.data)?;
     let key = failure_key(told.tag, told.kind);
     store.resolve_findings(
@@ -1011,7 +1006,8 @@ fn tell_failure(
         std::slice::from_ref(&key),
         env.actor,
     )?;
-    if store.raise_finding(&key, FindingId::UpdateFailed, None, told.data, env.actor)? {
+    let new = store.raise_finding(&key, FindingId::UpdateFailed, None, told.data, env.actor)?;
+    if new {
         let release = told
             .tag
             .map_or_else(|| "the newest release".to_owned(), Version::tag);
@@ -1021,9 +1017,8 @@ fn tell_failure(
                 told.step
             )));
         }
-        state.notice(told.now, told.report.to_string());
     }
-    Ok(())
+    Ok(new)
 }
 
 /// The key of the standing `update-failed` finding: one per failed release, one for transient failures.
