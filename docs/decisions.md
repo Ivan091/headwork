@@ -969,3 +969,10 @@ and the reason.
   a copy whose `user_version` is no longer the old one is thrown away. A failed copy is reported (`Store::backup`,
   printed by `install`) but does not stop the migration: a store the new build refuses would stop every hook. No event
   is logged: no actor fits a store open, and a new actor word would break older builds reading the log.
+- 2026-11-22 The version in the binary (autoupdate step 2, `crates/headwork/src/version.rs`): `--version` prints
+  `headwork <version> (<commit>, schema <n>)`, the version and commit from `HEADWORK_VERSION` and `HEADWORK_COMMIT` read
+  with `option_env!` at build time (cargo rebuilds when they change), `0.1.0 (dev, ...)` when unset. Environment
+  variables the release workflow sets rather than a `build.rs` that runs git: a `build.rs` reruns only when `HEAD` moves,
+  so it would call a dirty tree clean, and it would relink every worktree build on each commit. The string is built at
+  run time (clap's `string` feature), so the CLI parses through `Cli::command().version(..)` and `from_arg_matches`;
+  usage errors still exit 2, which the launcher's exit hand-off relies on. `doctor`'s `binary` check shows it.

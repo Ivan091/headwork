@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use headwork::home::Home;
 use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
@@ -443,7 +443,10 @@ fn with_default_command(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsSt
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(with_default_command(std::env::args_os().collect()));
+    let matches = Cli::command()
+        .version(headwork::version::text())
+        .get_matches_from(with_default_command(std::env::args_os().collect()));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let mut out = io::stdout().lock();
     match run(cli, &mut out) {
         Ok(code) => code,

@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive", "string"] }
 headwork-adapters.workspace = true
 headwork-core.workspace = true
 headwork-store.workspace = true

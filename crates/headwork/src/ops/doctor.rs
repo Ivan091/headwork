@@ -311,7 +311,7 @@ fn deprecated_keys_check(d: &Doctor<'_>) -> Check {
 }
 
 fn binary(d: &Doctor<'_>) -> Check {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::version::text();
     if d.exe.is_file() {
         Check::ok(
             "binary",
