@@ -410,6 +410,50 @@ text_enum!(
     }
 );
 
+text_enum!(
+    /// Whose tokens a usage row counts, fixed when the row is written (`docs/usage.md`, section 3).
+    UsageRole, "usage role" {
+        /// The orchestrator session.
+        Orchestrator => "orchestrator",
+        /// A lead task's session.
+        Lead => "lead",
+        /// A part of a lead.
+        Part => "part",
+        /// A plain worker task's session.
+        Worker => "worker",
+        /// A helper session a worker opened with `helper_tab`.
+        Helper => "helper",
+        /// A Claude session headwork did not start.
+        Unmanaged => "unmanaged",
+    }
+);
+
+text_enum!(
+    /// What `headwork usage` groups its totals by.
+    UsageGroup, "usage grouping" {
+        /// The task's project.
+        Project => "project",
+        /// The task, `<project>-<slug>`.
+        Task => "task",
+        /// The task's kind.
+        Kind => "kind",
+        /// The model that answered.
+        Model => "model",
+        /// The effort level of the turn.
+        Effort => "effort",
+        /// The usage role.
+        Role => "role",
+        /// The subagent type; the session itself is `main`.
+        Agent => "agent",
+        /// The session's folder.
+        Folder => "folder",
+        /// The UTC day.
+        Day => "day",
+        /// The Claude session.
+        Session => "session",
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

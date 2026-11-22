@@ -38,6 +38,7 @@ use headwork::ops::update::{
     LOCK_WAIT, SystemBuilds, SystemClock, ThisBuild, UpdateEnv, UpdateLock, UpdateOptions, after,
     update,
 };
+use headwork::ops::usage::{self, UsageOptions};
 use headwork::ops::waiting::LiveSlots;
 use headwork::ops::{Env, host_for};
 use headwork_adapters::disk::SystemDisks;
@@ -316,6 +317,35 @@ enum Command {
         /// such as `90m`, `24h`, `7d`.
         #[arg(long)]
         since: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tokens spent by every Claude session, read from Claude Code's transcripts: one line per group, a column per token
+    /// type. Reads the transcripts changed since the last read first.
+    Usage {
+        /// Group by: project, task, kind, model, effort, role, agent, folder, day or session.
+        #[arg(long, default_value = "task")]
+        by: String,
+        /// Only responses at or after this time: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now
+        /// such as `24h`, `7d`.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only this task and its parts, as `<project>-<slug>` or `<project>/<slug>`.
+        #[arg(long)]
+        task: Option<String>,
+        /// Break sessions headwork did not start down like the others, instead of one `unmanaged` line.
+        #[arg(long)]
+        unmanaged: bool,
+        /// Read every transcript on disk from its start (safe to repeat: each response is stored once).
+        #[arg(long)]
+        backfill: bool,
+        /// Report what is stored without reading the transcripts first.
+        #[arg(long, conflicts_with = "backfill")]
+        no_read: bool,
+        /// List what transcripts cannot show, so the totals are not read as complete.
+        #[arg(long)]
+        gaps: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -647,6 +677,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Retitle { .. }
         | Command::Recap { .. }
         | Command::ShadowReport { .. }
+        | Command::Usage { .. }
         | Command::Clean { .. }
         | Command::Reap { .. }) => other,
     };
@@ -687,6 +718,25 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
         Command::ShadowReport { since, json } => {
             shadow_command(&store, &ctx, since.as_deref(), json, out)
+        }
+        Command::Usage {
+            by,
+            since,
+            task,
+            unmanaged,
+            backfill,
+            no_read,
+            gaps,
+            json,
+        } => {
+            let options = UsageOptions {
+                by: by.parse()?,
+                since,
+                task,
+                unmanaged,
+            };
+            let read = (!no_read).then_some(backfill);
+            usage_command(&mut store, &ctx, &options, read, gaps, json, out)
         }
         Command::Clean { dry_run, gc, json } => {
             clean_command(&mut store, &ctx, CleanOptions { dry_run, gc }, json, out)
@@ -1756,6 +1806,38 @@ fn shadow_command(
         json_out(out, &report)?;
     } else {
         out.write_all(render::shadowed(&report).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn usage_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    options: &UsageOptions,
+    read: Option<bool>,
+    gaps: bool,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let ingested = read
+        .map(|from_start| {
+            let files = usage::transcripts(ctx.home.claude_dir());
+            usage::ingest(store, &files, from_start)
+        })
+        .transpose()?;
+    let mut report = usage::report(store, options)?;
+    report.ingest = ingested;
+    if json {
+        let mut value = serde_json::to_value(&report)?;
+        if gaps {
+            value["gaps"] = serde_json::json!(usage::GAPS);
+        }
+        json_out(out, &value)?;
+    } else {
+        out.write_all(render::usage(&report).as_bytes())?;
+        if gaps {
+            out.write_all(render::usage_gaps(usage::GAPS).as_bytes())?;
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

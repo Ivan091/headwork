@@ -1,6 +1,6 @@
 # Usage: tokens spent by every Claude session
 
-Status: plan of 2026-11-22, not built. The user's request: "a logging system to track how much tokens are spent by
+Status: plan of 2026-11-22; U1 built (`headwork usage`, migration 0018), U2 to U4 to come. The user's request: "a logging system to track how much tokens are spent by
 type and so on". The user's answers to the open points are in section 10 and are worked into the sections above.
 
 ## 1. What to answer
@@ -56,8 +56,7 @@ past as far back as Claude keeps them. Two other sources were weighed:
 
 ## 3. Store: one new migration
 
-Numbers and ids only, never message text. The migration takes the next free number when U1 is built
-(`docs/review-flows.md` plans 0015 too).
+Numbers and ids only, never message text. The migration is `0018_usage.sql`.
 
 ```sql
 CREATE TABLE usage (
@@ -112,7 +111,7 @@ CREATE TABLE usage_files (
     agent_id TEXT,
     read_to INTEGER NOT NULL,
     size INTEGER NOT NULL,
-    mtime TEXT NOT NULL,
+    mtime_ms INTEGER NOT NULL,
     read_at TEXT NOT NULL
 );
 ```

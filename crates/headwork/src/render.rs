@@ -16,8 +16,11 @@ use headwork::ops::slashed;
 use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::status::StatusLine;
 use headwork::ops::tick::TickReport;
+use headwork::ops::usage::UsageReport;
 use headwork_core::reap::{Reason as ReapReason, Spare};
+use headwork_core::usage::short_count;
 use headwork_core::{PlaceKind, TaskShape};
+use headwork_store::UsageTotal;
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// What an import found and did.
@@ -551,6 +554,123 @@ pub(crate) fn shadowed(report: &ShadowReport) -> String {
     }
     if report.rules.is_empty() {
         text.push_str("no rule would have denied anything\n");
+    }
+    text
+}
+
+fn usage_row(text: &mut String, row: &UsageTotal, width: usize) {
+    let tokens = &row.tokens;
+    let hit = tokens
+        .cache_hit_permille()
+        .map_or_else(|| "-".to_owned(), |permille| format!("{}%", permille / 10));
+    let web = tokens.web_searches.saturating_add(tokens.web_fetches);
+    let _ = writeln!(
+        text,
+        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}",
+        row.key,
+        short_count(row.responses),
+        short_count(tokens.input),
+        short_count(tokens.cache_write_5m),
+        short_count(tokens.cache_write_1h),
+        short_count(tokens.cache_read),
+        short_count(tokens.output),
+        short_count(tokens.thinking),
+        short_count(tokens.total()),
+        hit,
+        short_count(web),
+    );
+}
+
+/// The token totals of `headwork usage`, one line per group and the sum.
+#[must_use]
+pub(crate) fn usage(report: &UsageReport) -> String {
+    let mut text = String::new();
+    if let Some(ingest) = &report.ingest {
+        let _ = writeln!(
+            text,
+            "read {} of {} transcripts: {} response lines, {} new responses{}",
+            ingest.read,
+            ingest.files,
+            ingest.responses,
+            ingest.inserted,
+            if ingest.retagged > 0 {
+                format!(", {} re-tagged", ingest.retagged)
+            } else {
+                String::new()
+            }
+        );
+        for error in &ingest.errors {
+            let _ = writeln!(text, "  unreadable: {error}");
+        }
+    }
+    let scope = [
+        report
+            .task
+            .as_ref()
+            .map(|task| format!("task {task} and its parts")),
+        report.since.as_ref().map(|since| format!("since {since}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let _ = writeln!(
+        text,
+        "tokens by {}{}",
+        report.by,
+        if scope.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", scope.join(", "))
+        }
+    );
+    if report.rows.is_empty() {
+        text.push_str(
+            "no usage recorded
+",
+        );
+        return text;
+    }
+    let width = report
+        .rows
+        .iter()
+        .map(|row| row.key.chars().count())
+        .chain([report.by.as_str().len(), "total".len()])
+        .max()
+        .unwrap_or(0);
+    let _ = writeln!(
+        text,
+        "{:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>4}  {:>4}",
+        report.by.as_str(),
+        "resp",
+        "input",
+        "cw5m",
+        "cw1h",
+        "cread",
+        "output",
+        "think",
+        "total",
+        "hit",
+        "web"
+    );
+    for row in &report.rows {
+        usage_row(&mut text, row, width);
+    }
+    if report.rows.len() > 1 {
+        usage_row(&mut text, &report.total, width);
+    }
+    text
+}
+
+/// What transcripts cannot show.
+#[must_use]
+pub(crate) fn usage_gaps(gaps: &[&str]) -> String {
+    let mut text = String::from(
+        "
+not counted:
+",
+    );
+    for gap in gaps {
+        let _ = writeln!(text, "  - {gap}");
     }
     text
 }

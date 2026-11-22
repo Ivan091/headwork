@@ -333,3 +333,94 @@ fn update_refuses_a_tag_that_is_not_a_release() {
         stderr(&output)
     );
 }
+
+fn assistant_line(id: &str, block: u32, input: u64, output: u64) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "uuid": format!("u{id}{block}"),
+        "timestamp": "2026-11-22T10:00:00.000Z",
+        "effort": "high",
+        "cwd": "S:/w",
+        "message": {
+            "id": id,
+            "model": "claude-opus-5-5",
+            "usage": {
+                "input_tokens": input,
+                "cache_read_input_tokens": 100,
+                "output_tokens": output,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 50}
+            }
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn usage_reads_transcripts_once_and_groups_them() {
+    let home = home_with_fixture();
+    let folder = home.path().join(".claude/projects/S--w");
+    let subagents = folder.join("0a/subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    let main = [
+        assistant_line("m1", 1, 10, 5),
+        assistant_line("m1", 2, 10, 5),
+        r#"{"type":"user","message":{"role":"user","content":"hi"}}"#.to_owned(),
+        assistant_line("m2", 1, 1, 1),
+    ];
+    std::fs::write(
+        folder.join("0a.jsonl"),
+        format!("{}\n{{\"type\":\"assis", main.join("\n")),
+    )
+    .unwrap();
+    std::fs::write(
+        subagents.join("agent-x1.jsonl"),
+        assistant_line("m3", 1, 2, 2) + "\n",
+    )
+    .unwrap();
+    std::fs::write(
+        subagents.join("agent-x1.meta.json"),
+        r#"{"agentType":"Explore"}"#,
+    )
+    .unwrap();
+
+    let output = headwork(
+        home.path(),
+        &["usage", "--by", "agent", "--unmanaged", "--json"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(
+        json["ingest"]["inserted"], 3,
+        "three responses, the half line left: {json}"
+    );
+    assert_eq!(json["total"]["responses"], 3, "{json}");
+    assert_eq!(json["total"]["input"], 13, "{json}");
+    assert_eq!(json["total"]["cache_write_1h"], 150, "{json}");
+    let keys: Vec<&str> = json["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["main", "Explore"], "the session and its subagent");
+
+    let again = headwork(home.path(), &["usage", "--by", "role"]);
+    assert!(again.status.success(), "{}", stderr(&again));
+    let text = stdout(&again);
+    assert!(
+        text.starts_with("read 0 of 2 transcripts"),
+        "nothing new: {text}"
+    );
+    assert!(text.contains("\nunmanaged "), "one unmanaged line: {text}");
+
+    let backfill = headwork(home.path(), &["usage", "--backfill", "--gaps"]);
+    let text = stdout(&backfill);
+    assert!(
+        text.contains("4 response lines, 0 new responses"),
+        "a backfill counts nothing twice: {text}"
+    );
+    assert!(text.contains("not counted:"), "gaps listed: {text}");
+
+    let wrong = headwork(home.path(), &["usage", "--by", "colour"]);
+    assert!(!wrong.status.success(), "an unknown grouping is refused");
+}

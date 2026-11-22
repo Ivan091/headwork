@@ -15,6 +15,7 @@ pub mod process;
 pub mod reap;
 pub mod slots;
 pub mod update;
+pub mod usage;
 pub mod user_go;
 pub mod vocabulary;
 pub mod watch;
@@ -37,5 +38,6 @@ pub use names::{
 pub use platform::Platform;
 pub use vocabulary::{
     Actor, AskKind, AskState, Effort, FindingId, JobState, MachineMode, Model, PermissionMode,
-    PlaceKind, RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord,
+    PlaceKind, RecapKind, Role, RuleId, SessionState, TaskState, UnknownWord, UsageGroup,
+    UsageRole,
 };
