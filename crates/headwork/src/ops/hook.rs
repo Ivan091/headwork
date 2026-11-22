@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::{Choice, SurfaceId, TerminalHost};
-use headwork_core::config::{Delivery, ProjectConfig, PushMode, WorktreeCommand};
+use headwork_core::config::{Delivery, ProjectConfig, PushMode, REVIEW_KIND, WorktreeCommand};
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::grants::brief_grants;
 use headwork_core::guard::stop::{StopFacts, check_stop};
@@ -21,12 +21,14 @@ use headwork_core::guard::{
     SimpleCommand, ToolCall, check_tool, commands, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
+use headwork_core::review::{ParsedCommand, parse_command};
 use headwork_core::{
-    Actor, AskKind, Config, PermissionMode, Role, SessionState, TaskState, is_orchestrator_address,
+    Actor, AskKind, Config, PermissionMode, ReviewState, Role, SessionState, TaskState,
+    is_orchestrator_address,
 };
 use headwork_store::{
     EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk,
-    Store, StoreError, Task,
+    ReviewError, Store, StoreError, Task,
 };
 use serde_json::{Value, json};
 
@@ -364,6 +366,9 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         lenient(store.transition(task.id, &Trigger::AskAnswered, Actor::Hook))?;
     }
     let mut waiting = waiting_parts(store, call.task)?;
+    if !text.starts_with("<cross-session-message") && !notification {
+        waiting.push_str(&review_trigger(store, call, text)?);
+    }
     if call.session.role == Role::Orchestrator {
         waiting.push_str(&update_notices(call.env.home));
     }
@@ -381,6 +386,62 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         "headwork: your rules changed (version {version}); they replace the earlier ones.\n\n{rules}{waiting}"
     );
     Ok(HookReply::context(HookEvent::UserPromptSubmit, &text))
+}
+
+/// The user's `review [<flow>] <level> [<focus>]` in a lead's tab (`docs/review-flows.md`, section 3): stores a
+/// `requested` review and tells the lead to call `review_start`. A near miss gets a hint, a review already open its
+/// state, and a flow that does not load its problems; no review is stored then. Empty for every other prompt and
+/// session, and while `[reviews] enabled` is off.
+fn review_trigger(store: &mut Store, call: &Call<'_>, prompt: &str) -> Result<String> {
+    let config = call.env.config;
+    let Some(task) = call.task.filter(|task| task.shape.is_lead()) else {
+        return Ok(String::new());
+    };
+    if !config.reviews.enabled {
+        return Ok(String::new());
+    }
+    let command = match parse_command(prompt) {
+        ParsedCommand::Other => return Ok(String::new()),
+        ParsedCommand::NearMiss(hint) => {
+            return Ok(format!(
+                "\nheadwork: this looks like a review request but is not one, so no review started. {hint}\n"
+            ));
+        }
+        ParsedCommand::Review(command) => command,
+    };
+    let flow = command.flow.as_ref().map_or_else(
+        || config.reviews.flow_for(&task.kind).to_owned(),
+        ToString::to_string,
+    );
+    let allowed = config.project(task.project()).map_or_else(
+        || config.models.allowed.clone(),
+        |project| config.allowed_models(project),
+    );
+    if let Err(problem) = super::flows::load_flow(call.env.home.root(), &flow, &allowed) {
+        return Ok(format!(
+            "\nheadwork: the user asked for a review, but {problem}; no review started. Tell the user.\n"
+        ));
+    }
+    let level = command.level;
+    match store.request_review(task.id, &flow, level, &command.focus, Actor::Hook) {
+        Ok(review) => {
+            let focus = if command.focus.is_empty() {
+                String::new()
+            } else {
+                format!(" Focus: {}.", command.focus)
+            };
+            Ok(format!(
+                "\nheadwork: the user asked for a level-{level} review (review {}) with the flow `{flow}`.{focus} Commit your \
+                 work, then call the headwork `review_start` tool now.\n",
+                review.id
+            ))
+        }
+        Err(ReviewError::Running { id, state }) => Ok(format!(
+            "\nheadwork: the user asked for a review, but review {id} of this task is still {state}; tell the user it \
+             must finish first. No new review started.\n"
+        )),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// For a lead, one line per part that waits on the user (its state is `needs_user` or an ask of it waits), so the
@@ -493,6 +554,7 @@ pub fn scope_for(
                 scope.fable_allowed = store.fable_allowed(task.id)?;
                 scope.allowed_user_only = store.user_only_allowed(task.id)?;
                 scope.task_name = Some(task.name.to_string());
+                scope.reviewer = task.kind == REVIEW_KIND;
                 if let Some(project) = config.project(task.project()) {
                     let main = env.home.expand(&project.main);
                     writable.push(GuardPath::new(&slashed(&main.join(SUBAGENT_WORKTREES))));
@@ -1047,6 +1109,14 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
         },
         user_present: store
             .user_prompted_within(&call.session.id, call.env.config.hooks.push_window_secs)?,
+        review_requested: match call.task {
+            Some(task) if task.shape.is_lead() && call.env.config.reviews.enabled => {
+                store.open_review(task.id)?.is_some_and(|review| {
+                    review.state == ReviewState::Requested && review.task_id == task.id
+                })
+            }
+            Some(_) | None => false,
+        },
         last_message,
     };
     let decision = check_stop(&facts);

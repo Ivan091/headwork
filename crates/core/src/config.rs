@@ -309,6 +309,9 @@ pub struct Config {
     /// Token usage: how long per-response rows stay and the price table for the estimate (`docs/usage.md`).
     #[serde(default)]
     pub usage: crate::usage::UsageConfig,
+    /// Reviews on the user's word (`docs/review-flows.md`).
+    #[serde(default)]
+    pub reviews: ReviewsConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -699,6 +702,45 @@ pub struct LeadsConfig {
     /// A lead asks the user before its task closes: its own close and the tick's merged-grace close wait for the
     /// user's go on an ask headed `Close` (`docs/decisions.md`, 2026-11-21, leads ask before closing).
     pub ask_before_close: bool,
+}
+
+/// The kind of the part that runs a review: the reviewer lead (`docs/review-flows.md`).
+pub const REVIEW_KIND: &str = "review";
+
+/// The flow a review takes when neither the user nor `[reviews] flows` names one.
+pub const DEFAULT_FLOW: &str = "code";
+
+/// `[reviews]`: reviews the user asks for with `review [<flow>] <level>` in a lead's tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReviewsConfig {
+    /// The trigger works and the review tools are offered. Off until the review loop is built.
+    pub enabled: bool,
+    /// The model the reviewer lead runs: it coordinates; the flow's nodes carry the judgement.
+    pub lead_model: Model,
+    /// The default flow by task kind; a kind not listed takes [`DEFAULT_FLOW`].
+    pub flows: BTreeMap<String, String>,
+    /// At most this many nodes running at once per review.
+    pub parallel: NonZeroU32,
+}
+
+impl ReviewsConfig {
+    /// The flow for a task of this kind when the user named none.
+    #[must_use]
+    pub fn flow_for(&self, kind: &str) -> &str {
+        self.flows.get(kind).map_or(DEFAULT_FLOW, String::as_str)
+    }
+}
+
+impl Default for ReviewsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            lead_model: Model::Sonnet,
+            flows: BTreeMap::new(),
+            parallel: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
+        }
+    }
 }
 
 /// The task kind whose lead closes without the user's go, whatever `[leads] ask_before_close` says

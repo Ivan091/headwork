@@ -960,6 +960,17 @@ and the reason.
   round fixed something (no fix, nothing new to review); a state step from `rechecking` with nothing left to do stays in
   `rechecking` until `review_finish`, and `finish` also ends a delivered round that found nothing. A home flow is named
   by its file, and a `name` that differs from the file name is a `flow check` problem.
+- 2026-11-22 Review flows R2, the start. The lead's instructions for a review are not a section of `rules/lead.md` as the
+  plan said: worker and lead rules together already sit just under the 10,000-character hook limit (`CONTEXT_LIMIT`), and
+  one more section turned a lead's rules into the short pointer. The trigger's context line and `review_start`'s result
+  (`LEAD_NEXT`) carry them instead. The review worktree sits where the project's `worktree_path` puts the part's slug
+  (`<main>-<lead slug>-review`, `-review-2` for a later review), so the spawn finds it made and the store records it like
+  any part's; the plan's `<worktree_path>-review-<n>` is the same place in other words. The base is the merge base of HEAD
+  with the first of `origin/HEAD`, `origin/master`, `origin/main`, `master`, `main` that resolves. Until R3 the reviewer
+  lead walks the flow by hand: its brief lists every node at the level with its model, inputs and exact prompt.
+  `reviewer-write` also refuses `gh pr` writes (create, merge, edit, close, comment, review), and a review part may
+  write only the temp folder (where the scratchpad lives), not its own worktree. `review_start` is listed for every lead
+  and refuses while `[reviews] enabled` is off.
 - 2026-11-22 Closed sessions leave the Claude app. Closed workers stayed listed in the Claude app (Remote Control)
   because `close` ended `claude` with `taskkill /T /F`, which skips the teardown where Claude Code archives its Remote
   Control session at claude.ai (`[remote-bridge] Torn down (archive=200)` in its debug log). A trial with throwaway

@@ -98,6 +98,16 @@ Review flows (`docs/review-flows.md`) start with R1: the pure model in `core/src
 dispute rule), migration 0019 with `Store::request_review`, `move_review` and the node and finding queries
 (`store/src/reviews.rs`), and `ops/flows.rs`: the built-in flows embedded from `flows/` (`BUILTIN_FILES`; a test keeps
 it in step with the folder), overridden or added by `<home>/flows/<name>.toml`, checked by `headwork flow check`.
+R2 starts reviews: `[reviews]` (`enabled`, off for now; `lead_model`; `flows` by task kind; `parallel`), the
+`UserPromptSubmit` hook's trigger in a lead's tab (`review_trigger` in `ops/hook.rs`: the user's own prompt only, a
+`requested` review and a line telling the lead to call `review_start`; a near miss, an unknown flow or a review already
+open get a line and no review), the lead tool `review_start` (`ops/review.rs`: refused without a request
+`review-unrequested` or with uncommitted changes `review-dirty`; pins HEAD and the merge base with the default branch,
+makes a detached worktree at the part's `worktree_path` with `git worktree add --detach`, starts the part
+`<slug>-review` of kind `review` (`REVIEW_KIND`) on `lead_model` with a brief holding every node's exact prompt from
+`core/src/review/prompt.rs`), `rules/reviewer.md` for that part, the guard rule `reviewer-write` (a review part edits
+only the temp folder and runs no git write, `gh pr` write or build) and the stop rule `review-unstarted`; a review
+part's worktree is removed with `git worktree remove --force`, never the project's command.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

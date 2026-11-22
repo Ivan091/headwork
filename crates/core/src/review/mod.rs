@@ -6,6 +6,7 @@
 
 mod command;
 mod flow;
+mod prompt;
 mod schedule;
 mod state;
 
@@ -18,6 +19,7 @@ pub use flow::{
     After, DisputeRule, Each, Flow, FlowError, FlowName, LevelSpec, ModelChoice, Node, NodeId,
     Target, Unsettled,
 };
+pub use prompt::{FINDINGS_SHAPE, FindingText, ReviewTarget, VERDICT_SHAPE, compose};
 pub use schedule::{Instance, Progress, ready, round_complete};
 pub use state::{
     DisputeCall, ReviewFacts, ReviewRefusal, ReviewTrigger, ReviewerView, apply, round_due,

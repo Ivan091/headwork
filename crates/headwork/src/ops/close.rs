@@ -19,7 +19,7 @@ use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Key, SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
-use headwork_core::config::{TaskVars, WorktreeCommand};
+use headwork_core::config::{REVIEW_KIND, TaskVars, WorktreeCommand};
 use headwork_core::guard::DEFAULT_BRANCHES;
 use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, CloseGo, FinishFacts, MergeSource, PrEnd, Trigger,
@@ -740,7 +740,11 @@ pub(super) fn remove_worktree(
         main: &main,
         worktree: &worktree.path,
     };
-    let command = &env.project(&task)?.worktree_remove;
+    let command = if task.kind == REVIEW_KIND {
+        &WorktreeCommand::Builtin
+    } else {
+        &env.project(&task)?.worktree_remove
+    };
     let worktrees = env.worktrees(&task)?;
     if !worktrees.is_registered(Path::new(&worktree.path))? {
         let end = remove_stray_folder(store, env, id, &worktree.path)?;
@@ -749,7 +753,7 @@ pub(super) fn remove_worktree(
         }
         return Ok(end);
     }
-    let result = if force {
+    let result = if force || task.kind == REVIEW_KIND {
         worktrees.remove_forced(command, &vars)
     } else {
         worktrees.remove(command, &vars)

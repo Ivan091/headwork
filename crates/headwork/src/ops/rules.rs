@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
-use headwork_core::config::Delivery;
+use headwork_core::config::{Delivery, REVIEW_KIND};
 use headwork_core::{Config, Platform, Role, TaskShape};
 use headwork_store::{AddedRule, Store, Task};
 
@@ -29,6 +29,8 @@ pub const ORCHESTRATOR_RULES: &str = include_str!("../../../../rules/orchestrato
 pub const WORKER_RULES: &str = include_str!("../../../../rules/worker.md");
 /// The built-in `lead.md`, added to a lead's worker rules.
 pub const LEAD_RULES: &str = include_str!("../../../../rules/lead.md");
+/// The built-in `reviewer.md`, added to the rules of a part of kind `review`.
+pub const REVIEWER_RULES: &str = include_str!("../../../../rules/reviewer.md");
 
 /// The heading of the section a keep task's rules leave out.
 pub const CLOSING_HEADING: &str = "## Closing yourself";
@@ -51,6 +53,7 @@ pub struct RuleFiles {
     orchestrator: String,
     worker: String,
     lead: String,
+    reviewer: String,
     address: String,
     projects: Vec<(String, String)>,
     added: Vec<AddedRule>,
@@ -99,6 +102,7 @@ impl RuleFiles {
             None => read("child.md")?.unwrap_or_else(|| WORKER_RULES.to_owned()),
         };
         let lead = read("lead.md")?.unwrap_or_else(|| LEAD_RULES.to_owned());
+        let reviewer = read("reviewer.md")?.unwrap_or_else(|| REVIEWER_RULES.to_owned());
         let mut projects = Vec::new();
         for name in config.projects.keys() {
             if let Some(text) = read(&format!("{name}.md"))? {
@@ -106,7 +110,7 @@ impl RuleFiles {
             }
         }
         let mut all = format!(
-            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{lead}\u{0}{address}",
+            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{lead}\u{0}{reviewer}\u{0}{address}",
             global.as_deref().unwrap_or_default()
         );
         for (name, text) in &projects {
@@ -121,6 +125,7 @@ impl RuleFiles {
             orchestrator,
             worker,
             lead,
+            reviewer,
             address: address.to_owned(),
             projects,
             added: added.to_vec(),
@@ -169,6 +174,9 @@ impl RuleFiles {
                     } else {
                         parts.push(self.lead.clone());
                     }
+                }
+                if card.is_some_and(|card| card.task.kind == REVIEW_KIND) {
+                    parts.push(self.reviewer.clone());
                 }
                 if let Some(card) = card
                     && let Some((_, text)) = self

@@ -23,8 +23,8 @@ use headwork::ops::waiting::FakeSlots;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, Platform, ProjectName, Role, SILENT_KIND, SessionState,
-    Slug, TaskRequest, TaskState, Trigger,
+    Actor, Config, Model, PermissionMode, Platform, ProjectName, ReviewState, Role, SILENT_KIND,
+    SessionState, Slug, TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
 use serde_json::{Value, json};
@@ -2956,4 +2956,187 @@ fn a_helper_claude_gets_a_session_id_and_counts_under_the_task() {
         .filter(|event| event.kind == "helper-session")
         .count();
     assert_eq!(helpers, 1, "a resumed claude keeps its own session");
+}
+
+const REVIEWS: &str = "\n[leads]\nenabled = true\nmax_parts = 1\n\n[reviews]\nenabled = true\nlead_model = \"haiku\"\n";
+
+#[test]
+fn the_user_s_review_command_in_a_lead_s_tab_requests_a_review() {
+    let mut w = world(REVIEWS, false);
+    w.start();
+    let reply = w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 2 the park path" }),
+    );
+    let text = context(&reply);
+    assert!(
+        text.contains("level-2 review") && text.contains("`review_start`"),
+        "{text}"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(
+        (review.state, review.flow.as_str(), review.focus.as_str()),
+        (ReviewState::Requested, "code", "the park path"),
+        "{review:?}"
+    );
+
+    let again = context(&w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 1" }),
+    ));
+    assert!(again.contains("still requested"), "{again}");
+    let near = context(&w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 4" }),
+    ));
+    assert!(near.contains("no review started"), "{near}");
+    let unknown = context(&w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review nosuch 1" }),
+    ));
+    assert!(unknown.contains("no flow `nosuch`"), "{unknown}");
+    assert_eq!(
+        w.store.reviews_of(w.task.id).unwrap().len(),
+        1,
+        "only the first request is stored"
+    );
+}
+
+#[test]
+fn a_review_command_from_another_session_or_with_reviews_off_does_nothing() {
+    let mut w = world(REVIEWS, false);
+    w.start();
+    let message = json!({
+        "prompt": concat!(
+            "<cross-session-message from=\"uds:x\" from-name=\"orchestrator\" from-mode=\"prompting\">",
+            "review 3</cross-session-message>",
+        )
+    });
+    w.hook(HookEvent::UserPromptSubmit, &message);
+    assert!(
+        w.store.open_review(w.task.id).unwrap().is_none(),
+        "a message is not the user's word"
+    );
+    let mut off = world(LEADS, false);
+    off.start();
+    off.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 2" }),
+    );
+    assert!(
+        off.store.open_review(off.task.id).unwrap().is_none(),
+        "reviews are off"
+    );
+    let names = off.tool_names(worker_identity(&off));
+    assert!(
+        names.contains(&"review_start".to_owned()),
+        "the tool is listed for a lead: {names:?}"
+    );
+    let (is_error, text) = off.tool(worker_identity(&off), "review_start", &json!({}));
+    assert!(is_error && text.contains("reviews are off"), "{text}");
+}
+
+#[test]
+fn review_start_needs_the_user_s_request_and_a_clean_tree_then_starts_the_reviewer_lead() {
+    let mut w = world(
+        "push_window_secs = 0\n[leads]\nenabled = true\nmax_parts = 1\n\n[reviews]\nenabled = true\nlead_model = \"haiku\"\n",
+        false,
+    );
+    w.start();
+    let (is_error, text) = w.tool(worker_identity(&w), "review_start", &json!({}));
+    assert!(is_error && text.contains("review-unrequested"), "{text}");
+
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 2" }),
+    );
+    w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "Working on it." }),
+    );
+    let rules: Vec<String> = w.denies().into_iter().map(|(_, rule)| rule).collect();
+    assert_eq!(
+        rules,
+        ["review-unstarted"],
+        "the lead may not stop before it starts the review"
+    );
+
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), "new").unwrap();
+    let (is_error, text) = w.tool(worker_identity(&w), "review_start", &json!({}));
+    assert!(is_error && text.contains("review-dirty"), "{text}");
+    git(&tree, &["add", "change.txt"]);
+    git(&tree, &["commit", "-q", "-m", "change"]);
+
+    let (is_error, text) = w.tool(worker_identity(&w), "review_start", &json!({}));
+    assert!(
+        !is_error && text.contains("Fix or dispute every finding"),
+        "{text}"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(review.state, ReviewState::Running, "{review:?}");
+    let part = part_named(&w, "sand-review");
+    assert_eq!(part.kind, "review", "a part of kind review");
+    assert_eq!(review.part_id, Some(part.id), "the review knows its part");
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&tree)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        review.head_sha.as_deref(),
+        Some(head.trim()),
+        "the lead's HEAD is pinned"
+    );
+    let checkout = w.dir.path().join("demo-sand-review");
+    assert!(
+        checkout.join("change.txt").is_file(),
+        "the review worktree is at the head"
+    );
+    let branch = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .current_dir(&checkout)
+        .output()
+        .unwrap();
+    assert!(!branch.status.success(), "the review worktree is detached");
+    let brief = std::fs::read_to_string(w.home.brief_path(&part.name)).unwrap();
+    for wanted in [
+        "level 2",
+        "### `correctness`, model opus",
+        "### `verify`",
+        "change.txt",
+        "`demo-sand`",
+    ] {
+        assert!(
+            brief.contains(wanted),
+            "{wanted} missing from the brief:\n{brief}"
+        );
+    }
+    let (is_error, text) = w.tool(worker_identity(&w), "review_start", &json!({}));
+    assert!(is_error && text.contains("started already"), "{text}");
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity, "part_drop", &json!({ "name": "review" }));
+    assert!(!is_error, "{text}");
+    assert!(
+        !checkout.exists(),
+        "the review worktree goes with its part: {text}"
+    );
+}
+
+#[test]
+fn reviewer_rules_reach_a_review_part_and_no_one_else() {
+    let mut lead = world(REVIEWS, false);
+    let text = context(&lead.start());
+    assert!(
+        !text.contains("You are a reviewer lead")
+            && !text.contains("longer than a hook may inject"),
+        "a lead gets its full rules and no reviewer rules: {text}"
+    );
+    let mut reviewer = world_of(REVIEWS, "", false, "review");
+    let text = context(&reviewer.start());
+    assert!(text.contains("## You are a reviewer lead"), "{text}");
 }
