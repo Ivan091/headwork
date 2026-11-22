@@ -1289,5 +1289,8 @@ fn doctor_says_the_tick_polls_only_when_a_tick_is_running() {
     assert!(scheduled.contains("polled every"), "{scheduled}");
     let (_, unscheduled) = doctor_summary(&rig.home, &rig.config, false);
     assert!(!unscheduled.contains("polled every"), "{unscheduled}");
-    assert!(unscheduled.contains("only the close of a task"), "{unscheduled}");
+    assert!(
+        unscheduled.contains("only the close of a task"),
+        "{unscheduled}"
+    );
 }

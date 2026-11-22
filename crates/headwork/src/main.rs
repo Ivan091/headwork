@@ -45,8 +45,8 @@ use headwork_adapters::release::Curl;
 use headwork_core::guard::{ToolCall, check_tool};
 use headwork_core::watch::Limits;
 use headwork_core::{
-    Actor, Config, Decision, Effort, FindingId, Model, PermissionMode, Platform, ProjectName, Role, Slug,
-    TaskRequest,
+    Actor, Config, Decision, Effort, FindingId, Model, PermissionMode, Platform, ProjectName, Role,
+    Slug, TaskRequest,
 };
 use headwork_store::{AskId, EventFilter, Store, TaskId};
 
@@ -1529,23 +1529,25 @@ fn tick_command(
     let _lock = match tick_lock::acquire(ctx.home.root(), now)? {
         Acquired::Held(lock) => lock,
         Acquired::Busy(stamp) => {
-            return match stamp.filter(|stamp| stamp.hung(now)) {
-                Some(stamp) => {
-                    let held_min = now.saturating_sub(stamp.started_s) / 60;
-                    let detail = serde_json::json!({ "pid": stamp.pid, "held_min": held_min });
-                    store.raise_finding("tick-hung", FindingId::TickHung, None, &detail, Actor::Tick)?;
-                    writeln!(
-                        out,
-                        "tick-hung: the tick of process {} has held tick.lock for {held_min} min",
-                        stamp.pid
-                    )?;
-                    Ok(ExitCode::FAILURE)
-                }
-                None => {
-                    writeln!(out, "another tick is running")?;
-                    Ok(ExitCode::SUCCESS)
-                }
-            };
+            if let Some(stamp) = stamp.filter(|stamp| stamp.hung(now)) {
+                let held_min = now.saturating_sub(stamp.started_s) / 60;
+                let detail = serde_json::json!({ "pid": stamp.pid, "held_min": held_min });
+                store.raise_finding(
+                    "tick-hung",
+                    FindingId::TickHung,
+                    None,
+                    &detail,
+                    Actor::Tick,
+                )?;
+                writeln!(
+                    out,
+                    "tick-hung: the tick of process {} has held tick.lock for {held_min} min",
+                    stamp.pid
+                )?;
+                return Ok(ExitCode::FAILURE);
+            }
+            writeln!(out, "another tick is running")?;
+            return Ok(ExitCode::SUCCESS);
         }
     };
     let git = Gh::default();

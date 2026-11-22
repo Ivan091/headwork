@@ -748,8 +748,7 @@ fn disk_check(d: &Doctor<'_>, config: &Config) -> Check {
 }
 
 fn update_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check {
-    let (failing, detail) =
-        super::update::doctor_summary(d.home, config, tick_is_running(store));
+    let (failing, detail) = super::update::doctor_summary(d.home, config, tick_is_running(store));
     if failing {
         Check::warn(
             "update",

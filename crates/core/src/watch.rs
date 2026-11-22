@@ -236,8 +236,11 @@ impl TickStamp {
     /// The text written to `tick.started`.
     #[must_use]
     pub fn render(&self) -> String {
-        format!("{} {}
-", self.pid, self.started_s)
+        format!(
+            "{} {}
+",
+            self.pid, self.started_s
+        )
     }
 
     /// Reads the text of `tick.started`; `None` when it is not a stamp.

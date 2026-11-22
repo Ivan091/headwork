@@ -1167,7 +1167,10 @@ fn a_pane_that_cannot_be_read_does_not_stop_the_rest_of_the_tick() {
         "{:?}",
         report.lines
     );
-    assert_eq!(report.lines[0].task.as_deref(), Some(bad.name.to_string().as_str()));
+    assert_eq!(
+        report.lines[0].task.as_deref(),
+        Some(bad.name.to_string().as_str())
+    );
     assert!(
         w.store.screen_sample(&good_session).unwrap().is_some(),
         "the next pane was still looked at"

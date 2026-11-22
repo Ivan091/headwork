@@ -589,7 +589,11 @@ fn a_tick_holding_the_lock_for_too_long_is_a_warning() {
         panic!("the lock was free");
     };
     let report = run(&install, &FakeProbe::default());
-    assert_eq!(status(&report, "tick-hung"), Status::Warn, "held for an hour");
+    assert_eq!(
+        status(&report, "tick-hung"),
+        Status::Warn,
+        "held for an hour"
+    );
     assert!(detail(&report, "tick-hung").contains("held tick.lock"));
 }
 
@@ -599,10 +603,15 @@ fn a_free_lock_or_a_fresh_one_is_fine() {
     let install = install();
     let report = run(&install, &FakeProbe::default());
     assert_eq!(status(&report, "tick-hung"), Status::Ok, "no tick");
-    let Acquired::Held(_lock) = tick_lock::acquire(install.home.root(), tick_lock::now_s()).unwrap()
+    let Acquired::Held(_lock) =
+        tick_lock::acquire(install.home.root(), tick_lock::now_s()).unwrap()
     else {
         panic!("the lock was free");
     };
     let report = run(&install, &FakeProbe::default());
-    assert_eq!(status(&report, "tick-hung"), Status::Ok, "a tick that just began");
+    assert_eq!(
+        status(&report, "tick-hung"),
+        Status::Ok,
+        "a tick that just began"
+    );
 }

@@ -293,7 +293,10 @@ mod tests {
         let mut command = Command::new("sleep");
         command.arg("30");
         let error = timed::run(&mut command, Duration::from_millis(200)).unwrap_err();
-        assert!(error.to_string().contains("did not finish within"), "{error}");
+        assert!(
+            error.to_string().contains("did not finish within"),
+            "{error}"
+        );
     }
 
     #[test]
