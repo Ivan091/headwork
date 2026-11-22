@@ -821,6 +821,30 @@ impl Store {
         Ok(rows)
     }
 
+    /// The branches closed tasks of `project` left behind: each `(task, branch)` a close logged `branch-kept` for,
+    /// newest first and once per branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn kept_branches(&self, project: &str) -> Result<Vec<(TaskId, String)>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT e.task_id, json_extract(e.data, '$.branch') FROM events e JOIN tasks t ON t.id = e.task_id \
+             WHERE e.type = 'branch-kept' AND t.project = ?1 AND t.state = 'closed' ORDER BY e.id DESC",
+        )?;
+        let rows = statement
+            .query_map(params![project], |row| {
+                Ok((TaskId(row.get(0)?), row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(rows
+            .into_iter()
+            .filter_map(|(task, branch)| branch.map(|branch| (task, branch)))
+            .filter(|(_, branch)| seen.insert(branch.clone()))
+            .collect())
+    }
+
     /// Sets the state of one helper worktree of a task: `removed` or `kept`.
     ///
     /// # Errors

@@ -51,6 +51,10 @@ impl CleanReport {
                     .worktrees
                     .iter()
                     .any(|worktree| matches!(worktree.outcome, Outcome::Failed { .. }))
+                || project
+                    .branches
+                    .iter()
+                    .any(|branch| matches!(branch.outcome, BranchOutcome::Failed { .. }))
         })
     }
 }
@@ -64,8 +68,13 @@ pub struct ProjectClean {
     pub main: String,
     /// Why the project could not be read at all.
     pub error: Option<String>,
+    /// Why fetching the upstream of the main checkout's branch failed, when it did: what counts as merged is then
+    /// judged on what was fetched before.
+    pub fetch_error: Option<String>,
     /// Its worktrees besides the main checkout.
     pub worktrees: Vec<WorktreeClean>,
+    /// The branches closed tasks left behind because they looked unmerged at close.
+    pub branches: Vec<BranchClean>,
     /// `git gc`, when asked for.
     pub gc: Option<GcOutcome>,
 }
@@ -84,6 +93,40 @@ pub struct WorktreeClean {
     /// What else happened, such as the branch kept or deleted.
     pub note: Option<String>,
 }
+
+/// A branch a closed task left behind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BranchClean {
+    /// The branch.
+    pub branch: String,
+    /// The task that left it: `task <name>`.
+    pub owner: String,
+    /// What became of it.
+    pub outcome: BranchOutcome,
+}
+
+/// What became of a branch a closed task left behind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "outcome")]
+pub enum BranchOutcome {
+    /// A dry run: the main checkout or its upstream contains it, so it would be deleted.
+    WouldDelete,
+    /// Deleted: the main checkout or its upstream contains it.
+    Deleted,
+    /// Left in place.
+    Left {
+        /// Why.
+        reason: String,
+    },
+    /// The deletion was tried and failed.
+    Failed {
+        /// Why.
+        error: String,
+    },
+}
+
+/// Why a branch a closed task left stays.
+const BRANCH_UNMERGED: &str = "neither the main checkout nor its upstream contains it";
 
 /// What became of one worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -157,7 +200,9 @@ fn clean_project(
         project: name.to_string(),
         main: slashed(&main),
         error: None,
+        fetch_error: None,
         worktrees: Vec::new(),
+        branches: Vec::new(),
         gc: None,
     };
     if !main.is_dir() {
@@ -172,6 +217,10 @@ fn clean_project(
             return Ok(report);
         }
     };
+    report.fetch_error = worktrees
+        .fetch_upstream()
+        .err()
+        .map(|error| error.to_string());
     let recorded = store.recorded_worktrees()?;
     for entry in entries
         .iter()
@@ -219,10 +268,58 @@ fn clean_project(
                 note: None,
             }));
     }
+    report.branches = kept_branches(store, env, name, &worktrees, options.dry_run)?;
     if options.gc {
         report.gc = Some(gc(store, env, name, &main, &worktrees, options.dry_run)?);
     }
     Ok(report)
+}
+
+/// Deletes the branches closed tasks of the project kept because they looked unmerged at close, once the main
+/// checkout or its upstream contains them; lists the rest. A branch that is gone is not listed.
+fn kept_branches(
+    store: &Store,
+    env: &Env<'_>,
+    project: &ProjectName,
+    worktrees: &Worktrees,
+    dry_run: bool,
+) -> Result<Vec<BranchClean>> {
+    let mut out = Vec::new();
+    for (task, branch) in store.kept_branches(project.as_str())? {
+        if !worktrees.branch_exists(&branch)? {
+            continue;
+        }
+        let owner = format!("task {}", store.task(task)?.name);
+        let outcome = if !worktrees.is_merged(&branch)? {
+            BranchOutcome::Left {
+                reason: BRANCH_UNMERGED.to_owned(),
+            }
+        } else if dry_run {
+            BranchOutcome::WouldDelete
+        } else {
+            match worktrees.delete_merged_branch(&branch) {
+                Ok(()) => BranchOutcome::Deleted,
+                Err(error) => BranchOutcome::Failed {
+                    error: error.to_string(),
+                },
+            }
+        };
+        if !dry_run && !matches!(outcome, BranchOutcome::Left { .. }) {
+            store.append_event(
+                env.actor,
+                Some(task),
+                None,
+                "branch-cleaned",
+                &serde_json::json!({ "branch": branch, "outcome": outcome }),
+            )?;
+        }
+        out.push(BranchClean {
+            branch,
+            owner,
+            outcome,
+        });
+    }
+    Ok(out)
 }
 
 /// Whether `path` is a Claude Code agent worktree inside the main checkout.

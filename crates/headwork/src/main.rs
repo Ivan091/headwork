@@ -1077,7 +1077,9 @@ fn close_command(
         } else {
             close(store, env, task.id, identity.session.as_deref())?
         };
-        pump(store, env)?;
+        if !report.left_to_launcher() {
+            pump(store, env)?;
+        }
         Ok(report)
     })?;
     if json {

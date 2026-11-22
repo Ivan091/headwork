@@ -608,13 +608,15 @@ impl<'a> Server<'a> {
         let Some(task) = self.closing.take() else {
             return Ok(());
         };
-        end_closing(
+        let report = end_closing(
             self.store,
             &self.env,
             task.id,
             self.identity.session.as_deref(),
         )?;
-        pump(self.store, &self.env)?;
+        if !report.left_to_launcher() {
+            pump(self.store, &self.env)?;
+        }
         Ok(())
     }
 
