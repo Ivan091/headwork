@@ -34,6 +34,7 @@ pub mod title;
 pub mod trust;
 pub mod update;
 pub mod waiting;
+pub mod windowless;
 
 use std::path::{Path, PathBuf};
 

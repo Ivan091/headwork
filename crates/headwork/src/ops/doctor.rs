@@ -228,6 +228,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         if d.platform == Platform::MacOs {
             checks.push(tick_agent_check(d.probe, store, enforce));
         }
+        if d.platform == Platform::Windows {
+            checks.push(tick_task_check(d.probe, enforce));
+        }
     }
     DoctorReport { checks }
 }
@@ -870,6 +873,33 @@ fn tick_agent_check(probe: &dyn Probe, store: &Store, enforce: bool) -> Check {
         )
     } else {
         Check::ok("tick-agent", format!("{detail}; not needed in shadow mode"))
+    }
+}
+
+/// Whether the scheduled task that runs the tick on Windows exists, and whether it runs the windowless launcher.
+fn tick_task_check(probe: &dyn Probe, enforce: bool) -> Check {
+    let task = super::schedule::TASK_NAME;
+    let fix = "run `headwork tick --install` after the user's `Allow` tap (CLAUDE.md, Scheduling the tick)";
+    let Some(xml) = probe.run("schtasks", &["/Query", "/TN", task, "/XML"]) else {
+        let detail = format!("the scheduled task \"{task}\" is not there");
+        return if enforce {
+            Check::warn("tick-task", detail, fix)
+        } else {
+            Check::ok("tick-task", format!("{detail}; not needed in shadow mode"))
+        };
+    };
+    let launcher = super::windowless::launcher_name().to_ascii_lowercase();
+    if xml.to_ascii_lowercase().contains(&launcher) {
+        Check::ok(
+            "tick-task",
+            format!("\"{task}\" runs the windowless {launcher}"),
+        )
+    } else {
+        Check::warn(
+            "tick-task",
+            format!("\"{task}\" runs headwork directly, so a console window flashes at every run"),
+            fix,
+        )
     }
 }
 

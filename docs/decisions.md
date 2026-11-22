@@ -1203,3 +1203,13 @@ and the reason.
   task. A lead's "Close the task?" dialog opened while the orchestrator closed it stayed `open` for ever (eight such
   asks, the oldest from 2026-11-16), so the board listed them and the tick reminded the user of questions no session
   could act on. Superseding is bookkeeping, not enforcement, so the tick does it in shadow mode too.
+- 2026-11-22 The windowless tick is a launcher copy, not a second build target. `tick --install` copies the program
+  it schedules to `headworkw.exe` beside it and sets the PE subsystem field to GUI (2), so Task Scheduler starts it
+  without a console; the task runs `headworkw.exe tick`. A program whose stem is `headworkw` forwards its arguments to
+  the `headwork` beside it under `CREATE_NO_WINDOW` and waits, returning its exit code, with stdin null and output
+  appended to `<home>/tick.log` (started afresh past 1 MiB). The forwarded tick gets a console with no window
+  (`GetConsoleWindow` is null), which git, gh, bash and wmux inherit, so none of them opens one. A separate
+  `#![windows_subsystem]` binary would need its own release asset, download, hash check and install step; the copy
+  needs none, and since it only forwards, a new `headwork` never needs a new launcher. `conhost --headless` stays
+  out (2026-11-20). `doctor` warns (check `tick-task`) when the installed task still runs `headwork` directly.
+  `tick --uninstall` leaves the launcher file; it runs nothing on its own.
