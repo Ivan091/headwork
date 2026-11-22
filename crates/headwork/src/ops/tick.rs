@@ -139,6 +139,8 @@ pub struct TickReport {
     pub update: Option<Triggered>,
     /// What the read of the transcripts changed since the last read did (`docs/usage.md`).
     pub usage: Option<super::usage::IngestReport>,
+    /// The per-response rows older than `[usage] keep_days` this run summed per day, when there were any.
+    pub usage_rolled_up: Option<headwork_store::RolledUp>,
 }
 
 /// Runs one tick.
@@ -163,6 +165,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
             started: Vec::new(),
             update: None,
             usage: None,
+            usage_rolled_up: None,
         },
     };
     run.stage("rules", Run::rules)?;
@@ -307,6 +310,10 @@ impl<'b> Run<'_, 'b> {
             )?;
         }
         self.report.usage = Some(report);
+        let keep_days = self.env().config.usage.keep_days;
+        if let Some(rolled) = super::usage::roll_up(self.store, keep_days, self.actor())? {
+            self.report.usage_rolled_up = Some(rolled);
+        }
         Ok(())
     }
 

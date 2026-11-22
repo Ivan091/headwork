@@ -345,6 +345,13 @@ pub(crate) fn ticked(report: &TickReport) -> String {
             usage.inserted, usage.read
         );
     }
+    if let Some(rolled) = &report.usage_rolled_up {
+        let _ = writeln!(
+            text,
+            "  usage     summed {} responses before {} into {} daily rows",
+            rolled.rows, rolled.before_day, rolled.days
+        );
+    }
     if let Some(update) = &report.update {
         let _ = match (&update.started, &update.error) {
             (Some(started), _) => writeln!(

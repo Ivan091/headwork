@@ -386,3 +386,73 @@ fn a_leads_tokens_roll_up_its_parts() {
         "the board rolls up the lead"
     );
 }
+
+#[test]
+fn a_roll_up_keeps_every_total_and_runs_once() {
+    let (mut store, config) = store();
+    let sand = task(&mut store, &config, "sand", TaskShape::Plain);
+    session(&mut store, "s1", Some(sand.id), Role::Worker);
+    let lines = [
+        line("m1", "2026-08-01T10:00:00.000Z", "a", 5, 5),
+        line("m2", "2026-08-01T11:00:00.000Z", "a", 1, 1),
+        line("m3", "2026-08-02T10:00:00.000Z", "b", 2, 2),
+        line("m4", "2026-11-22T10:00:00.000Z", "a", 3, 3),
+    ];
+    record(&mut store, "s1", Some("x1"), &lines);
+    let groupings = [
+        UsageGroup::Task,
+        UsageGroup::Day,
+        UsageGroup::Model,
+        UsageGroup::Agent,
+        UsageGroup::Role,
+    ];
+    let before: Vec<_> = groupings
+        .iter()
+        .map(|by| keys(&store, &query(*by)))
+        .collect();
+    let window = UsageQuery {
+        since: Some("2026-08-02T00:00:00.000Z".to_owned()),
+        ..query(UsageGroup::Task)
+    };
+    let window_before = keys(&store, &window);
+
+    let rolled = store
+        .roll_up_usage("2026-11-01", Actor::Tick)
+        .unwrap()
+        .unwrap();
+    assert_eq!((rolled.rows, rolled.days), (3, 2), "two August days summed");
+    assert_eq!(
+        store.usage_rolled_to().unwrap(),
+        Some("2026-08-02".to_owned()),
+        "the last summed day"
+    );
+    let after: Vec<_> = groupings
+        .iter()
+        .map(|by| keys(&store, &query(*by)))
+        .collect();
+    assert_eq!(before, after, "every total is the same");
+    assert_eq!(
+        keys(&store, &window),
+        window_before,
+        "a window that starts on a day boundary too"
+    );
+    assert_eq!(
+        store.roll_up_usage("2026-11-01", Actor::Tick).unwrap(),
+        None,
+        "nothing left to sum"
+    );
+
+    record(
+        &mut store,
+        "s1",
+        Some("x1"),
+        &[line("m5", "2026-08-01T12:00:00.000Z", "a", 1, 0)],
+    );
+    let rolled = store
+        .roll_up_usage("2026-11-01", Actor::Tick)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rolled.rows, 1, "a late row adds to its day");
+    let days = keys(&store, &query(UsageGroup::Day));
+    assert!(days.contains(&("2026-08-01".to_owned(), 3, 43)), "{days:?}");
+}

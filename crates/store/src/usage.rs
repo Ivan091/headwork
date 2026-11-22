@@ -8,11 +8,31 @@ use std::collections::BTreeMap;
 
 use headwork_core::usage::{Tokens, UsageLine, usage_role};
 use headwork_core::{Role, UsageGroup, UsageRole};
-use rusqlite::{Transaction, params, params_from_iter};
+use rusqlite::{OptionalExtension, Transaction, params, params_from_iter};
 use serde::Serialize;
 
 use crate::records::TaskId;
 use crate::{NOW, Store, StoreError};
+
+/// The event that records a helper `claude` a worker started with `helper_tab`, under the helper's session id.
+///
+/// Its transcript counts under the worker's task as role `helper`. The event log is the record, so no schema change is
+/// needed.
+pub const EVENT_HELPER_SESSION: &str = "helper-session";
+
+/// The event the daily roll-up logs.
+pub const EVENT_USAGE_ROLLED_UP: &str = "usage-rolled-up";
+
+/// What one roll-up moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RolledUp {
+    /// Responses before this UTC day were summed.
+    pub before_day: String,
+    /// Per-response rows summed and deleted.
+    pub rows: usize,
+    /// Daily rows written or added to.
+    pub days: usize,
+}
 
 /// Whose tokens a row counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,7 +291,7 @@ impl Store {
         )?;
         let mut rows = statement.query(params![session])?;
         let Some(row) = rows.next()? else {
-            return Ok(None);
+            return self.helper_tag(session);
         };
         let role: Role = row.get::<_, String>(0)?.parse()?;
         let task: Option<i64> = row.get(1)?;
@@ -281,6 +301,110 @@ impl Store {
             task: task.map(TaskId),
             role: usage_role(role, lead, part),
         }))
+    }
+
+    fn helper_tag(&self, session: &str) -> Result<Option<UsageTag>, StoreError> {
+        let task: Option<i64> = self
+            .conn
+            .prepare(
+                "SELECT task_id FROM events WHERE type = ?1 AND session_id = ?2 AND task_id IS NOT NULL
+                 ORDER BY id DESC LIMIT 1",
+            )?
+            .query_row(params![EVENT_HELPER_SESSION, session], |row| row.get(0))
+            .optional()?;
+        Ok(task.map(|task| UsageTag {
+            task: Some(TaskId(task)),
+            role: UsageRole::Helper,
+        }))
+    }
+
+    /// Records a helper `claude` a worker's `helper_tab` starts under `session`, so its transcript counts under the
+    /// task as role `helper`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a write error.
+    pub fn record_helper_session(
+        &self,
+        task: TaskId,
+        session: &str,
+        argv: &[String],
+        actor: headwork_core::Actor,
+    ) -> Result<(), StoreError> {
+        crate::queries::insert_event(
+            &self.conn,
+            actor,
+            Some(task),
+            Some(session),
+            EVENT_HELPER_SESSION,
+            &serde_json::json!({ "argv": argv }),
+        )
+    }
+
+    /// The last UTC day the roll-up summed: responses on or before it live only in `usage_daily`, so a reread skips
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn usage_rolled_to(&self) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT MAX(day) FROM usage_daily", [], |row| row.get(0))?)
+    }
+
+    /// Sums every per-response row before the UTC day `before_day` (`YYYY-MM-DD`) into `usage_daily`, per day,
+    /// session, subagent type, model and effort, and deletes them, in one transaction, logging `usage-rolled-up`.
+    /// Totals do not change, since every query reads both tables. None when nothing was old enough.
+    ///
+    /// # Errors
+    ///
+    /// Returns a write error; nothing is moved then.
+    pub fn roll_up_usage(
+        &mut self,
+        before_day: &str,
+        actor: headwork_core::Actor,
+    ) -> Result<Option<RolledUp>, StoreError> {
+        let tx = self.conn.transaction()?;
+        let days = tx.execute(
+            "INSERT INTO usage_daily (day, session_id, agent_type, task_id, role, dir, model, effort, responses, input,
+                 cache_write_5m, cache_write_1h, cache_read, output, thinking, web_searches, web_fetches)
+             SELECT substr(at, 1, 10), session_id, COALESCE(agent_type, ''), MAX(task_id), MAX(role), MAX(dir), model,
+                    COALESCE(effort, ''), COUNT(*), SUM(input), SUM(cache_write_5m), SUM(cache_write_1h),
+                    SUM(cache_read), SUM(output), SUM(thinking), SUM(web_searches), SUM(web_fetches)
+             FROM usage WHERE substr(at, 1, 10) < ?1
+             GROUP BY substr(at, 1, 10), session_id, COALESCE(agent_type, ''), model, COALESCE(effort, '')
+             ON CONFLICT (day, session_id, agent_type, model, effort) DO UPDATE SET
+                 responses = responses + excluded.responses, input = input + excluded.input,
+                 cache_write_5m = cache_write_5m + excluded.cache_write_5m,
+                 cache_write_1h = cache_write_1h + excluded.cache_write_1h,
+                 cache_read = cache_read + excluded.cache_read, output = output + excluded.output,
+                 thinking = thinking + excluded.thinking, web_searches = web_searches + excluded.web_searches,
+                 web_fetches = web_fetches + excluded.web_fetches",
+            params![before_day],
+        )?;
+        let rows = tx.execute(
+            "DELETE FROM usage WHERE substr(at, 1, 10) < ?1",
+            params![before_day],
+        )?;
+        if rows == 0 {
+            return Ok(None);
+        }
+        let rolled = RolledUp {
+            before_day: before_day.to_owned(),
+            rows,
+            days,
+        };
+        crate::queries::insert_event(
+            &tx,
+            actor,
+            None,
+            None,
+            EVENT_USAGE_ROLLED_UP,
+            &serde_json::to_value(&rolled)?,
+        )?;
+        tx.commit()?;
+        Ok(Some(rolled))
     }
 
     /// How far a transcript was read, none when it never was.
@@ -345,10 +469,11 @@ impl Store {
         let sessions: Vec<String> = self
             .conn
             .prepare(
-                "SELECT DISTINCT u.session_id FROM usage u JOIN sessions s ON s.id = u.session_id
-                 WHERE u.role = 'unmanaged'",
+                "SELECT DISTINCT u.session_id FROM usage u
+                 WHERE u.role = 'unmanaged' AND (EXISTS (SELECT 1 FROM sessions s WHERE s.id = u.session_id)
+                     OR EXISTS (SELECT 1 FROM events e WHERE e.type = ?1 AND e.session_id = u.session_id))",
             )?
-            .query_map([], |row| row.get(0))?
+            .query_map(params![EVENT_HELPER_SESSION], |row| row.get(0))?
             .collect::<Result<_, _>>()?;
         let mut moved = 0;
         for session in sessions {

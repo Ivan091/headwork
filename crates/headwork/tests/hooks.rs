@@ -2891,3 +2891,69 @@ fn stop_and_session_end_read_the_sessions_usage() {
     let board = w.store.board(true).unwrap();
     assert_eq!(board.tasks[0].tokens, 133, "found by session id at the end");
 }
+
+#[test]
+fn a_helper_claude_gets_a_session_id_and_counts_under_the_task() {
+    let mut w = world("", false);
+    w.start();
+    let identity = worker_identity(&w);
+    let (error, text) = w.tool(
+        identity,
+        "helper_tab",
+        &json!({ "argv": ["claude", "--model", "haiku"] }),
+    );
+    assert!(!error, "{text}");
+    let spawn = headwork_adapters::host::TerminalHost::panes(&w.host)
+        .unwrap()
+        .into_iter()
+        .find(|pane| pane.label == "headwork:helper")
+        .unwrap()
+        .command;
+    assert!(
+        spawn.contains("--session-id"),
+        "the helper is named: {spawn}"
+    );
+    let events = w
+        .store
+        .events(EventFilter {
+            task: Some(w.task.id),
+            limit: 50,
+        })
+        .unwrap();
+    let helper = events
+        .iter()
+        .find(|event| event.kind == "helper-session")
+        .unwrap();
+    let id = helper.session_id.clone().unwrap();
+    assert!(
+        spawn.contains(&id),
+        "the recorded id is the one passed: {spawn}"
+    );
+    assert_eq!(
+        w.store.usage_tag(&id).unwrap(),
+        Some(headwork_store::UsageTag {
+            task: Some(w.task.id),
+            role: headwork_core::UsageRole::Helper
+        }),
+        "its transcript counts under the task"
+    );
+
+    let identity = worker_identity(&w);
+    let (error, text) = w.tool(
+        identity,
+        "helper_tab",
+        &json!({ "argv": ["claude", "--resume", "x"] }),
+    );
+    assert!(!error, "{text}");
+    let helpers = w
+        .store
+        .events(EventFilter {
+            task: Some(w.task.id),
+            limit: 50,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "helper-session")
+        .count();
+    assert_eq!(helpers, 1, "a resumed claude keeps its own session");
+}

@@ -1270,3 +1270,9 @@ and the reason.
   needs no price. `board` and `status` print the estimate only once `[usage.prices]` holds a price, so a machine
   without a price table sees no row of `?`; `headwork usage` always has the column and lists the unpriced models under
   the table, and `doctor` warns (check `usage-prices`) about models of the last 7 days without one.
+- 2026-11-22 Usage U4. A helper `claude` is recorded by a `helper-session` event (task and the helper's session id),
+  not a store session: a second session row under the task would become the task's "newest session" for close, lost
+  detection and the stop rules. The event log is the record, as for `user-only-allowed`, so no schema change. The
+  roll-up runs in the tick's `usage` stage whenever rows older than `[usage] keep_days` exist (cheap on the `at`
+  index, so at most once a day in effect), cuts on a UTC day boundary so no day is split between the tables, and a
+  reread skips lines on or before the last summed day (`MAX(day)` of `usage_daily`). `keep_days = 0` never rolls up.

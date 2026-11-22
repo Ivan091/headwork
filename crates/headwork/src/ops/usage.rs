@@ -122,6 +122,12 @@ const fn start_at(before: Option<FileMark>, now: FileMark, from_start: bool) -> 
     Some(before.read_to)
 }
 
+/// Whether a response at `at` lies on or before the last day the roll-up summed, so it is counted in `usage_daily`
+/// already and a reread must skip it.
+fn rolled_up(rolled_to: Option<&str>, at: &str) -> bool {
+    rolled_to.is_some_and(|day| at.get(..10).is_some_and(|line_day| line_day <= day))
+}
+
 /// Reads one transcript's new whole lines and stores their responses; returns the responses found and stored, none
 /// when the file has not changed.
 ///
@@ -141,6 +147,7 @@ pub fn ingest_file(
     let Some(start) = start_at(store.usage_file(&key)?, now, from_start) else {
         return Ok(None);
     };
+    let rolled_to = store.usage_rolled_to()?;
     let mut reader = BufReader::new(File::open(path)?);
     reader.seek(SeekFrom::Start(start))?;
     let mut read_to = start;
@@ -153,7 +160,9 @@ pub fn ingest_file(
             break;
         }
         read_to = read_to.saturating_add(u64::try_from(taken)?);
-        if let Some(line) = parse_line(&String::from_utf8_lossy(&buffer)) {
+        if let Some(line) = parse_line(&String::from_utf8_lossy(&buffer))
+            .filter(|line| !rolled_up(rolled_to.as_deref(), &line.at))
+        {
             lines.push(line);
         }
     }
@@ -245,6 +254,27 @@ fn sum<'a>(rows: impl Iterator<Item = &'a UsageTotal>) -> UsageTotal {
         total.add(row);
     }
     total
+}
+
+/// Sums the per-response rows older than `keep_days` into daily rows (`docs/usage.md`, section 3); `0` keeps them.
+/// The cut is a UTC day boundary, so a day is never split between the two tables.
+///
+/// # Errors
+///
+/// Fails when the store cannot be written.
+pub fn roll_up(
+    store: &mut Store,
+    keep_days: u32,
+    actor: headwork_core::Actor,
+) -> Result<Option<headwork_store::RolledUp>> {
+    if keep_days == 0 {
+        return Ok(None);
+    }
+    let cut = store.instant_ago(u64::from(keep_days).saturating_mul(86_400))?;
+    let Some(day) = cut.get(..10) else {
+        bail!("the store gave an instant without a date: {cut}");
+    };
+    Ok(store.roll_up_usage(day, actor)?)
 }
 
 /// What `headwork usage` was asked.
@@ -356,7 +386,7 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
 pub const GAPS: &[&str] = &[
     "the auto mode classifier's own calls: transcripts name them (serverClassifierRequest) but write no usage",
     "the summary call of a compaction: the summary lands as a user line, without usage",
-    "helper tabs: helper_tab starts its program without a store session, so a helper's tokens count as unmanaged",
+    "helper tabs running anything but a fresh `claude` (a `claude --resume` keeps the resumed session's own tag)",
     "transcripts Claude deleted after cleanupPeriodDays (default 30) before headwork read them",
     "service tier and fast mode prices: not applied until a priced tier is used here",
 ];
@@ -371,6 +401,26 @@ mod tests {
             size,
             mtime_ms,
         }
+    }
+
+    #[test]
+    fn rereads_skip_days_the_roll_up_summed() {
+        assert!(
+            rolled_up(Some("2026-08-02"), "2026-08-02T23:59:59.000Z"),
+            "the last summed day"
+        );
+        assert!(
+            rolled_up(Some("2026-08-02"), "2026-07-30T10:00:00.000Z"),
+            "before it"
+        );
+        assert!(
+            !rolled_up(Some("2026-08-02"), "2026-08-03T00:00:00.000Z"),
+            "after it"
+        );
+        assert!(
+            !rolled_up(None, "2026-08-02T10:00:00.000Z"),
+            "nothing summed yet"
+        );
     }
 
     #[test]

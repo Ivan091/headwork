@@ -1,6 +1,6 @@
 # Usage: tokens spent by every Claude session
 
-Status: plan of 2026-11-22; U1 built (`headwork usage`, migration 0018); U2 built (hook and tick reads, `board` and `status` tokens, the orchestrator's `usage` tool, `usage-total` at close); U3 built (`[usage.prices]`, the estimate in every view, doctor check `usage-prices`); U4 to come. The user's request: "a logging system to track how much tokens are spent by
+Status: plan of 2026-11-22; U1 built (`headwork usage`, migration 0018); U2 built (hook and tick reads, `board` and `status` tokens, the orchestrator's `usage` tool, `usage-total` at close); U3 built (`[usage.prices]`, the estimate in every view, doctor check `usage-prices`); U4 built (the tick's daily roll-up, helper `claude` sessions named and counted under their task). Done. The user's request: "a logging system to track how much tokens are spent by
 type and so on". The user's answers to the open points are in section 10 and are worked into the sections above.
 
 ## 1. What to answer
@@ -204,8 +204,10 @@ web_search_per_1000 = 0.0
 
 ## 8. Helper tabs and sessions outside headwork
 
-- `helper_tab` running `claude`: headwork adds `--session-id <uuid>` and records a store session of role `helper` under
-  the task, so its transcript is read like any other. Other programs spend no tokens.
+- `helper_tab` running a fresh `claude`: headwork adds `--session-id <uuid>` and records the id in a `helper-session`
+  event under the task (not a store session, which would stand in for the worker's own), so its transcript is read like
+  any other and counts as role `helper`. A `claude --resume` keeps the resumed session's tag; other programs spend no
+  tokens.
 - Sessions headwork did not start (a plain `claude` in some folder) are read as role `unmanaged` with no task, grouped
   by folder (section 4).
 
