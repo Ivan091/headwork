@@ -31,6 +31,7 @@ pub mod tick;
 pub mod title;
 pub mod trust;
 pub mod update;
+pub mod waiting;
 
 use std::path::{Path, PathBuf};
 
