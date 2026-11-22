@@ -301,6 +301,7 @@ fn session_start(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
 
 fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let text = call.text("prompt").unwrap_or_default();
+    let notification = text.trim_start().starts_with("<task-notification");
     let from = text
         .strip_prefix("<cross-session-message")
         .and_then(|rest| rest.split_once("from-name=\""))
@@ -311,9 +312,14 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         call.session.task_id,
         Some(&call.session.id),
         EVENT_PROMPT,
-        &json!({ "cross_session": text.starts_with("<cross-session-message"), "from": from }),
+        &json!({
+            "cross_session": text.starts_with("<cross-session-message"),
+            "from": from,
+            "notification": notification,
+        }),
     )?;
     if !text.starts_with("<cross-session-message")
+        && !notification
         && store.supersede_session_asks(&call.session.id, Actor::Hook)? > 0
         && let Some(task) = call.task
         && task.state == TaskState::NeedsUser

@@ -1738,6 +1738,35 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
 }
 
 #[test]
+fn task_notifications_close_background_work_one_by_one() {
+    let mut w = world("", false);
+    w.start();
+    let stop = json!({ "last_assistant_message": "Waiting for the agents." });
+    let notice = json!({ "prompt": "<task-notification>
+<status>completed</status>
+</task-notification>" });
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    for _ in 0..2 {
+        w.hook(
+            HookEvent::PostToolUse,
+            &json!({ "tool_name": "Agent", "tool_input": { "run_in_background": true }, "tool_response": {} }),
+        );
+    }
+    w.hook(HookEvent::UserPromptSubmit, &notice);
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(w.denies().len(), 0, "one agent still runs");
+    w.hook(HookEvent::UserPromptSubmit, &notice);
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(w.denies().len(), 1, "both reported, nothing else done");
+    let marked = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "prompt" && event.data["notification"] == true)
+        .count();
+    assert_eq!(marked, 2, "notifications are marked");
+}
+
+#[test]
 fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
     let mut w = world("enforce_rules = [\"stop-unfinished\"]", false);
     w.start();

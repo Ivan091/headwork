@@ -1041,3 +1041,15 @@ and the reason.
   An install leaves a line when its checkout step saw plugin files change, or when the new build's schema (from the
   version lines) is above the replaced one's. An older build that saves `update.json` (a rollback) drops waiting
   notices.
+
+- 2026-11-22, turns and notifications (audit G3): the `UserPromptSubmit` hook marks a prompt whose text starts with
+  `<task-notification` as `data.notification = true` (event data is JSON, no migration). A turn starts at the last
+  prompt that is not a notification, and a notification does not supersede the session's asks. Background work counts
+  as running while the background starts since that prompt outnumber the notifications since it: the payload names no
+  task id the start event could be matched on, so the stop is allowed while any is open, and a surplus notification
+  never reopens anything. Work started in an earlier turn is not tracked, as before.
+- 2026-11-22, notifications are no user prompts (audit G3): `user_prompted_within` skips notification prompts, so a
+  subagent finishing no longer lets `ask-push` think the user just spoke.
+- 2026-11-22, the lead's Close ask names the push (audit G8): `rules/lead.md` "Ask before you close" now says to send a
+  `PushNotification` just before the `AskUserQuestion`, as the worker rules do; most `ask-push` would-denies came from
+  this step.
