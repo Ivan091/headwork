@@ -1229,3 +1229,8 @@ and the reason.
   session or a task notification still counts as unfinished. The window is now strict, so `0` never presumes the
   user present.
 - 2026-11-22, a lead's board lists only its own project: `scoped_board` cuts `projects` to the project of the lead's or part's task, since a lead spawns parts only there; the orchestrator's and a plain worker's boards keep every project.
+- 2026-11-22 A session's Job Object allows breakaway. The L5 wmux trial saw every close and tick log `update-triggered`
+  with "could not leave the job: Access is denied": the launcher's kill-on-close job lacked `BREAKAWAY_OK`, so the
+  detached `headwork update` a close starts stayed in the session's job and died with it. The job now sets
+  `limit_breakaway_ok`; only a program started with `CREATE_BREAKAWAY_FROM_JOB` (`spawn_detached`) leaves, every
+  other descendant still ends with the session. Sessions started before this build keep the old job until resumed.
