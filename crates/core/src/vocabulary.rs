@@ -392,6 +392,8 @@ text_enum!(
         StrayTab => "stray-tab",
         /// The tick could not look at something it checks, such as the git host or a volume.
         TickError => "tick-error",
+        /// A tick has held `tick.lock` for longer than the hung threshold, so later runs cannot start.
+        TickHung => "tick-hung",
         /// `headwork update` failed in a way worth telling (deterministic, or transient from its third attempt); it
         /// stands until a later release installs. `update` raises and clears it, not the tick.
         UpdateFailed => "update-failed",

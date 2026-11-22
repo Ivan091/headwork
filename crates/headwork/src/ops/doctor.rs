@@ -215,7 +215,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     if let Ok(config) = &config {
         checks.push(enforce_check(config));
         checks.push(disk_check(d, config));
-        checks.push(update_check(d, config));
+        checks.push(update_check(d, config, store.as_ref()));
     }
     if let Ok(config) = &config {
         checks.push(trust_check(d, config, store.as_ref()));
@@ -224,6 +224,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.extend(store_checks(d, store));
         let enforce = config.as_ref().is_ok_and(|config| config.hooks.enforce);
         checks.push(tick_check(store, enforce));
+        checks.push(tick_hung_check(d));
         if d.platform == Platform::MacOs {
             checks.push(tick_agent_check(d.probe, store, enforce));
         }
@@ -746,8 +747,8 @@ fn disk_check(d: &Doctor<'_>, config: &Config) -> Check {
     }
 }
 
-fn update_check(d: &Doctor<'_>, config: &Config) -> Check {
-    let (failing, detail) = super::update::doctor_summary(d.home, config);
+fn update_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check {
+    let (failing, detail) = super::update::doctor_summary(d.home, config, tick_is_running(store));
     if failing {
         Check::warn(
             "update",
@@ -782,6 +783,33 @@ fn store_checks(d: &Doctor<'_>, store: &Store) -> Vec<Check> {
 
 /// A tick older than this counts as not running; the tick is meant to run every minute.
 const TICK_STALE_S: u64 = 300;
+
+/// Whether a tick ran recently enough to count as scheduled: the one signal that holds on every platform.
+fn tick_is_running(store: Option<&Store>) -> bool {
+    store
+        .and_then(|store| store.last_tick_age_s().ok().flatten())
+        .is_some_and(|age| age <= TICK_STALE_S)
+}
+
+/// A warning when a tick has held `tick.lock` for so long that every later run exits without acting.
+fn tick_hung_check(d: &Doctor<'_>) -> Check {
+    match super::tick_lock::hung(d.home.root(), super::tick_lock::now_s()) {
+        Ok(Some(stamp)) => Check::warn(
+            "tick-hung",
+            format!(
+                "the tick of process {} has held tick.lock since {} min ago; later runs exit without acting",
+                stamp.pid,
+                super::tick_lock::now_s().saturating_sub(stamp.started_s) / 60
+            ),
+            format!(
+                "look at what process {} waits on (a hung gh or wmux call); end it and the next tick takes the lock",
+                stamp.pid
+            ),
+        ),
+        Ok(None) => Check::ok("tick-hung", "no tick holds tick.lock for long"),
+        Err(error) => Check::warn("tick-hung", format!("{error:#}"), "check the home folder"),
+    }
+}
 
 fn tick_check(store: &Store, enforce: bool) -> Check {
     let age = match store.last_tick_age_s() {

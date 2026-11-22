@@ -220,9 +220,71 @@ pub const fn merged_grace_over(age_s: u64, session: MergedSession, limits: &Limi
     }
 }
 
+/// Seconds a tick may hold `tick.lock` before the next run calls it hung.
+pub const TICK_HUNG_AFTER_S: u64 = 15 * 60;
+
+/// Who holds `tick.lock` and since when: the first line of `tick.started`, `<pid> <unix seconds>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickStamp {
+    /// The process running the tick.
+    pub pid: u32,
+    /// When it took the lock, in seconds since the Unix epoch.
+    pub started_s: u64,
+}
+
+impl TickStamp {
+    /// The text written to `tick.started`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "{} {}
+",
+            self.pid, self.started_s
+        )
+    }
+
+    /// Reads the text of `tick.started`; `None` when it is not a stamp.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut words = text.split_whitespace();
+        let pid = words.next()?.parse().ok()?;
+        let started_s = words.next()?.parse().ok()?;
+        Some(Self { pid, started_s })
+    }
+
+    /// Whether the tick that took the lock has held it for longer than [`TICK_HUNG_AFTER_S`] at `now_s`.
+    #[must_use]
+    pub const fn hung(&self, now_s: u64) -> bool {
+        now_s.saturating_sub(self.started_s) > TICK_HUNG_AFTER_S
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tick_is_hung_only_past_the_threshold() {
+        let stamp = TickStamp {
+            pid: 7,
+            started_s: 1000,
+        };
+        assert!(!stamp.hung(1000 + TICK_HUNG_AFTER_S), "exactly at it");
+        assert!(stamp.hung(1001 + TICK_HUNG_AFTER_S), "past it");
+        assert!(!stamp.hung(10), "a clock that went back");
+    }
+
+    #[test]
+    fn a_stamp_round_trips_and_garbage_is_refused() {
+        let stamp = TickStamp {
+            pid: 42,
+            started_s: 1_700_000_000,
+        };
+        assert_eq!(TickStamp::parse(&stamp.render()), Some(stamp));
+        assert_eq!(TickStamp::parse(""), None);
+        assert_eq!(TickStamp::parse("12"), None);
+        assert_eq!(TickStamp::parse("a b"), None);
+    }
 
     const LIMITS: Limits = Limits {
         disk_warn: 15,

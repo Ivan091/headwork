@@ -159,22 +159,24 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
             update: None,
         },
     };
-    run.rules()?;
-    run.trust_prompts()?;
-    run.spawn_timeouts()?;
-    run.lost_sessions()?;
-    run.orphan_panes()?;
-    run.titles()?;
-    run.pull_requests()?;
-    run.merged_grace()?;
-    run.closing()?;
-    run.parts()?;
-    run.disks()?;
-    run.runaway()?;
-    run.stuck()?;
-    run.asks()?;
-    run.queue()?;
-    run.update()?;
+    run.stage("rules", Run::rules)?;
+    run.stage("trust_prompts", Run::trust_prompts)?;
+    run.stage("spawn_timeouts", Run::spawn_timeouts)?;
+    run.stage("lost_sessions", Run::lost_sessions)?;
+    run.stage("orphan_panes", Run::orphan_panes)?;
+    run.stage("titles", |run| run.titles())?;
+    run.stage("pull_requests", Run::pull_requests)?;
+    run.stage("merged_grace", Run::merged_grace)?;
+    run.stage("closing", Run::closing)?;
+    run.stage("parts", Run::parts)?;
+    run.stage("disks", Run::disks)?;
+    run.stage("runaway", Run::runaway)?;
+    run.stage("stuck", Run::stuck)?;
+    run.stage("asks", Run::asks)?;
+    run.stage("queue", Run::queue)?;
+    run.stage("update", Run::update)?;
+    run.sweep(FindingId::TickError)?;
+    run.sweep(FindingId::TickHung)?;
     run.store.record_tick()?;
     Ok(run.report)
 }
@@ -277,6 +279,16 @@ impl<'b> Run<'_, 'b> {
             None,
         )
         .map(drop)
+    }
+
+    /// Runs one stage of the tick. A stage that fails is recorded as a `tick-error` finding and the next stage runs
+    /// anyway, so one bad pane or host call never skips the asks, the queue, the update poll or the tick's record. A
+    /// failure to record it, which means the store itself is gone, ends the tick.
+    fn stage(&mut self, name: &str, stage: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        match stage(self) {
+            Ok(()) => Ok(()),
+            Err(error) => self.error(&format!("stage:{name}"), None, &format!("{error:#}")),
+        }
     }
 
     fn end_processes(session: &SessionRow) -> Result<bool> {
@@ -403,7 +415,14 @@ impl<'b> Run<'_, 'b> {
                 } else {
                     '2'
                 };
-                self.env().host.send_key(&surface, Key::Char(key))?;
+                if let Err(error) = self.env().host.send_key(&surface, Key::Char(key)) {
+                    self.error(
+                        &format!("trust-key:{}", session.id),
+                        Some(id),
+                        &error.to_string(),
+                    )?;
+                    continue;
+                }
                 self.store.set_ask_topic(ask.id, TRUST_DONE)?;
                 drop(self.env().host.clear_blocked(&surface));
                 continue;
@@ -587,7 +606,7 @@ impl<'b> Run<'_, 'b> {
                 }
             }
         }
-        self.sweep(FindingId::TickError)
+        Ok(())
     }
 
     fn reconcile_pr(&mut self, task: &Task) -> Result<()> {
@@ -700,9 +719,19 @@ impl<'b> Run<'_, 'b> {
             if let Some(session) = self.store.session_of(id)? {
                 let target = session.claude_pid.or(session.launcher_pid);
                 if let Some(pid) = target
-                    && proc::is_alive(pid)?
+                    && let Err(error) = proc::is_alive(pid).and_then(|alive| {
+                        if alive {
+                            proc::kill_tree(pid).map(drop)
+                        } else {
+                            Ok(())
+                        }
+                    })
                 {
-                    proc::kill_tree(pid)?;
+                    self.error(
+                        &format!("merged-grace-kill:{}", task.name),
+                        Some(id),
+                        &error.to_string(),
+                    )?;
                 }
             }
             self.applied(
@@ -1065,10 +1094,21 @@ impl<'b> Run<'_, 'b> {
                 self.store.clear_screen_sample(&session.id)?;
                 continue;
             };
-            let screen = self
+            let screen = match self
                 .env()
                 .host
-                .read_screen(&SurfaceId(surface.to_owned()), 60)?;
+                .read_screen(&SurfaceId(surface.to_owned()), 60)
+            {
+                Ok(screen) => screen,
+                Err(error) => {
+                    self.error(
+                        &format!("stuck-screen:{}", session.id),
+                        Some(id),
+                        &error.to_string(),
+                    )?;
+                    continue;
+                }
+            };
             let hash = format!("{:016x}", fnv1a(screen.as_bytes()));
             let unchanged = self
                 .store
