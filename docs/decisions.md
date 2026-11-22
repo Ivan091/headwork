@@ -1228,3 +1228,4 @@ and the reason.
   A plain-text question is still `stop-plain-question`, and a long turn after the prompt, a message from another
   session or a task notification still counts as unfinished. The window is now strict, so `0` never presumes the
   user present.
+- 2026-11-22, a lead's board lists only its own project: `scoped_board` cuts `projects` to the project of the lead's or part's task, since a lead spawns parts only there; the orchestrator's and a plain worker's boards keep every project.

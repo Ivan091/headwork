@@ -2374,6 +2374,43 @@ fn part_drop_drops_only_the_leads_own_parts() {
 }
 
 #[test]
+fn a_leads_board_lists_only_its_own_project() {
+    let mut w = world_in(
+        LEADS,
+        "
+[project.other]
+main = \"@DIR@/other\"
+worktree_new = \"builtin\"
+worktree_remove = \"builtin\"
+worktree_path = \"{main}-{slug}\"
+deliver = \"scripts/ship.sh\"
+merge = \"deliver\"
+",
+        false,
+    );
+    w.start();
+    let projects = |text: &str| -> Vec<String> {
+        let board: Value = serde_json::from_str(text).unwrap();
+        board["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|project| project["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, text) = w.tool(worker_identity(&w), "board", &json!({}));
+    assert_eq!(projects(&text), ["demo"], "the lead's board");
+    let (_, text) = w.tool(orchestrator_identity(), "board", &json!({}));
+    let mut all = projects(&text);
+    all.sort();
+    assert_eq!(
+        all,
+        ["demo", "other"],
+        "the orchestrator's board lists every project"
+    );
+}
+
+#[test]
 fn a_leads_board_and_inbox_show_only_the_lead_and_its_parts() {
     let mut w = world(LEADS, false);
     w.start();
