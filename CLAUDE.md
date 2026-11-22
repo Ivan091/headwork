@@ -24,6 +24,7 @@ crates/
                         lib (home, ops)
 plugin/                 the Claude Code plugin: hooks.json (each hook calls `headwork hook <event>`), .mcp.json (`headwork mcp`)
 rules/                  built-in orchestrator and worker rules, injected at SessionStart
+flows/                  built-in review flows (TOML graphs) and their node prompts, embedded in the binary
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
 scripts/check.sh        the quality gate
 docs/                   design, research, trials, decisions
@@ -92,6 +93,11 @@ outside its lead's workspace), a line in a lead's next prompt per part waiting o
 `[leads] ask_before_close` (default on) holds a lead's own close and the tick's merged-grace close until the user
 answers its ask headed `Close` with a go (`close-go` event, refusal `lead-close-unasked`); the lead's rules gain "Ask
 before you close" while it is on. A task of kind `silent` (`SILENT_KIND`) never asks: it closes without the go.
+Review flows (`docs/review-flows.md`) start with R1: the pure model in `core/src/review/` (the `review [<flow>] <level>
+[<focus>]` parser, flows as TOML graphs and their validation, ready-node scheduling, the review state machine, the
+dispute rule), migration 0019 with `Store::request_review`, `move_review` and the node and finding queries
+(`store/src/reviews.rs`), and `ops/flows.rs`: the built-in flows embedded from `flows/` (`BUILTIN_FILES`; a test keeps
+it in step with the folder), overridden or added by `<home>/flows/<name>.toml`, checked by `headwork flow check`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -126,6 +132,7 @@ cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over without touching any process
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
+cargo run -p headwork -- flow check [<name>] [--json]   # validate the review flows (built-in and <home>/flows); exit 1 on a problem
 cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # install the newest GitHub release, smoke-tested (docs/autoupdate.md)
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts
