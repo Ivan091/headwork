@@ -472,6 +472,9 @@ fn with_default_command(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsSt
 }
 
 fn main() -> ExitCode {
+    if let Some(code) = forward_if_launcher() {
+        return code;
+    }
     let matches = Cli::command()
         .version(headwork::version::text())
         .get_matches_from(with_default_command(std::env::args_os().collect()));
@@ -487,6 +490,18 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Runs as the windowless launcher when this program is `headworkw` ([`headwork::ops::windowless`]).
+fn forward_if_launcher() -> Option<ExitCode> {
+    use headwork::ops::windowless;
+    let exe = std::env::current_exe().ok()?;
+    if !windowless::is_launcher(&exe) {
+        return None;
+    }
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let forwarded = Home::locate().and_then(|home| windowless::forward(&exe, &args, home.root()));
+    Some(forwarded.unwrap_or(ExitCode::FAILURE))
 }
 
 #[expect(
@@ -1615,7 +1630,8 @@ fn schedule_command(install: bool, json: bool, out: &mut impl Write) -> Result<E
         let current = std::env::current_exe().context("finding the headwork program")?;
         let exe = schedule::program(&installed, &current);
         if windows {
-            schedule::install(&Schtasks, &exe)?
+            let launcher = headwork::ops::windowless::write_launcher(&exe)?;
+            schedule::install(&Schtasks, &launcher)?
         } else {
             let mut programs = vec![exe.clone()];
             programs.extend(

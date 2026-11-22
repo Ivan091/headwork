@@ -27,6 +27,7 @@ struct FakeProbe {
     missing: Vec<&'static str>,
     claude: Vec<u32>,
     agent_loaded: bool,
+    task_runs: Option<&'static str>,
 }
 
 impl Probe for FakeProbe {
@@ -37,6 +38,7 @@ impl Probe for FakeProbe {
         Some(match (program, args.first().copied()) {
             ("gh", _) => "Logged in to github.com account someone".to_owned(),
             ("id", _) => "501\n".to_owned(),
+            ("schtasks", _) => format!("<Exec><Command>{}</Command></Exec>", self.task_runs?),
             ("launchctl", _) if !self.agent_loaded => return None,
             ("launchctl", _) => format!("{} = {{\n\tstate = not running\n}}", args[1]),
             ("claude", Some("plugin")) => "headwork@headwork enabled".to_owned(),
@@ -311,6 +313,39 @@ fn macos_reports_the_tick_agent_and_the_last_tick() {
         status(&report, "tick-agent"),
         Status::Warn,
         "enforcing, not loaded"
+    );
+}
+
+#[test]
+fn windows_reports_whether_the_tick_task_runs_the_windowless_launcher() {
+    let install = install();
+    let mac = run_on(&install, &FakeProbe::default(), Platform::MacOs);
+    assert!(
+        mac.checks.iter().all(|check| check.id != "tick-task"),
+        "no scheduled task on macOS"
+    );
+    let absent = run(&install, &FakeProbe::default());
+    assert_eq!(status(&absent, "tick-task"), Status::Ok, "shadow mode");
+    assert!(
+        detail(&absent, "tick-task").contains("is not there"),
+        "absent"
+    );
+    let console = FakeProbe {
+        task_runs: Some("C:/Users/me/.local/bin/headwork.exe"),
+        ..FakeProbe::default()
+    };
+    let report = run(&install, &console);
+    assert_eq!(status(&report, "tick-task"), Status::Warn, "flashes");
+    let text = detail(&report, "tick-task");
+    assert!(text.contains("console window"), "{text}");
+    let windowless = FakeProbe {
+        task_runs: Some("C:/Users/me/.local/bin/HeadworkW.exe"),
+        ..FakeProbe::default()
+    };
+    assert_eq!(
+        status(&run(&install, &windowless), "tick-task"),
+        Status::Ok,
+        "windowless"
     );
 }
 

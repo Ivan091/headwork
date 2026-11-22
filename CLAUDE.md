@@ -149,7 +149,15 @@ cmux calls end after 60 s. While a tick runs, `<home>/tick.started` holds its pi
 lock held for over 15 minutes exits 1 with `tick-hung` (a standing finding, and `doctor` check `tick-hung`) and never
 takes the lock from the live process.
 
-It only reports until `[hooks] enforce = true`. A windowless build (no console flash per run) is not made yet.
+It only reports until `[hooks] enforce = true`.
+
+On Windows the task runs no console window (`ops/windowless.rs`): `tick --install` writes `headworkw.exe` beside the
+program, a copy of it whose PE header names the GUI subsystem, and the task runs `headworkw.exe tick`. A program named
+`headworkw` only forwards: it runs the `headwork` beside it with the same arguments under `CREATE_NO_WINDOW`, so the
+tick and every console program it starts (git, gh, bash, wmux) share one console that has no window, and appends their
+output to `<home>/tick.log`. It forwards to whatever `headwork` sits beside it, so hot reload and `update` need no new
+launcher. A task installed before this runs `headwork.exe tick` directly and flashes a window; `doctor` (check
+`tick-task`) says so, and `headwork tick --install` (after the user's `Allow` tap) replaces it.
 
 ### Panes
 
