@@ -48,11 +48,11 @@ pub enum WorktreeError {
 /// What became of a task's branch once its worktree was removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchEnd {
-    /// It held no commits beyond the main checkout's `HEAD` and was deleted.
+    /// It held no commits beyond the main checkout's `HEAD` or its upstream, and was deleted.
     Deleted,
     /// There was no such branch, for instance because the remove command deleted it.
     Absent,
-    /// It holds commits the main checkout's `HEAD` lacks, so it stays.
+    /// It holds commits that neither the main checkout's `HEAD` nor its upstream has, so it stays.
     Kept,
 }
 
@@ -88,7 +88,7 @@ impl Worktrees {
     /// Makes the task's worktree: `git worktree add -b <branch> <worktree>` for `builtin`, else the template.
     ///
     /// A `builtin` worktree reuses a branch of that name left by an earlier task when it is empty (no commits beyond
-    /// the main checkout's `HEAD`): it is reset to `HEAD` with `-B`. A branch with commits of its own is never reset;
+    /// the main checkout's `HEAD` or its upstream): it is reset to `HEAD` with `-B`. A branch with commits of its own is never reset;
     /// git refuses to make the worktree then.
     ///
     /// # Errors
@@ -114,8 +114,9 @@ impl Worktrees {
         }
     }
 
-    /// Deletes `branch` when it holds no commits beyond the main checkout's `HEAD`, so its slug can be used again;
-    /// a branch with work of its own is kept.
+    /// Deletes `branch` when it holds no commits beyond the main checkout's `HEAD` or that branch's upstream, so its
+    /// slug can be used again; a branch with work of its own is kept. A merged pull request lands on the remote first,
+    /// and the main checkout follows only when someone pulls, so the upstream counts as much as `HEAD`.
     ///
     /// # Errors
     ///
@@ -132,13 +133,64 @@ impl Worktrees {
         Ok(BranchEnd::Deleted)
     }
 
-    fn branch_exists(&self, branch: &str) -> Result<bool, WorktreeError> {
+    /// Whether the main checkout's repository has a local branch named `branch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot run.
+    pub fn branch_exists(&self, branch: &str) -> Result<bool, WorktreeError> {
         let reference = format!("refs/heads/{branch}");
         self.succeeds(&["rev-parse", "--verify", "--quiet", &reference])
     }
 
     fn branch_is_empty(&self, branch: &str) -> Result<bool, WorktreeError> {
-        self.succeeds(&["merge-base", "--is-ancestor", branch, "HEAD"])
+        self.contains(branch)
+    }
+
+    /// Whether the main checkout's `HEAD`, or the upstream of the branch it has checked out, contains `revision`.
+    fn contains(&self, revision: &str) -> Result<bool, WorktreeError> {
+        if self.succeeds(&["merge-base", "--is-ancestor", revision, "HEAD"])? {
+            return Ok(true);
+        }
+        self.succeeds(&["merge-base", "--is-ancestor", revision, "@{upstream}"])
+    }
+
+    /// Fetches the remote the main checkout's branch tracks, so a pull request merged since the last fetch counts as
+    /// landed. Returns `false`, fetching nothing, when that branch tracks no remote. The fetch never prompts: ssh runs
+    /// in batch mode with the user's own ssh program ([`crate::ssh::batch_command_in`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git fails or times out, for instance without network.
+    pub fn fetch_upstream(&self) -> Result<bool, WorktreeError> {
+        let head = self.output(
+            Command::new("git").args(["symbolic-ref", "-q", "HEAD"]),
+            "git symbolic-ref HEAD",
+        );
+        let Ok(head) = head else {
+            return Ok(false);
+        };
+        let remote = self.output(
+            Command::new("git").args([
+                "for-each-ref",
+                "--format=%(upstream:remotename)",
+                head.trim(),
+            ]),
+            "git for-each-ref",
+        )?;
+        let remote = remote.trim();
+        if remote.is_empty() {
+            return Ok(false);
+        }
+        let shown = format!("git fetch --quiet {remote}");
+        self.output(
+            Command::new("git")
+                .args(["fetch", "--quiet", remote])
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_SSH_COMMAND", crate::ssh::batch_command_in(&self.main)),
+            &shown,
+        )?;
+        Ok(true)
     }
 
     fn succeeds(&self, args: &[&str]) -> Result<bool, WorktreeError> {
@@ -168,7 +220,7 @@ impl Worktrees {
     }
 
     /// Removes the task's worktree with `git worktree remove`, without force, when it holds no work: its branch has no
-    /// commits beyond the main checkout's `HEAD`, and git refuses a worktree with changes or untracked files. Returns
+    /// commits beyond the main checkout's `HEAD` or its upstream, and git refuses a worktree with changes or untracked files. Returns
     /// whether it was removed. This is the fallback for a remove script that keeps worktrees it cannot see merged,
     /// which a task that never started also is.
     ///
@@ -245,13 +297,13 @@ impl Worktrees {
         Ok(!output.trim().is_empty())
     }
 
-    /// Whether the main checkout's `HEAD` contains `revision`.
+    /// Whether the main checkout's `HEAD`, or the upstream of its branch, contains `revision`.
     ///
     /// # Errors
     ///
     /// Returns a [`WorktreeError`] when git cannot run.
     pub fn is_merged(&self, revision: &str) -> Result<bool, WorktreeError> {
-        self.succeeds(&["merge-base", "--is-ancestor", revision, "HEAD"])
+        self.contains(revision)
     }
 
     /// Whether every commit `branch` holds beyond the main checkout's `HEAD` has a commit of the same subject in
@@ -319,13 +371,20 @@ impl Worktrees {
         self.git(&["worktree", "prune"])
     }
 
-    /// Deletes `branch` with `git branch -d`, which refuses one `HEAD` does not contain.
+    /// Deletes `branch` when the main checkout's `HEAD` or its upstream contains it ([`Self::is_merged`]); refuses
+    /// any other. `git branch -d` would refuse a branch only the upstream contains, so the check is made here.
     ///
     /// # Errors
     ///
-    /// Returns a [`WorktreeError`] when git refuses or fails.
+    /// Returns a [`WorktreeError`] when the branch is not contained, or git refuses or fails.
     pub fn delete_merged_branch(&self, branch: &str) -> Result<(), WorktreeError> {
-        self.git(&["branch", "-d", branch])
+        if !self.contains(branch)? {
+            return Err(WorktreeError::Failed {
+                command: format!("git branch -D {branch}"),
+                output: "neither the main checkout nor its upstream contains it".to_owned(),
+            });
+        }
+        self.git(&["branch", "-D", branch])
     }
 
     /// Runs plain `git gc` in the main checkout, with git's default prune window, and with no timeout of its own.

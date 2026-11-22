@@ -10,6 +10,7 @@ pub mod proc;
 pub mod release;
 pub mod runtime;
 pub mod shell;
+pub mod ssh;
 pub mod timed;
 pub mod trust;
 pub mod worktree;
