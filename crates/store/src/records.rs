@@ -150,28 +150,26 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
-    fn recorded(
-        &self,
-        pid: Option<u32>,
-        identity: Option<&ProcessIdentity>,
-    ) -> Option<RecordedPid> {
-        pid.map(|pid| RecordedPid {
+    fn recorded(&self, pid: u32, identity: Option<&ProcessIdentity>) -> RecordedPid {
+        RecordedPid {
             pid,
             identity: identity.cloned(),
             recorded_at: self.pids_at,
-        })
+        }
     }
 
     /// The `claude` process as recorded, to judge against what runs under its pid now.
     #[must_use]
     pub fn claude(&self) -> Option<RecordedPid> {
-        self.recorded(self.claude_pid, self.claude_identity.as_ref())
+        self.claude_pid
+            .map(|pid| self.recorded(pid, self.claude_identity.as_ref()))
     }
 
     /// The launcher process as recorded, to judge against what runs under its pid now.
     #[must_use]
     pub fn launcher(&self) -> Option<RecordedPid> {
-        self.recorded(self.launcher_pid, self.launcher_identity.as_ref())
+        self.launcher_pid
+            .map(|pid| self.recorded(pid, self.launcher_identity.as_ref()))
     }
 
     /// Both recorded processes, `claude` first.

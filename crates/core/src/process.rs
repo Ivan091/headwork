@@ -246,7 +246,7 @@ mod tests {
         };
         let bare = RecordedPid {
             identity: None,
-            ..known.clone()
+            ..known
         };
         let untimed = RecordedPid {
             recorded_at: None,

@@ -66,13 +66,23 @@ pub struct Proc {
     pub cwd: Option<String>,
 }
 
+/// A session's launcher or `claude`, as recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Root {
+    /// Its id.
+    pub pid: u32,
+    /// When it started, in seconds since the unix epoch, as recorded with the pid; absent for a session recorded
+    /// before identities were kept.
+    pub started: Option<u64>,
+}
+
 /// A session that ended, with the processes that held its tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndedSession {
     /// Its name: the task's, or the orchestrator's.
     pub name: String,
-    /// The launcher's and `claude`'s ids, as recorded.
-    pub roots: Vec<u32>,
+    /// The launcher and `claude`, as recorded.
+    pub roots: Vec<Root>,
     /// When it started, in seconds since the unix epoch.
     pub started: u64,
     /// When it ended, in seconds since the unix epoch; absent when it was found gone without an end.
@@ -247,10 +257,15 @@ impl<'a> Tree<'a> {
         let from = session.started.saturating_sub(START_SLACK_S);
         let until = end.saturating_add(START_SLACK_S);
         let mut members = BTreeSet::new();
-        for &root in &session.roots {
+        for recorded in &session.roots {
+            let root = recorded.pid;
             let holder = self.by_pid.get(&root).copied();
             let root_alive = holder.is_some_and(|p| {
-                p.started.abs_diff(session.started) <= ROOT_START_WINDOW_S && p.started <= until
+                let same = recorded.started.map_or_else(
+                    || p.started.abs_diff(session.started) <= ROOT_START_WINDOW_S,
+                    |started| p.started.abs_diff(started) <= START_SLACK_S,
+                );
+                same && p.started <= until
             });
             if root_alive {
                 self.descendants(root, &mut members);
@@ -420,7 +435,10 @@ mod tests {
     fn session(roots: &[u32], started: u64, ended: Option<u64>) -> EndedSession {
         EndedSession {
             name: "me-sim-x".to_owned(),
-            roots: roots.to_vec(),
+            roots: roots
+                .iter()
+                .map(|&pid| Root { pid, started: None })
+                .collect(),
             started,
             ended,
             last_seen: None,
@@ -807,5 +825,33 @@ mod tests {
         });
         assert_eq!(ended(&plan), vec![11], "{plan:?}");
         assert!(plan.spare.is_empty(), "{plan:?}");
+    }
+
+    #[test]
+    fn a_root_with_a_recorded_start_counts_only_while_the_start_matches() {
+        let procs = [
+            p(1, None, "node.exe", 50_050),
+            p(2, Some(1), "bash.exe", 50_100),
+            p(3, Some(1), "bash.exe", 50_020),
+        ];
+        let recorded = |started| EndedSession {
+            roots: vec![Root {
+                pid: 1,
+                started: Some(started),
+            }],
+            ..session(&[], 50_000, Some(60_000))
+        };
+        for (started, expected) in [(50_050, vec![2, 1]), (50_010, vec![3])] {
+            let sessions = [recorded(started)];
+            let plan = plan(&Facts {
+                now: NOW,
+                procs: &procs,
+                sessions: &sessions,
+                jobs: &[],
+                shells_known: false,
+                parents_kept: true,
+            });
+            assert_eq!(ended(&plan), expected, "recorded start {started}: {plan:?}");
+        }
     }
 }

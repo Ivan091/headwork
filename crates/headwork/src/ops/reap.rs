@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use headwork_adapters::proc::{self, ProcessIdentity};
-use headwork_core::reap::{EndedSession, Facts, Reason, Spare, Verdict, plan};
+use headwork_core::reap::{EndedSession, Facts, Reason, Root, Spare, Verdict, plan};
 use headwork_store::{Store, TaskId};
 use serde::Serialize;
 
@@ -160,12 +160,16 @@ fn ended_sessions(
         .filter_map(|row| {
             Some(EndedSession {
                 name: row.name,
-                roots: [row.launcher_pid, row.claude_pid]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
+                roots: [
+                    (row.launcher_pid, row.launcher_started),
+                    (row.claude_pid, row.claude_started),
+                ]
+                .into_iter()
+                .filter_map(|(pid, started)| pid.map(|pid| Root { pid, started }))
+                .collect(),
                 started: row.started?,
                 ended: row.ended,
+                last_seen: row.last_seen,
                 folders: with_resolved(row.folders),
             })
         })

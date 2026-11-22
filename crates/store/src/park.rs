@@ -839,7 +839,8 @@ impl Store {
         tx.execute(
             &format!(
                 "UPDATE sessions SET state = 'starting', launcher_pid = NULL, claude_pid = NULL, launcher_image = NULL,
-                     launcher_started = NULL, claude_image = NULL, claude_started = NULL, pids_at = NULL, ended_at = NULL, exit_code = NULL, started_at = {NOW} WHERE id = ?1"
+                     launcher_started = NULL, claude_image = NULL, claude_started = NULL, pids_at = NULL, ended_at = NULL,
+                     exit_code = NULL, started_at = {NOW} WHERE id = ?1"
             ),
             params![id],
         )?;

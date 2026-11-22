@@ -98,6 +98,10 @@ pub struct EndedSession {
     pub launcher_pid: Option<u32>,
     /// The `claude` process.
     pub claude_pid: Option<u32>,
+    /// When the launcher started, as recorded with its pid.
+    pub launcher_started: Option<u64>,
+    /// When `claude` started, as recorded with its pid.
+    pub claude_started: Option<u64>,
     /// When it started, in seconds since the unix epoch.
     pub started: Option<u64>,
     /// When it ended, in seconds since the unix epoch.
@@ -255,7 +259,8 @@ impl Store {
     pub fn ended_sessions(&self) -> Result<Vec<EndedSession>, StoreError> {
         let mut statement = self.conn.prepare(
             "SELECT rc_name, launcher_pid, claude_pid, CAST(strftime('%s', started_at) AS INTEGER),
-                    CAST(strftime('%s', ended_at) AS INTEGER), task_id, CAST(strftime('%s', last_event_at) AS INTEGER)
+                    CAST(strftime('%s', ended_at) AS INTEGER), task_id, CAST(strftime('%s', last_event_at) AS INTEGER),
+                    launcher_started, claude_started
              FROM sessions WHERE state IN ('ended', 'gone') ORDER BY started_at, rowid",
         )?;
         let rows = statement
@@ -268,6 +273,7 @@ impl Store {
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    (row.get::<_, Option<i64>>(7)?, row.get::<_, Option<i64>>(8)?),
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -276,7 +282,16 @@ impl Store {
             .prepare("SELECT path FROM worktrees WHERE task_id = ?1 ORDER BY id")?;
         rows.into_iter()
             .map(
-                |(name, launcher, claude, started, ended, task, last_seen)| {
+                |(
+                    name,
+                    launcher,
+                    claude,
+                    started,
+                    ended,
+                    task,
+                    last_seen,
+                    (launcher_started, claude_started),
+                )| {
                     let folders = match task {
                         Some(task) => folders
                             .query_map(params![task], |row| row.get::<_, String>(0))?
@@ -287,6 +302,8 @@ impl Store {
                         name,
                         launcher_pid: pid(launcher)?,
                         claude_pid: pid(claude)?,
+                        launcher_started: seconds(launcher_started)?,
+                        claude_started: seconds(claude_started)?,
                         started: seconds(started)?,
                         ended: seconds(ended)?,
                         last_seen: seconds(last_seen)?,
