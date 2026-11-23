@@ -146,6 +146,12 @@ pub fn ingest_file(
     let key = slashed(path);
     let now = mark_of(path)?;
     let Some(start) = start_at(store.usage_file(&key)?, now, from_start) else {
+        if let Some(agent) = file.agent_id.as_deref()
+            && store.agent_meta_open(agent)?
+            && let Some(meta) = meta_of(path)
+        {
+            store.record_agent_meta(agent, &file.session_id, &meta)?;
+        }
         return Ok(None);
     };
     let rolled_to = store.usage_rolled_to()?;

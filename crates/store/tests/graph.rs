@@ -364,7 +364,11 @@ fn the_facts_draw_a_lead_its_part_and_their_talk() {
     ];
     for (id, kind, parent) in table {
         let node = graph.node(id).unwrap();
-        assert_eq!((node.kind, node.parent.as_deref()), (kind, parent), "{id}");
+        assert_eq!(
+            (node.kind(), node.parent.as_deref()),
+            (kind, parent),
+            "{id}"
+        );
     }
     let edges = [
         (EdgeKind::Message, "session:part", "session:lead"),
@@ -383,7 +387,7 @@ fn the_facts_draw_a_lead_its_part_and_their_talk() {
     let ask = graph
         .nodes
         .iter()
-        .find(|node| node.kind == NodeKind::Ask)
+        .find(|node| node.kind() == NodeKind::Ask)
         .unwrap();
     assert_eq!(
         ask.label, "Which scope should the dashboard take?",
@@ -392,7 +396,7 @@ fn the_facts_draw_a_lead_its_part_and_their_talk() {
     let pr_node = graph
         .nodes
         .iter()
-        .find(|node| node.kind == NodeKind::Pr)
+        .find(|node| node.kind() == NodeKind::Pr)
         .unwrap();
     assert_eq!(pr_node.label, "#41", "the pull request");
 }

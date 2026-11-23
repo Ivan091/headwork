@@ -1,8 +1,9 @@
 //! The agent graph (`docs/dashboard.md`, sections 3 to 6): the store's facts in, nodes and edges out.
 //!
 //! [`build`] draws the graph as it stood at one instant. A task box, a session and the orchestrator are drawn while
-//! they exist at the instant; the satellites of a drawn task (subagents, helpers, jobs, pull requests, reviews and
-//! their nodes) are drawn from their start on, ended ones in their end state. Past states come from the store's logs:
+//! they exist at the instant; the satellites of a drawn task (helpers, jobs, pull requests, reviews and their nodes)
+//! are drawn from their start on, ended ones in their end state, and so are subagents, except that the live view of
+//! now keeps only those still running under a live session. Past states come from the store's logs:
 //! task `transition`, `pr-state`, `job-state`, `job-started`, `job-forgotten` and `review-<trigger>` events
 //! ([`Change`]), and a review node's start and finish times. Times are the store's RFC 3339 UTC text, which sorts as it
 //! reads. Nothing here reads a file or a database; the store gathers the [`Facts`].
@@ -387,7 +388,7 @@ text_enum!(
     }
 );
 
-/// A node's state, from the vocabulary of what the node stands for; written as its word.
+/// A node's state, from the vocabulary of what the node stands for ([`Shape::state`]); written as its word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// A task.
@@ -423,25 +424,6 @@ impl Status {
             Self::Ask(state) => state.as_str(),
         }
     }
-
-    /// Whether this state belongs to a node of `kind`: the pairing every drawn node keeps.
-    #[must_use]
-    pub const fn fits(self, kind: NodeKind) -> bool {
-        matches!(
-            (self, kind),
-            (Self::Task(_), NodeKind::Task)
-                | (
-                    Self::Session(_),
-                    NodeKind::Orchestrator | NodeKind::Lead | NodeKind::Worker | NodeKind::Part
-                )
-                | (Self::Agent(_), NodeKind::Subagent)
-                | (Self::Job(_), NodeKind::Job)
-                | (Self::Pull(_), NodeKind::Pr)
-                | (Self::Review(_), NodeKind::Review)
-                | (Self::ReviewNode(_), NodeKind::ReviewNode)
-                | (Self::Ask(_), NodeKind::Ask)
-        )
-    }
 }
 
 impl Serialize for Status {
@@ -450,19 +432,105 @@ impl Serialize for Status {
     }
 }
 
+/// What a node stands for, with the state its kind has: the type fixes which state goes with which kind. It is written
+/// as the node's `kind` and, where there is one, its `state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// The user.
+    User,
+    /// Every orchestrator session: `live` while one of them is.
+    Orchestrator(SessionState),
+    /// A task box.
+    Task(TaskState),
+    /// A lead task's newest session.
+    Lead(SessionState),
+    /// A plain task's newest session.
+    Worker(SessionState),
+    /// A part task's newest session.
+    Part(SessionState),
+    /// A subagent.
+    Subagent(AgentState),
+    /// A helper session.
+    Helper,
+    /// A review.
+    Review(ReviewState),
+    /// One node run of a review's flow.
+    ReviewNode(NodeState),
+    /// A job.
+    Job(JobState),
+    /// A pull request.
+    Pr(PullState),
+    /// An open ask.
+    Ask(AskState),
+    /// A message address headwork does not know.
+    External,
+}
+
+impl Shape {
+    /// What the node stands for.
+    #[must_use]
+    pub const fn kind(self) -> NodeKind {
+        match self {
+            Self::User => NodeKind::User,
+            Self::Orchestrator(_) => NodeKind::Orchestrator,
+            Self::Task(_) => NodeKind::Task,
+            Self::Lead(_) => NodeKind::Lead,
+            Self::Worker(_) => NodeKind::Worker,
+            Self::Part(_) => NodeKind::Part,
+            Self::Subagent(_) => NodeKind::Subagent,
+            Self::Helper => NodeKind::Helper,
+            Self::Review(_) => NodeKind::Review,
+            Self::ReviewNode(_) => NodeKind::ReviewNode,
+            Self::Job(_) => NodeKind::Job,
+            Self::Pr(_) => NodeKind::Pr,
+            Self::Ask(_) => NodeKind::Ask,
+            Self::External => NodeKind::External,
+        }
+    }
+
+    /// Its state, drawn as colour; none for the user, a helper and an external address.
+    #[must_use]
+    pub const fn state(self) -> Option<Status> {
+        match self {
+            Self::User | Self::Helper | Self::External => None,
+            Self::Orchestrator(state)
+            | Self::Lead(state)
+            | Self::Worker(state)
+            | Self::Part(state) => Some(Status::Session(state)),
+            Self::Task(state) => Some(Status::Task(state)),
+            Self::Subagent(state) => Some(Status::Agent(state)),
+            Self::Review(state) => Some(Status::Review(state)),
+            Self::ReviewNode(state) => Some(Status::ReviewNode(state)),
+            Self::Job(state) => Some(Status::Job(state)),
+            Self::Pr(state) => Some(Status::Pull(state)),
+            Self::Ask(state) => Some(Status::Ask(state)),
+        }
+    }
+}
+
+impl Serialize for Shape {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let state = self.state();
+        let mut map = serializer.serialize_map(Some(if state.is_some() { 2 } else { 1 }))?;
+        map.serialize_entry("kind", &self.kind())?;
+        if let Some(state) = state {
+            map.serialize_entry("state", &state)?;
+        }
+        map.end()
+    }
+}
+
 /// One node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Node {
     /// Unique across the graph, such as `task:12` or `session:<id>`; never agent-written text.
     pub id: String,
-    /// What it stands for.
-    pub kind: NodeKind,
+    /// What it stands for and its state. At a past instant a session is `live` or `ended`; now it is its stored state.
+    #[serde(flatten)]
+    pub shape: Shape,
     /// The text drawn on it.
     pub label: String,
-    /// Its state, drawn as colour: one word of the node kind's own vocabulary ([`Status::fits`]). At a past instant
-    /// a session is `live` or `ended`; now it is its stored state.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<Status>,
     /// The box it is drawn in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -511,6 +579,20 @@ pub struct Graph {
     /// Events left out of the facts, each named with why.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
+}
+
+impl Node {
+    /// What it stands for.
+    #[must_use]
+    pub const fn kind(&self) -> NodeKind {
+        self.shape.kind()
+    }
+
+    /// Its state, if its kind has one.
+    #[must_use]
+    pub const fn state(&self) -> Option<Status> {
+        self.shape.state()
+    }
 }
 
 impl Graph {

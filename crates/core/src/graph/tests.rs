@@ -239,10 +239,7 @@ fn edge<'g>(graph: &'g Graph, kind: EdgeKind, source: &str, target: &str) -> Opt
 }
 
 fn state(graph: &Graph, id: &str) -> Option<&'static str> {
-    graph
-        .node(id)
-        .and_then(|node| node.state)
-        .map(Status::as_str)
+    graph.node(id).and_then(Node::state).map(Status::as_str)
 }
 
 #[test]
@@ -266,34 +263,64 @@ fn every_node_kind_is_drawn_now() {
         (stranger.as_str(), NodeKind::External),
     ];
     for (id, kind) in table {
-        assert_eq!(
-            graph.node(id).map(|node| node.kind),
-            Some(kind),
-            "node {id}"
-        );
+        assert_eq!(graph.node(id).map(Node::kind), Some(kind), "node {id}");
     }
     let all = build(&facts(), None, Scope::All);
     assert_eq!(
-        all.node("session:s3").map(|node| node.kind),
+        all.node("session:s3").map(Node::kind),
         Some(NodeKind::Worker),
         "a plain task's session"
     );
 }
 
 #[test]
-fn every_drawn_state_fits_its_node_kind() {
-    for at in [None, Some("T04"), Some("T09")] {
-        let graph = build(&facts(), at, Scope::All);
-        for node in &graph.nodes {
-            if let Some(state) = node.state {
-                assert!(
-                    state.fits(node.kind),
-                    "{} is {:?} with {state:?}",
-                    node.id,
-                    node.kind
-                );
-            }
-        }
+fn a_shape_is_written_as_its_kind_and_state() {
+    let table = [
+        (Shape::User, "user", None),
+        (
+            Shape::Orchestrator(SessionState::Live),
+            "orchestrator",
+            Some("live"),
+        ),
+        (Shape::Task(TaskState::Working), "task", Some("working")),
+        (
+            Shape::Lead(SessionState::Starting),
+            "lead",
+            Some("starting"),
+        ),
+        (Shape::Worker(SessionState::Gone), "worker", Some("gone")),
+        (Shape::Part(SessionState::Ended), "part", Some("ended")),
+        (Shape::Subagent(AgentState::Seen), "subagent", Some("seen")),
+        (Shape::Helper, "helper", None),
+        (
+            Shape::Review(ReviewState::Delivered),
+            "review",
+            Some("delivered"),
+        ),
+        (
+            Shape::ReviewNode(NodeState::Ready),
+            "review-node",
+            Some("ready"),
+        ),
+        (Shape::Job(JobState::Parked), "job", Some("parked")),
+        (Shape::Pr(PullState::Merged), "pr", Some("merged")),
+        (Shape::Ask(AskState::Pending), "ask", Some("pending")),
+        (Shape::External, "external", None),
+    ];
+    assert_eq!(table.len(), NodeKind::ALL.len(), "every kind has a shape");
+    for (shape, kind, word) in table {
+        let json = serde_json::to_value(shape).unwrap();
+        assert_eq!(json["kind"], kind, "{shape:?}");
+        assert_eq!(
+            json.get("state").and_then(serde_json::Value::as_str),
+            word,
+            "{shape:?}"
+        );
+        assert_eq!(
+            (shape.kind().as_str(), shape.state().map(Status::as_str)),
+            (kind, word),
+            "{shape:?}"
+        );
     }
 }
 
@@ -669,7 +696,7 @@ fn the_orchestrator_is_one_node_across_restarts_and_knows_only_its_sessions_so_f
         graph
             .nodes
             .iter()
-            .filter(|node| node.kind == NodeKind::Orchestrator)
+            .filter(|node| node.kind() == NodeKind::Orchestrator)
             .count(),
         1,
         "one node"
@@ -686,7 +713,7 @@ fn the_orchestrator_is_one_node_across_restarts_and_knows_only_its_sessions_so_f
     let between = build(&facts, Some("T03"), Scope::Live);
     let node = between.node(ORCHESTRATOR_NODE).unwrap();
     assert_eq!(
-        (node.label.as_str(), node.state.map(Status::as_str)),
+        (node.label.as_str(), node.state().map(Status::as_str)),
         ("orchestrator", Some("ended")),
         "o1 only"
     );
@@ -1120,5 +1147,41 @@ fn words_serialise_as_the_kinds_and_states_read() {
     assert!(
         kinds.contains("review-node") && kinds.contains("subagent"),
         "{kinds:?}"
+    );
+}
+
+#[test]
+fn a_message_from_a_name_taken_again_comes_from_whoever_held_it_then() {
+    let mut facts = facts();
+    facts.tasks.push(task(
+        9,
+        "headwork-old",
+        TaskState::Working,
+        None,
+        false,
+        "T06",
+    ));
+    facts.sessions.push(session(
+        "s9",
+        Some(9),
+        Role::Worker,
+        "headwork-old",
+        "T06",
+        None,
+    ));
+    facts.received.push(received("s1", "headwork-old", "T04"));
+    facts.received.push(received("s1", "headwork-old", "T07"));
+    let now = build(&facts, None, Scope::Live);
+    let from_new = edge(&now, EdgeKind::Message, "session:s9", "session:s1").unwrap();
+    assert_eq!(from_new.weight, 1, "only the message the new task sent");
+    assert!(
+        edge(&now, EdgeKind::Message, "session:s3", "session:s1").is_none(),
+        "the old task is not drawn"
+    );
+    let all = build(&facts, None, Scope::All);
+    assert_eq!(
+        edge(&all, EdgeKind::Message, "session:s3", "session:s1").map(|edge| edge.weight),
+        Some(1),
+        "the old one's"
     );
 }

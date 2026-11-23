@@ -127,7 +127,7 @@ fn a_subagent_transcript_and_its_meta_become_a_node_in_its_callers_box() {
         "first and last response"
     );
     assert_eq!(
-        agent.state.map(headwork_core::graph::Status::as_str),
+        agent.state().map(headwork_core::graph::Status::as_str),
         Some("seen"),
         "seen now"
     );
@@ -197,7 +197,7 @@ fn state_at(store: &Store, at: &str, id: &str) -> Option<String> {
     };
     let graph = graph(store, &query).unwrap();
     graph.node(id).map(|node| {
-        node.state
+        node.state()
             .map_or_else(String::new, |state| state.as_str().to_owned())
     })
 }
@@ -308,4 +308,56 @@ fn a_job_parked_and_started_again_is_running_after_its_restart() {
             "{id} at {at}"
         );
     }
+}
+
+#[test]
+fn a_meta_file_missing_at_the_first_read_is_read_once_it_is_there() {
+    let (mut store, _task) = store_with_task();
+    let dir = tempfile::tempdir().unwrap();
+    let subagents = dir.path().join("projects/S--w/0a/subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    let transcript = subagents.join("agent-x2.jsonl");
+    std::fs::write(
+        &transcript,
+        response("m1", "2026-11-22T10:00:00.000Z") + "\n",
+    )
+    .unwrap();
+    ingest_file(&mut store, &transcript, false).unwrap();
+    let described = |store: &Store| {
+        let facts = store.graph_facts().unwrap();
+        let agent = facts
+            .agents
+            .iter()
+            .find(|agent| agent.id == "x2")
+            .cloned()
+            .unwrap();
+        (agent.description, agent.finished)
+    };
+    assert_eq!(described(&store), (None, None), "no meta yet");
+    std::fs::write(
+        subagents.join("agent-x2.meta.json"),
+        r#"{"description":"late","finished":true}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        ingest_file(&mut store, &transcript, false).unwrap(),
+        None,
+        "the transcript did not change"
+    );
+    assert_eq!(
+        described(&store),
+        (Some("late".to_owned()), Some(true)),
+        "the meta is read anyway"
+    );
+    std::fs::write(
+        subagents.join("agent-x2.meta.json"),
+        r#"{"description":"changed","finished":false}"#,
+    )
+    .unwrap();
+    ingest_file(&mut store, &transcript, false).unwrap();
+    assert_eq!(
+        described(&store),
+        (Some("late".to_owned()), Some(true)),
+        "a finished agent's meta is not read again"
+    );
 }

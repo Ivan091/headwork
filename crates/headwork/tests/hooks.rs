@@ -1842,6 +1842,15 @@ fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
         HookReply::default(),
         "the default address goes through unchanged"
     );
+    assert_eq!(
+        w.pre("SendMessage", &message("orchestrator [ab12]")),
+        HookReply::default(),
+        "the live address with a ref goes through unchanged, ref and all"
+    );
+    assert!(
+        !w.events().iter().any(|event| event.kind == "readdressed"),
+        "nothing readdressed"
+    );
     let readdressed = |reply: &HookReply| -> Value {
         let body: Value = serde_json::from_str(reply.stdout.as_deref().unwrap()).unwrap();
         body["hookSpecificOutput"]["updatedInput"].clone()

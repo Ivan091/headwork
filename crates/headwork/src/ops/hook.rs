@@ -810,11 +810,12 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
     let Some(to) = tool_input.get("to").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if !is_orchestrator_address(headwork_core::names::bare_address(to)) {
+    let bare = headwork_core::names::bare_address(to);
+    if !is_orchestrator_address(bare) {
         return Ok(None);
     }
     let address = rules::orchestrator_address(store, call.env.host)?;
-    if address == to {
+    if address == bare {
         return Ok(None);
     }
     store.append_event(

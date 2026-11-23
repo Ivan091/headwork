@@ -58,13 +58,13 @@ pub(crate) fn graph(graph: &Graph) -> String {
             continue;
         };
         let state = node
-            .state
+            .state()
             .map_or_else(String::new, |state| format!(" [{}]", state.as_str()));
         let _ = writeln!(
             text,
             "{:indent$}{} {}{state}  {}",
             "",
-            node.kind.as_str(),
+            node.kind().as_str(),
             printable(&node.label),
             node.id,
             indent = depth * 2
@@ -1275,14 +1275,13 @@ mod tests {
     fn graph_nests_boxes_counts_edges_and_escapes_unsafe_characters() {
         use std::collections::BTreeMap;
 
-        use headwork_core::TaskState;
-        use headwork_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind, Status};
+        use headwork_core::graph::{Edge, EdgeKind, Graph, Node, Shape};
+        use headwork_core::{SessionState, TaskState};
 
-        let node = |id: &str, kind: NodeKind, label: &str, parent: Option<&str>| Node {
+        let node = |id: &str, shape: Shape, label: &str, parent: Option<&str>| Node {
             id: id.to_owned(),
-            kind,
+            shape,
             label: label.to_owned(),
-            state: Some(Status::Task(TaskState::Working)),
             parent: parent.map(str::to_owned),
             start: None,
             end: None,
@@ -1291,11 +1290,21 @@ mod tests {
         let view = Graph {
             at: Some("2026-11-23T08:00:00.000Z".to_owned()),
             nodes: vec![
-                node("task:1", NodeKind::Task, "headwork-lead", None),
-                node("session:s1", NodeKind::Lead, "opus medium", Some("task:1")),
+                node(
+                    "task:1",
+                    Shape::Task(TaskState::Working),
+                    "headwork-lead",
+                    None,
+                ),
+                node(
+                    "session:s1",
+                    Shape::Lead(SessionState::Live),
+                    "opus medium",
+                    Some("task:1"),
+                ),
                 node(
                     "external:00ff",
-                    NodeKind::External,
+                    Shape::External,
                     "evil\u{1b}[2J\u{202e}x",
                     None,
                 ),
@@ -1323,11 +1332,11 @@ mod tests {
             "{text}"
         );
         assert!(
-            lines.contains(&"  lead opus medium [working]  session:s1"),
+            lines.contains(&"  lead opus medium [live]  session:s1"),
             "indented under its box: {text}"
         );
         assert!(
-            lines.contains(&r"external evil\u{1b}[2J\u{202e}x [working]  external:00ff"),
+            lines.contains(&r"external evil\u{1b}[2J\u{202e}x  external:00ff"),
             "escaped: {text}"
         );
         assert!(

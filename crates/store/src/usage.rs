@@ -185,8 +185,18 @@ fn upsert_agent(
 ) -> Result<(), StoreError> {
     let first = batch.lines.iter().map(|line| line.at.as_str()).min();
     let last = batch.lines.iter().map(|line| line.at.as_str()).max();
-    let meta = batch.agent_meta;
-    tx.execute(
+    write_agent(tx, agent, batch.session_id, batch.agent_meta, (first, last))
+}
+
+/// The one write of an `agents` row: insert, or widen its times and fill the meta fields given.
+fn write_agent(
+    conn: &rusqlite::Connection,
+    agent: &str,
+    session: &str,
+    meta: Option<&AgentMeta>,
+    (first, last): (Option<&str>, Option<&str>),
+) -> Result<(), StoreError> {
+    conn.execute(
         "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, parent_agent_id,
              finished, first_at, last_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%Y-%m-%dT%H:%M:%fZ', ?9), strftime('%Y-%m-%dT%H:%M:%fZ', ?10))
@@ -203,7 +213,7 @@ fn upsert_agent(
                  THEN COALESCE(excluded.last_at, agents.last_at) ELSE agents.last_at END",
         params![
             agent,
-            batch.session_id,
+            session,
             meta.and_then(|meta| meta.agent_type.as_deref()),
             meta.and_then(|meta| meta.description.as_deref()),
             meta.and_then(|meta| meta.model.as_deref()),
@@ -215,6 +225,43 @@ fn upsert_agent(
         ],
     )?;
     Ok(())
+}
+
+impl Store {
+    /// Whether a subagent's meta file is worth reading again although its transcript did not change: it has no row
+    /// yet, or its row does not say it finished (its meta was missing, half written, or written before its end).
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn agent_meta_open(&self, agent: &str) -> Result<bool, StoreError> {
+        let finished: Option<Option<bool>> = self
+            .conn
+            .query_row(
+                "SELECT finished FROM agents WHERE agent_id = ?1",
+                params![agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(finished.flatten() != Some(true))
+    }
+
+    /// Records what a subagent's meta file says, leaving its times as they are.
+    ///
+    /// # Errors
+    ///
+    /// Returns a write error.
+    pub fn record_agent_meta(
+        &self,
+        agent: &str,
+        session: &str,
+        meta: &AgentMeta,
+    ) -> Result<(), StoreError> {
+        if is_agent_id(agent) {
+            write_agent(&self.conn, agent, session, Some(meta), (None, None))?;
+        }
+        Ok(())
+    }
 }
 
 fn insert_line(
