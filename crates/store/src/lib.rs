@@ -22,7 +22,7 @@ mod waiting;
 use std::path::Path;
 
 use headwork_core::{Actor, MachineMode};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use error::StoreError;
@@ -106,6 +106,32 @@ impl Store {
         let mut store = Self::prepare(conn)?;
         store.backup = backup;
         Ok(store)
+    }
+
+    /// Opens an existing store for reading only: the connection is read-only and `query_only`, so nothing written
+    /// through it can change the store, and it never migrates. `headwork dash` reads through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the file cannot be opened, or its schema is newer
+    /// ([`StoreError::SchemaTooNew`]) or older ([`StoreError::SchemaBehind`]) than this build knows.
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.pragma_update(None, "query_only", true)?;
+        let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let known = MIGRATIONS.len();
+        let applied = usize::try_from(found).map_err(|_| StoreError::OutOfRange(found))?;
+        if applied > known {
+            return Err(StoreError::SchemaTooNew { found, known });
+        }
+        if applied < known {
+            return Err(StoreError::SchemaBehind { found, known });
+        }
+        Ok(Self { conn, backup: None })
     }
 
     /// Opens a fresh store in memory, for tests.

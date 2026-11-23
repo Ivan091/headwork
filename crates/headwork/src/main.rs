@@ -301,6 +301,18 @@ enum Command {
         #[command(subcommand)]
         action: FlowAction,
     },
+    /// Serve the agent graph as a web page on loopback, read only, until stopped (docs/dashboard.md).
+    Dash {
+        /// The port to listen on.
+        #[arg(long, default_value_t = headwork::ops::dash::DEFAULT_PORT)]
+        port: u16,
+        /// The address to bind; loopback only.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        /// Open the page in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
     /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
     Doctor {
         /// The Claude config folder.
@@ -640,6 +652,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return rule_test(&probe, json, out);
         }
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
+        Command::Dash { port, bind, open } => return dash_command(port, bind, open, out),
         Command::Flow {
             action: FlowAction::Check { name, json },
         } => return flow_check_command(name.as_deref(), json, out),
@@ -804,6 +817,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Doctor { .. }
+        | Command::Dash { .. }
         | Command::Flow { .. }
         | Command::Orchestrator { .. }
         | Command::Hook { .. }
@@ -1038,6 +1052,40 @@ fn status_command(
         out.write_all(render::statuses(&lines).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn dash_command(
+    port: u16,
+    bind: std::net::IpAddr,
+    open: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let home = Home::locate()?;
+    home.open_store()?;
+    let options = headwork::ops::dash::DashOptions {
+        bind,
+        port,
+        db: home.store_path(),
+    };
+    if open {
+        open_in_browser(&headwork::ops::dash::url(&options));
+    }
+    headwork::ops::dash::serve(&options, out)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Asks the system to open `url` in the default browser; a failure only means the user opens it by hand.
+fn open_in_browser(url: &str) {
+    let launched = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+    drop(launched);
 }
 
 fn graph_command(

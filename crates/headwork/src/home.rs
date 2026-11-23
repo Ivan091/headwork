@@ -162,6 +162,12 @@ impl Home {
         Ok(config)
     }
 
+    /// The store file, `state.db`.
+    #[must_use]
+    pub fn store_path(&self) -> PathBuf {
+        self.root.join("state.db")
+    }
+
     /// Opens `state.db`, creating the folder and the database when missing.
     ///
     /// # Errors
@@ -170,7 +176,7 @@ impl Home {
     pub fn open_store(&self) -> Result<Store> {
         std::fs::create_dir_all(&self.root)
             .with_context(|| format!("creating {}", self.root.display()))?;
-        let path = self.root.join("state.db");
+        let path = self.store_path();
         Store::open(&path).with_context(|| format!("opening {}", path.display()))
     }
 }

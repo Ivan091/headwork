@@ -1360,3 +1360,19 @@ and the reason.
     type-filtered reads and for D3's reads of new events. Pushing the scope and the instant into SQL waits until a
     store makes it slow, since it would repeat rules core owns.
   - The read-only store open for `headwork dash` comes with D2, its first caller.
+- 2026-11-23, dashboard D2 (the page): `headwork dash [--port 8740] [--bind 127.0.0.1] [--open]` serves the page on
+  loopback only (another `--bind` is refused) with `tiny_http` on four worker threads, each request reading through
+  its own `Store::open_read_only` connection (read-only and `query_only`, never migrating, refusing an older or newer
+  schema); the command itself opens the store writable once first so a new build migrates it. `ops::dash::route` is
+  pure and table-tested: `GET` only (405 otherwise), a `Host` of `127.0.0.1:<port>` or `localhost:<port>` only (403
+  otherwise, against DNS rebinding), `/` and the built-in assets, `/api/graph?at=&scope=live|all|task:<name>` (the
+  `headwork graph` query), `/api/node/<percent-encoded id>` (the node drawn now with every task, its edges, and for a
+  task its state history and newest recap). Every answer carries `Cache-Control: no-store`, `nosniff`,
+  `no-referrer` and a `default-src 'self'` content security policy, so the page loads nothing from elsewhere. The page
+  is plain HTML, CSS and JavaScript (no build step): Cytoscape.js 3.30.2 with the fcose layout (and its `layout-base`
+  and `cose-base`), vendored unchanged in `dash/vendor/` with their checksums in `dash/VENDOR.md`, which a test checks.
+  Agent-written text reaches the page only through `textContent` (Cytoscape draws labels on a canvas), and every id in
+  a fetched path goes through `encodeURIComponent`; a test refuses `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+  `document.write` and `eval(` in `app.js` and any fetch path built without encoding. The page polls `/api/graph`
+  every 5 seconds until D3's stream replaces it, keeps node positions across refreshes and lays out again only when
+  nodes come or go. Subagents start hidden, counted on their caller ("3 subagents"), as the plan's count badge.

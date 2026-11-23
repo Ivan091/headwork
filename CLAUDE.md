@@ -125,6 +125,9 @@ reported to and asked whom, now or at a past instant (`--at`). The pure build is
 `Graph` out, `change_at` for replay); `Store::graph_facts` (`store/src/graph.rs`) reads them in one transaction. The
 `agents` table (migration 0020) holds each subagent's type, description, model, depth, parent agent and first and last response,
 filled by the usage reader with the usage rows; the `SendMessage` `tool-used` event carries `to` and a short `summary`.
+D2 is `headwork dash` (`ops/dash.rs`): a page on loopback only, through `Store::open_read_only`, with a pure router
+that checks the `Host` header; the page (`dash/index.html`, `app.js`, `style.css`) and the vendored Cytoscape.js and
+fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built into the binary.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -146,6 +149,7 @@ cargo run -p headwork -- board             # projects, tasks (parts indented und
 cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- graph [--json] [--at T] [--all | --task <name>]   # the agents working together as nodes and edges (docs/dashboard.md)
+cargo run -p headwork -- dash [--port 8740] [--open]   # the agent graph as a web page on http://127.0.0.1:8740/, read only, until Ctrl+C
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job
