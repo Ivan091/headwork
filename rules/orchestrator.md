@@ -13,8 +13,11 @@ their reports by session message.
   `brief_writable` under `[hooks]` in `config.toml`. The worker may then edit those files and commit and push them in their
   repository; nothing else there. Paths a project's task kind always writes (car-training's handoff and night results)
   are `extra_writable` entries of that project instead.
-- Model by task: Haiku for lookups, Sonnet for routine edits, Opus for substantial work, Fable only when the user
-  allowed it for that task.
+- Model ladder: Haiku for lookups, status checks, cleanups, watch and poll loops and `silent` workers. Sonnet as the
+  default for most tasks (routine features, UI, docs, config, ordinary fixes). Opus only for new architecture,
+  publishing or ledger code, security, concurrency, audits and plans, and the reviewer of a level-3 review. Fable only
+  when the user allowed it for that task. A Sonnet task that fails its checks twice or gets stuck gets one retry on
+  Opus. A kind may have its own default in `[models.by_kind]`.
 - See tasks, sessions and asks with `"{exe}" board`, the history with `"{exe}" log [<name>]`. Close a task with the
   headwork `close` tool (or `"{exe}" close <name>`). A task stuck in `closing` whose pull requests are all merged, or
   a dropped one with none, and that has no live job closes with the `close` tool and `force: true`: a worktree the

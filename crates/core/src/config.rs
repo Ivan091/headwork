@@ -413,6 +413,16 @@ pub struct ModelsConfig {
     pub allowed: Vec<Model>,
     /// Fable needs the user's approval per task.
     pub fable_needs_user: bool,
+    /// The model of a task kind when a spawn names none (`silent = "sonnet"`); a kind not listed takes `default`.
+    pub by_kind: BTreeMap<String, Model>,
+}
+
+impl ModelsConfig {
+    /// The model a task of `kind` runs when its spawn names none.
+    #[must_use]
+    pub fn for_kind(&self, kind: &str) -> Model {
+        self.by_kind.get(kind).copied().unwrap_or(self.default)
+    }
 }
 
 impl Default for ModelsConfig {
@@ -421,6 +431,7 @@ impl Default for ModelsConfig {
             default: Model::Sonnet,
             allowed: Model::ALL.to_vec(),
             fable_needs_user: true,
+            by_kind: BTreeMap::new(),
         }
     }
 }
