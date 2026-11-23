@@ -469,6 +469,7 @@ pub fn launch_orchestrator(home: &Home, start: &OrchestratorStart) -> Result<Opt
         store.set_session_surface(&id, &surface, Actor::User)?;
     }
     let exe = std::env::current_exe().context("finding the headwork program")?;
+    let _started = super::dash::ensure(&config.dash, home, &exe);
     let plugin_dir = plugin_dir(home, &config);
     let prompt = orchestrator_prompt(start);
     let agent = start.agent.clone().unwrap_or_else(|| {
