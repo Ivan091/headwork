@@ -139,6 +139,9 @@ CREATE TABLE usage_files (
   (the key and the cut-off keep that safe).
 - A transcript whose session id is in the store is tagged with its task and role; any other is `unmanaged`. When the
   store learns the id later (`headwork import` adopts it), its rows are re-tagged.
+- A subagent transcript's new lines also refresh its row in `agents` (migration 0020, for the agent graph,
+  `docs/dashboard.md`) in the same transaction: type, description, model and depth from `agent-<id>.meta.json`, and the
+  first and last response widened to the lines read. `--backfill` fills the descriptions of subagents read before.
 - When it runs:
   - the `Stop` hook, for the session's own transcript and its subagents: a few kilobytes per turn, next to the 30 ms a
     hook takes today; a failure is logged as `usage-error` and never blocks;

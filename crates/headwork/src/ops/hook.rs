@@ -943,6 +943,19 @@ fn free_slot_while_asking(store: &mut Store, call: &Call<'_>) -> Result<()> {
 
 /// The longest message summary a `tool-used` event keeps, in characters.
 const SUMMARY_CHARS: usize = 120;
+/// The longest message address a `tool-used` event keeps, in characters.
+const ADDRESS_CHARS: usize = 120;
+
+/// `text` trimmed, without control characters and cut to `limit` characters; none when nothing is left.
+fn kept(text: Option<&str>, limit: usize) -> Option<String> {
+    let text: String = text?
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(limit)
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
 
 /// The `tool-used` event's data: the tool, and for `SendMessage` the address as sent and the sender's short summary
 /// (never the message body), which the agent graph draws as a message edge.
@@ -954,12 +967,12 @@ fn tool_used(tool: &str, input: Option<&Value>) -> Value {
         input
             .and_then(|input| input.get(name))
             .and_then(Value::as_str)
-            .map(str::trim)
     };
-    let summary = field("summary")
-        .filter(|summary| !summary.is_empty())
-        .map(|summary| summary.chars().take(SUMMARY_CHARS).collect::<String>());
-    json!({ "tool": tool, "to": field("to"), "summary": summary })
+    json!({
+        "tool": tool,
+        "to": kept(field("to"), ADDRESS_CHARS),
+        "summary": kept(field("summary"), SUMMARY_CHARS),
+    })
 }
 
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {

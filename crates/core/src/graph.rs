@@ -3,18 +3,26 @@
 //! [`build`] draws the graph as it stood at one instant: every row whose start lies at or before it and whose end, if
 //! any, lies after it, with each task's state taken from its transitions ([`state_at`]). Times are the store's RFC 3339
 //! UTC text, which sorts as it reads. Nothing here reads a file or a database; the store gathers the [`Facts`].
+//!
+//! The store keeps no history for the states of pull requests, jobs without an end, reviews and review nodes, so a
+//! view of a past instant shows those as they are now, except that a row with an end time is `running` before it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use crate::names::is_orchestrator_address;
-use crate::vocabulary::{Role, TaskState};
+use crate::review::Level;
+use crate::vocabulary::{
+    Actor, AskState, Effort, JobState, Model, NodeState, ReviewState, Role, SessionState, TaskState,
+};
 
 /// The id of the one node that stands for the user.
 pub const USER_NODE: &str = "user";
 /// The id of the one node that stands for every orchestrator session.
 pub const ORCHESTRATOR_NODE: &str = "orchestrator";
+/// What a `SendMessage` address may carry after the name to tell two sessions of one name apart: `name [ref]`.
+pub const ADDRESS_REF_MARK: &str = " [";
 
 /// A task as the graph needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,15 +38,17 @@ pub struct TaskFact {
     /// The state now.
     pub state: TaskState,
     /// The model it runs on.
-    pub model: String,
+    pub model: Model,
     /// The effort stored at spawn.
-    pub effort: Option<String>,
+    pub effort: Option<Effort>,
     /// Its lead, for a part.
     pub parent: Option<i64>,
     /// The task it waits for.
     pub depends_on: Option<i64>,
     /// Whether it is a lead.
     pub lead: bool,
+    /// Who created it (the `task-created` event's actor): the user from the CLI, else the orchestrator.
+    pub created_by: Actor,
     /// When it was queued: its start.
     pub queued_at: String,
     /// Its last report.
@@ -57,31 +67,29 @@ pub struct SessionFact {
     /// Its Remote Control name: the address other sessions write to.
     pub rc_name: String,
     /// The process state now.
-    pub state: String,
+    pub state: SessionState,
     /// When it started.
     pub started_at: String,
     /// When it ended.
     pub ended_at: Option<String>,
 }
 
-/// A subagent a session called (`agents` table).
+/// A subagent a session called (`agents` table); its task is its calling session's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentFact {
     /// The agent id.
     pub id: String,
     /// The session that called it.
     pub session: String,
-    /// The task of that session.
-    pub task: Option<i64>,
     /// Its type, such as `general-purpose`.
     pub agent_type: Option<String>,
     /// The short label its caller gave it.
     pub description: Option<String>,
-    /// The model it asked for.
+    /// The model it asked for, as its meta file names it.
     pub model: Option<String>,
     /// How deep it was nested: 1 for a session's own.
     pub depth: Option<i64>,
-    /// Its first response.
+    /// Its first response; none when its responses were summed into days before the table existed.
     pub first_at: Option<String>,
     /// Its last response.
     pub last_at: Option<String>,
@@ -110,7 +118,7 @@ pub struct JobFact {
     /// Its label.
     pub label: String,
     /// The job state now.
-    pub state: String,
+    pub state: JobState,
     /// When it started.
     pub started_at: String,
     /// When it ended.
@@ -128,9 +136,9 @@ pub struct PrFact {
     pub number: i64,
     /// The URL.
     pub url: String,
-    /// `open`, `merged` or `closed`.
+    /// `open`, `merged` or `closed`, as `prs.state` holds it.
     pub state: String,
-    /// When the store first learned of it: the first event naming its URL, else its task's start.
+    /// When the store first learned of it: the first event of its task naming its URL, else its task's start.
     pub first_at: String,
 }
 
@@ -143,15 +151,15 @@ pub struct AskFact {
     pub task: Option<i64>,
     /// The session that asked.
     pub session: Option<String>,
-    /// Its header (topic), else its kind.
-    pub header: String,
+    /// Its header (topic), if it has one.
+    pub header: Option<String>,
     /// The question.
     pub question: String,
     /// The ask state now.
-    pub state: String,
+    pub state: AskState,
     /// When it was asked.
     pub created_at: String,
-    /// When it was answered, expired or superseded.
+    /// When it was answered or superseded.
     pub closed_at: Option<String>,
 }
 
@@ -167,9 +175,9 @@ pub struct ReviewFact {
     /// The flow.
     pub flow: String,
     /// The level.
-    pub level: i64,
+    pub level: Level,
     /// The review state now.
-    pub state: String,
+    pub state: ReviewState,
     /// When it was asked for.
     pub requested_at: String,
     /// When it finished.
@@ -188,7 +196,7 @@ pub struct ReviewNodeFact {
     /// The item of an `each` node.
     pub item: i64,
     /// The node state now.
-    pub state: String,
+    pub state: NodeState,
     /// When it started; a node never started is drawn from its review's start.
     pub started_at: Option<String>,
     /// When it finished.
@@ -264,75 +272,102 @@ pub struct Facts {
 /// Which tasks to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Tasks not over (closed, dropped) at the instant.
+    /// Tasks not over (closed, dropped) at the instant, and the lead of every part drawn.
     Live,
     /// Every task that existed at the instant.
     All,
-    /// One task, with its parts and its lead.
+    /// One task, with its parts and its lead; the orchestrator's own subagents and asks are left out.
     Task(i64),
 }
 
-/// What a node stands for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NodeKind {
-    /// The user.
-    User,
-    /// Every orchestrator session, as one node.
-    Orchestrator,
-    /// A task: a box around its sessions, parts and satellites.
-    Task,
-    /// A lead task's session.
-    Lead,
-    /// A plain task's session.
-    Worker,
-    /// A part task's session.
-    Part,
-    /// A subagent.
-    Subagent,
-    /// A helper session.
-    Helper,
-    /// A review.
-    Review,
-    /// One node run of a review's flow.
-    ReviewNode,
-    /// A job.
-    Job,
-    /// A pull request.
-    Pr,
-    /// An open ask to the user.
-    Ask,
-    /// A message address headwork does not know.
-    External,
+macro_rules! kinds {
+    ($(#[$doc:meta])* $name:ident { $($(#[$vdoc:meta])* $variant:ident => $text:literal,)+ }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        pub enum $name {
+            $(
+                $(#[$vdoc])*
+                #[serde(rename = $text)]
+                $variant,
+            )+
+        }
+
+        impl $name {
+            /// Every kind, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// The name it is written as, in JSON and in text.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)+
+                }
+            }
+        }
+    };
 }
 
-/// What an edge means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EdgeKind {
-    /// The orchestrator made the task.
-    Spawned,
-    /// A part belongs to its lead's task (also drawn as nesting).
-    PartOf,
-    /// A task waits for another.
-    DependsOn,
-    /// A session called a subagent.
-    Called,
-    /// A session opened a helper or a job.
-    Opened,
-    /// Session messages, counted.
-    Message,
-    /// Reports to the orchestrator, counted.
-    Report,
-    /// Asks to the user, counted; an open one runs through its ask node.
-    Asked,
-    /// A review looks at a task.
-    Reviews,
-    /// A review ran a node of its flow.
-    Ran,
-    /// A task delivers in a pull request.
-    Delivered,
-}
+kinds!(
+    /// What a node stands for.
+    NodeKind {
+        /// The user.
+        User => "user",
+        /// Every orchestrator session, as one node.
+        Orchestrator => "orchestrator",
+        /// A task: a box around its sessions, parts and satellites.
+        Task => "task",
+        /// A lead task's session.
+        Lead => "lead",
+        /// A plain task's session.
+        Worker => "worker",
+        /// A part task's session.
+        Part => "part",
+        /// A subagent.
+        Subagent => "subagent",
+        /// A helper session.
+        Helper => "helper",
+        /// A review.
+        Review => "review",
+        /// One node run of a review's flow.
+        ReviewNode => "review-node",
+        /// A job.
+        Job => "job",
+        /// A pull request.
+        Pr => "pr",
+        /// An open ask to the user.
+        Ask => "ask",
+        /// A message address headwork does not know.
+        External => "external",
+    }
+);
+
+kinds!(
+    /// What an edge means.
+    EdgeKind {
+        /// The orchestrator (or the user, from the CLI) made the task.
+        Spawned => "spawned",
+        /// A part belongs to its lead's task (also drawn as nesting).
+        PartOf => "part-of",
+        /// A task waits for another.
+        DependsOn => "depends-on",
+        /// A session called a subagent.
+        Called => "called",
+        /// A session opened a helper or a job.
+        Opened => "opened",
+        /// Session messages, counted.
+        Message => "message",
+        /// Reports to the orchestrator, counted.
+        Report => "report",
+        /// Asks to the user, counted; an open one runs through its ask node.
+        Asked => "asked",
+        /// A review looks at a task.
+        Reviews => "reviews",
+        /// A review ran a node of its flow.
+        Ran => "ran",
+        /// A task delivers in a pull request.
+        Delivered => "delivered",
+    }
+);
 
 /// One node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -343,7 +378,9 @@ pub struct Node {
     pub kind: NodeKind,
     /// The text drawn on it.
     pub label: String,
-    /// Its state, drawn as colour.
+    /// Its state, drawn as colour: a word of the kind's own vocabulary (task, session, job, review, review node or
+    /// pull request state). At a past instant a session says `live` or `ended` and a subagent `running` or `done`,
+    /// the words that can be told then; now, a subagent says `seen`, as its transcript does not say it finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// The box it is drawn in.
@@ -418,6 +455,10 @@ pub fn session_node(session: &str) -> String {
     format!("session:{session}")
 }
 
+fn agent_node(agent: &str) -> String {
+    format!("agent:{agent}")
+}
+
 /// The state of `task` at `at`: the newest transition at or before it, else the state before its first transition
 /// after it, else `now`.
 #[must_use]
@@ -446,8 +487,12 @@ const fn is_over(state: TaskState) -> bool {
     matches!(state, TaskState::Closed | TaskState::Dropped)
 }
 
+/// Whether a row that started at `start` and ended at `end` is there at `at`; now (no `at`), while it has no end.
 fn alive(start: &str, end: Option<&str>, at: Option<&str>) -> bool {
-    at.is_none_or(|at| start <= at && end.is_none_or(|end| end > at))
+    at.map_or_else(
+        || end.is_none(),
+        |at| start <= at && end.is_none_or(|end| end > at),
+    )
 }
 
 fn task_end(transitions: &[TransitionFact], task: i64) -> Option<String> {
@@ -465,14 +510,28 @@ fn details<const N: usize>(pairs: [(&str, Option<String>); N]) -> BTreeMap<Strin
         .collect()
 }
 
-/// Edges keyed by kind, source and target, so repeats add to one edge's weight.
+/// Where an address or a session points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Place {
+    /// At a node drawn in this graph.
+    Drawn(String),
+    /// At something headwork knows that this graph does not draw (another scope, another instant).
+    Hidden,
+}
+
+/// The nodes and edges drawn so far; repeated edges add to one edge's weight.
 #[derive(Default)]
-struct EdgeSet {
+struct Canvas {
+    nodes: BTreeMap<String, Node>,
     edges: BTreeMap<(EdgeKind, String, String), Edge>,
 }
 
-impl EdgeSet {
-    fn add(
+impl Canvas {
+    fn put(&mut self, node: Node) {
+        self.nodes.insert(node.id.clone(), node);
+    }
+
+    fn link(
         &mut self,
         kind: EdgeKind,
         source: &str,
@@ -482,7 +541,7 @@ impl EdgeSet {
     ) {
         let key = (kind, source.to_owned(), target.to_owned());
         let edge = self.edges.entry(key).or_insert_with(|| Edge {
-            id: format!("{}:{source}->{target}", kind_name(kind)),
+            id: format!("{}:{source}->{target}", kind.as_str()),
             kind,
             source: source.to_owned(),
             target: target.to_owned(),
@@ -504,155 +563,228 @@ impl EdgeSet {
             }
         }
     }
-}
 
-const fn kind_name(kind: EdgeKind) -> &'static str {
-    match kind {
-        EdgeKind::Spawned => "spawned",
-        EdgeKind::PartOf => "part-of",
-        EdgeKind::DependsOn => "depends-on",
-        EdgeKind::Called => "called",
-        EdgeKind::Opened => "opened",
-        EdgeKind::Message => "message",
-        EdgeKind::Report => "report",
-        EdgeKind::Asked => "asked",
-        EdgeKind::Reviews => "reviews",
-        EdgeKind::Ran => "ran",
-        EdgeKind::Delivered => "delivered",
+    fn finish(self, at: Option<&str>) -> Graph {
+        let nodes = self.nodes;
+        let edges = self
+            .edges
+            .into_values()
+            .filter(|edge| nodes.contains_key(&edge.source) && nodes.contains_key(&edge.target))
+            .collect();
+        Graph {
+            at: at.map(str::to_owned),
+            nodes: nodes.into_values().collect(),
+            edges,
+        }
     }
 }
 
-/// What a build knows about the sessions it drew, to point edges at them.
-struct Places {
-    /// Session id to the node that stands for it: its own, or the orchestrator's.
-    sessions: BTreeMap<String, String>,
-    /// Message address (a Remote Control or task name) to node.
-    addresses: BTreeMap<String, String>,
-    /// Task to the node of its newest session, or its box when none is drawn.
-    task_heads: BTreeMap<i64, String>,
+/// One build: the facts, the instant, the scope, the tasks drawn and where sessions and addresses point.
+struct Draw<'f> {
+    facts: &'f Facts,
+    at: Option<&'f str>,
+    scope: Scope,
+    drawn: BTreeMap<i64, TaskState>,
+    sessions: BTreeMap<&'f str, Place>,
+    addresses: BTreeMap<&'f str, Place>,
+    heads: BTreeMap<i64, String>,
 }
 
-impl Places {
+impl<'f> Draw<'f> {
+    fn new(facts: &'f Facts, at: Option<&'f str>, scope: Scope) -> Self {
+        let mut draw = Self {
+            facts,
+            at,
+            scope,
+            drawn: drawn_tasks(facts, at, scope),
+            sessions: BTreeMap::new(),
+            addresses: BTreeMap::new(),
+            heads: BTreeMap::new(),
+        };
+        draw.place();
+        draw
+    }
+
+    fn until(&self, time: &str) -> bool {
+        self.at.is_none_or(|at| time <= at)
+    }
+
+    fn is_drawn(&self, task: i64) -> bool {
+        self.drawn.contains_key(&task)
+    }
+
+    fn task_box(&self, task: Option<i64>) -> Option<String> {
+        task.filter(|task| self.is_drawn(*task)).map(task_node)
+    }
+
+    /// Where every session, task name, orchestrator name and subagent id points.
+    fn place(&mut self) {
+        let facts = self.facts;
+        for task in &facts.tasks {
+            let place = if self.is_drawn(task.id) {
+                Place::Drawn(task_node(task.id))
+            } else {
+                Place::Hidden
+            };
+            if let Place::Drawn(id) = &place {
+                self.heads.insert(task.id, id.clone());
+            }
+            self.addresses.insert(&task.name, place);
+        }
+        for session in &facts.sessions {
+            if session.role == Role::Orchestrator {
+                self.sessions
+                    .insert(&session.id, Place::Drawn(ORCHESTRATOR_NODE.to_owned()));
+                self.addresses
+                    .insert(&session.rc_name, Place::Drawn(ORCHESTRATOR_NODE.to_owned()));
+                continue;
+            }
+            let head = session
+                .task
+                .filter(|task| self.is_drawn(*task))
+                .and_then(|task| newest_session(facts, task, self.at))
+                .map(|newest| session_node(&newest.id));
+            let place = head.map_or(Place::Hidden, Place::Drawn);
+            if let (Some(task), Place::Drawn(id)) = (session.task, &place) {
+                self.heads.insert(task, id.clone());
+            }
+            self.sessions.insert(&session.id, place.clone());
+            self.addresses.insert(&session.rc_name, place);
+        }
+        for agent in &facts.agents {
+            self.addresses
+                .insert(&agent.id, Place::Drawn(agent_node(&agent.id)));
+        }
+    }
+
     fn of_session(&self, session: &str) -> Option<&String> {
-        self.sessions.get(session)
+        match self.sessions.get(session) {
+            Some(Place::Drawn(id)) => Some(id),
+            _ => None,
+        }
     }
 
-    fn of_address(&self, address: &str) -> Option<String> {
+    fn of_address(&self, address: &str) -> Option<Place> {
         let bare = address
-            .split_once(" [")
+            .split_once(ADDRESS_REF_MARK)
             .map_or(address, |(name, _)| name)
             .trim();
         if is_orchestrator_address(bare) {
-            return Some(ORCHESTRATOR_NODE.to_owned());
+            return Some(Place::Drawn(ORCHESTRATOR_NODE.to_owned()));
         }
         self.addresses.get(bare).cloned()
     }
+
+    fn caller_task(&self, session: &str) -> Option<i64> {
+        self.facts
+            .sessions
+            .iter()
+            .find(|fact| fact.id == session)
+            .and_then(|fact| fact.task)
+    }
+}
+
+fn newest_session<'f>(facts: &'f Facts, task: i64, at: Option<&str>) -> Option<&'f SessionFact> {
+    facts
+        .sessions
+        .iter()
+        .filter(|session| session.task == Some(task) && session.role == Role::Worker)
+        .filter(|session| at.is_none_or(|at| session.started_at.as_str() <= at))
+        .max_by(|left, right| left.started_at.cmp(&right.started_at))
 }
 
 /// The graph at `at` (now when none) for `scope`.
 #[must_use]
 pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
-    let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
-    let mut edges = EdgeSet::default();
-    nodes.insert(
-        USER_NODE.to_owned(),
-        Node {
-            id: USER_NODE.to_owned(),
-            kind: NodeKind::User,
-            label: "you".to_owned(),
-            state: None,
-            parent: None,
-            start: None,
-            end: None,
-            details: BTreeMap::new(),
-        },
-    );
-    let tasks = drawn_tasks(facts, at, scope);
-    let mut places = Places {
-        sessions: BTreeMap::new(),
-        addresses: BTreeMap::new(),
-        task_heads: BTreeMap::new(),
-    };
-    orchestrator(facts, at, &mut nodes, &mut places);
-    for (task, state) in &tasks {
-        task_box(facts, task, *state, &mut nodes, &mut edges, &tasks);
-        places
-            .addresses
-            .insert(task.name.clone(), task_node(task.id));
-        places.task_heads.insert(task.id, task_node(task.id));
+    let draw = Draw::new(facts, at, scope);
+    let mut canvas = Canvas::default();
+    canvas.put(Node {
+        id: USER_NODE.to_owned(),
+        kind: NodeKind::User,
+        label: "you".to_owned(),
+        state: None,
+        parent: None,
+        start: None,
+        end: None,
+        details: BTreeMap::new(),
+    });
+    orchestrator(&draw, &mut canvas);
+    for task in &facts.tasks {
+        if let Some(state) = draw.drawn.get(&task.id) {
+            task_box(&draw, task, *state, &mut canvas);
+            task_session(&draw, task, &mut canvas);
+        }
     }
-    for (task, _) in &tasks {
-        task_session(facts, task, at, &mut nodes, &mut places);
-    }
-    satellites(facts, at, &tasks, &mut nodes, &mut edges, &places);
-    if let Scope::Task(_) = scope {
-        nodes.retain(|_, node| node.kind != NodeKind::Subagent || node.parent.is_some());
-    }
-    talk(facts, at, &mut nodes, &mut edges, &places);
-    let edges: Vec<Edge> = edges
-        .edges
-        .into_values()
-        .filter(|edge| nodes.contains_key(&edge.source) && nodes.contains_key(&edge.target))
-        .collect();
-    Graph {
-        at: at.map(str::to_owned),
-        nodes: nodes.into_values().collect(),
-        edges,
-    }
+    subagents(&draw, &mut canvas);
+    helpers(&draw, &mut canvas);
+    jobs(&draw, &mut canvas);
+    prs(&draw, &mut canvas);
+    reviews(&draw, &mut canvas);
+    messages(&draw, &mut canvas);
+    reports(&draw, &mut canvas);
+    asks(&draw, &mut canvas);
+    canvas.finish(at)
 }
 
-fn drawn_tasks<'a>(
-    facts: &'a Facts,
-    at: Option<&str>,
-    scope: Scope,
-) -> Vec<(&'a TaskFact, TaskState)> {
-    let existing = facts.tasks.iter().filter_map(|task| {
-        let state = at.map_or(task.state, |at| {
-            state_at(&facts.transitions, task.id, at, task.state)
-        });
-        let started = at.is_none_or(|at| task.queued_at.as_str() <= at);
-        started.then_some((task, state))
-    });
+fn drawn_tasks(facts: &Facts, at: Option<&str>, scope: Scope) -> BTreeMap<i64, TaskState> {
+    let existing: BTreeMap<i64, TaskState> = facts
+        .tasks
+        .iter()
+        .filter(|task| at.is_none_or(|at| task.queued_at.as_str() <= at))
+        .map(|task| {
+            let state = at.map_or(task.state, |at| {
+                state_at(&facts.transitions, task.id, at, task.state)
+            });
+            (task.id, state)
+        })
+        .collect();
+    let parent = |id: i64| {
+        facts
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .and_then(|task| task.parent)
+    };
     match scope {
-        Scope::All => existing.collect(),
-        Scope::Live => existing.filter(|(_, state)| !is_over(*state)).collect(),
-        Scope::Task(id) => {
-            let lead = facts
-                .tasks
+        Scope::All => existing,
+        Scope::Live => {
+            let live: BTreeSet<i64> = existing
                 .iter()
-                .find(|task| task.id == id)
-                .and_then(|task| task.parent)
-                .unwrap_or(id);
+                .filter(|(_, state)| !is_over(**state))
+                .map(|(id, _)| *id)
+                .collect();
+            let leads: BTreeSet<i64> = live.iter().filter_map(|id| parent(*id)).collect();
             existing
-                .filter(|(task, _)| task.id == lead || task.parent == Some(lead))
+                .into_iter()
+                .filter(|(id, _)| live.contains(id) || leads.contains(id))
+                .collect()
+        }
+        Scope::Task(id) => {
+            let lead = parent(id).unwrap_or(id);
+            let in_family = |task: i64| parent(task).unwrap_or(task) == lead;
+            existing
+                .into_iter()
+                .filter(|(task, _)| in_family(*task))
                 .collect()
         }
     }
 }
 
-fn orchestrator(
-    facts: &Facts,
-    at: Option<&str>,
-    nodes: &mut BTreeMap<String, Node>,
-    places: &mut Places,
-) {
-    let sessions: Vec<&SessionFact> = facts
+fn orchestrator(draw: &Draw<'_>, canvas: &mut Canvas) {
+    let sessions: Vec<&SessionFact> = draw
+        .facts
         .sessions
         .iter()
         .filter(|session| session.role == Role::Orchestrator)
         .collect();
-    for session in &sessions {
-        places
-            .sessions
-            .insert(session.id.clone(), ORCHESTRATOR_NODE.to_owned());
-    }
-    let live: Vec<&&SessionFact> = sessions
+    let live: Vec<&SessionFact> = sessions
         .iter()
-        .filter(|session| alive(&session.started_at, session.ended_at.as_deref(), at))
+        .copied()
+        .filter(|session| alive(&session.started_at, session.ended_at.as_deref(), draw.at))
         .collect();
     let newest = live
         .iter()
-        .map(|session| **session)
+        .copied()
         .max_by(|left, right| left.started_at.cmp(&right.started_at))
         .or_else(|| {
             sessions
@@ -660,114 +792,75 @@ fn orchestrator(
                 .copied()
                 .max_by(|left, right| left.started_at.cmp(&right.started_at))
         });
-    let label = newest.map_or_else(
-        || ORCHESTRATOR_NODE.to_owned(),
-        |session| session.rc_name.clone(),
-    );
-    let state = if live.is_empty() { "ended" } else { "live" };
-    let mut info = BTreeMap::new();
-    info.insert(
-        "sessions".to_owned(),
-        sessions
+    let listed = sessions
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    canvas.put(Node {
+        id: ORCHESTRATOR_NODE.to_owned(),
+        kind: NodeKind::Orchestrator,
+        label: newest.map_or_else(
+            || ORCHESTRATOR_NODE.to_owned(),
+            |session| session.rc_name.clone(),
+        ),
+        state: Some(if live.is_empty() { "ended" } else { "live" }.to_owned()),
+        parent: None,
+        start: sessions
             .iter()
-            .map(|session| session.id.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    nodes.insert(
-        ORCHESTRATOR_NODE.to_owned(),
-        Node {
-            id: ORCHESTRATOR_NODE.to_owned(),
-            kind: NodeKind::Orchestrator,
-            label,
-            state: Some(state.to_owned()),
-            parent: None,
-            start: sessions
-                .iter()
-                .map(|session| session.started_at.clone())
-                .min(),
-            end: None,
-            details: info,
-        },
-    );
+            .map(|session| session.started_at.clone())
+            .min(),
+        end: None,
+        details: details([("sessions", (!listed.is_empty()).then_some(listed))]),
+    });
 }
 
-fn task_box(
-    facts: &Facts,
-    task: &TaskFact,
-    state: TaskState,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    drawn: &[(&TaskFact, TaskState)],
-) {
+fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Canvas) {
     let id = task_node(task.id);
-    let is_drawn = |other: i64| drawn.iter().any(|(task, _)| task.id == other);
-    let parent = task.parent.filter(|lead| is_drawn(*lead)).map(task_node);
-    nodes.insert(
-        id.clone(),
-        Node {
-            id: id.clone(),
-            kind: NodeKind::Task,
-            label: task.name.clone(),
-            state: Some(state.as_str().to_owned()),
-            parent,
-            start: Some(task.queued_at.clone()),
-            end: task_end(&facts.transitions, task.id),
-            details: details([
-                ("project", Some(task.project.clone())),
-                ("kind", Some(task.kind.clone())),
-                ("model", Some(task.model.clone())),
-                ("effort", task.effort.clone()),
-                ("last_report", task.last_report.clone()),
-            ]),
-        },
-    );
-    match task.parent {
-        Some(lead) => edges.add(
+    canvas.put(Node {
+        id: id.clone(),
+        kind: NodeKind::Task,
+        label: task.name.clone(),
+        state: Some(state.as_str().to_owned()),
+        parent: draw.task_box(task.parent),
+        start: Some(task.queued_at.clone()),
+        end: task_end(&draw.facts.transitions, task.id),
+        details: details([
+            ("project", Some(task.project.clone())),
+            ("kind", Some(task.kind.clone())),
+            ("model", Some(task.model.as_str().to_owned())),
+            (
+                "effort",
+                task.effort.map(|effort| effort.as_str().to_owned()),
+            ),
+            ("last_report", task.last_report.clone()),
+        ]),
+    });
+    if let Some(lead) = task.parent {
+        canvas.link(
             EdgeKind::PartOf,
             &id,
             &task_node(lead),
             None,
             Some(&task.queued_at),
-        ),
-        None => edges.add(
-            EdgeKind::Spawned,
-            ORCHESTRATOR_NODE,
-            &id,
-            None,
-            Some(&task.queued_at),
-        ),
+        );
+    } else {
+        let maker = if task.created_by == Actor::User {
+            USER_NODE
+        } else {
+            ORCHESTRATOR_NODE
+        };
+        canvas.link(EdgeKind::Spawned, maker, &id, None, Some(&task.queued_at));
     }
     if let Some(other) = task.depends_on {
-        edges.add(EdgeKind::DependsOn, &id, &task_node(other), None, None);
+        canvas.link(EdgeKind::DependsOn, &id, &task_node(other), None, None);
     }
 }
 
-fn task_session(
-    facts: &Facts,
-    task: &TaskFact,
-    at: Option<&str>,
-    nodes: &mut BTreeMap<String, Node>,
-    places: &mut Places,
-) {
-    let sessions: Vec<&SessionFact> = facts
-        .sessions
-        .iter()
-        .filter(|session| session.task == Some(task.id) && session.role == Role::Worker)
-        .filter(|session| at.is_none_or(|at| session.started_at.as_str() <= at))
-        .collect();
-    let Some(newest) = sessions
-        .iter()
-        .max_by(|left, right| left.started_at.cmp(&right.started_at))
-    else {
+fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
+    let Some(newest) = newest_session(draw.facts, task.id, draw.at) else {
         return;
     };
-    let id = session_node(&newest.id);
-    for session in &sessions {
-        places.sessions.insert(session.id.clone(), id.clone());
-        places.addresses.insert(session.rc_name.clone(), id.clone());
-    }
-    places.task_heads.insert(task.id, id.clone());
     let kind = if task.parent.is_some() {
         NodeKind::Part
     } else if task.lead {
@@ -775,109 +868,79 @@ fn task_session(
     } else {
         NodeKind::Worker
     };
-    let state = if alive(&newest.started_at, newest.ended_at.as_deref(), at) {
-        if at.is_some() {
-            "live".to_owned()
-        } else {
-            newest.state.clone()
-        }
-    } else {
-        "ended".to_owned()
+    let state = match draw.at {
+        None => newest.state.as_str(),
+        Some(_) if alive(&newest.started_at, newest.ended_at.as_deref(), draw.at) => "live",
+        Some(_) => "ended",
     };
-    let label = task.effort.as_ref().map_or_else(
-        || task.model.clone(),
-        |effort| format!("{} {effort}", task.model),
+    let label = task.effort.map_or_else(
+        || task.model.as_str().to_owned(),
+        |effort| format!("{} {}", task.model.as_str(), effort.as_str()),
     );
-    let earlier: Vec<&str> = sessions
+    let earlier: Vec<&str> = draw
+        .facts
+        .sessions
         .iter()
-        .filter(|session| session.id != newest.id)
+        .filter(|session| {
+            session.task == Some(task.id) && session.role == Role::Worker && session.id != newest.id
+        })
+        .filter(|session| draw.until(&session.started_at))
         .map(|session| session.id.as_str())
         .collect();
-    nodes.insert(
-        id.clone(),
-        Node {
-            id,
-            kind,
-            label,
-            state: Some(state),
-            parent: Some(task_node(task.id)),
-            start: Some(newest.started_at.clone()),
-            end: newest.ended_at.clone(),
-            details: details([
-                ("session", Some(newest.id.clone())),
-                ("name", Some(newest.rc_name.clone())),
-                (
-                    "earlier_sessions",
-                    (!earlier.is_empty()).then(|| earlier.join(", ")),
-                ),
-            ]),
-        },
-    );
+    canvas.put(Node {
+        id: session_node(&newest.id),
+        kind,
+        label,
+        state: Some(state.to_owned()),
+        parent: Some(task_node(task.id)),
+        start: Some(newest.started_at.clone()),
+        end: newest.ended_at.clone(),
+        details: details([
+            ("session", Some(newest.id.clone())),
+            ("name", Some(newest.rc_name.clone())),
+            (
+                "earlier_sessions",
+                (!earlier.is_empty()).then(|| earlier.join(", ")),
+            ),
+        ]),
+    });
 }
 
-fn satellites(
-    facts: &Facts,
-    at: Option<&str>,
-    tasks: &[(&TaskFact, TaskState)],
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    let drawn: BTreeSet<i64> = tasks.iter().map(|(task, _)| task.id).collect();
-    subagents(facts, at, &drawn, nodes, edges, places);
-    helpers(facts, at, &drawn, nodes, edges, places);
-    jobs_and_prs(facts, at, &drawn, nodes, edges, places);
-    reviews(facts, at, &drawn, nodes, edges, places);
-}
-
-fn subagents(
-    facts: &Facts,
-    at: Option<&str>,
-    drawn: &BTreeSet<i64>,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    for agent in &facts.agents {
-        let Some(caller) = places.of_session(&agent.session) else {
+fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for agent in &draw.facts.agents {
+        let Some(caller) = draw.of_session(&agent.session) else {
             continue;
         };
-        let start = agent.first_at.clone().unwrap_or_default();
-        if at.is_some_and(|at| start.as_str() > at) {
+        let parent = draw.task_box(draw.caller_task(&agent.session));
+        if matches!(draw.scope, Scope::Task(_)) && parent.is_none() {
             continue;
         }
-        let id = format!("agent:{}", agent.id);
-        let parent = agent
-            .task
-            .filter(|task| drawn.contains(task))
-            .map(task_node);
-        let label = agent
-            .agent_type
-            .clone()
-            .unwrap_or_else(|| "subagent".to_owned());
-        let state = match (at, agent.last_at.as_deref()) {
-            (Some(at), Some(last)) if last <= at => "done",
-            (Some(_), _) => "running",
-            (None, _) => "seen",
+        let state = match (draw.at, agent.first_at.as_deref(), agent.last_at.as_deref()) {
+            (None, _, _) => "seen",
+            (Some(_), None, _) => continue,
+            (Some(at), Some(first), _) if first > at => continue,
+            (Some(at), Some(_), Some(last)) if last <= at => "done",
+            (Some(_), Some(_), _) => "running",
         };
-        nodes.insert(
-            id.clone(),
-            Node {
-                id: id.clone(),
-                kind: NodeKind::Subagent,
-                label,
-                state: Some(state.to_owned()),
-                parent,
-                start: agent.first_at.clone(),
-                end: agent.last_at.clone(),
-                details: details([
-                    ("description", agent.description.clone()),
-                    ("model", agent.model.clone()),
-                    ("depth", agent.depth.map(|depth| depth.to_string())),
-                ]),
-            },
-        );
-        edges.add(
+        let id = agent_node(&agent.id);
+        canvas.put(Node {
+            id: id.clone(),
+            kind: NodeKind::Subagent,
+            label: agent
+                .agent_type
+                .clone()
+                .unwrap_or_else(|| "subagent".to_owned()),
+            state: Some(state.to_owned()),
+            parent,
+            start: agent.first_at.clone(),
+            end: agent.last_at.clone(),
+            details: details([
+                ("description", agent.description.clone()),
+                ("model", agent.model.clone()),
+                ("depth", agent.depth.map(|depth| depth.to_string())),
+            ]),
+        });
+        canvas.link(
             EdgeKind::Called,
             caller,
             &id,
@@ -887,104 +950,79 @@ fn subagents(
     }
 }
 
-fn helpers(
-    facts: &Facts,
-    at: Option<&str>,
-    drawn: &BTreeSet<i64>,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    for helper in facts
-        .helpers
-        .iter()
-        .filter(|helper| drawn.contains(&helper.task))
-    {
-        if at.is_some_and(|at| helper.at.as_str() > at) {
+fn helpers(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for helper in &draw.facts.helpers {
+        if !draw.is_drawn(helper.task) || !draw.until(&helper.at) {
             continue;
         }
         let id = format!("helper:{}", helper.session);
-        nodes.insert(
-            id.clone(),
-            Node {
-                id: id.clone(),
-                kind: NodeKind::Helper,
-                label: "headwork:helper".to_owned(),
-                state: None,
-                parent: Some(task_node(helper.task)),
-                start: Some(helper.at.clone()),
-                end: None,
-                details: details([("session", Some(helper.session.clone()))]),
-            },
-        );
-        if let Some(head) = places.task_heads.get(&helper.task) {
-            edges.add(EdgeKind::Opened, head, &id, None, Some(&helper.at));
+        canvas.put(Node {
+            id: id.clone(),
+            kind: NodeKind::Helper,
+            label: "headwork:helper".to_owned(),
+            state: None,
+            parent: Some(task_node(helper.task)),
+            start: Some(helper.at.clone()),
+            end: None,
+            details: details([("session", Some(helper.session.clone()))]),
+        });
+        if let Some(head) = draw.heads.get(&helper.task) {
+            canvas.link(EdgeKind::Opened, head, &id, None, Some(&helper.at));
         }
     }
 }
 
-fn jobs_and_prs(
-    facts: &Facts,
-    at: Option<&str>,
-    drawn: &BTreeSet<i64>,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    for job in &facts.jobs {
-        let Some(task) = job.task.filter(|task| drawn.contains(task)) else {
+fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for job in &draw.facts.jobs {
+        let Some(task) = job.task.filter(|task| draw.is_drawn(*task)) else {
             continue;
         };
-        if !alive(&job.started_at, None, at) {
+        if !draw.until(&job.started_at) {
             continue;
         }
-        let id = format!("job:{}", job.id);
-        let state = match (at, job.ended_at.as_deref()) {
-            (Some(at), Some(end)) if end <= at => job.state.clone(),
-            (Some(_), _) => "running".to_owned(),
-            (None, _) => job.state.clone(),
+        let state = match (draw.at, job.ended_at.as_deref()) {
+            (Some(at), Some(end)) if end > at => JobState::Running,
+            _ => job.state,
         };
-        nodes.insert(
-            id.clone(),
-            Node {
-                id: id.clone(),
-                kind: NodeKind::Job,
-                label: job.label.clone(),
-                state: Some(state),
-                parent: Some(task_node(task)),
-                start: Some(job.started_at.clone()),
-                end: job.ended_at.clone(),
-                details: BTreeMap::new(),
-            },
-        );
+        let id = format!("job:{}", job.id);
+        canvas.put(Node {
+            id: id.clone(),
+            kind: NodeKind::Job,
+            label: job.label.clone(),
+            state: Some(state.as_str().to_owned()),
+            parent: Some(task_node(task)),
+            start: Some(job.started_at.clone()),
+            end: job.ended_at.clone(),
+            details: BTreeMap::new(),
+        });
         let opener = job
             .session
             .as_deref()
-            .and_then(|session| places.of_session(session))
-            .or_else(|| places.task_heads.get(&task));
+            .and_then(|session| draw.of_session(session))
+            .or_else(|| draw.heads.get(&task));
         if let Some(opener) = opener {
-            edges.add(EdgeKind::Opened, opener, &id, None, Some(&job.started_at));
+            canvas.link(EdgeKind::Opened, opener, &id, None, Some(&job.started_at));
         }
     }
-    for pr in facts.prs.iter().filter(|pr| drawn.contains(&pr.task)) {
-        if !alive(&pr.first_at, None, at) {
+}
+
+fn prs(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for pr in &draw.facts.prs {
+        if !draw.is_drawn(pr.task) || !draw.until(&pr.first_at) {
             continue;
         }
         let id = format!("pr:{}", pr.id);
-        nodes.insert(
-            id.clone(),
-            Node {
-                id: id.clone(),
-                kind: NodeKind::Pr,
-                label: format!("#{}", pr.number),
-                state: Some(pr.state.clone()),
-                parent: Some(task_node(pr.task)),
-                start: Some(pr.first_at.clone()),
-                end: None,
-                details: details([("url", Some(pr.url.clone()))]),
-            },
-        );
-        edges.add(
+        canvas.put(Node {
+            id: id.clone(),
+            kind: NodeKind::Pr,
+            label: format!("#{}", pr.number),
+            state: Some(pr.state.clone()),
+            parent: Some(task_node(pr.task)),
+            start: Some(pr.first_at.clone()),
+            end: None,
+            details: details([("url", Some(pr.url.clone()))]),
+        });
+        canvas.link(
             EdgeKind::Delivered,
             &task_node(pr.task),
             &id,
@@ -994,92 +1032,76 @@ fn jobs_and_prs(
     }
 }
 
-fn reviews(
-    facts: &Facts,
-    at: Option<&str>,
-    drawn: &BTreeSet<i64>,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    for review in facts
-        .reviews
-        .iter()
-        .filter(|review| drawn.contains(&review.task))
-    {
-        if !alive(&review.requested_at, None, at) {
+fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for review in &draw.facts.reviews {
+        if !draw.is_drawn(review.task) || !draw.until(&review.requested_at) {
             continue;
         }
         let id = format!("review:{}", review.id);
-        let state = match (at, review.finished_at.as_deref()) {
-            (Some(at), Some(end)) if end > at => "running".to_owned(),
-            _ => review.state.clone(),
+        let state = match (draw.at, review.finished_at.as_deref()) {
+            (Some(at), Some(end)) if end > at => ReviewState::Running,
+            _ => review.state,
         };
-        let parent = review
-            .part
-            .filter(|part| drawn.contains(part))
-            .unwrap_or(review.task);
-        nodes.insert(
-            id.clone(),
-            Node {
-                id: id.clone(),
-                kind: NodeKind::Review,
-                label: format!("{} {}", review.flow, review.level),
-                state: Some(state),
-                parent: Some(task_node(parent)),
-                start: Some(review.requested_at.clone()),
-                end: review.finished_at.clone(),
-                details: BTreeMap::new(),
-            },
+        let home = task_node(
+            review
+                .part
+                .filter(|part| draw.is_drawn(*part))
+                .unwrap_or(review.task),
         );
-        let reviewed = places
-            .task_heads
+        canvas.put(Node {
+            id: id.clone(),
+            kind: NodeKind::Review,
+            label: format!("{} {}", review.flow, review.level.number()),
+            state: Some(state.as_str().to_owned()),
+            parent: Some(home.clone()),
+            start: Some(review.requested_at.clone()),
+            end: review.finished_at.clone(),
+            details: BTreeMap::new(),
+        });
+        let reviewed = draw
+            .heads
             .get(&review.task)
             .cloned()
             .unwrap_or_else(|| task_node(review.task));
-        edges.add(
+        canvas.link(
             EdgeKind::Reviews,
             &id,
             &reviewed,
             None,
             Some(&review.requested_at),
         );
-        for run in facts
+        for run in draw
+            .facts
             .review_nodes
             .iter()
             .filter(|run| run.review == review.id)
         {
-            let start = run.started_at.as_deref().unwrap_or(&review.requested_at);
-            if !alive(start, None, at) {
+            if !draw.until(run.started_at.as_deref().unwrap_or(&review.requested_at)) {
                 continue;
             }
             let node_id = format!(
                 "review-node:{}:{}:{}:{}",
                 review.id, run.round, run.node, run.item
             );
-            let state = match (at, run.finished_at.as_deref()) {
-                (Some(at), Some(end)) if end > at => "running".to_owned(),
-                _ => run.state.clone(),
+            let state = match (draw.at, run.finished_at.as_deref()) {
+                (Some(at), Some(end)) if end > at => NodeState::Running,
+                _ => run.state,
             };
-            let label = if run.item == 0 {
-                run.node.clone()
-            } else {
-                format!("{} {}", run.node, run.item)
-            };
-            nodes.insert(
-                node_id.clone(),
-                Node {
-                    id: node_id.clone(),
-                    kind: NodeKind::ReviewNode,
-                    label,
-                    state: Some(state),
-                    parent: Some(task_node(parent)),
-                    start: run.started_at.clone(),
-                    end: run.finished_at.clone(),
-                    details: details([("round", Some(run.round.to_string()))]),
+            canvas.put(Node {
+                id: node_id.clone(),
+                kind: NodeKind::ReviewNode,
+                label: if run.item == 0 {
+                    run.node.clone()
+                } else {
+                    format!("{} {}", run.node, run.item)
                 },
-            );
-            edges.add(
+                state: Some(state.as_str().to_owned()),
+                parent: Some(home.clone()),
+                start: run.started_at.clone(),
+                end: run.finished_at.clone(),
+                details: details([("round", Some(run.round.to_string()))]),
+            });
+            canvas.link(
                 EdgeKind::Ran,
                 &id,
                 &node_id,
@@ -1090,33 +1112,37 @@ fn reviews(
     }
 }
 
-fn talk(
-    facts: &Facts,
-    at: Option<&str>,
-    nodes: &mut BTreeMap<String, Node>,
-    edges: &mut EdgeSet,
-    places: &Places,
-) {
-    let until = |time: &str| at.is_none_or(|at| time <= at);
-    for message in facts.messages.iter().filter(|message| until(&message.at)) {
-        let Some(from) = places.of_session(&message.from) else {
+fn messages(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for message in draw
+        .facts
+        .messages
+        .iter()
+        .filter(|message| draw.until(&message.at))
+    {
+        let Some(from) = draw.of_session(&message.from) else {
             continue;
         };
-        let target = places.of_address(&message.to).unwrap_or_else(|| {
-            let id = format!("external:{}", message.to);
-            nodes.entry(id.clone()).or_insert_with(|| Node {
-                id: id.clone(),
-                kind: NodeKind::External,
-                label: message.to.clone(),
-                state: None,
-                parent: None,
-                start: Some(message.at.clone()),
-                end: None,
-                details: BTreeMap::new(),
-            });
-            id
-        });
-        edges.add(
+        let target = match draw.of_address(&message.to) {
+            Some(Place::Drawn(id)) => id,
+            Some(Place::Hidden) => continue,
+            None => {
+                let id = format!("external:{}", message.to);
+                if !canvas.nodes.contains_key(&id) {
+                    canvas.put(Node {
+                        id: id.clone(),
+                        kind: NodeKind::External,
+                        label: message.to.clone(),
+                        state: None,
+                        parent: None,
+                        start: Some(message.at.clone()),
+                        end: None,
+                        details: BTreeMap::new(),
+                    });
+                }
+                id
+            }
+        };
+        canvas.link(
             EdgeKind::Message,
             from,
             &target,
@@ -1124,9 +1150,17 @@ fn talk(
             Some(&message.at),
         );
     }
-    for report in facts.reports.iter().filter(|report| until(&report.at)) {
-        if let Some(from) = places.of_session(&report.session) {
-            edges.add(
+}
+
+fn reports(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for report in draw
+        .facts
+        .reports
+        .iter()
+        .filter(|report| draw.until(&report.at))
+    {
+        if let Some(from) = draw.of_session(&report.session) {
+            canvas.link(
                 EdgeKind::Report,
                 from,
                 ORCHESTRATOR_NODE,
@@ -1135,58 +1169,75 @@ fn talk(
             );
         }
     }
-    for ask in facts.asks.iter().filter(|ask| until(&ask.created_at)) {
+}
+
+/// Whether an ask was open at `at` (now when none). An ask that left `pending` and `open` without a closing time is
+/// taken as closed when it was made.
+fn ask_open(ask: &AskFact, at: Option<&str>) -> bool {
+    match at {
+        None => ask.state.is_waiting(),
+        Some(_) if ask.state.is_waiting() => true,
+        Some(at) => ask.closed_at.as_deref().unwrap_or(&ask.created_at) > at,
+    }
+}
+
+/// The longest label an ask without a header takes from its question, in characters.
+const ASK_LABEL_CHARS: usize = 40;
+
+fn asks(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for ask in draw
+        .facts
+        .asks
+        .iter()
+        .filter(|ask| draw.until(&ask.created_at))
+    {
         let asker = ask
             .session
             .as_deref()
-            .and_then(|session| places.of_session(session).cloned())
-            .or_else(|| {
-                ask.task
-                    .and_then(|task| places.task_heads.get(&task).cloned())
-            });
+            .and_then(|session| draw.of_session(session).cloned())
+            .or_else(|| ask.task.and_then(|task| draw.heads.get(&task).cloned()));
         let Some(asker) = asker else {
             continue;
         };
-        let open = match (at, ask.closed_at.as_deref()) {
-            (Some(at), Some(closed)) => closed > at,
-            (Some(_), None) => true,
-            (None, _) => matches!(ask.state.as_str(), "pending" | "open"),
-        };
-        if open {
+        if matches!(draw.scope, Scope::Task(_)) && asker == ORCHESTRATOR_NODE {
+            continue;
+        }
+        let label = ask
+            .header
+            .clone()
+            .unwrap_or_else(|| ask.question.chars().take(ASK_LABEL_CHARS).collect());
+        if ask_open(ask, draw.at) {
             let id = format!("ask:{}", ask.id);
-            nodes.insert(
-                id.clone(),
-                Node {
-                    id: id.clone(),
-                    kind: NodeKind::Ask,
-                    label: ask.header.clone(),
-                    state: Some("open".to_owned()),
-                    parent: None,
-                    start: Some(ask.created_at.clone()),
-                    end: ask.closed_at.clone(),
-                    details: details([("question", Some(ask.question.clone()))]),
-                },
-            );
-            edges.add(
+            canvas.put(Node {
+                id: id.clone(),
+                kind: NodeKind::Ask,
+                label: label.clone(),
+                state: Some(AskState::Open.as_str().to_owned()),
+                parent: None,
+                start: Some(ask.created_at.clone()),
+                end: ask.closed_at.clone(),
+                details: details([("question", Some(ask.question.clone()))]),
+            });
+            canvas.link(
                 EdgeKind::Asked,
                 &asker,
                 &id,
-                Some(ask.header.clone()),
+                Some(label.clone()),
                 Some(&ask.created_at),
             );
-            edges.add(
+            canvas.link(
                 EdgeKind::Asked,
                 &id,
                 USER_NODE,
-                Some(ask.header.clone()),
+                Some(label),
                 Some(&ask.created_at),
             );
         } else {
-            edges.add(
+            canvas.link(
                 EdgeKind::Asked,
                 &asker,
                 USER_NODE,
-                Some(ask.header.clone()),
+                Some(label),
                 Some(&ask.created_at),
             );
         }
@@ -1212,11 +1263,12 @@ mod tests {
             project: "headwork".to_owned(),
             kind: "feature".to_owned(),
             state,
-            model: "opus".to_owned(),
-            effort: Some("medium".to_owned()),
+            model: Model::Opus,
+            effort: Some(Effort::Medium),
             parent,
             depends_on: None,
             lead,
+            created_by: Actor::Orchestrator,
             queued_at: at.to_owned(),
             last_report: None,
         }
@@ -1235,7 +1287,11 @@ mod tests {
             task,
             role,
             rc_name: name.to_owned(),
-            state: if ended.is_some() { "ended" } else { "live" }.to_owned(),
+            state: if ended.is_some() {
+                SessionState::Ended
+            } else {
+                SessionState::Live
+            },
             started_at: started.to_owned(),
             ended_at: ended.map(str::to_owned),
         }
@@ -1279,9 +1335,13 @@ mod tests {
             id,
             task: Some(task),
             session: Some(session.to_owned()),
-            header: header.to_owned(),
+            header: Some(header.to_owned()),
             question: "Which?".to_owned(),
-            state: if closed.is_some() { "answered" } else { "open" }.to_owned(),
+            state: if closed.is_some() {
+                AskState::Answered
+            } else {
+                AskState::Open
+            },
             created_at: created.to_owned(),
             closed_at: closed.map(str::to_owned),
         }
@@ -1293,8 +1353,8 @@ mod tests {
             task: 1,
             part: Some(2),
             flow: "code".to_owned(),
-            level: 3,
-            state: "running".to_owned(),
+            level: Level::Strict,
+            state: ReviewState::Running,
             requested_at: "T03".to_owned(),
             finished_at: None,
         }
@@ -1338,7 +1398,6 @@ mod tests {
             agents: vec![AgentFact {
                 id: "a1".to_owned(),
                 session: "s1".to_owned(),
-                task: Some(1),
                 agent_type: Some("Explore".to_owned()),
                 description: Some("find the hook".to_owned()),
                 model: Some("haiku".to_owned()),
@@ -1356,7 +1415,7 @@ mod tests {
                 task: Some(1),
                 session: Some("s1".to_owned()),
                 label: "render".to_owned(),
-                state: "done".to_owned(),
+                state: JobState::Done,
                 started_at: "T05".to_owned(),
                 ended_at: Some("T08".to_owned()),
             }],
@@ -1378,7 +1437,7 @@ mod tests {
                 round: 1,
                 node: "correctness".to_owned(),
                 item: 0,
-                state: "done".to_owned(),
+                state: NodeState::Done,
                 started_at: Some("T05".to_owned()),
                 finished_at: Some("T06".to_owned()),
             }],
@@ -1495,7 +1554,6 @@ mod tests {
         facts.agents.push(AgentFact {
             id: "a2".to_owned(),
             session: "o1".to_owned(),
-            task: None,
             agent_type: None,
             description: None,
             model: None,
@@ -1736,5 +1794,219 @@ mod tests {
             kinds.contains("review-node") && kinds.contains("subagent"),
             "{kinds:?}"
         );
+    }
+
+    #[test]
+    fn the_orchestrator_is_ended_now_when_every_session_ended() {
+        let mut facts = facts();
+        facts.sessions[0].ended_at = Some("T05".to_owned());
+        let graph = build(&facts, None, Scope::Live);
+        assert_eq!(
+            graph.node(ORCHESTRATOR_NODE).unwrap().state.as_deref(),
+            Some("ended"),
+            "now"
+        );
+        let graph = build(&facts, Some("T04"), Scope::Live);
+        assert_eq!(
+            graph.node(ORCHESTRATOR_NODE).unwrap().state.as_deref(),
+            Some("live"),
+            "before it ended"
+        );
+    }
+
+    #[test]
+    fn a_message_to_the_orchestrators_own_name_reaches_it() {
+        let mut facts = facts();
+        facts.sessions[0].rc_name = "boss".to_owned();
+        facts.messages.push(message("s1", "boss", None, "T06"));
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            edge(&graph, EdgeKind::Message, "session:s1", ORCHESTRATOR_NODE).is_some(),
+            "by its name"
+        );
+        assert!(graph.node("external:boss").is_none(), "not a stranger");
+    }
+
+    #[test]
+    fn a_message_to_something_known_but_not_drawn_is_left_out() {
+        let mut facts = facts();
+        facts
+            .messages
+            .push(message("s1", "headwork-old", None, "T06"));
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            graph.node("external:headwork-old").is_none(),
+            "a known task is no stranger"
+        );
+        let graph = build(&facts, None, Scope::All);
+        assert!(
+            edge(&graph, EdgeKind::Message, "session:s1", "session:s3").is_some(),
+            "drawn when its task is"
+        );
+    }
+
+    #[test]
+    fn a_message_to_a_subagent_reaches_it() {
+        let mut facts = facts();
+        facts.messages.push(message("s1", "a1", None, "T06"));
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            edge(&graph, EdgeKind::Message, "session:s1", "agent:a1").is_some(),
+            "by its id"
+        );
+    }
+
+    #[test]
+    fn a_task_the_user_spawned_is_spawned_from_the_user() {
+        let mut facts = facts();
+        facts.tasks[0].created_by = Actor::User;
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            edge(&graph, EdgeKind::Spawned, USER_NODE, "task:1").is_some(),
+            "from the user"
+        );
+        assert!(
+            edge(&graph, EdgeKind::Spawned, ORCHESTRATOR_NODE, "task:1").is_none(),
+            "not the orchestrator"
+        );
+    }
+
+    #[test]
+    fn a_live_part_brings_its_closed_lead() {
+        let mut facts = facts();
+        facts.tasks[0].state = TaskState::Closed;
+        let graph = build(&facts, None, Scope::Live);
+        assert!(graph.node("task:1").is_some(), "the lead is drawn");
+        assert_eq!(
+            graph.node("task:2").unwrap().parent.as_deref(),
+            Some("task:1"),
+            "in its box"
+        );
+    }
+
+    #[test]
+    fn a_superseded_ask_was_open_until_it_was_superseded() {
+        let mut facts = facts();
+        facts.asks[0].state = AskState::Superseded;
+        facts.asks[0].closed_at = Some("T05".to_owned());
+        assert!(
+            build(&facts, Some("T04"), Scope::Live)
+                .node("ask:4")
+                .is_some(),
+            "open before"
+        );
+        assert!(
+            build(&facts, Some("T05"), Scope::Live)
+                .node("ask:4")
+                .is_none(),
+            "closed at"
+        );
+        facts.asks[0].closed_at = None;
+        assert!(
+            build(&facts, Some("T02"), Scope::Live)
+                .node("ask:4")
+                .is_none(),
+            "no time: closed when made"
+        );
+    }
+
+    #[test]
+    fn an_ask_without_a_header_takes_the_start_of_its_question() {
+        let mut facts = facts();
+        facts.asks[1].header = None;
+        facts.asks[1].question = "q".repeat(60);
+        let graph = build(&facts, None, Scope::Live);
+        assert_eq!(
+            graph.node("ask:5").unwrap().label.chars().count(),
+            ASK_LABEL_CHARS,
+            "cut"
+        );
+    }
+
+    #[test]
+    fn a_task_scope_leaves_out_the_orchestrators_asks() {
+        let mut facts = facts();
+        facts.asks.push(AskFact {
+            id: 6,
+            task: None,
+            session: Some("o1".to_owned()),
+            header: Some("Spawn".to_owned()),
+            question: "Go?".to_owned(),
+            state: AskState::Open,
+            created_at: "T02".to_owned(),
+            closed_at: None,
+        });
+        assert!(
+            build(&facts, None, Scope::Live).node("ask:6").is_some(),
+            "live draws it"
+        );
+        assert!(
+            build(&facts, None, Scope::Task(1)).node("ask:6").is_none(),
+            "task scope leaves it out"
+        );
+    }
+
+    #[test]
+    fn a_subagent_without_times_shows_only_now() {
+        let mut facts = facts();
+        facts.agents[0].first_at = None;
+        facts.agents[0].last_at = None;
+        assert_eq!(
+            build(&facts, None, Scope::Live)
+                .node("agent:a1")
+                .unwrap()
+                .state
+                .as_deref(),
+            Some("seen"),
+            "now"
+        );
+        assert!(
+            build(&facts, Some("T09"), Scope::Live)
+                .node("agent:a1")
+                .is_none(),
+            "never in a past view"
+        );
+    }
+
+    #[test]
+    fn session_states_are_the_stored_word_now_and_live_or_ended_then() {
+        let mut facts = facts();
+        facts.sessions[1].state = SessionState::Starting;
+        assert_eq!(
+            build(&facts, None, Scope::Live)
+                .node("session:s1")
+                .unwrap()
+                .state
+                .as_deref(),
+            Some("starting"),
+            "now"
+        );
+        assert_eq!(
+            build(&facts, Some("T03"), Scope::Live)
+                .node("session:s1")
+                .unwrap()
+                .state
+                .as_deref(),
+            Some("live"),
+            "then"
+        );
+    }
+
+    #[test]
+    fn kind_names_are_the_json_names() {
+        for kind in NodeKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                kind.as_str(),
+                "{kind:?}"
+            );
+        }
+        for kind in EdgeKind::ALL {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                kind.as_str(),
+                "{kind:?}"
+            );
+        }
     }
 }

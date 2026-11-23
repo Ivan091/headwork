@@ -43,14 +43,14 @@ pub mod windowless;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use headwork_adapters::host::TerminalHost;
 use headwork_adapters::host::cmux::{Cli as CmuxCli, Cmux};
 use headwork_adapters::host::wmux::{Cli as WmuxCli, Wmux};
 use headwork_adapters::worktree::Worktrees;
 use headwork_core::config::{HostKind, ProjectConfig, TaskVars};
 use headwork_core::{Actor, Config};
-use headwork_store::Task;
+use headwork_store::{Store, Task};
 
 use crate::home::Home;
 
@@ -162,4 +162,32 @@ pub fn slashed(path: &Path) -> String {
 #[must_use]
 pub fn label(task: &Task) -> String {
     format!("{}/{}", task.project(), task.slug())
+}
+
+/// Turns a time the user typed (`--since`, `--at`) into an instant in UTC: a span back from now (`90m`, `24h`, `7d`),
+/// or an RFC 3339 date and time or a plain date.
+pub(crate) fn instant(store: &Store, text: &str) -> Result<String> {
+    let text = text.trim();
+    let span = text.char_indices().last().and_then(|(at, unit)| {
+        let seconds: u64 = match unit {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return None,
+        };
+        text.get(..at)?
+            .parse::<u64>()
+            .ok()
+            .and_then(|amount| amount.checked_mul(seconds))
+    });
+    if let Some(seconds) = span {
+        return Ok(store.instant_ago(seconds)?);
+    }
+    match store.instant_of(text)? {
+        Some(instant) => Ok(instant),
+        None => bail!(
+            "cannot read `{text}` as a time: use YYYY-MM-DD, an RFC 3339 date and time, or a span such as 24h or 7d"
+        ),
+    }
 }

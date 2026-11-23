@@ -1,4 +1,4 @@
-//! The agent graph's facts: the subagents table, every row and event the graph reads, and the read-only open.
+//! The agent graph's facts: the subagents table and its seeding migration, and every row and event the graph reads.
 
 #![expect(
     clippy::unwrap_used,
@@ -15,8 +15,8 @@ use headwork_core::{
     Trigger,
 };
 use headwork_store::{
-    FileMark, NewAgent, NewAsk, NewPr, NewSession, NewTask, Store, StoreError, Task, TaskId,
-    UsageBatch, UsageTag,
+    FileMark, MIGRATIONS, NewAsk, NewPr, NewSession, NewTask, Store, StoreError, Task, TaskId,
+    UsageBatch, UsageTag, migrate,
 };
 
 fn config() -> Config {
@@ -87,7 +87,13 @@ fn line(id: &str, at: &str, model: &str, input: u64, output: u64) -> UsageLine {
     }
 }
 
-fn record(store: &mut Store, session: &str, agent: Option<&str>, lines: &[UsageLine]) -> usize {
+fn record(
+    store: &mut Store,
+    session: &str,
+    agent: Option<&str>,
+    meta: Option<&AgentMeta>,
+    lines: &[UsageLine],
+) -> usize {
     let tag = store
         .usage_tag(session)
         .unwrap()
@@ -97,7 +103,7 @@ fn record(store: &mut Store, session: &str, agent: Option<&str>, lines: &[UsageL
             path: &format!("{session}-{agent:?}.jsonl"),
             session_id: session,
             agent_id: agent,
-            agent_type: agent.map(|_| "Explore"),
+            agent_meta: meta,
             tag,
             dir: "S:/Code/x",
             lines,
@@ -119,71 +125,129 @@ fn meta(description: &str) -> AgentMeta {
     }
 }
 
+const HAIKU: &str = "claude-haiku-5-5";
+
 #[test]
-fn an_agent_keeps_its_earliest_and_latest_response() {
+fn an_agent_keeps_its_earliest_and_latest_response_and_what_its_meta_said() {
     let (mut store, config) = store();
     let sand = task(&mut store, &config, "sand", TaskShape::Plain);
     session(&mut store, "s1", Some(sand.id), Role::Worker);
-    assert!(!store.agent_known("a1").unwrap(), "unknown at first");
-    record(
-        &mut store,
-        "s1",
-        Some("a1"),
-        &[line(
-            "m1",
-            "2026-11-22T10:00:00.000Z",
-            "claude-haiku-5-5",
-            1,
-            1,
-        )],
-    );
     let first = meta("find the hook");
-    store
-        .record_agent(&NewAgent {
-            agent_id: "a1",
-            session_id: "s1",
-            task: Some(sand.id),
-            meta: &first,
-        })
-        .unwrap();
     record(
         &mut store,
         "s1",
         Some("a1"),
-        &[line(
-            "m2",
-            "2026-11-22T12:00:00.000Z",
-            "claude-haiku-5-5",
-            1,
-            1,
-        )],
+        Some(&first),
+        &[line("m1", "2026-11-22T10:00:00.000Z", HAIKU, 1, 1)],
     );
-    let empty = AgentMeta::default();
-    store
-        .record_agent(&NewAgent {
-            agent_id: "a1",
-            session_id: "s1",
-            task: None,
-            meta: &empty,
-        })
-        .unwrap();
-    assert!(store.agent_known("a1").unwrap(), "known now");
+    record(
+        &mut store,
+        "s1",
+        Some("a1"),
+        None,
+        &[line("m2", "2026-11-22T12:00:00.000Z", HAIKU, 1, 1)],
+    );
+    record(
+        &mut store,
+        "s1",
+        Some("a1"),
+        None,
+        &[line("m0", "2026-11-22T09:00:00.000Z", HAIKU, 1, 1)],
+    );
+    record(&mut store, "s1", Some("a1"), None, &[]);
     let facts = store.graph_facts().unwrap();
+    assert_eq!(facts.agents.len(), 1, "one agent");
     let agent = &facts.agents[0];
     assert_eq!(
         (
             agent.first_at.as_deref(),
             agent.last_at.as_deref(),
             agent.description.as_deref(),
-            agent.task,
+            agent.session.as_str()
         ),
         (
-            Some("2026-11-22T10:00:00.000Z"),
+            Some("2026-11-22T09:00:00.000Z"),
             Some("2026-11-22T12:00:00.000Z"),
             Some("find the hook"),
-            Some(sand.id.0),
+            "s1"
         ),
-        "times widen, an empty meta keeps what was known"
+        "times widen both ways, a batch without meta keeps what was known"
+    );
+}
+
+#[test]
+fn an_agent_with_no_responses_is_recorded_without_times() {
+    let (mut store, _config) = store();
+    record(&mut store, "s9", Some("a9"), Some(&meta("quiet")), &[]);
+    let facts = store.graph_facts().unwrap();
+    assert_eq!(
+        (
+            facts.agents[0].first_at.as_deref(),
+            facts.agents[0].last_at.as_deref()
+        ),
+        (None, None),
+        "no times"
+    );
+}
+
+#[test]
+fn an_agent_id_that_is_not_a_plain_word_is_not_recorded() {
+    let (mut store, _config) = store();
+    record(
+        &mut store,
+        "s1",
+        Some("a/../b"),
+        Some(&meta("odd")),
+        &[line("m1", "2026-11-22T10:00:00.000Z", HAIKU, 1, 1)],
+    );
+    assert!(
+        store.graph_facts().unwrap().agents.is_empty(),
+        "left out of the graph"
+    );
+}
+
+#[test]
+fn migration_0020_seeds_agents_from_the_usage_rows_already_read() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    let before = MIGRATIONS.len() - 1;
+    for (number, sql) in MIGRATIONS.iter().take(before).enumerate() {
+        conn.execute_batch(sql).unwrap();
+        conn.pragma_update(None, "user_version", i64::try_from(number + 1).unwrap())
+            .unwrap();
+    }
+    for (id, agent, at) in [
+        ("m1", Some("a1"), "2026-11-22T10:00:00.000Z"),
+        ("m2", Some("a1"), "2026-11-22T11:00:00.000Z"),
+        ("m3", None, "2026-11-22T12:00:00.000Z"),
+        ("m4", Some("x y"), "2026-11-22T12:00:00.000Z"),
+    ] {
+        conn.execute(
+            "INSERT INTO usage (message_id, session_id, agent_id, agent_type, role, dir, at, model, input, cache_write_5m,
+                 cache_write_1h, cache_read, output, thinking, web_searches, web_fetches)
+             VALUES (?1, 's1', ?2, 'Explore', 'unmanaged', 'd', ?3, 'm', 0, 0, 0, 0, 0, 0, 0, 0)",
+            rusqlite::params![id, agent, at],
+        )
+        .unwrap();
+    }
+    migrate(&mut conn).unwrap();
+    let rows: Vec<(String, String, String, String)> = conn
+        .prepare("SELECT agent_id, agent_type, first_at, last_at FROM agents")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [(
+            "a1".to_owned(),
+            "Explore".to_owned(),
+            "2026-11-22T10:00:00.000Z".to_owned(),
+            "2026-11-22T11:00:00.000Z".to_owned()
+        )],
+        "one agent with its times; plain sessions and odd ids left out"
     );
 }
 
@@ -219,15 +283,14 @@ fn populate(store: &mut Store, config: &Config) -> (Task, Task) {
             &serde_json::json!({ "tool": "SendMessage", "to": "lead", "summary": "review ready" }),
         )
         .unwrap();
-    store
-        .append_event(
-            Actor::Hook,
-            Some(part.id),
-            Some("part"),
-            "tool-used",
-            &serde_json::json!({ "tool": "SendMessage" }),
-        )
-        .unwrap();
+    for data in [
+        serde_json::json!({ "tool": "SendMessage" }),
+        serde_json::json!({ "tool": "SendMessage", "to": "" }),
+    ] {
+        store
+            .append_event(Actor::Hook, Some(part.id), Some("part"), "tool-used", &data)
+            .unwrap();
+    }
     let pr = NewPr {
         repo: "o/r".to_owned(),
         number: 41,
@@ -252,22 +315,9 @@ fn populate(store: &mut Store, config: &Config) -> (Task, Task) {
         store,
         "lead",
         Some("a1"),
-        &[line(
-            "m1",
-            "2026-11-22T10:00:00.000Z",
-            "claude-haiku-5-5",
-            1,
-            1,
-        )],
+        Some(&meta("look")),
+        &[line("m1", "2026-11-22T10:00:00.000Z", HAIKU, 1, 1)],
     );
-    store
-        .record_agent(&NewAgent {
-            agent_id: "a1",
-            session_id: "lead",
-            task: Some(lead.id),
-            meta: &meta("look"),
-        })
-        .unwrap();
     (lead, part)
 }
 
@@ -275,14 +325,18 @@ fn populate(store: &mut Store, config: &Config) -> (Task, Task) {
 fn the_facts_draw_a_lead_its_part_and_their_talk() {
     let (mut store, config) = store();
     let (lead, part) = populate(&mut store, &config);
-
     let facts = store.graph_facts().unwrap();
     assert_eq!(
         facts.messages.len(),
         1,
-        "a SendMessage without `to` draws nothing"
+        "a SendMessage without a `to` draws nothing"
     );
     assert!(!facts.transitions.is_empty(), "transitions read");
+    assert_eq!(
+        facts.tasks[0].created_by,
+        Actor::Orchestrator,
+        "who created it"
+    );
     let graph = build(&facts, None, Scope::Live);
     let lead_box = format!("task:{}", lead.id.0);
     let part_box = format!("task:{}", part.id.0);
@@ -328,32 +382,69 @@ fn the_facts_draw_a_lead_its_part_and_their_talk() {
 }
 
 #[test]
-fn a_read_only_open_reads_and_never_writes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.db");
-    drop(Store::open(&path).unwrap());
-    let store = Store::open_read_only(&path).unwrap();
-    assert!(store.graph_facts().unwrap().tasks.is_empty(), "reads");
+fn a_superseded_ask_closes_when_it_was_superseded() {
+    let (mut store, config) = store();
+    let (lead, _) = populate(&mut store, &config);
+    store.supersede_session_asks("lead", Actor::Hook).unwrap();
+    let facts = store.graph_facts().unwrap();
+    let ask = facts
+        .asks
+        .iter()
+        .find(|ask| ask.task == Some(lead.id.0))
+        .unwrap();
+    assert!(!ask.state.is_waiting(), "superseded");
+    let closed = ask.closed_at.as_deref().unwrap();
     assert!(
-        store
-            .append_event(Actor::User, None, None, "probe", &serde_json::json!({}))
-            .is_err(),
-        "writes are refused"
+        closed >= ask.created_at.as_str(),
+        "closed at the supersede event, not before it was made"
+    );
+    assert_eq!(ask.header, None, "no header");
+}
+
+#[test]
+fn a_pull_request_starts_at_the_first_event_naming_its_whole_url() {
+    let (mut store, config) = store();
+    let (lead, _) = populate(&mut store, &config);
+    let other = NewPr {
+        repo: "o/r".to_owned(),
+        number: 4,
+        url: "https://github.com/o/r/pull/4".to_owned(),
+    };
+    store
+        .record_report(lead.id, "lead", "review", "second", &[], Some(&other))
+        .unwrap();
+    let facts = store.graph_facts().unwrap();
+    let first = |number: i64| {
+        facts
+            .prs
+            .iter()
+            .find(|pr| pr.number == number)
+            .unwrap()
+            .first_at
+            .clone()
+    };
+    assert!(
+        first(4) >= first(41),
+        "#4 is not matched by the event naming #41"
     );
 }
 
 #[test]
-fn a_read_only_open_refuses_an_older_schema() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("old.db");
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.pragma_update(None, "user_version", 3).unwrap();
-    drop(conn);
+fn an_unknown_stored_word_names_its_row() {
+    let (mut store, config) = store();
+    let (lead, _) = populate(&mut store, &config);
+    store
+        .append_event(
+            Actor::Hook,
+            Some(lead.id),
+            None,
+            "transition",
+            &serde_json::json!({ "from": "working", "to": "sleeping" }),
+        )
+        .unwrap();
+    let error = store.graph_facts().unwrap_err();
     assert!(
-        matches!(
-            Store::open_read_only(&path),
-            Err(StoreError::SchemaBehind { found: 3, .. })
-        ),
-        "older schema"
+        matches!(&error, StoreError::BadRow { row, .. } if row.starts_with("event ")),
+        "names the event: {error}"
     );
 }

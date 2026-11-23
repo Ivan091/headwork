@@ -815,6 +815,40 @@ fn a_session_message_logs_its_address_and_summary_but_never_its_body() {
 }
 
 #[test]
+fn tool_used_keeps_only_the_tool_for_other_tools_and_drops_empty_or_odd_message_fields() {
+    let mut w = world("", false);
+    w.start();
+    let cases = [
+        (
+            "PushNotification",
+            json!({ "message": "hi" }),
+            json!({ "tool": "PushNotification" }),
+        ),
+        (
+            "SendMessage",
+            json!({ "to": "  ", "summary": "" }),
+            json!({ "tool": "SendMessage", "to": null, "summary": null }),
+        ),
+        (
+            "SendMessage",
+            json!({ "to": "lead\u{1b}[2J", "summary": "ž".repeat(130) }),
+            json!({ "tool": "SendMessage", "to": "lead[2J", "summary": "ž".repeat(120) }),
+        ),
+    ];
+    for (tool, tool_input, logged) in cases {
+        let input = json!({ "tool_name": tool, "tool_input": tool_input, "tool_response": {} });
+        w.hook(HookEvent::PostToolUse, &input);
+        let event = w
+            .events()
+            .into_iter()
+            .rev()
+            .find(|event| event.kind == "tool-used")
+            .unwrap();
+        assert_eq!(event.data, logged, "{tool}");
+    }
+}
+
+#[test]
 fn a_plain_reply_to_the_user_who_just_typed_is_no_silent_stop() {
     let mut w = world("", false);
     w.start();

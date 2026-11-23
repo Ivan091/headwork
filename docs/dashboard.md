@@ -1,9 +1,9 @@
 # Dashboard: a live graph of the agents working together
 
-Status: plan of 2026-11-22; D1 built 2026-11-23 (`headwork graph`, `docs/decisions.md`). The user's request: "a dashboard for headwork, web-based, which should
-illustrate a map of agents working together, something like an Obsidian map or rather a graph of agents, like in Neo4j,
-so I can see and check how agents are working together." The user's answers are in section 11 and are worked into the
-sections above.
+Status: plan of 2026-11-22; D1 built 2026-11-23 (`headwork graph`, `docs/decisions.md`). The user's request: "a
+dashboard for headwork, web-based, which should illustrate a map of agents working together, something like an
+Obsidian map or rather a graph of agents, like in Neo4j, so I can see and check how agents are working together." The
+user's answers are in section 11 and are worked into the sections above.
 
 ## 1. What to answer
 
@@ -52,7 +52,8 @@ panel on click.
 | `review-node` | `review_nodes` | node name (correctness, tests, ...) | under the reviewer part; findings count and verdicts in details |
 | `job` | `jobs` | label | satellite of its task; colour by state |
 | `pr` | `prs` | `#<number>` | satellite of its task; gate and merge state |
-| `ask` | `asks` open or answered | header | edge-node between the session and `user` while open; folds into a line on the edge once answered |
+| `ask` | `asks` open or answered | header, else the start of its question | edge-node between the session and `user` while open; folds into a line on the edge once answered |
+| `external` | a message address headwork does not know | the address | drawn apart; a name headwork knows but this view does not draw gets no edge |
 
 Projects are not nodes: tasks are coloured or grouped by project (a filter, section 7).
 
@@ -60,21 +61,22 @@ Projects are not nodes: tasks are coloured or grouped by project (a filter, sect
 
 | Edge | From | Meaning |
 |---|---|---|
-| `spawned` | orchestrator → task (`task-created` event, actor) | the orchestrator made the task |
+| `spawned` | orchestrator or user → task (`task-created` event, actor) | who made a top-level task (a part has `part-of`) |
 | `part-of` | lead → part (`tasks.parent_id`) | drawn as nesting, not a line |
 | `depends-on` | task → task (`tasks.depends_on`), part → part (`after`) | dashed |
 | `called` | session → subagent (`usage.agent_id` under `session_id`) | thin |
 | `opened` | session → helper, session → job | thin |
 | `message` | session → session (`SendMessage`) | animated pulse when it happens; weight is the message count |
 | `report` | session → orchestrator (`report` events) | carries the last status |
-| `asked` | session → user (`ask-opened`), user → session (`ask-answered`) | red while open |
-| `reviews` | review → task under review, finding → lead | the review loop |
+| `asked` | session → ask → user while open, session → user once answered or superseded | red while open; weight is the ask count |
+| `reviews` | review → the session of the task under review | the review loop; findings per node come in D4 |
+| `ran` | review → review-node (`review_nodes`) | the flow's nodes as they run |
 | `delivered` | task → pr | |
 
-**The one data gap: who a message went to.** Today the `PreToolUse` hook logs `tool-used` with only the tool name, and
+**The one data gap: who a message went to.** The `PostToolUse` hook logged `tool-used` with only the tool name, and
 the receiver's `prompt` event has `from` but no recipient id for messages that came from outside headwork. Change: the
-`tool-used` event for `SendMessage` also stores `to` (the address as sent, after `readdress`) and the message's
-`summary` (5 to 10 words, never the body). The receiver side already logs `cross_session` and `from` on `prompt`.
+`tool-used` event for `SendMessage` also stores `to` (the address as the tool ran it, after a `PreToolUse` readdress)
+and the sender's `summary`, each trimmed, without control characters and cut to 120 characters, never the body. The receiver side already logs `cross_session` and `from` on `prompt`.
 Together they give both ends; a message to a name headwork does not know becomes an edge to an `external` node. No
 schema change, an event payload field only.
 
@@ -86,7 +88,6 @@ Everything else is already in the store. One table, at the next free migration n
 CREATE TABLE agents (
     agent_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
-    task_id INTEGER REFERENCES tasks(id),
     agent_type TEXT,
     description TEXT,
     model TEXT,
@@ -97,10 +98,14 @@ CREATE TABLE agents (
 CREATE INDEX agents_session ON agents(session_id);
 ```
 
-Filled by the same reader that fills `usage` (`ops/usage.rs`): when it reads a subagent transcript it also reads its
-`agent-<id>.meta.json` once (description, type, model, depth) and keeps `first_at` and `last_at` from the lines it
-reads. Descriptions are the short labels the caller gave the `Agent` call, never prompts or output. `spawn_depth` lets
-nested subagents (a fork's agents, a workflow's) hang off their parent agent rather than the session.
+Filled by the same reader that fills `usage` (`ops/usage.rs`), in the same transaction as the usage rows: when it reads
+new lines of a subagent transcript it also reads its `agent-<id>.meta.json` (description, type, model, depth) and
+widens `first_at` and `last_at` to the lines it read. The migration seeds the table from the `usage` rows already
+stored (type and times); `headwork usage --backfill` rereads every transcript and adds the descriptions. The task is
+not stored: it is the calling session's, so it follows a session `headwork import` adopts later. Descriptions are the
+short labels the caller gave the `Agent` call, never prompts or output. `spawn_depth` is shown in the details: the meta
+file names no parent agent, and a nested transcript's folder is a workflow run (`subagents/workflows/<run>/`), not its
+parent, so every subagent hangs off its session.
 
 ## 6. Endpoints
 
@@ -150,7 +155,7 @@ messages pulse and nodes appear in the order they happened.
 
 | | What | Done when |
 |---|---|---|
-| D1 | `core/src/graph.rs` (facts → nodes and edges, `state_at`), the `agents` migration and its fill in the usage reader, `to` and `summary` on `SendMessage` events, `headwork graph --json [--at T]` printing the graph | table tests for every node and edge kind; `headwork graph --json` on this machine's store shows the review-flows lead with its parts and subagents |
+| D1 (built) | `core/src/graph.rs` (facts → nodes and edges, `state_at`), the `agents` migration and its fill in the usage reader, `to` and `summary` on `SendMessage` events, `headwork graph [--json] [--at T] [--all] [--task <name>]` printing the graph as JSON or an indented text tree | table tests for every node and edge kind; `headwork graph --json` on this machine's store shows the review-flows lead with its parts and subagents (checked 2026-11-23 on a copy of the store: the lead, its session, its seven pull requests and its reports; it ran no parts or subagents) |
 | D2 | `headwork dash`: `tiny_http` server, `/api/graph`, `/api/node`, the page with Cytoscape.js vendored, layout, colours, side panel, filters, search | the page shows the live board as a graph and matches `headwork board` |
 | D3 | live and replay: `/api/events`, `/api/stream`, `/api/range`, the slider, play speeds, message pulses | a task's whole life replays from its first event; a new spawn appears within two seconds |
 | D4 | cost and health: size by tokens, tokens by type in the panel, finding and ask badges, review nodes with findings, the hierarchical layout; a trial with a few live tasks, results in `docs/trials/` | the user has watched a real lead, its parts and a review on the page |

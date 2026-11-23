@@ -17,6 +17,7 @@ use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
+use headwork::ops::graph::GraphQuery;
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
@@ -91,7 +92,7 @@ enum Command {
         #[arg(long)]
         all: bool,
         /// Only this task with its lead and parts, as `<project>-<slug>`.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         task: Option<String>,
         /// Print JSON instead of text.
         #[arg(long)]
@@ -741,18 +742,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             all,
             task,
             json,
-        } => {
-            let graph = headwork::ops::graph::graph(
-                &store,
-                &headwork::ops::graph::GraphQuery { at, all, task },
-            )?;
-            if json {
-                json_out(out, &graph)?;
-            } else {
-                out.write_all(headwork::ops::graph::render(&graph).as_bytes())?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        } => graph_command(&mut store, &ctx, &GraphQuery { at, all, task }, json, out),
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
@@ -1039,6 +1029,23 @@ fn status_command(
         json_out(out, &lines)?;
     } else {
         out.write_all(render::statuses(&lines).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn graph_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    query: &GraphQuery,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
+    let graph = headwork::ops::graph::graph(store, query)?;
+    if json {
+        json_out(out, &graph)?;
+    } else {
+        out.write_all(headwork::ops::graph::render(&graph).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }

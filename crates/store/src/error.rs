@@ -18,16 +18,6 @@ pub enum StoreError {
         /// The newest version this build knows.
         known: usize,
     },
-    /// A read-only open found a database older than this build, which only a writable open migrates.
-    #[error(
-        "the database schema is version {found}, older than the {known} this headwork knows; run `headwork board` once to migrate it"
-    )]
-    SchemaBehind {
-        /// The database's version.
-        found: i64,
-        /// The newest version this build knows.
-        known: usize,
-    },
     /// The lifecycle refused a transition.
     #[error("task `{task}`: {refusal}")]
     Refused {
@@ -46,6 +36,15 @@ pub enum StoreError {
     /// A stored word is not one this build knows.
     #[error("stored value: {0}")]
     UnknownWord(#[from] UnknownWord),
+    /// A stored word in a named row is not one this build knows.
+    #[error("{row}: {source}")]
+    BadRow {
+        /// The row, such as `task 12` or `event 345`.
+        row: String,
+        /// The word.
+        #[source]
+        source: UnknownWord,
+    },
     /// A stored name is not valid.
     #[error("stored name: {0}")]
     BadName(#[from] NameError),

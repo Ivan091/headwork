@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use headwork_core::lifecycle::SessionFacts;
-use headwork_core::usage::{Tokens, UsageLine};
+use headwork_core::usage::{AgentMeta, Tokens, UsageLine};
 use headwork_core::{
     Actor, Config, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape, Trigger,
     UsageGroup, UsageRole,
@@ -91,12 +91,16 @@ fn record(store: &mut Store, session: &str, agent: Option<&str>, lines: &[UsageL
         .usage_tag(session)
         .unwrap()
         .unwrap_or(UsageTag::UNMANAGED);
+    let meta = AgentMeta {
+        agent_type: Some("Explore".to_owned()),
+        ..AgentMeta::default()
+    };
     store
         .record_usage(&UsageBatch {
             path: &format!("{session}-{agent:?}.jsonl"),
             session_id: session,
             agent_id: agent,
-            agent_type: agent.map(|_| "Explore"),
+            agent_meta: agent.map(|_| &meta),
             tag,
             dir: "S:/Code/x",
             lines,

@@ -13,12 +13,9 @@ use headwork_core::UsageGroup;
 use headwork_core::usage::{
     AgentMeta, Estimate, UsageConfig, agent_meta, parse_line, transcript_of,
 };
-use headwork_store::{
-    FileMark, NewAgent, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal,
-};
+use headwork_store::{FileMark, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal};
 use serde::Serialize;
 
-use crate::ops::shadow::since_instant;
 use crate::ops::slashed;
 
 /// The folder under `~/.claude` that holds every transcript, one folder per working folder.
@@ -149,11 +146,6 @@ pub fn ingest_file(
     let key = slashed(path);
     let now = mark_of(path)?;
     let Some(start) = start_at(store.usage_file(&key)?, now, from_start) else {
-        if let Some(agent) = file.agent_id.as_deref()
-            && !store.agent_known(agent)?
-        {
-            record_agent(store, path, &file.session_id, agent)?;
-        }
         return Ok(None);
     };
     let rolled_to = store.usage_rolled_to()?;
@@ -176,7 +168,6 @@ pub fn ingest_file(
         }
     }
     let meta = file.agent_id.as_ref().and_then(|_| meta_of(path));
-    let agent_type = meta.as_ref().and_then(|meta| meta.agent_type.clone());
     let tag = store
         .usage_tag(&file.session_id)?
         .unwrap_or(UsageTag::UNMANAGED);
@@ -189,20 +180,12 @@ pub fn ingest_file(
         path: &key,
         session_id: &file.session_id,
         agent_id: file.agent_id.as_deref(),
-        agent_type: agent_type.as_deref(),
+        agent_meta: meta.as_ref(),
         tag,
         dir: &dir,
         lines: &lines,
         mark: FileMark { read_to, ..now },
     })?;
-    if let Some(agent) = file.agent_id.as_deref() {
-        store.record_agent(&NewAgent {
-            agent_id: agent,
-            session_id: &file.session_id,
-            task: tag.task,
-            meta: &meta.unwrap_or_default(),
-        })?;
-    }
     Ok(Some((lines.len(), inserted)))
 }
 
@@ -211,18 +194,6 @@ fn meta_of(transcript: &Path) -> Option<AgentMeta> {
     std::fs::read_to_string(transcript.with_extension("meta.json"))
         .ok()
         .and_then(|text| agent_meta(&text))
-}
-
-/// Records a subagent whose transcript was read before the `agents` table existed.
-fn record_agent(store: &Store, path: &Path, session: &str, agent: &str) -> Result<()> {
-    let task = store.usage_tag(session)?.and_then(|tag| tag.task);
-    store.record_agent(&NewAgent {
-        agent_id: agent,
-        session_id: session,
-        task,
-        meta: &meta_of(path).unwrap_or_default(),
-    })?;
-    Ok(())
 }
 
 /// Reads every file in `files` (see [`ingest_file`]), then re-tags the rows of sessions the store learned since. A
@@ -380,7 +351,7 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
     let since = options
         .since
         .as_deref()
-        .map(|text| since_instant(store, text))
+        .map(|text| super::instant(store, text))
         .transpose()?;
     let tasks = match &options.task {
         Some(name) => {

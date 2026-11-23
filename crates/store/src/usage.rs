@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use headwork_core::usage::{Tokens, UsageLine, usage_role};
+use headwork_core::usage::{AgentMeta, Tokens, UsageLine, is_agent_id, usage_role};
 use headwork_core::{Role, UsageGroup, UsageRole};
 use rusqlite::{OptionalExtension, Transaction, params, params_from_iter};
 use serde::Serialize;
@@ -71,8 +71,8 @@ pub struct UsageBatch<'a> {
     pub session_id: &'a str,
     /// The subagent, for a subagent transcript.
     pub agent_id: Option<&'a str>,
-    /// The subagent's type.
-    pub agent_type: Option<&'a str>,
+    /// What the subagent's meta file says, for a subagent transcript.
+    pub agent_meta: Option<&'a AgentMeta>,
     /// Whose tokens they are.
     pub tag: UsageTag,
     /// The folder to record when a line names none.
@@ -190,7 +190,7 @@ fn insert_line(
             line.message_id,
             batch.session_id,
             batch.agent_id,
-            batch.agent_type,
+            batch.agent_meta.and_then(|meta| meta.agent_type.as_deref()),
             batch.tag.task.map(|task| task.0),
             batch.tag.role.as_str(),
             line.cwd.as_deref().unwrap_or(batch.dir),
@@ -438,6 +438,9 @@ impl Store {
         let mut inserted = 0;
         for line in batch.lines {
             inserted += insert_line(&tx, batch, line)?;
+        }
+        if let Some(agent) = batch.agent_id.filter(|agent| is_agent_id(agent)) {
+            crate::graph::upsert_agent(&tx, agent, batch)?;
         }
         tx.execute(
             &format!(

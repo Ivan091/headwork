@@ -204,13 +204,6 @@ pub fn transcript_of(path: &Path) -> Option<TranscriptFile> {
     }
 }
 
-/// The subagent type in an `agent-<id>.meta.json` file (`agentType`), none when the file says none.
-#[must_use]
-pub fn agent_type(meta: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(meta).ok()?;
-    text(&value, &["agentType"])
-}
-
 /// What a subagent's `agent-<id>.meta.json` says about it: its type, the short label its caller gave it, the model it
 /// asked for and how deep it was nested.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -223,6 +216,20 @@ pub struct AgentMeta {
     pub model: Option<String>,
     /// 1 for a session's own subagent, more for nested ones.
     pub spawn_depth: Option<i64>,
+}
+
+/// The longest subagent id the agent graph records.
+const AGENT_ID_MAX: usize = 64;
+
+/// Whether a transcript's agent id is one Claude Code writes (letters, digits, `-` and `_`, at most 64), so it can
+/// stand as a row key and a graph node id.
+#[must_use]
+pub fn is_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= AGENT_ID_MAX
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 /// Reads a subagent's meta file; none when it is not a JSON object.
@@ -645,14 +652,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_meta_gives_its_type() {
-        assert_eq!(
-            agent_type(r#"{"agentType":"Explore","model":"haiku"}"#),
-            Some("Explore".to_owned()),
-            "type read"
-        );
-        assert_eq!(agent_type("{}"), None, "no type");
-        assert_eq!(agent_type("nope"), None, "not json");
+    fn agent_ids_are_short_plain_words() {
+        let table = [
+            ("a0e783e096e8bfe7b", true),
+            ("acompact-1_x", true),
+            ("", false),
+            ("a/b", false),
+            ("a b", false),
+            ("é", false),
+        ];
+        for (id, ok) in table {
+            assert_eq!(is_agent_id(id), ok, "{id:?}");
+        }
+        assert!(!is_agent_id(&"a".repeat(65)), "too long");
     }
 
     #[test]
@@ -676,6 +688,7 @@ mod tests {
             "an empty object"
         );
         assert_eq!(agent_meta("[1]"), None, "not an object");
+        assert_eq!(agent_meta("nope"), None, "not json");
     }
 
     #[test]
