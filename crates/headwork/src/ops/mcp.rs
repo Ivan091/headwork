@@ -457,7 +457,18 @@ const TOOLS: &[ToolDef] = &[
                 json!({
                     "slug": { "type": "string", "description": "The part's own kebab-case word, such as `review`." },
                     "brief": { "type": "string", "description": "The part's brief; it must stand alone." },
-                    "model": { "type": "string", "enum": ["haiku", "sonnet", "opus", "fable"] },
+                    "model": {
+                        "type": "string",
+                        "enum": ["haiku", "sonnet", "opus", "fable"],
+                        "description": "Omit for Sonnet; your own model is never passed down. Opus needs `reason`.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": concat!(
+                            "Why this part needs Opus (new architecture, publishing or ledger code, security, ",
+                            "concurrency, audit, plan); recorded."
+                        ),
+                    },
                     "after": {
                         "type": "string",
                         "description": "Another part of yours (its word or full name) whose pull request must merge first.",
@@ -1363,6 +1374,18 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .map(str::parse)
             .transpose()?;
+        let opus_reason = match model {
+            Some(Model::Opus) => Some(
+                text(args, "reason")
+                    .ok()
+                    .filter(|reason| !reason.trim().is_empty())
+                    .context(concat!(
+                        "a part on Opus needs a `reason` (new architecture, publishing or ledger code, security, ",
+                        "concurrency, an audit or a plan); otherwise leave `model` out for Sonnet"
+                    ))?,
+            ),
+            _ => None,
+        };
         let depends_on = match args.get("after").and_then(Value::as_str) {
             Some(after) => Some(self.part_of(lead, after)?.id),
             None => None,
@@ -1395,6 +1418,15 @@ impl<'a> Server<'a> {
         );
         std::fs::remove_file(&file).ok();
         let (task, pumped) = result?;
+        if let Some(reason) = opus_reason {
+            self.store.append_event(
+                self.env.actor,
+                Some(task.id),
+                None,
+                "part-opus-reason",
+                &json!({ "lead": lead.name.to_string(), "reason": reason }),
+            )?;
+        }
         let fable = task.fable_ask.map(
             |_| "Fable waits for the user's approval: the part starts once the user allows it",
         );

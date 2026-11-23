@@ -9,7 +9,11 @@
   a long render, a second branch): the headwork `part_spawn` tool with `slug` (the part's own word, such as `review`;
   its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model` and `after` (another part
   of yours whose pull request must merge first). Parts run in your project only, at most `max_parts` at once (more wait
-  in the queue right behind you), and Fable still needs the user's approval. Work in another project goes to the
+  in the queue right behind you), and Fable still needs the user's approval. Model ladder: a part runs on Sonnet unless
+  you name another; your own model is never passed down. Haiku for lookups, status checks, cleanups and watch or poll
+  loops. Sonnet for routine features, UI, docs, config and ordinary fixes. Opus only for new architecture, publishing
+  or ledger code, security, concurrency, audits and plans, with a `reason` that headwork records (`part-opus-reason`).
+  A Sonnet part that fails its checks twice or gets stuck gets one retry on Opus. Work in another project goes to the
   orchestrator as a new task. Never run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` through Bash.
 - A part reports to you by `SendMessage`. While a part runs you may end your turn and wait for its message. When a
   part asks the user, it asks in its own tab; tell the user which tab waits (headwork adds a line naming the part to

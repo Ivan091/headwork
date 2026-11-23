@@ -612,3 +612,19 @@ fn usage_prices_parse_and_bad_ones_are_refused() {
     let unknown = text.replace("input = 15.0", "inptu = 15.0");
     assert!(Config::parse(&unknown, "typo").is_err(), "an unknown key");
 }
+
+#[test]
+fn a_kind_takes_its_own_default_model() {
+    let text = "[machine]\nhost = \"cmux\"\n[models]\ndefault = \"sonnet\"\n[models.by_kind]\ncar-training = \"haiku\"\n";
+    let config = Config::parse(text, "kinds").unwrap();
+    assert_eq!(
+        config.models.for_kind("car-training"),
+        Model::Haiku,
+        "listed kind"
+    );
+    assert_eq!(
+        config.models.for_kind("task"),
+        Model::Sonnet,
+        "unlisted kind"
+    );
+}

@@ -117,7 +117,9 @@ pub fn admit(
         }
         (true, true) | (false, false) => {}
     }
-    let model = request.model.unwrap_or(config.models.default);
+    let model = request
+        .model
+        .unwrap_or_else(|| config.models.for_kind(&request.kind));
     if !config.allowed_models(project).contains(&model) {
         return Err(AdmissionRefusal::ModelNotAllowed(model));
     }

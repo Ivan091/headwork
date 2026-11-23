@@ -115,7 +115,9 @@ pub fn spawn_shaped(
     };
     let mut request = new.request.clone();
     if request.effort.is_none() {
-        let model = request.model.unwrap_or(env.config.models.default);
+        let model = request
+            .model
+            .unwrap_or_else(|| env.config.models.for_kind(&request.kind));
         let main = env
             .config
             .project(&request.project)

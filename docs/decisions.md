@@ -1409,3 +1409,8 @@ and the reason.
 - 2026-11-23, rate-limit errors name the login: the update's `ask` failure says `signed in` or `without a login`.
   v0.1.35 was built from the merge before the token lookup landed, so it still asked anonymously and looked as if
   the token had not helped; the error now shows which it was.
+- 2026-11-23, model ladder: `[models.by_kind]` gives a task kind its own default model (`ModelsConfig::for_kind`, used by
+  admission and spawn); a part never inherits its lead's model and runs on the default unless the lead names one; a part
+  on Opus needs a `reason`, recorded as the `part-opus-reason` event. The orchestrator and lead rules carry the ladder
+  (Haiku lookups and loops, Sonnet default, Opus for architecture, ledger, security, concurrency, audits, plans; one
+  Opus retry after two failed checks on Sonnet).
