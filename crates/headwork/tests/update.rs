@@ -508,6 +508,7 @@ fn transient_failures_are_reported_from_the_third() {
         rig.releases.fail_next(ReleaseError::RateLimited {
             what: "the newest release".to_owned(),
             status: 403,
+            signed_in: false,
         });
         let report = rig.run(&clock, plain());
         assert!(
@@ -1111,6 +1112,7 @@ fn transient_failures_are_told_from_the_third_and_only_once() {
         rig.releases.fail_next(ReleaseError::RateLimited {
             what: "the newest release".to_owned(),
             status: 403,
+            signed_in: false,
         });
         rig.run(&clock, plain());
         let told = usize::from(attempt >= 3);
