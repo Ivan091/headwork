@@ -246,10 +246,8 @@ fn every_node_kind_is_drawn_now() {
     let table = [
         ("user", NodeKind::User),
         ("orchestrator", NodeKind::Orchestrator),
-        ("task:1", NodeKind::Task),
-        ("session:s1", NodeKind::Lead),
-        ("task:2", NodeKind::Task),
-        ("session:s2", NodeKind::Part),
+        ("task:1", NodeKind::Lead),
+        ("task:2", NodeKind::Part),
         ("agent:a1", NodeKind::Subagent),
         ("helper:h1", NodeKind::Helper),
         ("job:7", NodeKind::Job),
@@ -264,7 +262,7 @@ fn every_node_kind_is_drawn_now() {
     }
     let all = build(&facts(), None, Scope::All);
     assert_eq!(
-        all.node("session:s3").map(Node::kind),
+        all.node("task:3").map(Node::kind),
         Some(NodeKind::Worker),
         "a plain task's session"
     );
@@ -279,14 +277,9 @@ fn a_shape_is_written_as_its_kind_and_state() {
             "orchestrator",
             Some("live"),
         ),
-        (Shape::Task(TaskState::Working), "task", Some("working")),
-        (
-            Shape::Lead(SessionState::Starting),
-            "lead",
-            Some("starting"),
-        ),
-        (Shape::Worker(SessionState::Gone), "worker", Some("gone")),
-        (Shape::Part(SessionState::Ended), "part", Some("ended")),
+        (Shape::Lead(TaskState::Working), "lead", Some("working")),
+        (Shape::Worker(TaskState::Closed), "worker", Some("closed")),
+        (Shape::Part(TaskState::InReview), "part", Some("in_review")),
         (Shape::Subagent(AgentState::Seen), "subagent", Some("seen")),
         (Shape::Helper, "helper", None),
         (
@@ -322,47 +315,23 @@ fn a_shape_is_written_as_its_kind_and_state() {
 }
 
 #[test]
-fn nesting_puts_parts_and_satellites_in_their_boxes() {
-    let graph = build(&facts(), None, Scope::Live);
-    let table = [
-        ("task:1", None),
-        ("task:2", Some("task:1")),
-        ("session:s1", Some("task:1")),
-        ("session:s2", Some("task:2")),
-        ("agent:a1", Some("task:1")),
-        ("helper:h1", Some("task:1")),
-        ("job:7", Some("task:1")),
-        ("pr:9", Some("task:1")),
-        ("review:1", Some("task:2")),
-        ("review-node:1:1:correctness:0", Some("task:2")),
-    ];
-    for (id, parent) in table {
-        assert_eq!(
-            graph.node(id).unwrap().parent.as_deref(),
-            parent,
-            "parent of {id}"
-        );
-    }
-}
-
-#[test]
 fn every_edge_kind_is_drawn_now() {
     let stranger = external_node("stranger");
     let graph = build(&facts(), None, Scope::Live);
     let table = [
         (EdgeKind::Spawned, "orchestrator", "task:1"),
         (EdgeKind::PartOf, "task:2", "task:1"),
-        (EdgeKind::Called, "session:s1", "agent:a1"),
-        (EdgeKind::Opened, "session:s1", "helper:h1"),
-        (EdgeKind::Opened, "session:s1", "job:7"),
-        (EdgeKind::Message, "session:s2", "session:s1"),
-        (EdgeKind::Message, "session:s1", "orchestrator"),
-        (EdgeKind::Message, "session:s1", stranger.as_str()),
-        (EdgeKind::Report, "session:s1", "orchestrator"),
-        (EdgeKind::Asked, "session:s1", "user"),
-        (EdgeKind::Asked, "session:s2", "ask:5"),
+        (EdgeKind::Called, "task:1", "agent:a1"),
+        (EdgeKind::Opened, "task:1", "helper:h1"),
+        (EdgeKind::Opened, "task:1", "job:7"),
+        (EdgeKind::Message, "task:2", "task:1"),
+        (EdgeKind::Message, "task:1", "orchestrator"),
+        (EdgeKind::Message, "task:1", stranger.as_str()),
+        (EdgeKind::Report, "task:1", "orchestrator"),
+        (EdgeKind::Asked, "task:1", "user"),
+        (EdgeKind::Asked, "task:2", "ask:5"),
         (EdgeKind::Asked, "ask:5", "user"),
-        (EdgeKind::Reviews, "review:1", "session:s1"),
+        (EdgeKind::Reviews, "review:1", "task:1"),
         (EdgeKind::Ran, "review:1", "review-node:1:1:correctness:0"),
         (EdgeKind::Delivered, "task:1", "pr:9"),
     ];
@@ -388,13 +357,13 @@ fn depends_on_joins_two_drawn_tasks() {
 #[test]
 fn a_message_between_sessions_counts_once_from_its_receiver_with_the_senders_summary() {
     let graph = build(&facts(), None, Scope::Live);
-    let sent = edge(&graph, EdgeKind::Message, "session:s2", "session:s1").unwrap();
+    let sent = edge(&graph, EdgeKind::Message, "task:2", "task:1").unwrap();
     assert_eq!(
         (sent.weight, sent.label.as_deref()),
         (2, Some("second")),
         "two arrivals, the last summary"
     );
-    let reported = edge(&graph, EdgeKind::Report, "session:s1", "orchestrator").unwrap();
+    let reported = edge(&graph, EdgeKind::Report, "task:1", "orchestrator").unwrap();
     assert_eq!(
         (reported.weight, reported.label.as_deref()),
         (2, Some("review")),
@@ -414,7 +383,7 @@ fn a_message_from_outside_headwork_reaches_its_receiver_from_an_external_node() 
         "labelled by its name"
     );
     assert!(
-        edge(&graph, EdgeKind::Message, &id, "session:s1").is_some(),
+        edge(&graph, EdgeKind::Message, &id, "task:1").is_some(),
         "to its receiver"
     );
 }
@@ -425,13 +394,7 @@ fn one_unknown_name_with_different_refs_is_one_external_node() {
     facts.messages.push(message("s1", "peer [a1]", None, "T06"));
     facts.messages.push(message("s1", "peer [b7]", None, "T06"));
     let graph = build(&facts, None, Scope::Live);
-    let sent = edge(
-        &graph,
-        EdgeKind::Message,
-        "session:s1",
-        &external_node("peer"),
-    )
-    .unwrap();
+    let sent = edge(&graph, EdgeKind::Message, "task:1", &external_node("peer")).unwrap();
     assert_eq!(sent.weight, 2, "one node, two messages");
 }
 
@@ -467,14 +430,10 @@ fn edges_never_point_at_nodes_left_out() {
 #[test]
 fn the_graph_at_an_instant_holds_what_existed_then() {
     let table: [(&str, &[&str], &[&str]); 3] = [
-        (
-            "T01",
-            &["task:1", "task:3"],
-            &["task:2", "session:s1", "agent:a1"],
-        ),
+        ("T01", &["task:1", "task:3"], &["task:2", "agent:a1"]),
         (
             "T04",
-            &["task:1", "task:2", "session:s1", "session:s2", "task:3"],
+            &["task:1", "task:2", "task:3"],
             &["agent:a1", "pr:9"],
         ),
         ("T07", &["agent:a1", "pr:9", "job:7", "ask:5"], &["task:3"]),
@@ -614,7 +573,7 @@ fn an_answered_ask_folds_into_an_edge() {
     let graph = build(&facts(), Some("T04"), Scope::Live);
     assert!(graph.node("ask:4").is_none(), "answered by T04");
     assert!(
-        edge(&graph, EdgeKind::Asked, "session:s1", "user").is_some(),
+        edge(&graph, EdgeKind::Asked, "task:1", "user").is_some(),
         "folded into a line"
     );
 }
@@ -655,10 +614,6 @@ fn a_pending_ask_keeps_its_word_and_one_headwork_raised_comes_from_the_task() {
     assert!(
         edge(&graph, EdgeKind::Asked, "task:2", "ask:5").is_some(),
         "from the task's box"
-    );
-    assert!(
-        edge(&graph, EdgeKind::Asked, "session:s2", "ask:5").is_none(),
-        "not from its session"
     );
 }
 
@@ -704,7 +659,7 @@ fn the_orchestrator_is_one_node_across_restarts_and_knows_only_its_sessions_so_f
         "the newest live session names it"
     );
     assert!(
-        edge(&graph, EdgeKind::Message, "orchestrator", "session:s1").is_some(),
+        edge(&graph, EdgeKind::Message, "orchestrator", "task:1").is_some(),
         "the old session's talk"
     );
     let between = build(&facts, Some("T03"), Scope::Live);
@@ -746,7 +701,7 @@ fn a_message_to_the_orchestrators_own_name_reaches_it() {
         .push(message("s1", "boss", Some("hello"), "T07"));
     facts.received.push(received("o1", "headwork-lead", "T07"));
     let graph = build(&facts, None, Scope::Live);
-    let sent = edge(&graph, EdgeKind::Message, "session:s1", ORCHESTRATOR_NODE).unwrap();
+    let sent = edge(&graph, EdgeKind::Message, "task:1", ORCHESTRATOR_NODE).unwrap();
     assert_eq!(
         sent.label.as_deref(),
         Some("hello"),
@@ -772,7 +727,7 @@ fn a_message_to_something_known_but_not_drawn_is_left_out() {
     );
     let graph = build(&facts, None, Scope::All);
     assert!(
-        edge(&graph, EdgeKind::Message, "session:s1", "session:s3").is_some(),
+        edge(&graph, EdgeKind::Message, "task:1", "task:3").is_some(),
         "drawn when its task is"
     );
 }
@@ -803,12 +758,12 @@ fn a_name_taken_again_points_at_the_task_the_view_draws() {
     facts.received.push(received("s3", "headwork-lead", "T04"));
     let now = build(&facts, None, Scope::Live);
     assert!(
-        edge(&now, EdgeKind::Message, "session:s1", "session:s9").is_some(),
+        edge(&now, EdgeKind::Message, "task:1", "task:9").is_some(),
         "the new task's session"
     );
     let then = build(&facts, Some("T04"), Scope::All);
     assert!(
-        edge(&then, EdgeKind::Message, "session:s1", "session:s3").is_some(),
+        edge(&then, EdgeKind::Message, "task:1", "task:3").is_some(),
         "the old one at its time"
     );
     assert!(
@@ -839,17 +794,11 @@ fn a_subagent_id_never_takes_a_session_or_task_name() {
         .push(message("s2", "headwork-lead", Some("third"), "T07"));
     let graph = build(&facts, None, Scope::Live);
     assert!(
-        edge(
-            &graph,
-            EdgeKind::Message,
-            "session:s2",
-            "agent:headwork-lead"
-        )
-        .is_none(),
+        edge(&graph, EdgeKind::Message, "task:2", "agent:headwork-lead").is_none(),
         "not the subagent"
     );
     assert_eq!(
-        edge(&graph, EdgeKind::Message, "session:s2", "session:s1")
+        edge(&graph, EdgeKind::Message, "task:2", "task:1")
             .unwrap()
             .label
             .as_deref(),
@@ -864,7 +813,7 @@ fn a_message_to_a_subagent_reaches_it() {
     facts.messages.push(message("s1", "a1", None, "T06"));
     let graph = build(&facts, None, Scope::Live);
     assert!(
-        edge(&graph, EdgeKind::Message, "session:s1", "agent:a1").is_some(),
+        edge(&graph, EdgeKind::Message, "task:1", "agent:a1").is_some(),
         "by its id"
     );
 }
@@ -879,11 +828,7 @@ fn a_helpers_subagents_and_messages_hang_off_the_helper() {
         edge(&graph, EdgeKind::Called, "helper:h1", "agent:a7").is_some(),
         "its subagent"
     );
-    assert_eq!(
-        graph.node("agent:a7").unwrap().parent.as_deref(),
-        Some("task:1"),
-        "in the task's box"
-    );
+    assert!(graph.node("agent:a7").is_some(), "drawn");
     assert!(
         edge(
             &graph,
@@ -917,10 +862,9 @@ fn a_live_part_brings_its_closed_lead() {
     facts.tasks[0].state = TaskState::Closed;
     let graph = build(&facts, None, Scope::Live);
     assert!(graph.node("task:1").is_some(), "the lead is drawn");
-    assert_eq!(
-        graph.node("task:2").unwrap().parent.as_deref(),
-        Some("task:1"),
-        "in its box"
+    assert!(
+        edge(&graph, EdgeKind::PartOf, "task:2", "task:1").is_some(),
+        "its part hangs off it by a line"
     );
 }
 
@@ -1012,7 +956,7 @@ fn a_nested_subagent_is_called_by_its_parent_agent_of_the_same_session() {
         "from its parent"
     );
     assert!(
-        edge(&graph, EdgeKind::Called, "session:s1", "agent:a2").is_none(),
+        edge(&graph, EdgeKind::Called, "task:1", "agent:a2").is_none(),
         "not from the session"
     );
     let fallbacks = [
@@ -1028,7 +972,7 @@ fn a_nested_subagent_is_called_by_its_parent_agent_of_the_same_session() {
             facts.agents[0].first_at = None;
         }
         let graph = build(&facts, Some("T09"), Scope::All);
-        let caller = format!("session:{session_id}");
+        let caller = format!("task:{}", session_id.trim_start_matches('s'));
         assert!(
             edge(&graph, EdgeKind::Called, &caller, "agent:a2").is_some(),
             "{case}: from the session"
@@ -1050,33 +994,41 @@ fn a_resumed_task_shows_its_newest_session() {
     ));
     let graph = build(&facts, None, Scope::All);
     assert!(
-        graph.node("session:s1").is_none(),
-        "the older session folds into the newest"
+        graph
+            .nodes
+            .iter()
+            .all(|node| !node.id.starts_with("session:")),
+        "no session is a node"
     );
-    let node = graph.node("session:s1b").unwrap();
+    let node = graph.node("task:1").unwrap();
+    assert_eq!(
+        node.details.get("session").map(String::as_str),
+        Some("s1b"),
+        "the newest session in details"
+    );
     assert_eq!(
         node.details.get("earlier_sessions").map(String::as_str),
         Some("s1"),
-        "listed in details"
+        "the earlier ones listed in details"
     );
     assert!(
-        edge(&graph, EdgeKind::Called, "session:s1b", "agent:a1").is_some(),
+        edge(&graph, EdgeKind::Called, "task:1", "agent:a1").is_some(),
         "the older session's agents"
     );
 }
 
 #[test]
-fn session_states_are_the_stored_word_now_and_live_or_ended_then() {
+fn a_task_node_shows_the_task_state_now_and_then() {
     let mut facts = facts();
     facts.sessions[1].state = SessionState::Starting;
     assert_eq!(
-        state(&build(&facts, None, Scope::Live), "session:s1"),
-        Some("starting"),
+        state(&build(&facts, None, Scope::Live), "task:1"),
+        Some("working"),
         "now"
     );
     assert_eq!(
-        state(&build(&facts, Some("T03"), Scope::Live), "session:s1"),
-        Some("live"),
+        state(&build(&facts, Some("T01"), Scope::Live), "task:1"),
+        Some("queued"),
         "then"
     );
 }
@@ -1169,15 +1121,15 @@ fn a_message_from_a_name_taken_again_comes_from_whoever_held_it_then() {
     facts.received.push(received("s1", "headwork-old", "T04"));
     facts.received.push(received("s1", "headwork-old", "T07"));
     let now = build(&facts, None, Scope::Live);
-    let from_new = edge(&now, EdgeKind::Message, "session:s9", "session:s1").unwrap();
+    let from_new = edge(&now, EdgeKind::Message, "task:9", "task:1").unwrap();
     assert_eq!(from_new.weight, 1, "only the message the new task sent");
     assert!(
-        edge(&now, EdgeKind::Message, "session:s3", "session:s1").is_none(),
+        edge(&now, EdgeKind::Message, "task:3", "task:1").is_none(),
         "the old task is not drawn"
     );
     let all = build(&facts, None, Scope::All);
     assert_eq!(
-        edge(&all, EdgeKind::Message, "session:s3", "session:s1").map(|edge| edge.weight),
+        edge(&all, EdgeKind::Message, "task:3", "task:1").map(|edge| edge.weight),
         Some(1),
         "the old one's"
     );
@@ -1234,7 +1186,6 @@ fn the_view_of_now_carries_tokens_and_every_view_its_badges() {
     };
     let table = [
         ("task:1", Some(1000)),
-        ("session:s1", Some(600)),
         ("orchestrator", Some(50)),
         ("agent:a1", Some(70)),
     ];

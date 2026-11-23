@@ -1423,3 +1423,8 @@ and the reason.
 - 2026-11-23, context nudge: `[usage] nudge_context_k` (default 200, `0` off) makes the `UserPromptSubmit` hook add one
   line to a long worker, lead or part session that its context is that large and every turn re-reads it, so it hands
   read-heavy steps to a Sonnet subagent; once per multiple of the threshold, remembered as a `context-nudge` event.
+- 2026-11-23, one node per task in the agent graph: a task and its lead's (or worker's) session are one node (`lead`,
+  `worker`, `part`), coloured by the task's state; the session it ran in, and the ones before it, are details, not nodes.
+  There are no compound boxes (`Node.parent` is gone): a part hangs off its lead by a dotted `part-of` line, helpers,
+  jobs, pull requests, reviews and subagents by their own lines. Messages, reports and asks end on the task node. The
+  user's request: orchestrator to task to lead or worker, and no separate task square.

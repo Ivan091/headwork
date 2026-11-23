@@ -59,8 +59,6 @@
       text: read("--text"),
       muted: read("--muted"),
       line: read("--line"),
-      box: read("--box"),
-      boxLine: read("--box-line"),
       green: read("--green"),
       red: read("--red"),
       amber: read("--amber"),
@@ -115,7 +113,8 @@
       },
       { selector: "node[kind = 'user']", style: { shape: "star", width: 34, height: 34 } },
       { selector: "node[kind = 'orchestrator']", style: { shape: "hexagon", width: 40, height: 40, "font-size": 12 } },
-      { selector: "node[kind = 'lead'], node[kind = 'worker'], node[kind = 'part']", style: { shape: "ellipse" } },
+      { selector: "node[kind = 'lead']", style: { shape: "ellipse", width: 30, height: 30, "font-size": 11 } },
+      { selector: "node[kind = 'worker'], node[kind = 'part']", style: { shape: "ellipse" } },
       { selector: "node[kind = 'subagent'], node[kind = 'helper']", style: { "font-size": 8 } },
       { selector: "node[kind = 'job']", style: { shape: "round-rectangle", width: 16, height: 12 } },
       { selector: "node[kind = 'pr']", style: { shape: "tag", width: 16, height: 14 } },
@@ -123,22 +122,6 @@
       { selector: "node[kind = 'review-node']", style: { shape: "diamond", width: 10, height: 10, "font-size": 8 } },
       { selector: "node[kind = 'ask']", style: { shape: "round-triangle", width: 20, height: 20 } },
       { selector: "node[kind = 'external']", style: { shape: "round-octagon", "background-color": c.grey } },
-      {
-        selector: "node[kind = 'task']",
-        style: {
-          shape: "round-rectangle",
-          "background-color": c.box,
-          "background-opacity": 1,
-          "border-width": 2,
-          "border-color": (node) => c[node.data("tone")] || c.boxLine,
-          "text-valign": "top",
-          "text-halign": "center",
-          "text-margin-y": -4,
-          "font-size": 11,
-          "font-weight": "bold",
-          padding: 12,
-        },
-      },
       {
         selector: "edge",
         style: {
@@ -161,7 +144,7 @@
       { selector: "edge[kind = 'report']", style: { "line-color": c.green, "target-arrow-color": c.green } },
       { selector: "edge[kind = 'asked']", style: { "line-color": c.red, "target-arrow-color": c.red } },
       { selector: "edge[kind = 'depends-on']", style: { "line-style": "dashed" } },
-      { selector: "edge[kind = 'part-of']", style: { display: "none" } },
+      { selector: "edge[kind = 'part-of']", style: { "line-style": "dotted" } },
       { selector: ".hidden", style: { display: "none" } },
       { selector: ".faded", style: { opacity: 0.12 } },
       { selector: "node:selected", style: { "border-width": 3, "border-color": c.violet } },
@@ -217,25 +200,37 @@
     return url;
   }
 
-  function projectsOf(nodes) {
-    const parents = new Map(nodes.map((node) => [node.id, node.parent]));
+  const TASK_KINDS = ["lead", "worker", "part"];
+  const OWNED_EDGES = ["opened", "called", "delivered", "reviews", "ran"];
+
+  function projectsOf(nodes, edges) {
     const projects = new Map();
     for (const node of nodes) {
-      if (node.kind === "task" && node.details && node.details.project) {
+      if (TASK_KINDS.includes(node.kind) && node.details && node.details.project) {
         projects.set(node.id, node.details.project);
       }
     }
-    const find = (id) => {
-      let at = id;
-      for (let hops = 0; at && hops < 6; hops += 1) {
-        if (projects.has(at)) {
-          return projects.get(at);
+    for (let pass = 0; pass < 6; pass += 1) {
+      let grew = false;
+      for (const edge of edges) {
+        if (!OWNED_EDGES.includes(edge.kind)) {
+          continue;
         }
-        at = parents.get(at);
+        const from = projects.get(edge.source);
+        const to = projects.get(edge.target);
+        if (from && !to) {
+          projects.set(edge.target, from);
+          grew = true;
+        } else if (to && !from) {
+          projects.set(edge.source, to);
+          grew = true;
+        }
       }
-      return "";
-    };
-    return new Map(nodes.map((node) => [node.id, find(node.id)]));
+      if (!grew) {
+        break;
+      }
+    }
+    return new Map(nodes.map((node) => [node.id, projects.get(node.id) || ""]));
   }
 
   function shortCount(tokens) {
@@ -254,13 +249,13 @@
   function shownLabel(node) {
     const badges = node.badges || {};
     let label = node.label;
-    if (node.kind === "task" && node.state) {
+    if (TASK_KINDS.includes(node.kind) && node.state) {
       label += " · " + node.state;
     }
     if (node.kind === "user" && badges.asks) {
       label += " · " + badges.asks + " ask" + (badges.asks > 1 ? "s" : "") + " waiting";
     }
-    if (node.kind === "task" && badges.findings) {
+    if (TASK_KINDS.includes(node.kind) && badges.findings) {
       label += " · ⚠ " + badges.findings;
     }
     if ((node.kind === "review" || node.kind === "review-node") && badges.findings) {
@@ -283,7 +278,7 @@
   }
 
   function apply(graph) {
-    const projects = projectsOf(graph.nodes);
+    const projects = projectsOf(graph.nodes, graph.edges);
     const known = new Set(graph.nodes.map((node) => node.id));
     const before = new Map(cy.edges().map((edge) => [edge.id(), edge.data("raw") ? edge.data("raw").at : null]));
     let changed = false;
@@ -309,13 +304,10 @@
           raw: node,
         };
         const existing = cy.getElementById(node.id);
-        if (existing.nonempty() && existing.data("parentId") === (node.parent || "")) {
+        if (existing.nonempty()) {
           existing.data(data);
         } else {
-          if (existing.nonempty()) {
-            existing.remove();
-          }
-          cy.add({ group: "nodes", data: Object.assign({ parent: node.parent || undefined, parentId: node.parent || "" }, data) });
+          cy.add({ group: "nodes", data });
           changed = true;
         }
       }
@@ -580,8 +572,9 @@
   function showDetails(details) {
     const node = details.node;
     panelTitle.textContent = node.label;
-    replayTaskButton.hidden = node.kind !== "task";
-    replayTaskButton.dataset.name = node.kind === "task" ? node.label : "";
+    const isTask = TASK_KINDS.includes(node.kind);
+    replayTaskButton.hidden = !isTask;
+    replayTaskButton.dataset.name = isTask ? node.label : "";
     replayTaskButton.dataset.start = node.start || "";
     panelBody.replaceChildren();
     pairs(panelBody, [
@@ -813,7 +806,7 @@
   const NODE_ROWS = [
     ["star", "you (the user)", "violet"],
     ["hexagon", "the orchestrator", "blue"],
-    ["ellipse", "a lead, worker or part session", "green"],
+    ["ellipse", "a task: a lead (larger), worker or part, with its sessions", "green"],
     ["ellipse", "a subagent or helper (smaller)", "green"],
     ["round-rectangle", "a job", "green"],
     ["tag", "a pull request", "green"],
@@ -830,6 +823,7 @@
   ];
   const EDGE_ROWS = [
     ["", "#line", "spawned, called, opened, reviews"],
+    ["dotted", "#line", "a part hangs off its lead"],
     ["", "#blue", "message between sessions (count on the line)"],
     ["", "#green", "report to the orchestrator"],
     ["", "#red", "ask to the user"],
@@ -871,13 +865,6 @@
     for (const [tone, text] of TONE_ROWS) {
       row(box, (svg) => legendShape(svg, "ellipse", c[tone]), text);
     }
-    row(
-      box,
-      (svg) => {
-        legendShape(svg, "round-rectangle", c.box, c.green, 2);
-      },
-      "a task box, outlined in its state colour; its sessions sit inside",
-    );
     add(box, "h3", "edges");
     for (const [style, colour, text] of EDGE_ROWS) {
       row(
@@ -891,7 +878,7 @@
           line.setAttribute("stroke", c[colour.slice(1)]);
           line.setAttribute("stroke-width", "2");
           if (style) {
-            line.setAttribute("stroke-dasharray", "4 3");
+            line.setAttribute("stroke-dasharray", style === "dotted" ? "1 3" : "4 3");
           }
           svg.appendChild(line);
           const head = document.createElementNS(SVG, "path");

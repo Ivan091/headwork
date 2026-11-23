@@ -348,11 +348,7 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         None => (Vec::new(), None),
     };
     let whose = match node.shape {
-        Shape::Task(_) => task.map(SpendOf::Task),
-        Shape::Lead(_) | Shape::Worker(_) | Shape::Part(_) => node
-            .details
-            .get("session")
-            .map(|session| SpendOf::Session(session.as_str())),
+        Shape::Lead(_) | Shape::Worker(_) | Shape::Part(_) => task.map(SpendOf::Task),
         Shape::Subagent(_) => id.strip_prefix("agent:").map(SpendOf::Agent),
         Shape::User
         | Shape::Orchestrator(_)
