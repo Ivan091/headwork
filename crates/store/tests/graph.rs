@@ -658,3 +658,37 @@ fn a_read_only_open_refuses_an_older_schema() {
         "older schema"
     );
 }
+
+#[test]
+fn the_log_gives_its_span_and_the_events_after_an_id() {
+    let (mut store, config) = store();
+    let before = store.event_range().unwrap();
+    let (lead, _) = populate(&mut store, &config);
+    let range = store.event_range().unwrap();
+    assert!(
+        range.last_id > before.last_id && range.first_at.is_some(),
+        "{range:?}"
+    );
+    assert_eq!(
+        store.last_event_id().unwrap(),
+        range.last_id,
+        "the newest id"
+    );
+    let after = store.events_after(before.last_id, 3).unwrap();
+    assert_eq!(after.len(), 3, "the limit");
+    assert!(
+        after.windows(2).all(|pair| pair[0].id < pair[1].id),
+        "oldest first"
+    );
+    assert!(
+        store.events_after(range.last_id, 10).unwrap().is_empty(),
+        "nothing after the newest"
+    );
+    let named = store.events_after(0, 1000).unwrap();
+    assert!(
+        named
+            .iter()
+            .any(|mark| mark.task.as_deref() == Some(&lead.name.to_string())),
+        "named by task"
+    );
+}

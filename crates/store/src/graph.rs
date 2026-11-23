@@ -10,6 +10,7 @@ use headwork_core::graph::{
 use headwork_core::review::Level;
 use headwork_core::{Actor, UnknownWord};
 use rusqlite::{Connection, Row, params};
+use serde::Serialize;
 
 use crate::hooks::{EVENT_ASK_SUPERSEDED, EVENT_PROMPT, EVENT_TOOL};
 use crate::park::{EVENT_JOB_FORGOTTEN, EVENT_JOB_STARTED, EVENT_JOB_STATE};
@@ -19,7 +20,87 @@ use crate::tick::EVENT_PR_STATE;
 use crate::usage::EVENT_HELPER_SESSION;
 use crate::{Store, StoreError};
 
+/// One logged event as the dashboard's live view and replay see it: what happened and to whom, never its data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventMark {
+    /// The row id: the log's order.
+    pub id: i64,
+    /// When.
+    pub at: String,
+    /// The event type.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The task's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+/// The span of the event log, for the replay slider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventRange {
+    /// The first event's time.
+    pub first_at: Option<String>,
+    /// The newest event's time.
+    pub last_at: Option<String>,
+    /// The newest event's id; 0 for an empty log.
+    pub last_id: i64,
+}
+
 impl Store {
+    /// The span of the event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn event_range(&self) -> Result<EventRange, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT (SELECT at FROM events ORDER BY id LIMIT 1), (SELECT at FROM events ORDER BY id DESC LIMIT 1),
+                 COALESCE((SELECT MAX(id) FROM events), 0)",
+            [],
+            |row| Ok(EventRange { first_at: row.get(0)?, last_at: row.get(1)?, last_id: row.get(2)? }),
+        )?)
+    }
+
+    /// The newest event's id; 0 for an empty log.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn last_event_id(&self) -> Result<i64, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    /// The events after `id`, oldest first, at most `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn events_after(&self, id: i64, limit: u32) -> Result<Vec<EventMark>, StoreError> {
+        rows(
+            &self.conn,
+            "SELECT e.id, e.at, e.type, t.project || '-' || t.slug, e.session_id
+             FROM events e LEFT JOIN tasks t ON t.id = e.task_id
+             WHERE e.id > ?1 ORDER BY e.id LIMIT ?2",
+            params![id, limit],
+            |row| {
+                Ok(EventMark {
+                    id: row.get(0)?,
+                    at: row.get(1)?,
+                    kind: row.get(2)?,
+                    task: row.get(3)?,
+                    session: row.get(4)?,
+                })
+            },
+        )
+    }
+
     /// Every fact the graph is drawn from, read in one transaction so they come from one moment (inside a transaction
     /// already open on this connection, in that one). Events holding a word this build does not know are left out and
     /// listed in [`Facts::skipped`]; a table row with one fails the read, naming the row.
