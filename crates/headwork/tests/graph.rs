@@ -7,9 +7,10 @@
 
 use std::path::Path;
 
-use headwork::ops::graph::{GraphQuery, graph, render};
+use headwork::ops::graph::{GraphQuery, Which, graph};
 use headwork::ops::usage::ingest_file;
 use headwork_core::config::ParkPolicy;
+use headwork_core::graph::EdgeKind;
 use headwork_core::{
     Actor, Config, JobState, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape,
 };
@@ -125,12 +126,17 @@ fn a_subagent_transcript_and_its_meta_become_a_node_in_its_callers_box() {
         ),
         "first and last response"
     );
-    let text = render(&graph);
-    assert!(
-        text.contains("  subagent Explore [seen]  agent:x1"),
-        "{text}"
+    assert_eq!(
+        agent.state.map(headwork_core::graph::Status::as_str),
+        Some("seen"),
+        "seen now"
     );
-    assert!(text.contains("session:0a -called-> agent:x1"), "{text}");
+    assert!(
+        graph
+            .edges_of(EdgeKind::Called)
+            .any(|edge| edge.source == "session:0a" && edge.target == "agent:x1"),
+        "called by its session"
+    );
 }
 
 #[test]
@@ -153,13 +159,19 @@ fn graph_replays_a_past_instant_and_refuses_a_task_not_yet_queued() {
         "the instant"
     );
     let one = GraphQuery {
-        task: Some("me-sim-sand".to_owned()),
+        which: Which::Task("me-sim-sand".to_owned()),
         ..before
     };
     let error = graph(&store, &one).unwrap_err().to_string();
-    assert!(error.contains("was not queued yet"), "{error}");
+    assert!(error.contains("was queued by"), "{error}");
+    let future = GraphQuery {
+        at: Some("2999-01-01".to_owned()),
+        ..GraphQuery::default()
+    };
+    let error = graph(&store, &future).unwrap_err().to_string();
+    assert!(error.contains("in the future"), "{error}");
     let all = GraphQuery {
-        all: true,
+        which: Which::All,
         ..GraphQuery::default()
     };
     assert!(
@@ -181,8 +193,7 @@ fn tick(store: &Store) -> String {
 fn state_at(store: &Store, at: &str, id: &str) -> Option<String> {
     let query = GraphQuery {
         at: Some(at.to_owned()),
-        all: true,
-        task: None,
+        which: Which::All,
     };
     let graph = graph(store, &query).unwrap();
     graph.node(id).map(|node| {
@@ -223,7 +234,7 @@ fn a_replay_shows_each_instant_as_the_operations_left_it() {
     let pr_node = graph(
         &store,
         &GraphQuery {
-            all: true,
+            which: Which::All,
             ..GraphQuery::default()
         },
     )

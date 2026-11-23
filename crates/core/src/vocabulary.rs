@@ -68,6 +68,8 @@ macro_rules! text_enum {
     };
 }
 
+pub(crate) use text_enum;
+
 text_enum!(
     /// Where a task is in its lifecycle (design section 2.3).
     TaskState, "task state" {

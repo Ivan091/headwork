@@ -175,6 +175,48 @@ fn read_count(value: i64) -> Result<u64, StoreError> {
     u64::try_from(value).map_err(|_| StoreError::OutOfRange(value))
 }
 
+/// Records the batch's subagent for the agent graph, or refreshes it, in the batch's own transaction: its first and
+/// last times widen to take in the batch's responses (written in the store's own time format, so they compare with
+/// it), and a meta field the batch lacks keeps what was known.
+fn upsert_agent(
+    tx: &Transaction<'_>,
+    agent: &str,
+    batch: &UsageBatch<'_>,
+) -> Result<(), StoreError> {
+    let first = batch.lines.iter().map(|line| line.at.as_str()).min();
+    let last = batch.lines.iter().map(|line| line.at.as_str()).max();
+    let meta = batch.agent_meta;
+    tx.execute(
+        "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, parent_agent_id,
+             finished, first_at, last_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%Y-%m-%dT%H:%M:%fZ', ?9), strftime('%Y-%m-%dT%H:%M:%fZ', ?10))
+         ON CONFLICT (agent_id) DO UPDATE SET
+             agent_type = COALESCE(excluded.agent_type, agents.agent_type),
+             description = COALESCE(excluded.description, agents.description),
+             model = COALESCE(excluded.model, agents.model),
+             spawn_depth = COALESCE(excluded.spawn_depth, agents.spawn_depth),
+             parent_agent_id = COALESCE(excluded.parent_agent_id, agents.parent_agent_id),
+             finished = COALESCE(excluded.finished, agents.finished),
+             first_at = CASE WHEN agents.first_at IS NULL OR excluded.first_at < agents.first_at
+                 THEN COALESCE(excluded.first_at, agents.first_at) ELSE agents.first_at END,
+             last_at = CASE WHEN agents.last_at IS NULL OR excluded.last_at > agents.last_at
+                 THEN COALESCE(excluded.last_at, agents.last_at) ELSE agents.last_at END",
+        params![
+            agent,
+            batch.session_id,
+            meta.and_then(|meta| meta.agent_type.as_deref()),
+            meta.and_then(|meta| meta.description.as_deref()),
+            meta.and_then(|meta| meta.model.as_deref()),
+            meta.and_then(|meta| meta.spawn_depth),
+            meta.and_then(|meta| meta.parent_agent_id.as_deref()),
+            meta.and_then(|meta| meta.finished),
+            first,
+            last,
+        ],
+    )?;
+    Ok(())
+}
+
 fn insert_line(
     tx: &Transaction<'_>,
     batch: &UsageBatch<'_>,
@@ -440,7 +482,7 @@ impl Store {
             inserted += insert_line(&tx, batch, line)?;
         }
         if let Some(agent) = batch.agent_id.filter(|agent| is_agent_id(agent)) {
-            crate::graph::upsert_agent(&tx, agent, batch)?;
+            upsert_agent(&tx, agent, batch)?;
         }
         tx.execute(
             &format!(

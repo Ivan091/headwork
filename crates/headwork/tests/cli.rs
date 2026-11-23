@@ -90,6 +90,18 @@ fn graph_json_draws_the_user_and_the_orchestrator_on_an_empty_store() {
         text.starts_with("at ") && text.contains("user you"),
         "{text}"
     );
+    let both = headwork(home.path(), &["graph", "--all", "--task", "me-sim-nope"]);
+    assert!(
+        !both.status.success() && stderr(&both).contains("cannot be used with"),
+        "--all and --task exclude"
+    );
+    let all = headwork(home.path(), &["graph", "--all", "--json"]);
+    assert!(all.status.success(), "{}", stderr(&all));
+    let bad = headwork(home.path(), &["graph", "--at", "yesterday"]);
+    assert!(
+        !bad.status.success() && stderr(&bad).contains("cannot read"),
+        "a bad time"
+    );
     let unknown = headwork(home.path(), &["graph", "--task", "me-sim-nope"]);
     assert!(
         !unknown.status.success() && stderr(&unknown).contains("no task named"),

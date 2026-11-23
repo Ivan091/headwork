@@ -1,80 +1,54 @@
-//! What the agent graph is drawn from (`docs/dashboard.md`): the subagents table the usage reader fills, and one read
-//! of every row and event the graph needs, handed to [`headwork_core::graph::build`].
+//! What the agent graph is drawn from (`docs/dashboard.md`): one read of every row and event the graph needs, handed to
+//! [`headwork_core::graph::build`]. The event types it reads are the constants their writers use.
 
 use std::str::FromStr;
 
 use headwork_core::graph::{
-    AgentFact, AskFact, Change, Facts, HelperFact, JobFact, MessageFact, PrFact, ReportFact,
-    ReviewFact, ReviewNodeFact, SessionFact, TaskFact, TransitionFact,
+    AgentFact, AskFact, Change, Facts, HelperFact, JobFact, MessageFact, PrFact, ReceivedFact,
+    ReportFact, ReviewFact, ReviewNodeFact, SessionFact, TaskFact,
 };
 use headwork_core::review::Level;
 use headwork_core::{Actor, UnknownWord};
-use rusqlite::{Connection, Row, Transaction, params};
+use rusqlite::{Connection, Row, params};
 
-use crate::hooks::EVENT_TOOL;
+use crate::hooks::{EVENT_ASK_SUPERSEDED, EVENT_PROMPT, EVENT_TOOL};
+use crate::park::{EVENT_JOB_FORGOTTEN, EVENT_JOB_STARTED, EVENT_JOB_STATE};
+use crate::queries::{EVENT_TASK_CREATED, EVENT_TRANSITION};
 use crate::reports::EVENT_REPORT;
-use crate::usage::{EVENT_HELPER_SESSION, UsageBatch};
+use crate::tick::EVENT_PR_STATE;
+use crate::usage::EVENT_HELPER_SESSION;
 use crate::{Store, StoreError};
 
-/// The event that records an ask superseded without an answer; its time is when the ask closed.
-const EVENT_ASK_SUPERSEDED: &str = "ask-superseded";
-
-/// Records the batch's subagent, or refreshes it, in the batch's own transaction: its first and last times widen to
-/// take in the batch's responses, and a meta field the batch lacks keeps what was known.
-pub(crate) fn upsert_agent(
-    tx: &Transaction<'_>,
-    agent: &str,
-    batch: &UsageBatch<'_>,
-) -> Result<(), StoreError> {
-    let first = batch.lines.iter().map(|line| line.at.as_str()).min();
-    let last = batch.lines.iter().map(|line| line.at.as_str()).max();
-    let meta = batch.agent_meta;
-    tx.execute(
-        "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, parent_agent_id,
-             first_at, last_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8)
-         ON CONFLICT (agent_id) DO UPDATE SET
-             agent_type = COALESCE(excluded.agent_type, agents.agent_type),
-             description = COALESCE(excluded.description, agents.description),
-             model = COALESCE(excluded.model, agents.model),
-             spawn_depth = COALESCE(excluded.spawn_depth, agents.spawn_depth),
-             parent_agent_id = COALESCE(excluded.parent_agent_id, agents.parent_agent_id),
-             first_at = CASE WHEN agents.first_at IS NULL OR excluded.first_at < agents.first_at
-                 THEN COALESCE(excluded.first_at, agents.first_at) ELSE agents.first_at END,
-             last_at = CASE WHEN agents.last_at IS NULL OR excluded.last_at > agents.last_at
-                 THEN COALESCE(excluded.last_at, agents.last_at) ELSE agents.last_at END",
-        params![
-            agent,
-            batch.session_id,
-            meta.and_then(|meta| meta.agent_type.as_deref()),
-            meta.and_then(|meta| meta.description.as_deref()),
-            meta.and_then(|meta| meta.model.as_deref()),
-            meta.and_then(|meta| meta.spawn_depth),
-            first,
-            last,
-            meta.and_then(|meta| meta.parent_agent_id.as_deref()),
-        ],
-    )?;
-    Ok(())
-}
-
 impl Store {
-    /// Every fact the graph is drawn from, read in one transaction so they come from one moment.
+    /// Every fact the graph is drawn from, read in one transaction so they come from one moment (inside a transaction
+    /// already open on this connection, in that one). Events holding a word this build does not know are left out and
+    /// listed in [`Facts::skipped`]; a table row with one fails the read, naming the row.
     ///
     /// # Errors
     ///
-    /// Returns a read error, or a stored word this build does not know, naming the row it came from.
+    /// Returns a read error, or [`StoreError::BadRow`].
     pub fn graph_facts(&self) -> Result<Facts, StoreError> {
         let conn = &self.conn;
+        if !conn.is_autocommit() {
+            return read_facts(conn);
+        }
         conn.execute_batch("BEGIN DEFERRED")?;
         let facts = read_facts(conn);
-        let end = if facts.is_ok() { "COMMIT" } else { "ROLLBACK" };
-        conn.execute_batch(end)?;
-        facts
+        let end = conn.execute_batch(if facts.is_ok() { "COMMIT" } else { "ROLLBACK" });
+        match (facts, end) {
+            (Ok(facts), Ok(())) => Ok(facts),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Err(error), _) => Err(error),
+        }
     }
 }
 
 fn read_facts(conn: &Connection) -> Result<Facts, StoreError> {
+    let mut skipped = Vec::new();
+    let transitions = changes(conn, &transitions_sql(), "task", &mut skipped)?;
+    let pr_changes = changes(conn, &pr_changes_sql(), "pull request", &mut skipped)?;
+    let job_changes = changes(conn, &job_changes_sql(), "job", &mut skipped)?;
+    let review_changes = changes(conn, REVIEW_CHANGES, "review", &mut skipped)?;
     Ok(Facts {
         tasks: tasks(conn)?,
         sessions: sessions(conn)?,
@@ -86,11 +60,13 @@ fn read_facts(conn: &Connection) -> Result<Facts, StoreError> {
         reviews: reviews(conn)?,
         review_nodes: review_nodes(conn)?,
         messages: rows(conn, MESSAGES, params![EVENT_TOOL], message)?,
+        received: rows(conn, RECEIVED, params![EVENT_PROMPT], received)?,
         reports: rows(conn, REPORTS, params![EVENT_REPORT], report)?,
-        transitions: transitions(conn)?,
-        pr_changes: changes(conn, PR_CHANGES, "pull request")?,
-        job_changes: changes(conn, JOB_CHANGES, "job")?,
-        review_changes: changes(conn, REVIEW_CHANGES, "review")?,
+        transitions,
+        pr_changes,
+        job_changes,
+        review_changes,
+        skipped,
     })
 }
 
@@ -150,16 +126,14 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
 }
 
 fn tasks(conn: &Connection) -> Result<Vec<TaskFact>, StoreError> {
-    let raw = rows(
-        conn,
+    let sql = format!(
         "SELECT t.id, t.project, t.slug, t.kind, t.state, t.model, t.effort, t.parent_id, t.depends_on, t.lead,
-             (SELECT e.actor FROM events e WHERE e.task_id = t.id AND e.type = 'task-created' ORDER BY e.id LIMIT 1),
+             (SELECT e.actor FROM events e WHERE e.task_id = t.id AND e.type = '{EVENT_TASK_CREATED}' ORDER BY e.id LIMIT 1),
              t.queued_at, t.last_report
-         FROM tasks t ORDER BY t.id",
-        [],
-        raw_task,
-    )?;
-    raw.into_iter()
+         FROM tasks t ORDER BY t.id"
+    );
+    rows(conn, &sql, [], raw_task)?
+        .into_iter()
         .map(|task| {
             let id = task.id;
             let at = || format!("task {id}");
@@ -196,19 +170,15 @@ fn sessions(conn: &Connection) -> Result<Vec<SessionFact>, StoreError> {
     );
     let raw: Vec<Raw> = rows(
         conn,
-        "SELECT id, task_id, role, rc_name, state, started_at, ended_at FROM sessions ORDER BY started_at, id",
+        "SELECT s.id, s.task_id, s.role, s.rc_name, s.state,
+             CASE WHEN f.first_at IS NOT NULL AND f.first_at < s.started_at THEN f.first_at ELSE s.started_at END,
+             s.ended_at
+         FROM sessions s
+         LEFT JOIN (SELECT session_id, MIN(at) AS first_at FROM events WHERE session_id IS NOT NULL GROUP BY session_id) f
+             ON f.session_id = s.id
+         ORDER BY s.started_at, s.id",
         [],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
-        },
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
     )?;
     raw.into_iter()
         .map(|(id, task, role, rc_name, state, started_at, ended_at)| {
@@ -227,32 +197,85 @@ fn sessions(conn: &Connection) -> Result<Vec<SessionFact>, StoreError> {
         .collect()
 }
 
-fn transitions(conn: &Connection) -> Result<Vec<TransitionFact>, StoreError> {
-    let raw: Vec<(i64, i64, String, String, String)> = rows(
-        conn,
-        "SELECT id, task_id, json_extract(data, '$.from'), json_extract(data, '$.to'), at FROM events
-         WHERE type = 'transition' AND task_id IS NOT NULL AND json_valid(data)
-             AND json_extract(data, '$.from') IS NOT NULL AND json_extract(data, '$.to') IS NOT NULL
-         ORDER BY id",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    )?;
-    raw.into_iter()
-        .map(|(event, task, from, to, at)| {
-            let row = || format!("event {event}");
-            Ok(TransitionFact {
-                task,
-                from: word(&from, row)?,
-                to: word(&to, row)?,
-                at,
-            })
-        })
-        .collect()
+/// The logged state changes a query returns as `(key, from, to, at, event id)`. An event with a word this build does
+/// not know is left out and named in `skipped`.
+fn changes<S: FromStr<Err = UnknownWord>>(
+    conn: &Connection,
+    sql: &str,
+    what: &str,
+    skipped: &mut Vec<String>,
+) -> Result<Vec<Change<S>>, StoreError> {
+    type Raw = (i64, Option<String>, String, String, i64);
+    let raw: Vec<Raw> = rows(conn, sql, [], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    let mut found = Vec::with_capacity(raw.len());
+    for (key, from, to, at, event) in raw {
+        let parsed = from
+            .map(|from| from.parse::<S>())
+            .transpose()
+            .and_then(|from| to.parse::<S>().map(|to| Change { key, from, to, at }));
+        match parsed {
+            Ok(change) => found.push(change),
+            Err(error) => skipped.push(format!("event {event} ({what} {key}): {error}")),
+        }
+    }
+    Ok(found)
 }
+
+fn transitions_sql() -> String {
+    format!(
+        "SELECT task_id, json_extract(data, '$.from'), json_extract(data, '$.to'), at, id FROM events
+         WHERE type = '{EVENT_TRANSITION}' AND task_id IS NOT NULL AND json_valid(data)
+             AND json_type(data, '$.from') = 'text' AND json_type(data, '$.to') = 'text'
+         ORDER BY id"
+    )
+}
+
+fn pr_changes_sql() -> String {
+    format!(
+        "SELECT p.id, json_extract(e.data, '$.from'), json_extract(e.data, '$.to'), e.at, e.id
+         FROM events e JOIN prs p ON p.task_id = e.task_id AND p.url = json_extract(e.data, '$.url')
+         WHERE e.type = '{EVENT_PR_STATE}' AND json_valid(e.data) AND json_type(e.data, '$.to') = 'text'
+             AND json_type(e.data, '$.from') IN ('text', 'null')
+         ORDER BY e.id"
+    )
+}
+
+/// `job-state` events name the new state; `job-started` (started again after a park) means `running` and
+/// `job-forgotten` (marked over) means `done`.
+fn job_changes_sql() -> String {
+    format!(
+        "SELECT json_extract(data, '$.job'), NULL,
+             CASE type WHEN '{EVENT_JOB_STARTED}' THEN 'running' WHEN '{EVENT_JOB_FORGOTTEN}' THEN 'done'
+                 ELSE json_extract(data, '$.state') END,
+             at, id
+         FROM events
+         WHERE type IN ('{EVENT_JOB_STATE}', '{EVENT_JOB_STARTED}', '{EVENT_JOB_FORGOTTEN}') AND json_valid(data)
+             AND json_type(data, '$.job') = 'integer'
+             AND (type <> '{EVENT_JOB_STATE}' OR json_type(data, '$.state') = 'text')
+         ORDER BY id"
+    )
+}
+
+/// `review-<trigger>` events: every review event with a review id and both states. The type range (`review-` up to
+/// `review.`, the next character) is the `LIKE 'review-%'` that the `events_type` index can serve.
+const REVIEW_CHANGES: &str = "SELECT json_extract(data, '$.review'), json_extract(data, '$.from'),
+         json_extract(data, '$.to'), at, id
+     FROM events
+     WHERE type >= 'review-' AND type < 'review.' AND json_valid(data) AND json_type(data, '$.review') = 'integer'
+         AND json_type(data, '$.from') = 'text' AND json_type(data, '$.to') = 'text'
+     ORDER BY id";
 
 const AGENTS: &str =
     "SELECT agent_id, session_id, agent_type, description, model, spawn_depth, first_at, last_at,
-         parent_agent_id
+         parent_agent_id, finished
      FROM agents ORDER BY first_at, agent_id";
 
 fn agent(row: &Row<'_>) -> rusqlite::Result<AgentFact> {
@@ -266,6 +289,7 @@ fn agent(row: &Row<'_>) -> rusqlite::Result<AgentFact> {
         first_at: row.get(6)?,
         last_at: row.get(7)?,
         parent: row.get(8)?,
+        finished: row.get(9)?,
     })
 }
 
@@ -308,23 +332,19 @@ fn jobs(conn: &Connection) -> Result<Vec<JobFact>, StoreError> {
     )?;
     raw.into_iter()
         .map(|(id, task, session, label, state, started_at, ended_at)| {
+            let state = word(&state, || format!("job {id}"))?;
             Ok(JobFact {
                 id,
                 task,
                 session,
                 label,
-                state: word(&state, || format!("job {id}"))?,
+                state,
                 started_at,
                 ended_at,
             })
         })
         .collect()
 }
-
-const PRS: &str = "SELECT p.id, p.task_id, p.number, p.url, p.state,
-         COALESCE((SELECT MIN(e.at) FROM events e
-             WHERE e.task_id = p.task_id AND instr(e.data, '\"' || p.url || '\"') > 0), t.queued_at)
-     FROM prs p JOIN tasks t ON t.id = p.task_id ORDER BY p.id";
 
 struct RawPr {
     id: i64,
@@ -346,6 +366,11 @@ fn raw_pr(row: &Row<'_>) -> rusqlite::Result<RawPr> {
     })
 }
 
+const PRS: &str = "SELECT p.id, p.task_id, p.number, p.url, p.state,
+         COALESCE((SELECT MIN(e.at) FROM events e
+             WHERE e.task_id = p.task_id AND instr(e.data, '\"' || p.url || '\"') > 0), t.queued_at)
+     FROM prs p JOIN tasks t ON t.id = p.task_id ORDER BY p.id";
+
 fn prs(conn: &Connection) -> Result<Vec<PrFact>, StoreError> {
     rows(conn, PRS, [], raw_pr)?
         .into_iter()
@@ -358,58 +383,6 @@ fn prs(conn: &Connection) -> Result<Vec<PrFact>, StoreError> {
                 url: pr.url,
                 state: word(&pr.state, || format!("pull request {id}"))?,
                 first_at: pr.first_at,
-            })
-        })
-        .collect()
-}
-
-/// `pr-state` events, keyed by the pull request of their task and URL.
-const PR_CHANGES: &str = "SELECT p.id, json_extract(e.data, '$.from'), json_extract(e.data, '$.to'), e.at, e.id
-     FROM events e JOIN prs p ON p.task_id = e.task_id AND p.url = json_extract(e.data, '$.url')
-     WHERE e.type = 'pr-state' AND json_valid(e.data) AND json_extract(e.data, '$.to') IS NOT NULL ORDER BY e.id";
-
-/// `job-state` events, which name the new state only, and `job-started` events (a job started again after a park),
-/// a change to `running`.
-const JOB_CHANGES: &str = "SELECT json_extract(data, '$.job'), NULL,
-         CASE type WHEN 'job-started' THEN 'running' ELSE json_extract(data, '$.state') END, at, id
-     FROM events
-     WHERE type IN ('job-state', 'job-started') AND json_valid(data) AND json_extract(data, '$.job') IS NOT NULL
-         AND (type = 'job-started' OR json_extract(data, '$.state') IS NOT NULL)
-     ORDER BY id";
-
-/// `review-<trigger>` events: every review event with a review id and both states. The type range (`review-` up to
-/// `review.`, the next character) is the `LIKE 'review-%'` that the `events_type` index can serve.
-const REVIEW_CHANGES: &str = "SELECT json_extract(data, '$.review'), json_extract(data, '$.from'), json_extract(data, '$.to'),
-         at, id
-     FROM events
-     WHERE type >= 'review-' AND type < 'review.' AND json_valid(data) AND json_extract(data, '$.review') IS NOT NULL
-         AND json_extract(data, '$.from') IS NOT NULL AND json_extract(data, '$.to') IS NOT NULL
-     ORDER BY id";
-
-/// The logged state changes a query returns as `(key, from, to, at, event id)`.
-fn changes<S: FromStr<Err = UnknownWord>>(
-    conn: &Connection,
-    sql: &str,
-    what: &str,
-) -> Result<Vec<Change<S>>, StoreError> {
-    type Raw = (i64, Option<String>, String, String, i64);
-    let raw: Vec<Raw> = rows(conn, sql, [], |row| {
-        Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-        ))
-    })?;
-    raw.into_iter()
-        .map(|(key, from, to, at, event)| {
-            let row = || format!("event {event} ({what} {key})");
-            Ok(Change {
-                key,
-                from: from.map(|from| word(&from, row)).transpose()?,
-                to: word(&to, row)?,
-                at,
             })
         })
         .collect()
@@ -565,7 +538,8 @@ fn review_nodes(conn: &Connection) -> Result<Vec<ReviewNodeFact>, StoreError> {
 
 const MESSAGES: &str = "SELECT session_id, json_extract(data, '$.to'), json_extract(data, '$.summary'), at FROM events
      WHERE type = ?1 AND session_id IS NOT NULL AND json_valid(data)
-         AND json_extract(data, '$.tool') = 'SendMessage' AND COALESCE(json_extract(data, '$.to'), '') <> ''
+         AND json_extract(data, '$.tool') = 'SendMessage' AND json_type(data, '$.to') = 'text'
+         AND json_extract(data, '$.to') <> '' AND COALESCE(json_type(data, '$.summary'), 'null') IN ('text', 'null')
      ORDER BY id";
 
 fn message(row: &Row<'_>) -> rusqlite::Result<MessageFact> {
@@ -577,9 +551,25 @@ fn message(row: &Row<'_>) -> rusqlite::Result<MessageFact> {
     })
 }
 
+const RECEIVED: &str = "SELECT session_id, json_extract(data, '$.from'), at FROM events
+     WHERE type = ?1 AND session_id IS NOT NULL AND json_valid(data)
+         AND json_type(data, '$.cross_session') = 'true' AND json_type(data, '$.from') = 'text'
+         AND json_extract(data, '$.from') <> ''
+     ORDER BY id";
+
+fn received(row: &Row<'_>) -> rusqlite::Result<ReceivedFact> {
+    Ok(ReceivedFact {
+        session: row.get(0)?,
+        from: row.get(1)?,
+        at: row.get(2)?,
+    })
+}
+
 const REPORTS: &str =
     "SELECT session_id, COALESCE(json_extract(data, '$.status'), ''), at FROM events
-     WHERE type = ?1 AND session_id IS NOT NULL AND json_valid(data) ORDER BY id";
+     WHERE type = ?1 AND session_id IS NOT NULL AND json_valid(data)
+         AND COALESCE(json_type(data, '$.status'), 'null') IN ('text', 'null')
+     ORDER BY id";
 
 fn report(row: &Row<'_>) -> rusqlite::Result<ReportFact> {
     Ok(ReportFact {
@@ -641,5 +631,13 @@ mod tests {
             facts.prs[0].first_at, facts.tasks[0].queued_at,
             "the task's start"
         );
+    }
+
+    #[test]
+    fn inside_an_open_transaction_the_facts_read_in_it() {
+        let store = Store::open_in_memory().unwrap();
+        store.conn.execute_batch("BEGIN").unwrap();
+        assert!(store.graph_facts().is_ok(), "no nested BEGIN");
+        store.conn.execute_batch("COMMIT").unwrap();
     }
 }

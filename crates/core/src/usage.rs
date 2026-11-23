@@ -11,6 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::names::kept_text;
 use crate::vocabulary::{Role, UsageRole};
 
 /// The model Claude Code names on lines it wrote itself (an interrupted turn, an error), which spent nothing.
@@ -218,10 +219,18 @@ pub struct AgentMeta {
     pub spawn_depth: Option<i64>,
     /// The subagent that started a nested one (`parentAgentId`).
     pub parent_agent_id: Option<String>,
+    /// Whether it finished (`finished`), when the file says.
+    pub finished: Option<bool>,
 }
 
-/// The longest subagent id the agent graph records.
+/// The longest subagent id the agent graph records. Migration 0020 seeds `agents` with the same rule written in SQL
+/// (`length(agent_id) BETWEEN 1 AND 64`, plain characters only); a change here leaves the seeded rows as they are.
 const AGENT_ID_MAX: usize = 64;
+
+/// The longest subagent description kept, in characters.
+const DESCRIPTION_CHARS: usize = 200;
+/// The longest subagent type or model name kept, in characters.
+const NAME_CHARS: usize = 64;
 
 /// Whether a transcript's agent id is one Claude Code writes (letters, digits, `-` and `_`, at most 64), so it can
 /// stand as a row key and a graph node id.
@@ -238,12 +247,15 @@ pub fn is_agent_id(id: &str) -> bool {
 #[must_use]
 pub fn agent_meta(meta: &str) -> Option<AgentMeta> {
     let value: Value = serde_json::from_str(meta).ok()?;
+    let kept =
+        |key: &str, limit: usize| text(&value, &[key]).and_then(|text| kept_text(&text, limit));
     value.is_object().then(|| AgentMeta {
-        agent_type: text(&value, &["agentType"]),
-        description: text(&value, &["description"]),
-        model: text(&value, &["model"]),
+        agent_type: kept("agentType", NAME_CHARS),
+        description: kept("description", DESCRIPTION_CHARS),
+        model: kept("model", NAME_CHARS),
         spawn_depth: value.get("spawnDepth").and_then(Value::as_i64),
         parent_agent_id: text(&value, &["parentAgentId"]).filter(|id| is_agent_id(id)),
+        finished: value.get("finished").and_then(Value::as_bool),
     })
 }
 
@@ -672,9 +684,10 @@ mod tests {
 
     #[test]
     fn agent_meta_reads_type_label_model_and_depth() {
-        let meta = agent_meta(
-            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","spawnDepth":2,"parentAgentId":"a0b2"}"#,
-        );
+        let meta = agent_meta(concat!(
+            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","#,
+            r#""spawnDepth":2,"parentAgentId":"a0b2","finished":true}"#
+        ));
         assert_eq!(
             meta,
             Some(AgentMeta {
@@ -683,6 +696,7 @@ mod tests {
                 model: Some("opus".to_owned()),
                 spawn_depth: Some(2),
                 parent_agent_id: Some("a0b2".to_owned()),
+                finished: Some(true),
             }),
             "every field"
         );
@@ -692,6 +706,21 @@ mod tests {
             "an empty object"
         );
         assert_eq!(agent_meta("[1]"), None, "not an object");
+        let odd = agent_meta(&format!(
+            r#"{{"description":" a\u202eb {} ","agentType":"\u0007x"}}"#,
+            "c".repeat(300)
+        ))
+        .unwrap_or_default();
+        assert_eq!(
+            odd.description.map(|text| text.chars().count()),
+            Some(DESCRIPTION_CHARS),
+            "cut"
+        );
+        assert_eq!(
+            odd.agent_type.as_deref(),
+            Some("x"),
+            "control characters dropped"
+        );
         assert_eq!(agent_meta("nope"), None, "not json");
     }
 

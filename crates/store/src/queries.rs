@@ -14,6 +14,11 @@ use crate::records::{
 use crate::waiting::DIALOG_ASK_KINDS;
 use crate::{NOW, Store, StoreError};
 
+/// The event of a task's state change, with `from` and `to`.
+pub(crate) const EVENT_TRANSITION: &str = "transition";
+/// The event of a new task; its actor is who created it.
+pub(crate) const EVENT_TASK_CREATED: &str = "task-created";
+
 /// The answer to a Fable approval ask that lets the task start.
 pub const FABLE_ALLOW: &str = "Allow Fable";
 
@@ -192,7 +197,7 @@ fn apply_in(
             )?;
             let data =
                 serde_json::json!({ "trigger": trigger.name(), "from": step.from, "to": step.to });
-            insert_event(tx, actor, Some(id), None, "transition", &data)?;
+            insert_event(tx, actor, Some(id), None, EVENT_TRANSITION, &data)?;
             Ok(Ok(step))
         }
         Err(refusal) => Ok(Err((task, refusal))),
@@ -478,7 +483,7 @@ impl Store {
             "name": name.to_string(), "kind": request.kind, "model": admitted.model, "effort": admitted.effort, "in_main": request.in_main,
             "keep": request.keep, "shape": new.shape,
         });
-        insert_event(&tx, actor, Some(id), None, "task-created", &data)?;
+        insert_event(&tx, actor, Some(id), None, EVENT_TASK_CREATED, &data)?;
         tx.commit()?;
         load_task(&self.conn, id)
     }

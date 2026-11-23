@@ -6,6 +6,7 @@ CREATE TABLE agents (
     model TEXT,
     spawn_depth INTEGER,
     parent_agent_id TEXT,
+    finished INTEGER,
     first_at TEXT,
     last_at TEXT
 );

@@ -13,6 +13,8 @@ use crate::{NOW, Store, StoreError};
 pub const EVENT_PROMPT: &str = "prompt";
 /// The event a `PostToolUse` hook records for a tool the checks count.
 pub const EVENT_TOOL: &str = "tool-used";
+/// The event of an ask superseded without an answer; its time is when the ask closed.
+pub(crate) const EVENT_ASK_SUPERSEDED: &str = "ask-superseded";
 /// The event of a deny that blocked.
 pub const EVENT_DENY: &str = "deny";
 /// The event of a deny that shadow mode only logged.
@@ -328,7 +330,7 @@ impl Store {
                 actor,
                 task.map(TaskId),
                 Some(session),
-                "ask-superseded",
+                EVENT_ASK_SUPERSEDED,
                 &serde_json::json!({ "ask": id }),
             )?;
         }

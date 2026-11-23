@@ -18,10 +18,89 @@ use headwork::ops::spawn::{Outcome, Pumped};
 use headwork::ops::status::StatusLine;
 use headwork::ops::tick::TickReport;
 use headwork::ops::usage::{UsageReport, UsageRow};
+use headwork_core::graph::Graph;
+use headwork_core::names::is_unsafe_char;
 use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{PlaceKind, TaskShape};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
+
+/// `text` with characters that could change how the terminal shows it (control, bidirectional, zero-width) written as
+/// escapes, so agent-written labels cannot move the cursor or reorder the line.
+fn printable(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for character in text.chars() {
+        if is_unsafe_char(character) {
+            shown.extend(character.escape_unicode());
+        } else {
+            shown.push(character);
+        }
+    }
+    shown
+}
+
+/// The agent graph as text: the instant, one line per node indented under the box it sits in, then one line per edge,
+/// then the events left out.
+pub(crate) fn graph(graph: &Graph) -> String {
+    let mut text = String::new();
+    if let Some(at) = &graph.at {
+        let _ = writeln!(text, "at {at}");
+    }
+    let mut stack: Vec<(&str, usize)> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.parent.is_none())
+        .rev()
+        .map(|node| (node.id.as_str(), 0))
+        .collect();
+    while let Some((id, depth)) = stack.pop() {
+        let Some(node) = graph.node(id) else {
+            continue;
+        };
+        let state = node
+            .state
+            .map_or_else(String::new, |state| format!(" [{}]", state.as_str()));
+        let _ = writeln!(
+            text,
+            "{:indent$}{} {}{state}  {}",
+            "",
+            node.kind.as_str(),
+            printable(&node.label),
+            node.id,
+            indent = depth * 2
+        );
+        stack.extend(
+            graph
+                .nodes
+                .iter()
+                .filter(|child| child.parent.as_deref() == Some(id))
+                .rev()
+                .map(|child| (child.id.as_str(), depth + 1)),
+        );
+    }
+    for edge in &graph.edges {
+        let label = edge
+            .label
+            .as_deref()
+            .map_or_else(String::new, |label| format!(" \"{}\"", printable(label)));
+        let times = if edge.weight > 1 {
+            format!(" x{}", edge.weight)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            text,
+            "{} -{}-> {}{times}{label}",
+            edge.source,
+            edge.kind.as_str(),
+            edge.target
+        );
+    }
+    for skipped in &graph.skipped {
+        let _ = writeln!(text, "skipped {}", printable(skipped));
+    }
+    text
+}
 
 /// What an import found and did.
 #[must_use]
@@ -1190,5 +1269,82 @@ mod tests {
             "{text}"
         );
         assert_eq!(super::events(&[]), "no events\n", "empty log");
+    }
+
+    #[test]
+    fn graph_nests_boxes_counts_edges_and_escapes_unsafe_characters() {
+        use std::collections::BTreeMap;
+
+        use headwork_core::TaskState;
+        use headwork_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind, Status};
+
+        let node = |id: &str, kind: NodeKind, label: &str, parent: Option<&str>| Node {
+            id: id.to_owned(),
+            kind,
+            label: label.to_owned(),
+            state: Some(Status::Task(TaskState::Working)),
+            parent: parent.map(str::to_owned),
+            start: None,
+            end: None,
+            details: BTreeMap::new(),
+        };
+        let view = Graph {
+            at: Some("2026-11-23T08:00:00.000Z".to_owned()),
+            nodes: vec![
+                node("task:1", NodeKind::Task, "headwork-lead", None),
+                node("session:s1", NodeKind::Lead, "opus medium", Some("task:1")),
+                node(
+                    "external:00ff",
+                    NodeKind::External,
+                    "evil\u{1b}[2J\u{202e}x",
+                    None,
+                ),
+            ],
+            edges: vec![Edge {
+                id: "message:session:s1->external:00ff".to_owned(),
+                kind: EdgeKind::Message,
+                source: "session:s1".to_owned(),
+                target: "external:00ff".to_owned(),
+                weight: 3,
+                label: Some("hi\nthere".to_owned()),
+                at: None,
+            }],
+            skipped: vec!["event 9 (task 1): unknown task state `sleeping`".to_owned()],
+        };
+        let text = super::graph(&view);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("at 2026-11-23T08:00:00.000Z"),
+            "the instant"
+        );
+        assert!(
+            lines.contains(&"task headwork-lead [working]  task:1"),
+            "{text}"
+        );
+        assert!(
+            lines.contains(&"  lead opus medium [working]  session:s1"),
+            "indented under its box: {text}"
+        );
+        assert!(
+            lines.contains(&r"external evil\u{1b}[2J\u{202e}x [working]  external:00ff"),
+            "escaped: {text}"
+        );
+        assert!(
+            lines.contains(&r#"session:s1 -message-> external:00ff x3 "hi\u{a}there""#),
+            "weight and label: {text}"
+        );
+        assert!(
+            lines.contains(&"skipped event 9 (task 1): unknown task state `sleeping`"),
+            "skipped: {text}"
+        );
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{202e}'),
+            "no raw escape"
+        );
+        assert!(
+            super::graph(&Graph::default()).is_empty(),
+            "nothing to draw"
+        );
     }
 }

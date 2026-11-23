@@ -44,9 +44,9 @@ panel on click.
 | `user` | one fixed node | you | asks point at it; drawn apart, at the top |
 | `orchestrator` | `sessions` with role `orchestrator` | its `rc_name` | the hub; one node across restarts, with each session listed in its details |
 | `task` | `tasks` | `<project>-<slug>` | a compound box holding its lead, parts, helpers and satellites; colour by state |
-| `lead` / `worker` | the task's sessions | model, effort | the session inside its task box; a task that ran several sessions (resume, interrupt) shows the newest, the others in details |
-| `part` | `tasks.parent_id` | the part's slug | its own small box nested in the lead's task box |
-| `subagent` | `usage.agent_id`, `agent_type` (already read by U1) plus the new `agents` table (section 5) | agent type and description | a small node on its caller; collapsed into a count badge by default ("7 subagents"), expanded on click |
+| `lead` / `worker` | a lead's or plain task's newest session | model, effort | inside its task box; earlier sessions (resume, interrupt) are listed in its details |
+| `part` | a part task's newest session | model, effort | inside the part's own `task` box (labelled `<project>-<slug>`), which is nested in the lead's box |
+| `subagent` | the `agents` table (section 5) | agent type | in its caller's task box; description, model and depth in details; `seen`, `running` or `done` now by its meta file's `finished`, `running`/`done` at a past instant; the live view keeps only those still running; D2 collapses them into a count badge |
 | `helper` | `helper-session` events | `headwork:helper` | inside its task box |
 | `review` | `reviews` | flow and level | the reviewer lead part gets a review badge |
 | `review-node` | `review_nodes` | node name (correctness, tests, ...) | under the reviewer part; findings count and verdicts in details |
@@ -62,11 +62,11 @@ Projects are not nodes: tasks are coloured or grouped by project (a filter, sect
 | Edge | From | Meaning |
 |---|---|---|
 | `spawned` | orchestrator or user → task (`task-created` event, actor) | who made a top-level task (a part has `part-of`) |
-| `part-of` | lead → part (`tasks.parent_id`) | drawn as nesting, not a line |
+| `part-of` | part's task box → lead's task box (`tasks.parent_id`) | also drawn as nesting |
 | `depends-on` | task → task (`tasks.depends_on`), part → part (`after`) | dashed |
 | `called` | session → subagent, or parent subagent → nested one (`agents.parent_agent_id`) | thin |
 | `opened` | session → helper, session → job | thin |
-| `message` | session → session (`SendMessage`) | animated pulse when it happens; weight is the message count |
+| `message` | session → session, external or subagent (`SendMessage`) | counted from the receiver's `prompt` event when it is a session headwork runs, labelled with the sender's last summary; else from the sender's event; animated pulse when it happens |
 | `report` | session → orchestrator (`report` events) | carries the last status |
 | `asked` | session → ask → user while open, session → user once answered or superseded | red while open; weight is the ask count |
 | `reviews` | review → the session of the task under review | the review loop; findings per node come in D4 |
@@ -74,11 +74,13 @@ Projects are not nodes: tasks are coloured or grouped by project (a filter, sect
 | `delivered` | task → pr | |
 
 **The one data gap: who a message went to.** The `PostToolUse` hook logged `tool-used` with only the tool name, and
-the receiver's `prompt` event has `from` but no recipient id for messages that came from outside headwork. Change: the
-`tool-used` event for `SendMessage` also stores `to` (the address as the tool ran it, after a `PreToolUse` readdress)
-and the sender's `summary`, each trimmed, without control characters and cut to 120 characters, never the body. The receiver side already logs `cross_session` and `from` on `prompt`.
-Together they give both ends; a message to a name headwork does not know becomes an edge to an `external` node. No
-schema change, an event payload field only.
+the receiver's `prompt` event has `from` but no recipient for messages to something that is not a session headwork
+runs. Change: the `tool-used` event for `SendMessage` also stores `to` (the address in the tool input `PostToolUse`
+receives) and the sender's `summary`, each trimmed, stripped of control, bidirectional and zero-width characters and
+cut to 120 characters, never the body. The receiver side already logs `cross_session` and `from` on `prompt`, also for
+senders outside headwork and for history before `to`; a message to a session headwork runs is counted there, and one
+to anything else from the sender's event. A message to a name headwork does not know becomes an edge to an `external`
+node. No schema change, an event payload field only.
 
 ## 5. Store: one new migration
 
@@ -114,7 +116,7 @@ All `GET`, JSON, read only:
 | Path | Returns |
 |---|---|
 | `/` | the page |
-| `/api/graph?at=<time>&scope=<live\|all\|task:N>` | nodes and edges as Cytoscape elements, the state at that time (default now) |
+| `/api/graph?at=<time>&scope=<live\|all\|task:<name>>` | nodes and edges as Cytoscape elements, the state at that time (default now); the scope takes a task name like `headwork graph --task` |
 | `/api/events?since=<event id>` | new events since an id, each mapped to a graph change (node added, state changed, edge pulse) |
 | `/api/node/<id>` | details for the side panel: state history, last report, recap, tokens by type, prs, asks, findings |
 | `/api/range` | first and last event times, for the slider |
@@ -123,8 +125,10 @@ All `GET`, JSON, read only:
 **Live:** the page opens `/api/stream`; the server polls the `events` table every second for ids above the last one it
 sent (cheap: the primary key) and pushes the mapped changes. A dropped stream falls back to polling `/api/events`.
 
-**Replay:** `/api/graph?at=T` builds the graph from rows whose start is at or before `T` and whose end is after it, and
-states from the newest `transition` event at or before `T` (`core/src/graph.rs`, `state_at`). The slider asks for
+**Replay:** `/api/graph?at=T` builds the graph from rows whose start is at or before `T` (task boxes and sessions
+while they exist then) and their states from the logs: task `transition`, `pr-state`, `job-state`, `job-started`,
+`job-forgotten` and `review-<trigger>` events, and review nodes' start and finish times (`core/src/graph`,
+`change_at`). The slider asks for
 snapshots while dragged and plays forward from a point by applying `/api/events` in order at 1x, 10x or 100x, so
 messages pulse and nodes appear in the order they happened.
 
@@ -155,7 +159,7 @@ messages pulse and nodes appear in the order they happened.
 
 | | What | Done when |
 |---|---|---|
-| D1 (built) | `core/src/graph.rs` (facts → nodes and edges, `state_at`), the `agents` migration and its fill in the usage reader, `to` and `summary` on `SendMessage` events, `headwork graph [--json] [--at T] [--all] [--task <name>]` printing the graph as JSON or an indented text tree | table tests for every node and edge kind; `headwork graph --json` on this machine's store shows the review-flows lead with its parts and subagents (checked 2026-11-23 on a copy of the store: the lead, its session, its seven pull requests and its reports; it ran no parts or subagents) |
+| D1 (built) | `core/src/graph.rs` (facts → nodes and edges, `state_at`), the `agents` migration and its fill in the usage reader, `to` and `summary` on `SendMessage` events, `headwork graph [--json] [--at T] [--all] [--task <name>]` printing the graph as JSON or an indented text tree | table tests for every node and edge kind; `headwork graph --json` on this machine's store shows the review-flows lead with its parts and subagents (checked 2026-11-23 on a copy of this machine's store: `headwork graph --task headwork-agent-graph-dashboard`, a lead whose level-3 review ran as a part, showed the lead's session, the part's box nested in the lead's, the part's 206 subagents, the review with its flow nodes, and messages both ways between lead and part) |
 | D2 | `headwork dash`: `tiny_http` server, `/api/graph`, `/api/node`, the page with Cytoscape.js vendored, layout, colours, side panel, filters, search | the page shows the live board as a graph and matches `headwork board` |
 | D3 | live and replay: `/api/events`, `/api/stream`, `/api/range`, the slider, play speeds, message pulses | a task's whole life replays from its first event; a new spawn appears within two seconds |
 | D4 | cost and health: size by tokens, tokens by type in the panel, finding and ask badges, review nodes with findings, the hierarchical layout; a trial with a few live tasks, results in `docs/trials/` | the user has watched a real lead, its parts and a review on the page |

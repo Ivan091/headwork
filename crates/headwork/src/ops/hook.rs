@@ -21,6 +21,7 @@ use headwork_core::guard::{
     SimpleCommand, ToolCall, check_tool, commands, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
+use headwork_core::names::kept_text;
 use headwork_core::review::{ParsedCommand, parse_command};
 use headwork_core::{
     Actor, AskKind, Config, PermissionMode, ReviewState, Role, SessionState, TaskState,
@@ -809,7 +810,7 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
     let Some(to) = tool_input.get("to").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if !is_orchestrator_address(to) {
+    if !is_orchestrator_address(headwork_core::names::bare_address(to)) {
         return Ok(None);
     }
     let address = rules::orchestrator_address(store, call.env.host)?;
@@ -946,19 +947,9 @@ const SUMMARY_CHARS: usize = 120;
 /// The longest message address a `tool-used` event keeps, in characters.
 const ADDRESS_CHARS: usize = 120;
 
-/// `text` trimmed, without control characters and cut to `limit` characters; none when nothing is left.
-fn kept(text: Option<&str>, limit: usize) -> Option<String> {
-    let text: String = text?
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(limit)
-        .collect();
-    (!text.is_empty()).then_some(text)
-}
-
-/// The `tool-used` event's data: the tool, and for `SendMessage` the address as sent and the sender's short summary
-/// (never the message body), which the agent graph draws as a message edge.
+/// The `tool-used` event's data: the tool, and for `SendMessage` the address in the tool input `PostToolUse` receives
+/// and the sender's short summary (never the message body), kept by [`kept_text`], which the agent graph draws as a
+/// message edge.
 fn tool_used(tool: &str, input: Option<&Value>) -> Value {
     if tool != "SendMessage" {
         return json!({ "tool": tool });
@@ -970,8 +961,8 @@ fn tool_used(tool: &str, input: Option<&Value>) -> Value {
     };
     json!({
         "tool": tool,
-        "to": kept(field("to"), ADDRESS_CHARS),
-        "summary": kept(field("summary"), SUMMARY_CHARS),
+        "to": field("to").and_then(|to| kept_text(to, ADDRESS_CHARS)),
+        "summary": field("summary").and_then(|summary| kept_text(summary, SUMMARY_CHARS)),
     })
 }
 

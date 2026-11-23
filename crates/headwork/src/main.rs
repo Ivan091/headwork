@@ -17,7 +17,7 @@ use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
-use headwork::ops::graph::GraphQuery;
+use headwork::ops::graph::{GraphQuery, Which};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
@@ -742,7 +742,14 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             all,
             task,
             json,
-        } => graph_command(&mut store, &ctx, &GraphQuery { at, all, task }, json, out),
+        } => {
+            let which = match (task, all) {
+                (Some(name), _) => Which::Task(name),
+                (None, true) => Which::All,
+                (None, false) => Which::Live,
+            };
+            graph_command(&mut store, &ctx, &GraphQuery { at, which }, json, out)
+        }
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
@@ -1040,12 +1047,14 @@ fn graph_command(
     json: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
+    if query.at.is_none() {
+        ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
+    }
     let graph = headwork::ops::graph::graph(store, query)?;
     if json {
         json_out(out, &graph)?;
     } else {
-        out.write_all(headwork::ops::graph::render(&graph).as_bytes())?;
+        out.write_all(render::graph(&graph).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }

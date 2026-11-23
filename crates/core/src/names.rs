@@ -184,6 +184,32 @@ pub const ORCHESTRATOR_ADDRESS: &str = "orchestrator";
 /// The orchestrator's address until 2026-11-14, when it was called the orchestrator; still an alias of the orchestrator.
 pub const LEGACY_ORCHESTRATOR_ADDRESS: &str = "root";
 
+/// Whether a character in agent-written text could change how the text around it shows.
+///
+/// That is a control character, a bidirectional override or isolate, a zero-width character, the byte-order mark, or a
+/// line or paragraph separator; it applies to addresses, summaries and subagent labels.
+#[must_use]
+pub const fn is_unsafe_char(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+        )
+}
+
+/// Agent-written `text` kept for the store and the graph: trimmed, without [`is_unsafe_char`] characters and cut to
+/// `limit` characters; none when nothing is left.
+#[must_use]
+pub fn kept_text(text: &str, limit: usize) -> Option<String> {
+    let kept: String = text
+        .trim()
+        .chars()
+        .filter(|character| !is_unsafe_char(*character))
+        .take(limit)
+        .collect();
+    (!kept.is_empty()).then_some(kept)
+}
+
 /// What Claude Code's `SendMessage` tool takes after a session's name when two sessions share it: `name [ref]`, the
 /// `[ref]` copied from its `ListAgents` listing. The name before it is the address.
 pub const ADDRESS_REF_MARK: &str = " [";
@@ -254,6 +280,29 @@ pub fn orchestrator_address<'a>(
 #[expect(clippy::unwrap_used, reason = "tests fail loudly on a bad fixture")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kept_text_trims_cuts_and_drops_unsafe_characters() {
+        let table = [
+            ("  lead  ", 10, Some("lead")),
+            ("a\u{202E}b\u{200B}c\u{1b}[2J", 10, Some("abc[2J")),
+            ("žžžž", 2, Some("žž")),
+            (" \u{2028} ", 10, None),
+        ];
+        for (text, limit, kept) in table {
+            assert_eq!(kept_text(text, limit).as_deref(), kept, "{text:?}");
+        }
+        assert!(
+            is_unsafe_char('\u{2066}') && !is_unsafe_char('é'),
+            "isolates are unsafe, letters are not"
+        );
+    }
+
+    #[test]
+    fn a_bare_address_drops_its_ref() {
+        assert_eq!(bare_address(" lead [ab12]"), "lead", "the name");
+        assert_eq!(bare_address("lead"), "lead", "no ref");
+    }
 
     #[test]
     fn accepts_kebab_case() {
