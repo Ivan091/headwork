@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>headwork graph</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <strong class="brand">headwork</strong>
+  <select id="scope" title="which tasks">
+    <option value="live">live</option>
+    <option value="all">all tasks</option>
+  </select>
+  <select id="project" title="project">
+    <option value="">every project</option>
+  </select>
+  <label><input type="checkbox" id="show-subagents"> subagents</label>
+  <label><input type="checkbox" id="show-jobs" checked> jobs</label>
+  <label><input type="checkbox" id="show-prs" checked> pull requests</label>
+  <label><input type="checkbox" id="show-reviews" checked> reviews</label>
+  <label><input type="checkbox" id="show-asks" checked> asks</label>
+  <select id="layout" title="layout">
+    <option value="fcose">force</option>
+    <option value="breadthfirst">hierarchy</option>
+  </select>
+  <input id="search" type="search" placeholder="find a task or session" autocomplete="off">
+  <button id="fit" type="button">fit</button>
+  <button id="unfocus" type="button" hidden>show all</button>
+  <span id="status" role="status"></span>
+</header>
+<main>
+  <div id="graph"></div>
+  <aside id="panel" hidden>
+    <div class="panel-head">
+      <h2 id="panel-title"></h2>
+      <button id="close" type="button" title="close">close</button>
+    </div>
+    <div class="panel-actions">
+      <button id="focus" type="button">focus on its neighbours</button>
+    </div>
+    <div id="panel-body"></div>
+  </aside>
+</main>
+<script src="/vendor/cytoscape.min.js"></script>
+<script src="/vendor/layout-base.js"></script>
+<script src="/vendor/cose-base.js"></script>
+<script src="/vendor/cytoscape-fcose.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

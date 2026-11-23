@@ -627,3 +627,34 @@ fn an_agents_times_are_each_normalised_before_the_first_and_last_are_taken() {
         "the offset time is the earlier one, and the garbage one is dropped"
     );
 }
+
+#[test]
+fn a_read_only_open_reads_and_never_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    drop(Store::open(&path).unwrap());
+    let store = Store::open_read_only(&path).unwrap();
+    assert!(store.graph_facts().unwrap().tasks.is_empty(), "reads");
+    assert!(
+        store
+            .append_event(Actor::User, None, None, "probe", &serde_json::json!({}))
+            .is_err(),
+        "writes are refused"
+    );
+}
+
+#[test]
+fn a_read_only_open_refuses_an_older_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", 3).unwrap();
+    drop(conn);
+    assert!(
+        matches!(
+            Store::open_read_only(&path),
+            Err(headwork_store::StoreError::SchemaBehind { found: 3, .. })
+        ),
+        "older schema"
+    );
+}
