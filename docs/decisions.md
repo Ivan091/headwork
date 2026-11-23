@@ -1406,3 +1406,6 @@ and the reason.
   the same start time, as reused: it typed no `/exit`, ended nothing, and the task stayed `closing` with its workspace
   open. A session pid recorded as a bare unix shell (`EXEC_WRAPPERS`) that now runs `claude` with the same start time
   counts as the same process (`RecordedPid::judge`). Jobs keep the strict check, and so does a Windows `bash.exe`.
+- 2026-11-23, rate-limit errors name the login: the update's `ask` failure says `signed in` or `without a login`.
+  v0.1.35 was built from the merge before the token lookup landed, so it still asked anonymously and looked as if
+  the token had not helped; the error now shows which it was.
