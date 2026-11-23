@@ -23,6 +23,10 @@ user's answers are in section 11 and are worked into the sections above.
 connection with `query_only`, so the dashboard can never write). No Node, no build step, no extra service; the page
 ships inside the binary.
 
+Open by default: starting the orchestrator (`headwork orchestrator`, `resume`) runs `ops::dash::ensure`. With `[dash] enabled`
+(default on) and nothing listening on `[dash] port` (8740) it starts a detached `headwork dash` and, with `[dash] open`
+(default on), opens the page in the browser. A server already running is left alone and the page is not opened again.
+
 - **Server:** `tiny_http` (synchronous, no async runtime, small) on a thread pool of std threads, in a new module
   `ops/dash/`. JSON endpoints plus the static page. The graph building is pure, in `core/src/graph.rs` (facts in, nodes
   and edges out), so it is table-tested like the rest of `core`.

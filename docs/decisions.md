@@ -1423,3 +1423,6 @@ and the reason.
 - 2026-11-23, context nudge: `[usage] nudge_context_k` (default 200, `0` off) makes the `UserPromptSubmit` hook add one
   line to a long worker, lead or part session that its context is that large and every turn re-reads it, so it hands
   read-heavy steps to a Sonnet subagent; once per multiple of the threshold, remembered as a `context-nudge` event.
+- 2026-11-23, dashboard open by default: starting the orchestrator starts a detached `headwork dash` when `[dash] port`
+  is free and opens the page once (`[dash] enabled`, `open`, `port`; all default on, 8740). The user chose this over a
+  logon task or opening only on `dash`; a running server is never restarted or reopened.

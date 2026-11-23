@@ -306,6 +306,9 @@ pub struct Config {
     /// Installing releases with `headwork update` (`docs/autoupdate.md`).
     #[serde(default)]
     pub update: UpdateConfig,
+    /// The agent-graph page that starts with the orchestrator (`docs/dashboard.md`).
+    #[serde(default)]
+    pub dash: DashConfig,
     /// Token usage: how long per-response rows stay and the price table for the estimate (`docs/usage.md`).
     #[serde(default)]
     pub usage: crate::usage::UsageConfig,
@@ -811,6 +814,28 @@ impl Default for UpdateConfig {
             enabled: false,
             project: ProjectName::headwork(),
             poll_min: 15,
+        }
+    }
+}
+
+/// `[dash]`: the agent-graph page (`docs/dashboard.md`) that starts with the orchestrator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DashConfig {
+    /// Whether starting the orchestrator also starts `headwork dash` when nothing listens on `port`.
+    pub enabled: bool,
+    /// Whether starting the orchestrator opens the page in the default browser.
+    pub open: bool,
+    /// The loopback port the page is served on.
+    pub port: u16,
+}
+
+impl Default for DashConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            open: true,
+            port: 8740,
         }
     }
 }

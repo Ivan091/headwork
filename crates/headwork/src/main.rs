@@ -1069,24 +1069,10 @@ fn dash_command(
         db: home.store_path(),
     };
     if open {
-        open_in_browser(&headwork::ops::dash::url(&options));
+        headwork::ops::dash::open_in_browser(&headwork::ops::dash::url(&options));
     }
     headwork::ops::dash::serve(&options, out)?;
     Ok(ExitCode::SUCCESS)
-}
-
-/// Asks the system to open `url` in the default browser; a failure only means the user opens it by hand.
-fn open_in_browser(url: &str) {
-    let launched = if cfg!(windows) {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
-    } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
-    };
-    drop(launched);
 }
 
 fn graph_command(

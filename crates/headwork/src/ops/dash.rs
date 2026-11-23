@@ -20,6 +20,8 @@ use crate::ops::graph::{GraphQuery, Which, graph};
 
 /// The port `headwork dash` listens on unless told otherwise.
 pub const DEFAULT_PORT: u16 = 8740;
+/// How long a probe waits for the port to answer.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 /// How many requests are answered at once.
 const WORKERS: usize = 4;
 /// How many live streams may be open at once; each holds a thread.
@@ -107,6 +109,62 @@ pub enum Route {
     BadHost,
     /// A query that does not parse.
     BadRequest(String),
+}
+
+/// Whether something already listens on the loopback `port`.
+#[must_use]
+pub fn is_serving(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &SocketAddr::new(IpAddr::from([127, 0, 0, 1]), port),
+        PROBE_TIMEOUT,
+    )
+    .is_ok()
+}
+
+/// Asks the system to open `url` in the default browser; a failure only means the user opens it by hand.
+pub fn open_in_browser(url: &str) {
+    let launched = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+    drop(launched);
+}
+
+/// Starts the dashboard by default.
+///
+/// When `[dash]` is `enabled` and nothing listens on `port`, starts a detached `headwork dash` that outlives the caller
+/// and, with `open`, opens the page. A page already served is left alone. Returns whether a server was started;
+/// a failure to start only means the user runs `headwork dash` by hand.
+#[must_use]
+pub fn ensure(
+    config: &headwork_core::config::DashConfig,
+    home: &crate::home::Home,
+    exe: &Path,
+) -> bool {
+    if !config.enabled || is_serving(config.port) {
+        return false;
+    }
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["dash", "--port", &config.port.to_string()])
+        .env(crate::home::HOME_VAR, home.root())
+        .current_dir(home.root());
+    if headwork_adapters::proc::spawn_detached(&mut command).is_err() {
+        return false;
+    }
+    if config.open {
+        open_in_browser(&url(&DashOptions {
+            bind: IpAddr::from([127, 0, 0, 1]),
+            port: config.port,
+            db: PathBuf::new(),
+        }));
+    }
+    true
 }
 
 /// The route for a request: its method, its URL (path and query), its `Host` header and the port served.
@@ -581,6 +639,26 @@ fn handle(request: tiny_http::Request, db: &Path, port: u16, streams: &Arc<Atomi
 #[expect(clippy::unwrap_used, reason = "tests fail loudly on a bad fixture")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bound_port_is_serving_and_a_free_one_is_not() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_serving(port), "bound port");
+        drop(listener);
+        assert!(!is_serving(port), "released port");
+    }
+
+    #[test]
+    fn a_disabled_dash_is_never_started() {
+        let home = crate::home::Home::at(Some(std::env::temp_dir())).unwrap();
+        let config = headwork_core::config::DashConfig {
+            enabled: false,
+            open: true,
+            port: 1,
+        };
+        assert!(!ensure(&config, &home, Path::new("headwork")), "disabled");
+    }
 
     const PORT: u16 = 8740;
     const HOST: Option<&str> = Some("127.0.0.1:8740");
