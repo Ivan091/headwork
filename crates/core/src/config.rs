@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::MergePolicy;
 use crate::names::ProjectName;
-use crate::vocabulary::{Model, RuleId};
+use crate::vocabulary::{CloseMode, Model, RuleId};
 
 /// Placeholders a command template may use.
 pub const PLACEHOLDERS: &[&str] = &["slug", "branch", "main", "worktree", "out", "temp"];
@@ -754,16 +754,16 @@ impl Default for ReviewsConfig {
     }
 }
 
-/// The task kind whose lead closes without the user's go, whatever `[leads] ask_before_close` says
-/// (`docs/decisions.md`, 2026-11-22, the silent kind).
+/// The task kind that still means `close = silent` when a spawn names no close mode (`docs/decisions.md`, 2026-11-22, the
+/// silent kind; 2026-11-23, silent became a flag).
 pub const SILENT_KIND: &str = "silent";
 
 impl LeadsConfig {
-    /// Whether a lead of this kind asks the user before its task closes: `ask_before_close` is on and the kind is not
-    /// [`SILENT_KIND`].
+    /// Whether a lead whose task has this close mode asks the user before its task closes: `ask_before_close` is on and
+    /// the mode is [`CloseMode::Confirm`].
     #[must_use]
-    pub fn asks_before_close(&self, kind: &str) -> bool {
-        self.ask_before_close && kind != SILENT_KIND
+    pub fn asks_before_close(&self, close: CloseMode) -> bool {
+        self.ask_before_close && close == CloseMode::Confirm
     }
 
     /// A part's tab title: `part_title` with its placeholders filled in.

@@ -33,7 +33,7 @@ pub use hooks::{
 };
 pub use migrate::{MIGRATIONS, migrate};
 pub use park::{JobRow, NewJob, NewRecap, ParkRow, RecapRow};
-pub use queries::{EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
+pub use queries::{EVENT_FLAGS_SET, EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
 pub use queue::AdoptTask;
 pub use records::{
     AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,

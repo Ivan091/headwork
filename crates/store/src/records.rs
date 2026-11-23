@@ -3,9 +3,10 @@
 use std::fmt;
 
 use headwork_core::process::{ProcessIdentity, RecordedPid};
+use headwork_core::review::Level;
 use headwork_core::{
-    Actor, AskKind, AskState, Effort, MachineMode, Model, PermissionMode, PlaceKind, ProjectName,
-    SessionState, Slug, TaskName, TaskShape, TaskSnapshot, TaskState,
+    Actor, AskKind, AskState, CloseMode, Effort, MachineMode, Model, PermissionMode, PlaceKind,
+    ProjectName, SessionState, Slug, TaskName, TaskShape, TaskSnapshot, TaskState,
 };
 use serde::{Serialize, Serializer};
 
@@ -54,6 +55,10 @@ pub struct Task {
     pub permission_mode: PermissionMode,
     /// A standing role.
     pub keep: bool,
+    /// Whether its lead asks the user before it closes.
+    pub close: CloseMode,
+    /// The review planned for it, started at its first pull request or `done`.
+    pub review_plan: Option<Level>,
     /// Runs in the main checkout.
     pub in_main: bool,
     /// The task it waits for.

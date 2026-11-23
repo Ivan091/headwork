@@ -48,8 +48,8 @@ use headwork_adapters::release::Curl;
 use headwork_core::guard::{ToolCall, check_tool};
 use headwork_core::watch::Limits;
 use headwork_core::{
-    Actor, Config, Decision, Effort, FindingId, Model, PermissionMode, Platform, ProjectName, Role,
-    Slug, TaskRequest,
+    Actor, CloseMode, Config, Decision, Effort, FindingId, Model, PermissionMode, Platform,
+    ProjectName, Role, Slug, TaskRequest,
 };
 use headwork_store::{AskId, EventFilter, Store, TaskId};
 
@@ -528,9 +528,22 @@ struct SpawnArgs {
     /// The permission mode.
     #[arg(long, default_value = "auto")]
     mode: PermissionMode,
-    /// The task kind; the slug for a main-checkout task, `task` otherwise. A `silent` lead closes without asking the user.
+    /// The task kind; the slug for a main-checkout task, `task` otherwise. Kind `silent` still means `--close silent`.
     #[arg(long)]
     kind: Option<String>,
+    /// Whether the lead asks the user before it closes: `confirm` (the default) or `silent`. Follow the decision table in
+    /// your rules.
+    #[arg(long)]
+    close: Option<CloseMode>,
+    /// The review planned for the task, started at its first pull request or `done`: 0 none, 1 light, 2 standard, 3 strict.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=3))]
+    review: Option<u8>,
+    /// Who chose `--close` and `--review`: `user` when the user's own words did, `judged` when the rules' table did.
+    #[arg(long, value_name = "WHO")]
+    decided_by: Option<String>,
+    /// A one-line reason; required when `--close` or `--review` was judged.
+    #[arg(long)]
+    reason: Option<String>,
     /// Start only after this task is merged.
     #[arg(long)]
     after: Option<String>,
@@ -1168,6 +1181,13 @@ fn spawn_command(
             "task".to_owned()
         }
     });
+    let flags = headwork::ops::flags::resolve(
+        &kind,
+        args.close,
+        args.review,
+        args.decided_by.as_deref(),
+        args.reason.as_deref(),
+    )?;
     let request = SpawnRequest {
         request: TaskRequest {
             project: ProjectName::new(args.project)?,
@@ -1177,6 +1197,9 @@ fn spawn_command(
             effort: args.effort,
             in_main: args.in_main,
             keep: args.keep,
+            close: flags.close,
+            review: flags.review,
+            decision: flags.decision,
         },
         brief: &args.brief,
         depends_on,

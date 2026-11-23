@@ -158,7 +158,7 @@ impl RuleFiles {
             Role::Worker => {
                 let keep = card.is_some_and(|card| card.task.keep);
                 let shape = card.map_or(TaskShape::Plain, |card| card.task.shape);
-                let asks = card.is_none_or(|card| config.leads.asks_before_close(&card.task.kind));
+                let asks = card.is_none_or(|card| config.leads.asks_before_close(card.task.close));
                 let mut worker = if keep {
                     without_closing(&self.worker)
                 } else {

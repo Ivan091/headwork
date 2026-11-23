@@ -42,6 +42,9 @@ fn request(project: &str, slug: &str, kind: &str) -> NewTask {
             effort: None,
             in_main: false,
             keep: false,
+            close: headwork_core::CloseMode::Confirm,
+            review: None,
+            decision: None,
         },
         brief_path: format!("briefs/{project}-{slug}.md"),
         depends_on: None,
@@ -2139,4 +2142,60 @@ fn the_pr_rows_migration_moves_rows_named_before_the_re_creation_to_the_archive(
         2,
         "a new pull request with an archived number gets a row of its own"
     );
+}
+
+#[test]
+fn task_flags_default_set_and_log() {
+    use headwork_core::review::Level;
+    use headwork_core::{CloseMode, DecidedBy};
+    let (mut store, config) = store();
+    let mut new = request("me-sim", "flags", "scene");
+    new.request.review = Some(Level::Standard);
+    let task = store.create_task(&config, &new, Actor::User).unwrap();
+    assert_eq!(
+        (task.close, task.review_plan),
+        (CloseMode::Confirm, Some(Level::Standard))
+    );
+    store
+        .set_task_close(task.id, CloseMode::Silent, DecidedBy::User, Actor::User)
+        .unwrap();
+    store
+        .set_review_plan(task.id, None, DecidedBy::User, Actor::User)
+        .unwrap();
+    let task = store.task(task.id).unwrap();
+    assert_eq!((task.close, task.review_plan), (CloseMode::Silent, None));
+    let logged = store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 20,
+        })
+        .unwrap();
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|event| event.kind == "flags-set")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn migration_22_makes_kind_silent_tasks_silent() {
+    use headwork_core::CloseMode;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 21);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+                 VALUES (1, 'me-sim', 'quiet', 'silent', 'working', 'opus', 'b.md', 't', 't'),
+                        (2, 'me-sim', 'loud', 'scene', 'working', 'opus', 'b.md', 't', 't');",
+        )
+        .unwrap();
+    let store = Store::open(&path).unwrap();
+    let quiet = store.task(TaskId(1)).unwrap();
+    let loud = store.task(TaskId(2)).unwrap();
+    assert_eq!((quiet.close, quiet.review_plan), (CloseMode::Silent, None));
+    assert_eq!((loud.close, loud.review_plan), (CloseMode::Confirm, None));
 }
