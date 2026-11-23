@@ -191,6 +191,8 @@ pub enum ToolCall<'a> {
         tool: &'a str,
         /// The model it names, if any.
         model: Option<&'a str>,
+        /// Whether the prompt carries an `Opus because:` line.
+        reason: bool,
     },
     /// Anything the guard does not read.
     Other,
@@ -276,7 +278,11 @@ pub fn check_tool(scope: &Scope, call: &ToolCall<'_>) -> Decision {
             background,
         } => check_bash(scope, role, command, background),
         ToolCall::Skill { name } => check_skill(scope, role, name),
-        ToolCall::Agent { tool, model } => check_agent(scope, role, tool, model),
+        ToolCall::Agent {
+            tool,
+            model,
+            reason,
+        } => check_agent(scope, role, tool, model, reason),
         ToolCall::Other => Decision::Allow,
     }
 }
@@ -787,13 +793,32 @@ fn check_skill(scope: &Scope, role: Role, name: &str) -> Decision {
     Decision::Allow
 }
 
-fn check_agent(scope: &Scope, role: Role, tool: &str, model: Option<&str>) -> Decision {
+fn check_agent(
+    scope: &Scope,
+    role: Role,
+    tool: &str,
+    model: Option<&str>,
+    reason: bool,
+) -> Decision {
     let fable = model.is_some_and(|model| model.eq_ignore_ascii_case("fable"));
     if role == Role::Worker && fable && !scope.fable_allowed {
         return Decision::deny(
             RuleId::WorkerFable,
             format!(
                 "{tool} with Fable needs the user's approval for this task; use opus, or ask the user first"
+            ),
+        );
+    }
+    let opus = model.is_some_and(|model| {
+        let model = model.to_ascii_lowercase();
+        model == "opus" || model.starts_with("claude-opus")
+    });
+    if role == Role::Worker && opus && !reason && !scope.reviewer && tool != "Workflow" {
+        return Decision::deny(
+            RuleId::SubagentOpus,
+            format!(
+                "{tool} with Opus needs a reason; use sonnet (the default: omit `model`), or add a line \
+                 `Opus because: <why>` to the prompt for architecture, security, concurrency, audits or plans"
             ),
         );
     }

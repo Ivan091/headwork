@@ -465,6 +465,8 @@ text_enum!(
         WorkerGlobalSkill => "worker-global-skill" | "child-global-skill",
         /// A worker starts a Fable subagent without the user's approval.
         WorkerFable => "worker-fable" | "child-fable",
+        /// A worker starts an Opus subagent without an `Opus because:` line in its prompt.
+        SubagentOpus => "subagent-opus",
         /// A worker starts a long job in the background instead of registering it.
         WorkerLongJob => "worker-long-job" | "child-long-job",
         /// A worker runs an orchestrator command of the headwork CLI (spawn, queue, park, close of another task...).

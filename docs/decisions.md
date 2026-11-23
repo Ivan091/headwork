@@ -1417,3 +1417,6 @@ and the reason.
 - 2026-11-23, delegation: leads and workers hand read-heavy steps to Sonnet subagents and keep design, integration and
   the final read of the diff; the review flow's `verify` node runs on Sonnet at level 2, since it runs once per finding.
   Analysis in `docs/delegation.md`.
+- 2026-11-23, subagent-opus: a worker, lead or part (not a review part) may start an Opus subagent only when the prompt has a
+  line starting `Opus because:`; the marker is a plain line in text the call already carries, so the guard needs no new tool
+  input. Shadow like every rule until enforced.

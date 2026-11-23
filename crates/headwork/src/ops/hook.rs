@@ -683,6 +683,7 @@ fn tool_call<'a>(name: &'a str, input: &'a Value) -> ToolCall<'a> {
         "Agent" | "Task" => ToolCall::Agent {
             tool: name,
             model: text("model"),
+            reason: text("prompt").is_some_and(has_opus_reason),
         },
         "Workflow" => ToolCall::Agent {
             tool: name,
@@ -698,9 +699,18 @@ fn tool_call<'a>(name: &'a str, input: &'a Value) -> ToolCall<'a> {
                     .any(|form| script.contains(form))
                 })
                 .map(|_| "fable"),
+            reason: false,
         },
         _ => ToolCall::Other,
     }
+}
+
+fn has_opus_reason(prompt: &str) -> bool {
+    prompt.lines().any(|line| {
+        line.trim()
+            .to_ascii_lowercase()
+            .starts_with("opus because:")
+    })
 }
 
 fn questions(input: &Value) -> Vec<(String, String, Vec<String>)> {
