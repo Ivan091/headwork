@@ -91,17 +91,32 @@ Risks:
    (forks inherit the whole context and model). A short "when to delegate" list from the section above. Same model
    ladder as parts.
 2. **Subagent model guard** (code): the `PreToolUse` hook already sees `Agent` calls. Log `subagent-model` (shadow,
-   like the other rules) when a managed session starts an `Agent` or `fork` subagent on Opus or Fable without a
-   `reason`-like line in its description, mirroring `part-opus-reason`. Enforceable later through `enforce_rules`.
+   like the other rules) when a worker, lead or part (not a review part) starts an `Agent` subagent on Opus without a
+   line `Opus because: <why>` in its prompt, mirroring `part-opus-reason`. Enforceable later through `enforce_rules`.
 3. **Context nudge** (code): the usage reader already knows each main session's context size. When a lead's or
    worker's last response passed `[usage] nudge_context_k` (say 200k), the `UserPromptSubmit` or `PostToolUse` hook adds
    one line: hand the next read-heavy step to a subagent, or `/compact`. Once per threshold crossed, not every turn.
 4. **Review flow models** (`flows/code.toml`): `verify` on Sonnet at level 2, Opus at 3; it runs once per finding, so it
    is the most repeated node.
-5. **Measure** (code): `headwork usage --by delegation` (or a column on `--by role`): share of each role's spend and
+5. **Measure** (code): `headwork usage --by delegation`: share of each role's spend and
    responses in subagents versus the main session, and the main session's median context. Read it before and two weeks
    after steps 1-4 to check the estimate.
 
 Not proposed: forcing parts more often. A part costs as much to start as a subagent and adds a pane, a slot and a
 lifecycle; it stays for separate reviews, long jobs and second branches. Not proposed either: moving leads off Opus;
 the ladder (#50) already governs that.
+
+## Status
+
+All five steps were built on 2026-11-23 (`subagent-opus`, `[usage] nudge_context_k = 200`, `usage --by delegation`).
+Baseline from `headwork usage --by delegation --since 14d` on that day:
+
+| Role | Subagent share of cost | Subagent cost on Opus | Median main context |
+|---|---:|---:|---:|
+| worker | 29 % | 91 % | 152k |
+| lead | 26 % | 93 % | 152k |
+| orchestrator | 32 % | 5 % | 146k |
+| part | 76 % | 99 % | 339k |
+
+Compare after two weeks: the Opus share of subagent cost should fall, the subagent share and the main context should
+move the other way.
