@@ -941,6 +941,27 @@ fn free_slot_while_asking(store: &mut Store, call: &Call<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The longest message summary a `tool-used` event keeps, in characters.
+const SUMMARY_CHARS: usize = 120;
+
+/// The `tool-used` event's data: the tool, and for `SendMessage` the address as sent and the sender's short summary
+/// (never the message body), which the agent graph draws as a message edge.
+fn tool_used(tool: &str, input: Option<&Value>) -> Value {
+    if tool != "SendMessage" {
+        return json!({ "tool": tool });
+    }
+    let field = |name: &str| {
+        input
+            .and_then(|input| input.get(name))
+            .and_then(Value::as_str)
+            .map(str::trim)
+    };
+    let summary = field("summary")
+        .filter(|summary| !summary.is_empty())
+        .map(|summary| summary.chars().take(SUMMARY_CHARS).collect::<String>());
+    json!({ "tool": tool, "to": field("to"), "summary": summary })
+}
+
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
     if starts_background_work(tool, call) {
@@ -961,7 +982,7 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         call.session.task_id,
         Some(&call.session.id),
         EVENT_TOOL,
-        &json!({ "tool": tool }),
+        &tool_used(tool, call.input.get("tool_input")),
     )?;
     if tool == "AskUserQuestion" {
         let response = call

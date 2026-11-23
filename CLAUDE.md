@@ -139,6 +139,7 @@ cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks (parts indented under their lead), sessions (pane or tab), states, asks
 cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
+cargo run -p headwork -- graph [--json] [--at T] [--all] [--task N]   # the agents working together as nodes and edges (docs/dashboard.md)
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job

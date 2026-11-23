@@ -10,8 +10,12 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, bail};
 use headwork_core::UsageGroup;
-use headwork_core::usage::{Estimate, UsageConfig, agent_type, parse_line, transcript_of};
-use headwork_store::{FileMark, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal};
+use headwork_core::usage::{
+    AgentMeta, Estimate, UsageConfig, agent_meta, parse_line, transcript_of,
+};
+use headwork_store::{
+    FileMark, NewAgent, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal,
+};
 use serde::Serialize;
 
 use crate::ops::shadow::since_instant;
@@ -145,6 +149,11 @@ pub fn ingest_file(
     let key = slashed(path);
     let now = mark_of(path)?;
     let Some(start) = start_at(store.usage_file(&key)?, now, from_start) else {
+        if let Some(agent) = file.agent_id.as_deref()
+            && !store.agent_known(agent)?
+        {
+            record_agent(store, path, &file.session_id, agent)?;
+        }
         return Ok(None);
     };
     let rolled_to = store.usage_rolled_to()?;
@@ -166,12 +175,8 @@ pub fn ingest_file(
             lines.push(line);
         }
     }
-    let agent_type = file.agent_id.as_ref().and_then(|_| {
-        let meta = path.with_extension("meta.json");
-        std::fs::read_to_string(meta)
-            .ok()
-            .and_then(|text| agent_type(&text))
-    });
+    let meta = file.agent_id.as_ref().and_then(|_| meta_of(path));
+    let agent_type = meta.as_ref().and_then(|meta| meta.agent_type.clone());
     let tag = store
         .usage_tag(&file.session_id)?
         .unwrap_or(UsageTag::UNMANAGED);
@@ -190,7 +195,34 @@ pub fn ingest_file(
         lines: &lines,
         mark: FileMark { read_to, ..now },
     })?;
+    if let Some(agent) = file.agent_id.as_deref() {
+        store.record_agent(&NewAgent {
+            agent_id: agent,
+            session_id: &file.session_id,
+            task: tag.task,
+            meta: &meta.unwrap_or_default(),
+        })?;
+    }
     Ok(Some((lines.len(), inserted)))
+}
+
+/// What a subagent transcript's `agent-<id>.meta.json` beside it says; none when it is missing or unreadable.
+fn meta_of(transcript: &Path) -> Option<AgentMeta> {
+    std::fs::read_to_string(transcript.with_extension("meta.json"))
+        .ok()
+        .and_then(|text| agent_meta(&text))
+}
+
+/// Records a subagent whose transcript was read before the `agents` table existed.
+fn record_agent(store: &Store, path: &Path, session: &str, agent: &str) -> Result<()> {
+    let task = store.usage_tag(session)?.and_then(|tag| tag.task);
+    store.record_agent(&NewAgent {
+        agent_id: agent,
+        session_id: session,
+        task,
+        meta: &meta_of(path).unwrap_or_default(),
+    })?;
+    Ok(())
 }
 
 /// Reads every file in `files` (see [`ingest_file`]), then re-tags the rows of sessions the store learned since. A

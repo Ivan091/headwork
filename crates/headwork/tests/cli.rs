@@ -72,6 +72,32 @@ fn board_json_is_machine_readable() {
 }
 
 #[test]
+fn graph_json_draws_the_user_and_the_orchestrator_on_an_empty_store() {
+    let home = home_with_fixture();
+    let output = headwork(home.path(), &["graph", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let ids: Vec<&str> = json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["orchestrator", "user"], "the two fixed nodes");
+    assert!(json["edges"].as_array().unwrap().is_empty(), "no edges");
+    let text = stdout(&headwork(home.path(), &["graph", "--at", "1h"]));
+    assert!(
+        text.starts_with("at ") && text.contains("user you"),
+        "{text}"
+    );
+    let unknown = headwork(home.path(), &["graph", "--task", "me-sim-nope"]);
+    assert!(
+        !unknown.status.success() && stderr(&unknown).contains("no task named"),
+        "unknown task"
+    );
+}
+
+#[test]
 fn log_shows_the_project_sync() {
     let home = home_with_fixture();
     let output = headwork(home.path(), &["log"]);

@@ -1303,3 +1303,14 @@ and the reason.
   newest `transition` at or before it. A real Neo4j and an Obsidian vault were set aside as later exports. The one
   data gap, a message's recipient, is closed by `to` and a short `summary` on the `SendMessage` `tool-used` event,
   never the body.
+- 2026-11-23, dashboard D1 (the graph model): `core/src/graph.rs` builds the graph from `Facts` the store gathers
+  (`Store::graph_facts`), and `headwork graph [--json] [--at T] [--all] [--task N]` prints it. Choices the plan left
+  open: a review's flow nodes are drawn as `review-node` nodes joined to their review by a `ran` edge, in the reviewer
+  part's box; an ask without a header is labelled by the first 40 characters of its question; an ask closed without
+  an answer time (expired, superseded) counts as closed from its creation; a pull request starts at the first event
+  of its task naming its URL, else at its task's start; a subagent is drawn in its caller's task box, nested ones off
+  the session too (`spawn_depth` in its details), and a single-task view leaves out the orchestrator's own subagents.
+  The `agents` table (migration 0020) is filled by the usage reader, which also records, once, the subagents of
+  transcripts it read before the table existed. `Store::open_read_only` (read-only and `query_only`, never migrates,
+  refuses an older or newer schema) is ready for `headwork dash`; the `graph` command itself opens the store as every
+  other command does. A `SendMessage` summary is kept up to 120 characters.

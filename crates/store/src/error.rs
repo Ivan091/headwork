@@ -18,6 +18,16 @@ pub enum StoreError {
         /// The newest version this build knows.
         known: usize,
     },
+    /// A read-only open found a database older than this build, which only a writable open migrates.
+    #[error(
+        "the database schema is version {found}, older than the {known} this headwork knows; run `headwork board` once to migrate it"
+    )]
+    SchemaBehind {
+        /// The database's version.
+        found: i64,
+        /// The newest version this build knows.
+        known: usize,
+    },
     /// The lifecycle refused a transition.
     #[error("task `{task}`: {refusal}")]
     Refused {

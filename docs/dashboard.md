@@ -1,6 +1,6 @@
 # Dashboard: a live graph of the agents working together
 
-Status: plan of 2026-11-22, nothing built. The user's request: "a dashboard for headwork, web-based, which should
+Status: plan of 2026-11-22; D1 built 2026-11-23 (`headwork graph`, `docs/decisions.md`). The user's request: "a dashboard for headwork, web-based, which should
 illustrate a map of agents working together, something like an Obsidian map or rather a graph of agents, like in Neo4j,
 so I can see and check how agents are working together." The user's answers are in section 11 and are worked into the
 sections above.

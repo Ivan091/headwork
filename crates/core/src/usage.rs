@@ -211,6 +211,32 @@ pub fn agent_type(meta: &str) -> Option<String> {
     text(&value, &["agentType"])
 }
 
+/// What a subagent's `agent-<id>.meta.json` says about it: its type, the short label its caller gave it, the model it
+/// asked for and how deep it was nested.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentMeta {
+    /// Such as `general-purpose` or `Explore`.
+    pub agent_type: Option<String>,
+    /// The `Agent` call's description, never its prompt.
+    pub description: Option<String>,
+    /// The model it asked for.
+    pub model: Option<String>,
+    /// 1 for a session's own subagent, more for nested ones.
+    pub spawn_depth: Option<i64>,
+}
+
+/// Reads a subagent's meta file; none when it is not a JSON object.
+#[must_use]
+pub fn agent_meta(meta: &str) -> Option<AgentMeta> {
+    let value: Value = serde_json::from_str(meta).ok()?;
+    value.is_object().then(|| AgentMeta {
+        agent_type: text(&value, &["agentType"]),
+        description: text(&value, &["description"]),
+        model: text(&value, &["model"]),
+        spawn_depth: value.get("spawnDepth").and_then(Value::as_i64),
+    })
+}
+
 /// How many leading bytes of `bytes` are whole lines: up to and including the last newline.
 #[must_use]
 pub fn complete_len(bytes: &[u8]) -> usize {
@@ -627,6 +653,29 @@ mod tests {
         );
         assert_eq!(agent_type("{}"), None, "no type");
         assert_eq!(agent_type("nope"), None, "not json");
+    }
+
+    #[test]
+    fn agent_meta_reads_type_label_model_and_depth() {
+        let meta = agent_meta(
+            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","spawnDepth":2}"#,
+        );
+        assert_eq!(
+            meta,
+            Some(AgentMeta {
+                agent_type: Some("general-purpose".to_owned()),
+                description: Some("Build the graph".to_owned()),
+                model: Some("opus".to_owned()),
+                spawn_depth: Some(2),
+            }),
+            "every field"
+        );
+        assert_eq!(
+            agent_meta("{}"),
+            Some(AgentMeta::default()),
+            "an empty object"
+        );
+        assert_eq!(agent_meta("[1]"), None, "not an object");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod clean;
 pub mod config;
+pub mod graph;
 pub mod guard;
 pub mod layout;
 pub mod lead;

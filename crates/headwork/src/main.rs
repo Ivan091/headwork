@@ -80,6 +80,23 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The agents working together as a graph: the orchestrator, tasks, leads and parts, subagents, helpers, jobs,
+    /// pull requests, reviews and asks, with who spawned, called, messaged, reported to and asked whom.
+    Graph {
+        /// Draw the graph as it stood then: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now
+        /// such as `90m`, `24h`, `7d`.
+        #[arg(long)]
+        at: Option<String>,
+        /// Include closed and dropped tasks.
+        #[arg(long)]
+        all: bool,
+        /// Only this task with its lead and parts, as `<project>-<slug>`.
+        #[arg(long)]
+        task: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the event log, all of it or one task's.
     Log {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`.
@@ -688,6 +705,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         } => return import_command(projects_conf, claude_dir, dry_run, json, out),
         other @ (Command::Board { .. }
         | Command::Status { .. }
+        | Command::Graph { .. }
         | Command::Log { .. }
         | Command::Spawn(_)
         | Command::Queue { .. }
@@ -718,6 +736,23 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     match command {
         Command::Board { all, json } => board(&mut store, &ctx, all, json, out),
         Command::Status { all, json } => status_command(&mut store, &ctx, all, json, out),
+        Command::Graph {
+            at,
+            all,
+            task,
+            json,
+        } => {
+            let graph = headwork::ops::graph::graph(
+                &store,
+                &headwork::ops::graph::GraphQuery { at, all, task },
+            )?;
+            if json {
+                json_out(out, &graph)?;
+            } else {
+                out.write_all(headwork::ops::graph::render(&graph).as_bytes())?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),

@@ -6,6 +6,7 @@ pub mod close;
 pub mod doctor;
 pub mod effort;
 pub mod flows;
+pub mod graph;
 pub mod helpers;
 pub mod hook;
 pub mod import;
