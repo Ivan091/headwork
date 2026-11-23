@@ -1401,3 +1401,8 @@ and the reason.
 - 2026-11-23, the release API with a token: `headwork update` hit GitHub's anonymous limit (60 an hour per address)
   three times in a row. The lookup now sends `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token --hostname github.com`, in
   that order, on `curl`'s standard input; none, or a `401`, falls back to anonymous. Downloads stay anonymous.
+- 2026-11-23, a `claude` started through a shell shim: in cmux `claude` on `PATH` is cmux's bash wrapper, which execs the
+  real `claude`, so the launch recorded the pid as `bash` and every close later judged the same pid, now `claude` with
+  the same start time, as reused: it typed no `/exit`, ended nothing, and the task stayed `closing` with its workspace
+  open. A session pid recorded as a bare unix shell (`EXEC_WRAPPERS`) that now runs `claude` with the same start time
+  counts as the same process (`RecordedPid::judge`). Jobs keep the strict check, and so does a Windows `bash.exe`.

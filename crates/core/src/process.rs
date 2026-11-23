@@ -25,6 +25,15 @@ pub const START_SLACK_S: u64 = 1;
 /// launchers that wrap the real work.
 pub const JOB_HOSTS: [&str; 7] = ["bash", "sh", "cargo", "python", "python3", "py", "uv"];
 
+/// Unix shells that may start a session's `claude` and then exec it, as cmux's `claude` shim on `PATH` does.
+///
+/// The pid and start time stay and the image changes. Only bare names count; a Windows image (`bash.exe`) never
+/// execs another program.
+pub const EXEC_WRAPPERS: [&str; 5] = ["bash", "sh", "zsh", "dash", "env"];
+
+/// The program a session's recorded pid may have become through one of [`EXEC_WRAPPERS`].
+pub const SESSION_PROGRAM: &str = "claude";
+
 /// What runs under a recorded pid now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
@@ -103,14 +112,19 @@ pub struct RecordedPid {
 impl RecordedPid {
     /// Judges what runs under the pid now.
     ///
-    /// With an identity the image and the start time must both match, as for a job. Without one the process counts as
+    /// With an identity the image and the start time must both match, as for a job, except that a pid recorded while
+    /// it still ran one of [`EXEC_WRAPPERS`] that now runs [`SESSION_PROGRAM`] with the same start time is the same
+    /// process after an exec. Without one the process counts as
     /// the recorded one only when it started no later than the pid was recorded: the recorded process was running
     /// then, so a program that took its pid over started after. A start time that reads 0 (unknown), or a pid with no
     /// record time, never counts: such a process is left alone.
     #[must_use]
     pub fn judge(&self, current: Option<ProcessIdentity>) -> Liveness {
-        if self.identity.is_some() {
-            return judge(self.identity.as_ref(), &[], current);
+        if let Some(then) = &self.identity {
+            if current.as_ref().is_some_and(|now| exec_of(then, now)) {
+                return Liveness::Alive;
+            }
+            return judge(Some(then), &[], current);
         }
         let Some(now) = current else {
             return Liveness::Gone;
@@ -136,6 +150,18 @@ fn stem(image: &str) -> String {
 
 fn same_image(a: &str, b: &str) -> bool {
     stem(a) == stem(b)
+}
+
+fn exec_of(then: &ProcessIdentity, now: &ProcessIdentity) -> bool {
+    let bare = !then
+        .image
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&then.image)
+        .contains('.');
+    bare && EXEC_WRAPPERS.contains(&stem(&then.image).as_str())
+        && stem(&now.image) == SESSION_PROGRAM
+        && then.started.abs_diff(now.started) <= START_SLACK_S
 }
 
 fn plausible_for(argv: &[String], image: &str) -> bool {
@@ -252,6 +278,14 @@ mod tests {
             recorded_at: None,
             ..bare.clone()
         };
+        let shim = RecordedPid {
+            identity: Some(id("bash", 1000)),
+            ..known
+        };
+        let win_shell = RecordedPid {
+            identity: Some(id("bash.exe", 1000)),
+            ..known
+        };
         let reused = |image: &str, started| Liveness::Reused {
             now: id(image, started),
         };
@@ -264,6 +298,20 @@ mod tests {
                 reused("claude.exe", 900),
             ),
             (&known, Some(id("wmux.exe", 1000)), reused("wmux.exe", 1000)),
+            (&shim, Some(id("claude", 1000)), Liveness::Alive),
+            (
+                &shim,
+                Some(id("/opt/homebrew/bin/claude", 1001)),
+                Liveness::Alive,
+            ),
+            (&shim, Some(id("bash", 1000)), Liveness::Alive),
+            (&shim, Some(id("claude", 1500)), reused("claude", 1500)),
+            (&shim, Some(id("python3", 1000)), reused("python3", 1000)),
+            (
+                &win_shell,
+                Some(id("claude.exe", 1000)),
+                reused("claude.exe", 1000),
+            ),
             (&bare, None, Liveness::Gone),
             (&bare, Some(id("anything.exe", 990)), Liveness::Alive),
             (&bare, Some(id("anything.exe", 1003)), Liveness::Alive),
