@@ -8,7 +8,8 @@ use super::{
 };
 use crate::names::{bare_address, is_orchestrator_address};
 use crate::vocabulary::{
-    Actor, AskState, JobState, NodeState, PullState, ReviewState, Role, SessionState, TaskState,
+    Actor, AskState, FindingVerdict, JobState, NodeState, PullState, ReviewState, Role,
+    SessionState, TaskState,
 };
 
 /// The longest label an ask without a header takes from its question, in characters.
@@ -389,6 +390,8 @@ pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
         start: None,
         end: None,
         details: BTreeMap::new(),
+        tokens: None,
+        badges: BTreeMap::new(),
     });
     orchestrator(&draw, &mut canvas);
     for task in &facts.tasks {
@@ -405,6 +408,7 @@ pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
     messages(&draw, &mut canvas);
     reports(&draw, &mut canvas);
     asks(&draw, &mut canvas);
+    spend_and_badges(&draw, &mut canvas);
     canvas.finish(at, &facts.skipped)
 }
 
@@ -504,6 +508,8 @@ fn orchestrator(draw: &Draw<'_>, canvas: &mut Canvas) {
             .min(),
         end: None,
         details: details([("sessions", (!listed.is_empty()).then_some(listed))]),
+        tokens: None,
+        badges: BTreeMap::new(),
     });
 }
 
@@ -533,6 +539,8 @@ fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Can
             ),
             ("last_report", task.last_report.clone()),
         ]),
+        tokens: None,
+        badges: BTreeMap::new(),
     });
     if let Some(lead) = task.parent {
         canvas.link(
@@ -601,6 +609,8 @@ fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
                 (!earlier.is_empty()).then(|| earlier.join(", ")),
             ),
         ]),
+        tokens: None,
+        badges: BTreeMap::new(),
     });
 }
 
@@ -660,6 +670,8 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
                 ("model", agent.model.clone()),
                 ("depth", agent.depth.map(|depth| depth.to_string())),
             ]),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
         let starter = agent
             .parent
@@ -690,6 +702,8 @@ fn helpers(draw: &Draw<'_>, canvas: &mut Canvas) {
             start: Some(helper.at.clone()),
             end: None,
             details: details([("session", Some(helper.session.clone()))]),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
         if let Some(head) = draw.heads.get(&helper.task) {
             canvas.link(EdgeKind::Opened, head, &id, None, Some(&helper.at));
@@ -723,6 +737,8 @@ fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
             start: Some(job.started_at.clone()),
             end: job.ended_at.clone(),
             details: BTreeMap::new(),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
         let opener = job
             .session
@@ -753,6 +769,8 @@ fn prs(draw: &Draw<'_>, canvas: &mut Canvas) {
             start: Some(pr.first_at.clone()),
             end: None,
             details: details([("url", Some(pr.url.clone()))]),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
         canvas.link(
             EdgeKind::Delivered,
@@ -791,6 +809,8 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
             start: Some(review.requested_at.clone()),
             end: review.finished_at.clone(),
             details: BTreeMap::new(),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
         let reviewed = draw
             .heads
@@ -833,6 +853,8 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
                 start: run.started_at.clone(),
                 end: run.finished_at.clone(),
                 details: details([("round", Some(run.round.to_string()))]),
+                tokens: None,
+                badges: BTreeMap::new(),
             });
             canvas.link(
                 EdgeKind::Ran,
@@ -913,6 +935,8 @@ fn external(canvas: &mut Canvas, address: &str, at: &str) -> String {
             start: Some(at.to_owned()),
             end: None,
             details: BTreeMap::new(),
+            tokens: None,
+            badges: BTreeMap::new(),
         });
     }
     id
@@ -983,6 +1007,8 @@ fn asks(draw: &Draw<'_>, canvas: &mut Canvas) {
                 start: Some(ask.created_at.clone()),
                 end: ask.closed_at.clone(),
                 details: details([("question", Some(ask.question.clone()))]),
+                tokens: None,
+                badges: BTreeMap::new(),
             });
             canvas.link(
                 EdgeKind::Asked,
@@ -1008,4 +1034,133 @@ fn asks(draw: &Draw<'_>, canvas: &mut Canvas) {
             );
         }
     }
+}
+
+fn count(number: usize) -> u32 {
+    u32::try_from(number).unwrap_or(u32::MAX)
+}
+
+/// Tokens (in the view of now only: summed days cannot be cut at an instant) and the counts drawn on nodes.
+fn spend_and_badges(draw: &Draw<'_>, canvas: &mut Canvas) {
+    let spend = &draw.facts.spend;
+    let open_asks = canvas
+        .nodes
+        .values()
+        .filter(|node| node.kind() == super::NodeKind::Ask)
+        .count();
+    for node in canvas.nodes.values_mut() {
+        let id = node.id.clone();
+        if let Some(task) = id
+            .strip_prefix("task:")
+            .and_then(|task| task.parse::<i64>().ok())
+        {
+            let open = draw
+                .facts
+                .findings
+                .iter()
+                .filter(|finding| finding.task == task)
+                .filter(|finding| {
+                    draw.at.map_or_else(
+                        || finding.resolved_at.is_none(),
+                        |at| {
+                            finding.first_at.as_str() <= at
+                                && finding.resolved_at.as_deref().is_none_or(|end| end > at)
+                        },
+                    )
+                })
+                .count();
+            if open > 0 {
+                node.badges.insert("findings".to_owned(), count(open));
+            }
+            if draw.at.is_none() {
+                node.tokens = spend.tasks.get(&task).copied();
+            }
+        } else if let Some(session) = id.strip_prefix("session:") {
+            if draw.at.is_none() {
+                let task = draw.session_tasks.get(session).copied();
+                let sessions = task
+                    .and_then(|task| draw.task_sessions.get(&task))
+                    .map_or(&[][..], Vec::as_slice);
+                let total: u64 = sessions
+                    .iter()
+                    .filter_map(|session| spend.sessions.get(&session.id))
+                    .sum();
+                node.tokens = (total > 0).then_some(total);
+            }
+        } else if id == ORCHESTRATOR_NODE {
+            if draw.at.is_none() {
+                let total: u64 = draw
+                    .facts
+                    .sessions
+                    .iter()
+                    .filter(|session| session.role == Role::Orchestrator)
+                    .filter_map(|session| spend.sessions.get(&session.id))
+                    .sum();
+                node.tokens = (total > 0).then_some(total);
+            }
+        } else if let Some(agent) = id.strip_prefix("agent:") {
+            if draw.at.is_none() {
+                node.tokens = spend.agents.get(agent).copied();
+            }
+        } else if id == USER_NODE {
+            if open_asks > 0 {
+                node.badges.insert("asks".to_owned(), count(open_asks));
+            }
+        } else if let Some(review) = id
+            .strip_prefix("review:")
+            .and_then(|review| review.parse::<i64>().ok())
+        {
+            let found: Vec<&super::ReviewFindingFact> = draw
+                .facts
+                .review_findings
+                .iter()
+                .filter(|finding| finding.review == review)
+                .collect();
+            finding_badges(node, &found);
+        } else if let Some(rest) = id.strip_prefix("review-node:") {
+            let mut parts = rest.splitn(4, ':');
+            let (review, round, name) = (parts.next(), parts.next(), parts.next());
+            let found: Vec<&super::ReviewFindingFact> = draw
+                .facts
+                .review_findings
+                .iter()
+                .filter(|finding| {
+                    review == Some(finding.review.to_string().as_str())
+                        && round == Some(finding.round.to_string().as_str())
+                        && name == Some(finding.node.as_str())
+                })
+                .collect();
+            finding_badges(node, &found);
+        }
+    }
+}
+
+/// A review's or flow node's finding counts: all, those still open between the leads (a finding the verify stage
+/// rejected never reached them), and by severity in details.
+fn finding_badges(node: &mut Node, found: &[&super::ReviewFindingFact]) {
+    if found.is_empty() {
+        return;
+    }
+    node.badges
+        .insert("findings".to_owned(), count(found.len()));
+    let open = found
+        .iter()
+        .filter(|finding| finding.verdict != Some(FindingVerdict::Rejected))
+        .filter(|finding| {
+            finding
+                .resolution
+                .is_none_or(|resolution| !resolution.is_settled())
+        })
+        .count();
+    node.badges.insert("open".to_owned(), count(open));
+    let mut by_severity: BTreeMap<&str, usize> = BTreeMap::new();
+    for finding in found {
+        *by_severity.entry(finding.severity.as_str()).or_default() += 1;
+    }
+    let summary = by_severity
+        .iter()
+        .map(|(severity, number)| format!("{number} {severity}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    node.details.insert("findings".to_owned(), summary);
 }

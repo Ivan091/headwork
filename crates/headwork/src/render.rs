@@ -1286,6 +1286,8 @@ mod tests {
             start: None,
             end: None,
             details: BTreeMap::new(),
+            tokens: None,
+            badges: BTreeMap::new(),
         };
         let view = Graph {
             at: Some("2026-11-23T08:00:00.000Z".to_owned()),

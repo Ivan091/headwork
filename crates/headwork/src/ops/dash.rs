@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
-use headwork_core::graph::{Edge, Node, task_node};
-use headwork_store::{Store, TaskId};
+use headwork_core::graph::{Edge, Node, Shape, task_node};
+use headwork_store::{SpendOf, Store, TaskId};
 use serde::Serialize;
 
 use crate::ops::graph::{GraphQuery, Which, graph};
@@ -262,6 +262,9 @@ pub struct NodeDetails {
     /// For a task, its newest recap.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recap: Option<String>,
+    /// For a task (its own), a session or a subagent, the tokens spent by type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend: Option<headwork_core::usage::Tokens>,
 }
 
 /// The answer to a route, read from the store at `db` through a read-only connection.
@@ -344,11 +347,30 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         }
         None => (Vec::new(), None),
     };
+    let whose = match node.shape {
+        Shape::Task(_) => task.map(SpendOf::Task),
+        Shape::Lead(_) | Shape::Worker(_) | Shape::Part(_) => node
+            .details
+            .get("session")
+            .map(|session| SpendOf::Session(session.as_str())),
+        Shape::Subagent(_) => id.strip_prefix("agent:").map(SpendOf::Agent),
+        Shape::User
+        | Shape::Orchestrator(_)
+        | Shape::Helper
+        | Shape::Review(_)
+        | Shape::ReviewNode(_)
+        | Shape::Job(_)
+        | Shape::Pr(_)
+        | Shape::Ask(_)
+        | Shape::External => None,
+    };
+    let spend = whose.map(|whose| store.spend_of(whose)).transpose()?;
     Ok(Some(NodeDetails {
         node,
         edges,
         history,
         recap,
+        spend,
     }))
 }
 

@@ -17,8 +17,8 @@ use headwork_core::{
     Slug, TaskRequest, TaskShape, Trigger,
 };
 use headwork_store::{
-    FileMark, MIGRATIONS, NewAsk, NewJob, NewPr, NewSession, NewTask, PrSeen, Store, Task, TaskId,
-    UsageBatch, UsageTag, migrate,
+    FileMark, MIGRATIONS, NewAsk, NewJob, NewPr, NewSession, NewTask, PrSeen, SpendOf, Store, Task,
+    TaskId, UsageBatch, UsageTag, migrate,
 };
 
 fn config() -> Config {
@@ -690,5 +690,62 @@ fn the_log_gives_its_span_and_the_events_after_an_id() {
             .iter()
             .any(|mark| mark.task.as_deref() == Some(&lead.name.to_string())),
         "named by task"
+    );
+}
+
+#[test]
+fn spend_is_summed_per_task_session_and_subagent() {
+    let (mut store, config) = store();
+    let (lead, _) = populate(&mut store, &config);
+    record(
+        &mut store,
+        "lead",
+        None,
+        None,
+        &[line("m9", "2026-11-22T10:00:00.000Z", HAIKU, 5, 5)],
+    );
+    let facts = store.graph_facts().unwrap();
+    let main = 5 + 10 + 5;
+    let agent = 1 + 10 + 1;
+    assert_eq!(
+        facts.spend.sessions.get("lead").copied(),
+        Some(main),
+        "the session's own"
+    );
+    assert_eq!(
+        facts.spend.agents.get("a1").copied(),
+        Some(agent),
+        "its subagent's"
+    );
+    assert_eq!(
+        facts.spend.tasks.get(&lead.id.0).copied(),
+        Some(main + agent),
+        "the task's, subagents in"
+    );
+    let by_type = store.spend_of(SpendOf::Session("lead")).unwrap();
+    assert_eq!(
+        (
+            by_type.input,
+            by_type.cache_read,
+            by_type.output,
+            by_type.total()
+        ),
+        (5, 10, 5, main),
+        "by type"
+    );
+    assert_eq!(
+        store.spend_of(SpendOf::Agent("a1")).unwrap().total(),
+        agent,
+        "a subagent by type"
+    );
+    assert_eq!(
+        store.spend_of(SpendOf::Task(lead.id.0)).unwrap().total(),
+        main + agent,
+        "a task by type"
+    );
+    assert_eq!(
+        store.spend_of(SpendOf::Agent("nobody")).unwrap().total(),
+        0,
+        "nothing spent"
     );
 }
