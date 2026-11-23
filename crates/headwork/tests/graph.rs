@@ -9,10 +9,11 @@ use std::path::Path;
 
 use headwork::ops::graph::{GraphQuery, graph, render};
 use headwork::ops::usage::ingest_file;
+use headwork_core::config::ParkPolicy;
 use headwork_core::{
-    Actor, Config, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape,
+    Actor, Config, JobState, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape,
 };
-use headwork_store::{NewPr, NewSession, NewTask, PrSeen, Store, TaskId};
+use headwork_store::{NewJob, NewPr, NewSession, NewTask, PrSeen, Store, TaskId};
 
 fn config() -> Config {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
@@ -244,5 +245,56 @@ fn a_replay_shows_each_instant_as_the_operations_left_it() {
     ];
     for (at, id, state) in table {
         assert_eq!(state_at(&store, at, id).as_deref(), state, "{id} at {at}");
+    }
+}
+
+#[test]
+fn a_job_parked_and_started_again_is_running_after_its_restart() {
+    let (mut store, task) = store_with_task();
+    let argv = ["render".to_owned()];
+    let job = store
+        .register_job(
+            &NewJob {
+                task_id: Some(task),
+                session_id: Some("0a"),
+                project: "me-sim",
+                label: "render",
+                park_policy: ParkPolicy::Rerun,
+                argv: &argv,
+                cwd: "S:/w",
+                pid: Some(10),
+                identity: None,
+                checkpoint_path: None,
+                heavy: false,
+                restart: true,
+                log_path: "S:/w/render.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let started = tick(&store);
+    store
+        .set_job_state(job, JobState::Parked, Some("park"), Actor::Tick)
+        .unwrap();
+    let parked = tick(&store);
+    store.set_job_pid(job, 11, None, Actor::Tick).unwrap();
+    let restarted = tick(&store);
+    store
+        .set_job_state(job, JobState::Done, None, Actor::Tick)
+        .unwrap();
+    let done = tick(&store);
+    let id = format!("job:{job}");
+    let table = [
+        (&started, "running"),
+        (&parked, "parked"),
+        (&restarted, "running"),
+        (&done, "done"),
+    ];
+    for (at, state) in table {
+        assert_eq!(
+            state_at(&store, at, &id).as_deref(),
+            Some(state),
+            "{id} at {at}"
+        );
     }
 }

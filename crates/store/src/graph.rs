@@ -368,18 +368,21 @@ const PR_CHANGES: &str = "SELECT p.id, json_extract(e.data, '$.from'), json_extr
      FROM events e JOIN prs p ON p.task_id = e.task_id AND p.url = json_extract(e.data, '$.url')
      WHERE e.type = 'pr-state' AND json_valid(e.data) AND json_extract(e.data, '$.to') IS NOT NULL ORDER BY e.id";
 
-/// `job-state` events; they name the new state only.
-const JOB_CHANGES: &str =
-    "SELECT json_extract(data, '$.job'), NULL, json_extract(data, '$.state'), at, id FROM events
-     WHERE type = 'job-state' AND json_valid(data) AND json_extract(data, '$.job') IS NOT NULL
-         AND json_extract(data, '$.state') IS NOT NULL
+/// `job-state` events, which name the new state only, and `job-started` events (a job started again after a park),
+/// a change to `running`.
+const JOB_CHANGES: &str = "SELECT json_extract(data, '$.job'), NULL,
+         CASE type WHEN 'job-started' THEN 'running' ELSE json_extract(data, '$.state') END, at, id
+     FROM events
+     WHERE type IN ('job-state', 'job-started') AND json_valid(data) AND json_extract(data, '$.job') IS NOT NULL
+         AND (type = 'job-started' OR json_extract(data, '$.state') IS NOT NULL)
      ORDER BY id";
 
-/// `review-<trigger>` events: every review event with a review id and both states.
+/// `review-<trigger>` events: every review event with a review id and both states. The type range (`review-` up to
+/// `review.`, the next character) is the `LIKE 'review-%'` that the `events_type` index can serve.
 const REVIEW_CHANGES: &str = "SELECT json_extract(data, '$.review'), json_extract(data, '$.from'), json_extract(data, '$.to'),
          at, id
      FROM events
-     WHERE type LIKE 'review-%' AND json_valid(data) AND json_extract(data, '$.review') IS NOT NULL
+     WHERE type >= 'review-' AND type < 'review.' AND json_valid(data) AND json_extract(data, '$.review') IS NOT NULL
          AND json_extract(data, '$.from') IS NOT NULL AND json_extract(data, '$.to') IS NOT NULL
      ORDER BY id";
 

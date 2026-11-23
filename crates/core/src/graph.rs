@@ -1026,21 +1026,31 @@ fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
     });
 }
 
+/// Where a subagent is drawn and in what state, or none when this view leaves it out: its caller is not drawn, it is
+/// the orchestrator's in a single-task view, or it had not responded yet at the instant (or has no times at all).
+fn agent_shown<'d>(
+    draw: &'d Draw<'_>,
+    agent: &AgentFact,
+) -> Option<(&'d String, Option<String>, AgentState)> {
+    let caller = draw.of_session(&agent.session)?;
+    let home = draw.task_box(draw.caller_task(&agent.session));
+    if matches!(draw.scope, Scope::Task(_)) && home.is_none() {
+        return None;
+    }
+    let state = match (draw.at, agent.first_at.as_deref(), agent.last_at.as_deref()) {
+        (None, _, _) => AgentState::Seen,
+        (Some(_), None, _) => return None,
+        (Some(at), Some(first), _) if first > at => return None,
+        (Some(at), Some(_), Some(last)) if last <= at => AgentState::Done,
+        (Some(_), Some(_), _) => AgentState::Running,
+    };
+    Some((caller, home, state))
+}
+
 fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
     for agent in &draw.facts.agents {
-        let Some(caller) = draw.of_session(&agent.session) else {
+        let Some((caller, home, state)) = agent_shown(draw, agent) else {
             continue;
-        };
-        let parent = draw.task_box(draw.caller_task(&agent.session));
-        if matches!(draw.scope, Scope::Task(_)) && parent.is_none() {
-            continue;
-        }
-        let state = match (draw.at, agent.first_at.as_deref(), agent.last_at.as_deref()) {
-            (None, _, _) => AgentState::Seen,
-            (Some(_), None, _) => continue,
-            (Some(at), Some(first), _) if first > at => continue,
-            (Some(at), Some(_), Some(last)) if last <= at => AgentState::Done,
-            (Some(_), Some(_), _) => AgentState::Running,
         };
         let id = agent_node(&agent.id);
         canvas.put(Node {
@@ -1051,7 +1061,7 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
                 .clone()
                 .unwrap_or_else(|| "subagent".to_owned()),
             state: Some(Status::Agent(state)),
-            parent,
+            parent: home,
             start: agent.first_at.clone(),
             end: agent.last_at.clone(),
             details: details([
@@ -1063,8 +1073,9 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
         let starter = agent
             .parent
             .as_deref()
-            .filter(|parent| draw.facts.agents.iter().any(|other| other.id == *parent))
-            .map_or_else(|| caller.clone(), agent_node);
+            .and_then(|parent| draw.facts.agents.iter().find(|other| other.id == parent))
+            .filter(|parent| agent_shown(draw, parent).is_some())
+            .map_or_else(|| caller.clone(), |parent| agent_node(&parent.id));
         canvas.link(
             EdgeKind::Called,
             &starter,
@@ -1105,18 +1116,20 @@ fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
         if !draw.until(&job.started_at) {
             continue;
         }
-        let state = draw
-            .at
-            .map_or(job.state, |at| match job.ended_at.as_deref() {
-                Some(end) if end > at => JobState::Running,
-                _ => change_at(
-                    &draw.facts.job_changes,
-                    job.id,
-                    at,
-                    JobState::Running,
-                    job.state,
-                ),
-            });
+        let state = draw.at.map_or(job.state, |at| {
+            let unlogged = if job.ended_at.as_deref().is_some_and(|end| end > at) {
+                JobState::Running
+            } else {
+                job.state
+            };
+            change_at(
+                &draw.facts.job_changes,
+                job.id,
+                at,
+                JobState::Running,
+                unlogged,
+            )
+        });
         let id = format!("job:{}", job.id);
         canvas.put(Node {
             id: id.clone(),
