@@ -107,15 +107,16 @@
           "text-wrap": "ellipsis",
           "text-max-width": 160,
           "background-color": (node) => c[node.data("tone")] || c.grey,
-          width: 22,
-          height: 22,
-          "border-width": 0,
+          width: "data(size)",
+          height: "data(size)",
+          "border-width": (node) => (node.data("raw") && node.data("raw").badges && node.data("raw").badges.findings ? 3 : 0),
+          "border-color": c.red,
         },
       },
       { selector: "node[kind = 'user']", style: { shape: "star", width: 34, height: 34 } },
       { selector: "node[kind = 'orchestrator']", style: { shape: "hexagon", width: 40, height: 40, "font-size": 12 } },
-      { selector: "node[kind = 'lead'], node[kind = 'worker'], node[kind = 'part']", style: { shape: "ellipse", width: 28, height: 28 } },
-      { selector: "node[kind = 'subagent'], node[kind = 'helper']", style: { width: 12, height: 12, "font-size": 8 } },
+      { selector: "node[kind = 'lead'], node[kind = 'worker'], node[kind = 'part']", style: { shape: "ellipse" } },
+      { selector: "node[kind = 'subagent'], node[kind = 'helper']", style: { "font-size": 8 } },
       { selector: "node[kind = 'job']", style: { shape: "round-rectangle", width: 16, height: 12 } },
       { selector: "node[kind = 'pr']", style: { shape: "tag", width: 16, height: 14 } },
       { selector: "node[kind = 'review']", style: { shape: "diamond", width: 20, height: 20 } },
@@ -216,11 +217,48 @@
     return new Map(nodes.map((node) => [node.id, find(node.id)]));
   }
 
-  function shownLabel(node) {
-    if (node.kind === "task" && node.state) {
-      return node.label + " · " + node.state;
+  function shortCount(tokens) {
+    if (tokens >= 1e9) {
+      return (tokens / 1e9).toFixed(1) + "G";
     }
-    return node.label;
+    if (tokens >= 1e6) {
+      return (tokens / 1e6).toFixed(1) + "M";
+    }
+    if (tokens >= 1e3) {
+      return (tokens / 1e3).toFixed(1) + "k";
+    }
+    return String(tokens);
+  }
+
+  function shownLabel(node) {
+    const badges = node.badges || {};
+    let label = node.label;
+    if (node.kind === "task" && node.state) {
+      label += " · " + node.state;
+    }
+    if (node.kind === "user" && badges.asks) {
+      label += " · " + badges.asks + " ask" + (badges.asks > 1 ? "s" : "") + " waiting";
+    }
+    if (node.kind === "task" && badges.findings) {
+      label += " · ⚠ " + badges.findings;
+    }
+    if ((node.kind === "review" || node.kind === "review-node") && badges.findings) {
+      label += " · " + badges.findings + " finding" + (badges.findings > 1 ? "s" : "");
+      if (badges.open) {
+        label += " (" + badges.open + " open)";
+      }
+    }
+    if (byId("by-cost").checked && node.tokens) {
+      label += " · " + shortCount(node.tokens);
+    }
+    return label;
+  }
+
+  function sizeOf(node, base) {
+    if (!byId("by-cost").checked || !node.tokens) {
+      return base;
+    }
+    return Math.min(base + 8 * Math.log10(1 + node.tokens / 1000), 90);
   }
 
   function apply(graph) {
@@ -245,6 +283,7 @@
           kind: node.kind,
           state: node.state || "",
           tone: tone(node.kind, node.state),
+          size: sizeOf(node, 22),
           project: projects.get(node.id) || "",
           raw: node,
         };
@@ -543,6 +582,22 @@
         add(list, "li", at + "  " + (from ? from + " → " : "") + to);
       }
     }
+    if (details.spend) {
+      const spend = details.spend;
+      const total = spend.input + spend.cache_write_5m + spend.cache_write_1h + spend.cache_read + spend.output;
+      add(panelBody, "h3", "tokens");
+      pairs(panelBody, [
+        ["total", total.toLocaleString()],
+        ["input", spend.input.toLocaleString()],
+        ["cache writes (5 min)", spend.cache_write_5m.toLocaleString()],
+        ["cache writes (1 h)", spend.cache_write_1h.toLocaleString()],
+        ["cache reads", spend.cache_read.toLocaleString()],
+        ["output", spend.output.toLocaleString()],
+        ["of which thinking", spend.thinking ? spend.thinking.toLocaleString() : ""],
+        ["web searches", spend.web_searches || ""],
+        ["web fetches", spend.web_fetches || ""],
+      ]);
+    }
     if (details.recap) {
       add(panelBody, "h3", "newest recap");
       add(panelBody, "pre", details.recap);
@@ -667,6 +722,15 @@
   projectSelect.addEventListener("change", () => {
     filter();
     layout();
+  });
+  byId("by-cost").addEventListener("change", () => {
+    for (const node of cy.nodes()) {
+      const raw = node.data("raw");
+      if (raw) {
+        node.data("size", sizeOf(raw, 22));
+      }
+    }
+    filter();
   });
   for (const id of new Set(Object.values(toggles))) {
     byId(id).addEventListener("change", () => {

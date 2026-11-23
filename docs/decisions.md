@@ -1388,3 +1388,13 @@ and the reason.
   now, and "replay this task" sets the task scope and plays from the task's start. New talk (`message`, `report`,
   `asked`, `spawned`) pulses on the edge whose last time changed between two snapshots, so live and replay pulse the
   same way without a second mapping of events to edges.
+- 2026-11-23, dashboard D4 (cost and health): a node carries its tokens (every input kind plus output, as
+  `Tokens::total`) in the view of now only, since summed days cannot be cut at an instant: a task its own (subagents
+  in), a session its own (subagents out, earlier sessions of its task added), the orchestrator all its sessions, a
+  subagent its own. "Size by cost" grows a node by the log of its tokens and adds the count to its label; the side
+  panel shows a task's, session's or subagent's tokens by type (`/api/node`, `Store::spend_of`). Badges are counts on
+  the node: open tick findings on a task (at a past instant, those open then; a red ring), open asks on the user node,
+  and on a review and its flow nodes their findings, how many are still open between the leads (a finding the verify
+  stage rejected never reached them), and their severities in the details. The hierarchical layout is the page's
+  "hierarchy" (Cytoscape `breadthfirst` from the orchestrator), there since D2. The trial is
+  `docs/trials/f-dashboard/results.md`.

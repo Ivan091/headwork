@@ -22,8 +22,8 @@ pub use build::build;
 
 use crate::review::Level;
 use crate::vocabulary::{
-    Actor, AskState, Effort, JobState, Model, NodeState, PullState, ReviewState, Role,
-    SessionState, TaskState, UnknownWord, text_enum,
+    Actor, AskState, Effort, FindingVerdict, JobState, Model, NodeState, PullState, Resolution,
+    ReviewState, Role, SessionState, Severity, TaskState, UnknownWord, text_enum,
 };
 
 /// The id of the one node that stands for the user.
@@ -250,6 +250,49 @@ pub struct ReportFact {
     pub at: String,
 }
 
+/// A finding the tick raised about a task (`findings` table), such as a stuck session or a stray tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingFact {
+    /// The task it names.
+    pub task: i64,
+    /// The tick's rule.
+    pub rule: String,
+    /// What it found.
+    pub detail: String,
+    /// When it was first seen.
+    pub first_at: String,
+    /// When it was resolved.
+    pub resolved_at: Option<String>,
+}
+
+/// A finding a review node raised (`review_findings` table).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFindingFact {
+    /// The review.
+    pub review: i64,
+    /// The round.
+    pub round: i64,
+    /// The flow node that raised it.
+    pub node: String,
+    /// How bad.
+    pub severity: Severity,
+    /// What the verify stage said.
+    pub verdict: Option<FindingVerdict>,
+    /// Where it stands between the leads.
+    pub resolution: Option<Resolution>,
+}
+
+/// Tokens spent (every input kind plus output), as the usage reader stored them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Spend {
+    /// Each task's own tokens.
+    pub tasks: BTreeMap<i64, u64>,
+    /// Each session's own tokens, its subagents' left out.
+    pub sessions: BTreeMap<String, u64>,
+    /// Each subagent's tokens.
+    pub agents: BTreeMap<String, u64>,
+}
+
 /// A logged state change of a task, pull request, job or review, keyed by its row id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change<S> {
@@ -298,6 +341,12 @@ pub struct Facts {
     pub job_changes: Vec<Change<JobState>>,
     /// Every logged review state change, oldest first.
     pub review_changes: Vec<Change<ReviewState>>,
+    /// Every tick finding about a task.
+    pub findings: Vec<FindingFact>,
+    /// Every review finding.
+    pub review_findings: Vec<ReviewFindingFact>,
+    /// The tokens spent so far.
+    pub spend: Spend,
     /// Events left out because they hold a word this build does not know, each named with why.
     pub skipped: Vec<String>,
 }
@@ -543,6 +592,13 @@ pub struct Node {
     /// More to show on click.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub details: BTreeMap<String, String>,
+    /// Tokens spent so far, in the view of now, for a task (its own), a session, the orchestrator and a subagent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// Counts drawn on the node: open tick `findings` on a task, open `asks` on the user, review `findings` (and
+    /// `open` ones) on a review and its flow nodes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub badges: BTreeMap<String, u32>,
 }
 
 /// One edge.

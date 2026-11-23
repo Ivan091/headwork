@@ -225,10 +225,7 @@ fn facts() -> Facts {
             change(1, Some(TaskState::Queued), TaskState::Working, "T02"),
             change(3, Some(TaskState::Working), TaskState::Closed, "T05"),
         ],
-        pr_changes: Vec::new(),
-        job_changes: Vec::new(),
-        review_changes: Vec::new(),
-        skipped: Vec::new(),
+        ..Facts::default()
     }
 }
 
@@ -1184,4 +1181,93 @@ fn a_message_from_a_name_taken_again_comes_from_whoever_held_it_then() {
         Some(1),
         "the old one's"
     );
+}
+
+#[test]
+fn the_view_of_now_carries_tokens_and_every_view_its_badges() {
+    let mut facts = facts();
+    facts.spend.tasks.insert(1, 1000);
+    facts.spend.sessions.insert("s1".to_owned(), 600);
+    facts.spend.sessions.insert("o1".to_owned(), 50);
+    facts.spend.agents.insert("a1".to_owned(), 70);
+    facts.findings.push(FindingFact {
+        task: 1,
+        rule: "stuck".to_owned(),
+        detail: "no output".to_owned(),
+        first_at: "T03".to_owned(),
+        resolved_at: Some("T06".to_owned()),
+    });
+    facts.findings.push(FindingFact {
+        task: 1,
+        rule: "stray-tab".to_owned(),
+        detail: "outside".to_owned(),
+        first_at: "T04".to_owned(),
+        resolved_at: None,
+    });
+    for (severity, resolution) in [
+        (Severity::Important, Some(Resolution::Open)),
+        (Severity::Nit, Some(Resolution::FixAccepted)),
+    ] {
+        facts.review_findings.push(ReviewFindingFact {
+            review: 1,
+            round: 1,
+            node: "correctness".to_owned(),
+            severity,
+            verdict: Some(FindingVerdict::Confirmed),
+            resolution,
+        });
+    }
+    facts.review_findings.push(ReviewFindingFact {
+        review: 1,
+        round: 1,
+        node: "correctness".to_owned(),
+        severity: Severity::Doubt,
+        verdict: Some(FindingVerdict::Rejected),
+        resolution: None,
+    });
+    let now = build(&facts, None, Scope::Live);
+    let tokens = |graph: &Graph, id: &str| graph.node(id).and_then(|node| node.tokens);
+    let badge = |graph: &Graph, id: &str, name: &str| {
+        graph
+            .node(id)
+            .and_then(|node| node.badges.get(name).copied())
+    };
+    let table = [
+        ("task:1", Some(1000)),
+        ("session:s1", Some(600)),
+        ("orchestrator", Some(50)),
+        ("agent:a1", Some(70)),
+    ];
+    for (id, expected) in table {
+        assert_eq!(tokens(&now, id), expected, "tokens of {id}");
+    }
+    assert_eq!(
+        badge(&now, "task:1", "findings"),
+        Some(1),
+        "one finding still open now"
+    );
+    assert_eq!(badge(&now, "user", "asks"), Some(1), "one open ask");
+    assert_eq!(
+        badge(&now, "review:1", "findings"),
+        Some(3),
+        "three review findings"
+    );
+    assert_eq!(
+        badge(&now, "review:1", "open"),
+        Some(1),
+        "a rejected finding never reached the leads"
+    );
+    let node = now.node("review-node:1:1:correctness:0").unwrap();
+    assert_eq!(
+        node.details.get("findings").map(String::as_str),
+        Some("1 doubt, 1 important, 1 nit"),
+        "by severity"
+    );
+    let then = build(&facts, Some("T05"), Scope::Live);
+    assert_eq!(
+        badge(&then, "task:1", "findings"),
+        Some(2),
+        "both open at T05"
+    );
+    assert_eq!(tokens(&then, "task:1"), None, "no tokens at a past instant");
 }

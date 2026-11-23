@@ -130,7 +130,8 @@ that checks the `Host` header; the page (`dash/index.html`, `app.js`, `style.css
 fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built into the binary. D3 adds `/api/range`,
 `/api/events?since=` and `/api/stream` (server-sent `change` lines written straight to the socket when the event log
 grows), and the page's timeline: live, a slider over the log, play at 1x to 1000x, pulses on new talk, and "replay
-this task".
+this task". D4 adds tokens (`Facts::spend`, `Store::spend_of`) for "size by cost" and the panel, and badges: open tick
+findings on a task, open asks on the user, review findings on a review and its flow nodes.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

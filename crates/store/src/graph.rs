@@ -4,10 +4,12 @@
 use std::str::FromStr;
 
 use headwork_core::graph::{
-    AgentFact, AskFact, Change, Facts, HelperFact, JobFact, MessageFact, PrFact, ReceivedFact,
-    ReportFact, ReviewFact, ReviewNodeFact, SessionFact, TaskFact,
+    AgentFact, AskFact, Change, Facts, FindingFact, HelperFact, JobFact, MessageFact, PrFact,
+    ReceivedFact, ReportFact, ReviewFact, ReviewFindingFact, ReviewNodeFact, SessionFact, Spend,
+    TaskFact,
 };
 use headwork_core::review::Level;
+use headwork_core::usage::Tokens;
 use headwork_core::{Actor, UnknownWord};
 use rusqlite::{Connection, Row, params};
 use serde::Serialize;
@@ -147,8 +149,181 @@ fn read_facts(conn: &Connection) -> Result<Facts, StoreError> {
         pr_changes,
         job_changes,
         review_changes,
+        findings: rows(conn, FINDINGS, [], finding)?,
+        review_findings: review_findings(conn)?,
+        spend: spend(conn)?,
         skipped,
     })
+}
+
+const FINDINGS: &str = "SELECT task_id, rule, detail, first_at, resolved_at FROM findings
+     WHERE task_id IS NOT NULL ORDER BY id";
+
+fn finding(row: &Row<'_>) -> rusqlite::Result<FindingFact> {
+    Ok(FindingFact {
+        task: row.get(0)?,
+        rule: row.get(1)?,
+        detail: row.get(2)?,
+        first_at: row.get(3)?,
+        resolved_at: row.get(4)?,
+    })
+}
+
+fn review_findings(conn: &Connection) -> Result<Vec<ReviewFindingFact>, StoreError> {
+    type Raw = (
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    let raw: Vec<Raw> = rows(
+        conn,
+        "SELECT id, review_id, round, node, severity, verdict, resolution FROM review_findings ORDER BY id",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    raw.into_iter()
+        .map(|(id, review, round, node, severity, verdict, resolution)| {
+            let at = || format!("review finding {id}");
+            Ok(ReviewFindingFact {
+                review,
+                round,
+                node,
+                severity: word(&severity, at)?,
+                verdict: verdict.map(|verdict| word(&verdict, at)).transpose()?,
+                resolution: resolution
+                    .map(|resolution| word(&resolution, at))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+/// Every token kind summed: input, both cache writes, cache reads and output (`Tokens::total`).
+const TOTAL: &str = "SUM(input + cache_write_5m + cache_write_1h + cache_read + output)";
+
+fn sums<K: rusqlite::types::FromSql + Ord>(
+    conn: &Connection,
+    sql: &str,
+) -> Result<std::collections::BTreeMap<K, u64>, StoreError> {
+    let raw: Vec<(K, i64)> = rows(conn, sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(raw
+        .into_iter()
+        .map(|(key, total)| (key, u64::try_from(total).unwrap_or(0)))
+        .collect())
+}
+
+fn spend(conn: &Connection) -> Result<Spend, StoreError> {
+    Ok(Spend {
+        tasks: sums(
+            conn,
+            &format!(
+                "SELECT task_id, SUM(t) FROM (
+                     SELECT task_id, {TOTAL} AS t FROM usage WHERE task_id IS NOT NULL GROUP BY task_id
+                     UNION ALL
+                     SELECT task_id, {TOTAL} AS t FROM usage_daily WHERE task_id IS NOT NULL GROUP BY task_id
+                 ) GROUP BY task_id"
+            ),
+        )?,
+        sessions: sums(
+            conn,
+            &format!(
+                "SELECT session_id, SUM(t) FROM (
+                     SELECT session_id, {TOTAL} AS t FROM usage WHERE agent_id IS NULL GROUP BY session_id
+                     UNION ALL
+                     SELECT session_id, {TOTAL} AS t FROM usage_daily WHERE agent_type = '' GROUP BY session_id
+                 ) GROUP BY session_id"
+            ),
+        )?,
+        agents: sums(conn, &format!("SELECT agent_id, {TOTAL} FROM usage WHERE agent_id IS NOT NULL GROUP BY agent_id"))?,
+    })
+}
+
+/// Whose tokens to sum by type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendOf<'a> {
+    /// A task's own.
+    Task(i64),
+    /// A session's own, its subagents' left out.
+    Session(&'a str),
+    /// A subagent's.
+    Agent(&'a str),
+}
+
+impl Store {
+    /// The tokens spent, by type, by a task, a session or a subagent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn spend_of(&self, whose: SpendOf<'_>) -> Result<Tokens, StoreError> {
+        let columns = "COALESCE(SUM(input), 0), COALESCE(SUM(cache_write_5m), 0), COALESCE(SUM(cache_write_1h), 0),
+             COALESCE(SUM(cache_read), 0), COALESCE(SUM(output), 0), COALESCE(SUM(thinking), 0),
+             COALESCE(SUM(web_searches), 0), COALESCE(SUM(web_fetches), 0)";
+        let (live, daily, key): (&str, &str, String) = match whose {
+            SpendOf::Task(task) => ("task_id = ?1", "task_id = ?1", task.to_string()),
+            SpendOf::Session(session) => (
+                "session_id = ?1 AND agent_id IS NULL",
+                "session_id = ?1 AND agent_type = ''",
+                session.to_owned(),
+            ),
+            SpendOf::Agent(agent) => ("agent_id = ?1", "0", agent.to_owned()),
+        };
+        let sql = format!(
+            "SELECT {columns} FROM (
+                 SELECT input, cache_write_5m, cache_write_1h, cache_read, output, thinking, web_searches, web_fetches
+                 FROM usage WHERE {live}
+                 UNION ALL
+                 SELECT input, cache_write_5m, cache_write_1h, cache_read, output, thinking, web_searches, web_fetches
+                 FROM usage_daily WHERE {daily}
+             )"
+        );
+        let numbers: [i64; 8] = self.conn.query_row(&sql, params![key], |row| {
+            Ok([
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ])
+        })?;
+        let [
+            input,
+            cache_writes_short,
+            cache_writes_long,
+            reads,
+            output,
+            thinking,
+            searches,
+            fetches,
+        ] = numbers.map(|number| u64::try_from(number).unwrap_or(0));
+        Ok(Tokens {
+            input,
+            cache_write_5m: cache_writes_short,
+            cache_write_1h: cache_writes_long,
+            cache_read: reads,
+            output,
+            thinking,
+            web_searches: searches,
+            web_fetches: fetches,
+        })
+    }
 }
 
 fn rows<P: rusqlite::Params, T>(

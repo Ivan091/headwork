@@ -1,7 +1,8 @@
 # Dashboard: a live graph of the agents working together
 
 Status: plan of 2026-11-22; D1 built 2026-11-23 (`headwork graph`), D2 built 2026-11-23 (`headwork dash`), D3 built
-2026-11-23 (live stream and replay slider); see `docs/decisions.md`. The user's request: "a
+2026-11-23 (live stream and replay slider), D4 built 2026-11-23 (cost and health; trial in
+`docs/trials/f-dashboard/results.md`); see `docs/decisions.md`. The user's request: "a
 dashboard for headwork, web-based, which should illustrate a map of agents working together, something like an
 Obsidian map or rather a graph of agents, like in Neo4j, so I can see and check how agents are working together." The
 user's answers are in section 11 and are worked into the sections above.
@@ -163,7 +164,7 @@ messages pulse and nodes appear in the order they happened.
 | D1 (built) | `core/src/graph.rs` (facts → nodes and edges, `state_at`), the `agents` migration and its fill in the usage reader, `to` and `summary` on `SendMessage` events, `headwork graph [--json] [--at T] [--all] [--task <name>]` printing the graph as JSON or an indented text tree | table tests for every node and edge kind; `headwork graph --json` on this machine's store shows the review-flows lead with its parts and subagents (checked 2026-11-23 on a copy of this machine's store: `headwork graph --task headwork-agent-graph-dashboard`, a lead whose level-3 review ran as a part, showed the lead's session, the part's box nested in the lead's, the part's 206 subagents, the review with its flow nodes, and messages both ways between lead and part) |
 | D2 (built) | `headwork dash`: `tiny_http` server, `/api/graph`, `/api/node`, the page with Cytoscape.js vendored, layout, colours, side panel, filters, search | the page shows the live board as a graph and matches `headwork board` |
 | D3 (built) | live and replay: `/api/events`, `/api/stream`, `/api/range`, the slider, play speeds, message pulses | a task's whole life replays from its first event; a new spawn appears within two seconds |
-| D4 | cost and health: size by tokens, tokens by type in the panel, finding and ask badges, review nodes with findings, the hierarchical layout; a trial with a few live tasks, results in `docs/trials/` | the user has watched a real lead, its parts and a review on the page |
+| D4 (built) | cost and health: size by tokens, tokens by type in the panel, finding and ask badges, review nodes with findings, the hierarchical layout; a trial with a few live tasks, results in `docs/trials/` | the user has watched a real lead, its parts and a review on the page |
 | | Total | about 4 |
 
 D1 first; D2 and D3 in order; D4 last. Each milestone is usable on its own: D1 gives a JSON graph any tool can draw.
