@@ -68,6 +68,8 @@ macro_rules! text_enum {
     };
 }
 
+pub(crate) use text_enum;
+
 text_enum!(
     /// Where a task is in its lifecycle (design section 2.3).
     TaskState, "task state" {
@@ -290,6 +292,18 @@ text_enum!(
         Default => "default",
         /// File edits pass without asking.
         AcceptEdits => "acceptEdits",
+    }
+);
+
+text_enum!(
+    /// Where a pull request is, as `prs.state` holds it.
+    PullState, "pull request state" {
+        /// Open, its gate running or done.
+        Open => "open",
+        /// Merged.
+        Merged => "merged",
+        /// Closed unmerged.
+        Closed => "closed",
     }
 );
 

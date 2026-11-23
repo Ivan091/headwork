@@ -21,6 +21,7 @@ use headwork_core::guard::{
     SimpleCommand, ToolCall, check_tool, commands, repo_from_url,
 };
 use headwork_core::lifecycle::{SessionFacts, Trigger};
+use headwork_core::names::kept_text;
 use headwork_core::review::{ParsedCommand, parse_command};
 use headwork_core::{
     Actor, AskKind, Config, PermissionMode, ReviewState, Role, SessionState, TaskState,
@@ -809,11 +810,12 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
     let Some(to) = tool_input.get("to").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if !is_orchestrator_address(to) {
+    let bare = headwork_core::names::bare_address(to);
+    if !is_orchestrator_address(bare) {
         return Ok(None);
     }
     let address = rules::orchestrator_address(store, call.env.host)?;
-    if address == to {
+    if address == bare {
         return Ok(None);
     }
     store.append_event(
@@ -941,6 +943,30 @@ fn free_slot_while_asking(store: &mut Store, call: &Call<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The longest message summary a `tool-used` event keeps, in characters.
+const SUMMARY_CHARS: usize = 120;
+/// The longest message address a `tool-used` event keeps, in characters.
+const ADDRESS_CHARS: usize = 120;
+
+/// The `tool-used` event's data: the tool, and for `SendMessage` the address in the tool input `PostToolUse` receives
+/// and the sender's short summary (never the message body), kept by [`kept_text`], which the agent graph draws as a
+/// message edge.
+fn tool_used(tool: &str, input: Option<&Value>) -> Value {
+    if tool != "SendMessage" {
+        return json!({ "tool": tool });
+    }
+    let field = |name: &str| {
+        input
+            .and_then(|input| input.get(name))
+            .and_then(Value::as_str)
+    };
+    json!({
+        "tool": tool,
+        "to": field("to").and_then(|to| kept_text(to, ADDRESS_CHARS)),
+        "summary": field("summary").and_then(|summary| kept_text(summary, SUMMARY_CHARS)),
+    })
+}
+
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
     if starts_background_work(tool, call) {
@@ -961,7 +987,7 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         call.session.task_id,
         Some(&call.session.id),
         EVENT_TOOL,
-        &json!({ "tool": tool }),
+        &tool_used(tool, call.input.get("tool_input")),
     )?;
     if tool == "AskUserQuestion" {
         let response = call

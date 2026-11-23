@@ -5,6 +5,7 @@
 
 mod backup;
 mod error;
+mod graph;
 mod hooks;
 mod migrate;
 mod park;

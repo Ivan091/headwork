@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use headwork_core::RuleId;
 use headwork_core::config::HooksConfig;
 use headwork_store::{EVENT_WOULD_DENY, EventFilter, Store};
@@ -68,34 +68,6 @@ pub struct ShadowReport {
     pub rules: Vec<RuleHits>,
 }
 
-/// Turns `--since` into an instant in UTC: a span back from now (`90m`, `24h`, `7d`), or an RFC 3339 date and time or
-/// a plain date.
-pub(crate) fn since_instant(store: &Store, text: &str) -> Result<String> {
-    let text = text.trim();
-    let span = text.char_indices().last().and_then(|(at, unit)| {
-        let seconds: u64 = match unit {
-            's' => 1,
-            'm' => 60,
-            'h' => 3600,
-            'd' => 86_400,
-            _ => return None,
-        };
-        text.get(..at)?
-            .parse::<u64>()
-            .ok()
-            .and_then(|amount| amount.checked_mul(seconds))
-    });
-    if let Some(seconds) = span {
-        return Ok(store.instant_ago(seconds)?);
-    }
-    match store.instant_of(text)? {
-        Some(instant) => Ok(instant),
-        None => bail!(
-            "cannot read `{text}` as a time: use YYYY-MM-DD, an RFC 3339 date and time, or a span such as 24h or 7d"
-        ),
-    }
-}
-
 /// Reads the log and groups the would-deny events by rule, from `since` on when given.
 ///
 /// # Errors
@@ -106,7 +78,7 @@ pub fn shadow_report(
     hooks: &HooksConfig,
     since: Option<&str>,
 ) -> Result<ShadowReport> {
-    let since = since.map(|text| since_instant(store, text)).transpose()?;
+    let since = since.map(|text| super::instant(store, text)).transpose()?;
     let mut events = store.events(EventFilter {
         task: None,
         limit: u32::MAX,

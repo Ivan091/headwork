@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod clean;
 pub mod config;
+pub mod graph;
 pub mod guard;
 pub mod layout;
 pub mod lead;
@@ -39,6 +40,6 @@ pub use names::{
 pub use platform::Platform;
 pub use vocabulary::{
     Actor, AskKind, AskState, Effort, FindingId, FindingVerdict, JobState, MachineMode, Model,
-    NodeState, PermissionMode, PlaceKind, RecapKind, Resolution, ReviewState, Role, RuleId,
-    SessionState, Severity, TaskState, UnknownWord, UsageGroup, UsageRole,
+    NodeState, PermissionMode, PlaceKind, PullState, RecapKind, Resolution, ReviewState, Role,
+    RuleId, SessionState, Severity, TaskState, UnknownWord, UsageGroup, UsageRole,
 };

@@ -119,6 +119,12 @@ the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` i
 (`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
 `review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
 review.
+The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
+leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
+reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,
+`Graph` out, `change_at` for replay); `Store::graph_facts` (`store/src/graph.rs`) reads them in one transaction. The
+`agents` table (migration 0020) holds each subagent's type, description, model, depth, parent agent and first and last response,
+filled by the usage reader with the usage rows; the `SendMessage` `tool-used` event carries `to` and a short `summary`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -139,6 +145,7 @@ cargo test -p headwork-core                # one crate
 cargo run -p headwork -- board             # projects, tasks (parts indented under their lead), sessions (pane or tab), states, asks
 cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
+cargo run -p headwork -- graph [--json] [--at T] [--all | --task <name>]   # the agents working together as nodes and edges (docs/dashboard.md)
 cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job

@@ -36,6 +36,15 @@ pub enum StoreError {
     /// A stored word is not one this build knows.
     #[error("stored value: {0}")]
     UnknownWord(#[from] UnknownWord),
+    /// A stored word in a named row is not one this build knows.
+    #[error("{row}: {source}")]
+    BadRow {
+        /// The row, such as `task 12` or `event 345`.
+        row: String,
+        /// The word.
+        #[source]
+        source: UnknownWord,
+    },
     /// A stored name is not valid.
     #[error("stored name: {0}")]
     BadName(#[from] NameError),

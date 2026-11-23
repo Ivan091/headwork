@@ -11,6 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::names::kept_text;
 use crate::vocabulary::{Role, UsageRole};
 
 /// The model Claude Code names on lines it wrote itself (an interrupted turn, an error), which spent nothing.
@@ -204,11 +205,58 @@ pub fn transcript_of(path: &Path) -> Option<TranscriptFile> {
     }
 }
 
-/// The subagent type in an `agent-<id>.meta.json` file (`agentType`), none when the file says none.
+/// What a subagent's `agent-<id>.meta.json` says about it: its type, the short label its caller gave it, the model it
+/// asked for and how deep it was nested.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentMeta {
+    /// Such as `general-purpose` or `Explore`.
+    pub agent_type: Option<String>,
+    /// The `Agent` call's description, never its prompt.
+    pub description: Option<String>,
+    /// The model it asked for.
+    pub model: Option<String>,
+    /// 1 for a session's own subagent, more for nested ones.
+    pub spawn_depth: Option<i64>,
+    /// The subagent that started a nested one (`parentAgentId`).
+    pub parent_agent_id: Option<String>,
+    /// Whether it finished (`finished`), when the file says.
+    pub finished: Option<bool>,
+}
+
+/// The longest subagent id the agent graph records. Migration 0020 seeds `agents` with the same rule written in SQL
+/// (`length(agent_id) BETWEEN 1 AND 64`, plain characters only); a change here leaves the seeded rows as they are.
+const AGENT_ID_MAX: usize = 64;
+
+/// The longest subagent description kept, in characters.
+const DESCRIPTION_CHARS: usize = 200;
+/// The longest subagent type or model name kept, in characters.
+const NAME_CHARS: usize = 64;
+
+/// Whether a transcript's agent id is one Claude Code writes (letters, digits, `-` and `_`, at most 64), so it can
+/// stand as a row key and a graph node id.
 #[must_use]
-pub fn agent_type(meta: &str) -> Option<String> {
+pub fn is_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= AGENT_ID_MAX
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Reads a subagent's meta file; none when it is not a JSON object.
+#[must_use]
+pub fn agent_meta(meta: &str) -> Option<AgentMeta> {
     let value: Value = serde_json::from_str(meta).ok()?;
-    text(&value, &["agentType"])
+    let kept =
+        |key: &str, limit: usize| text(&value, &[key]).and_then(|text| kept_text(&text, limit));
+    value.is_object().then(|| AgentMeta {
+        agent_type: kept("agentType", NAME_CHARS),
+        description: kept("description", DESCRIPTION_CHARS),
+        model: kept("model", NAME_CHARS),
+        spawn_depth: value.get("spawnDepth").and_then(Value::as_i64),
+        parent_agent_id: text(&value, &["parentAgentId"]).filter(|id| is_agent_id(id)),
+        finished: value.get("finished").and_then(Value::as_bool),
+    })
 }
 
 /// How many leading bytes of `bytes` are whole lines: up to and including the last newline.
@@ -619,14 +667,61 @@ mod tests {
     }
 
     #[test]
-    fn agent_meta_gives_its_type() {
+    fn agent_ids_are_short_plain_words() {
+        let table = [
+            ("a0e783e096e8bfe7b", true),
+            ("acompact-1_x", true),
+            ("", false),
+            ("a/b", false),
+            ("a b", false),
+            ("é", false),
+        ];
+        for (id, ok) in table {
+            assert_eq!(is_agent_id(id), ok, "{id:?}");
+        }
+        assert!(!is_agent_id(&"a".repeat(65)), "too long");
+    }
+
+    #[test]
+    fn agent_meta_reads_type_label_model_and_depth() {
+        let meta = agent_meta(concat!(
+            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","#,
+            r#""spawnDepth":2,"parentAgentId":"a0b2","finished":true}"#
+        ));
         assert_eq!(
-            agent_type(r#"{"agentType":"Explore","model":"haiku"}"#),
-            Some("Explore".to_owned()),
-            "type read"
+            meta,
+            Some(AgentMeta {
+                agent_type: Some("general-purpose".to_owned()),
+                description: Some("Build the graph".to_owned()),
+                model: Some("opus".to_owned()),
+                spawn_depth: Some(2),
+                parent_agent_id: Some("a0b2".to_owned()),
+                finished: Some(true),
+            }),
+            "every field"
         );
-        assert_eq!(agent_type("{}"), None, "no type");
-        assert_eq!(agent_type("nope"), None, "not json");
+        assert_eq!(
+            agent_meta("{}"),
+            Some(AgentMeta::default()),
+            "an empty object"
+        );
+        assert_eq!(agent_meta("[1]"), None, "not an object");
+        let odd = agent_meta(&format!(
+            r#"{{"description":" a\u202eb {} ","agentType":"\u0007x"}}"#,
+            "c".repeat(300)
+        ))
+        .unwrap_or_default();
+        assert_eq!(
+            odd.description.map(|text| text.chars().count()),
+            Some(DESCRIPTION_CHARS),
+            "cut"
+        );
+        assert_eq!(
+            odd.agent_type.as_deref(),
+            Some("x"),
+            "control characters dropped"
+        );
+        assert_eq!(agent_meta("nope"), None, "not json");
     }
 
     #[test]

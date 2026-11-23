@@ -11,6 +11,9 @@ use crate::queries::insert_event;
 use crate::records::{AskId, TaskId};
 use crate::{NOW, Store, StoreError};
 
+/// The event of a pull request's state change, with its `url`, `from` and `to`.
+pub(crate) const EVENT_PR_STATE: &str = "pr-state";
+
 const AGE: &str = "CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', ";
 
 fn age_of(column: &str) -> String {
@@ -388,7 +391,7 @@ impl Store {
                 actor,
                 Some(task),
                 None,
-                "ask-superseded",
+                crate::hooks::EVENT_ASK_SUPERSEDED,
                 &serde_json::json!({ "ask": ask.0 }),
             )?;
         }
@@ -441,7 +444,7 @@ impl Store {
             let data = serde_json::json!({
                 "repo": pr.repo, "number": pr.number, "url": pr.url, "from": before, "to": pr.state,
             });
-            insert_event(&tx, actor, Some(task), None, "pr-state", &data)?;
+            insert_event(&tx, actor, Some(task), None, EVENT_PR_STATE, &data)?;
         }
         tx.commit()?;
         Ok(())

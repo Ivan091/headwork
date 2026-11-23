@@ -17,6 +17,7 @@ use headwork::ops::clean::{CleanOptions, clean};
 use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
+use headwork::ops::graph::{GraphQuery, Which};
 use headwork::ops::hook::{Git, HookEnv, HookEvent, parse_input, run_hook, scope_for};
 use headwork::ops::import::{Sources, config_section, import, missing_projects};
 use headwork::ops::install::{Stamp, install};
@@ -76,6 +77,23 @@ enum Command {
         /// Include closed tasks.
         #[arg(long)]
         all: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The agents working together as a graph: the orchestrator, tasks, leads and parts, subagents, helpers, jobs,
+    /// pull requests, reviews and asks, with who spawned, called, messaged, reported to and asked whom.
+    Graph {
+        /// Draw the graph as it stood then: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now
+        /// such as `90m`, `24h`, `7d`.
+        #[arg(long)]
+        at: Option<String>,
+        /// Include closed and dropped tasks.
+        #[arg(long)]
+        all: bool,
+        /// Only this task with its lead and parts, as `<project>-<slug>`.
+        #[arg(long, conflicts_with = "all")]
+        task: Option<String>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -688,6 +706,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         } => return import_command(projects_conf, claude_dir, dry_run, json, out),
         other @ (Command::Board { .. }
         | Command::Status { .. }
+        | Command::Graph { .. }
         | Command::Log { .. }
         | Command::Spawn(_)
         | Command::Queue { .. }
@@ -718,6 +737,19 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
     match command {
         Command::Board { all, json } => board(&mut store, &ctx, all, json, out),
         Command::Status { all, json } => status_command(&mut store, &ctx, all, json, out),
+        Command::Graph {
+            at,
+            all,
+            task,
+            json,
+        } => {
+            let which = match (task, all) {
+                (Some(name), _) => Which::Task(name),
+                (None, true) => Which::All,
+                (None, false) => Which::Live,
+            };
+            graph_command(&mut store, &ctx, &GraphQuery { at, which }, json, out)
+        }
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
@@ -1004,6 +1036,25 @@ fn status_command(
         json_out(out, &lines)?;
     } else {
         out.write_all(render::statuses(&lines).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn graph_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    query: &GraphQuery,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    if query.at.is_none() {
+        ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
+    }
+    let graph = headwork::ops::graph::graph(store, query)?;
+    if json {
+        json_out(out, &graph)?;
+    } else {
+        out.write_all(render::graph(&graph).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)
 }

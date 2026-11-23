@@ -10,11 +10,12 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, bail};
 use headwork_core::UsageGroup;
-use headwork_core::usage::{Estimate, UsageConfig, agent_type, parse_line, transcript_of};
+use headwork_core::usage::{
+    AgentMeta, Estimate, UsageConfig, agent_meta, parse_line, transcript_of,
+};
 use headwork_store::{FileMark, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal};
 use serde::Serialize;
 
-use crate::ops::shadow::since_instant;
 use crate::ops::slashed;
 
 /// The folder under `~/.claude` that holds every transcript, one folder per working folder.
@@ -145,6 +146,12 @@ pub fn ingest_file(
     let key = slashed(path);
     let now = mark_of(path)?;
     let Some(start) = start_at(store.usage_file(&key)?, now, from_start) else {
+        if let Some(agent) = file.agent_id.as_deref()
+            && store.agent_meta_open(agent)?
+            && let Some(meta) = meta_of(path)
+        {
+            store.record_agent_meta(agent, &file.session_id, &meta)?;
+        }
         return Ok(None);
     };
     let rolled_to = store.usage_rolled_to()?;
@@ -166,12 +173,7 @@ pub fn ingest_file(
             lines.push(line);
         }
     }
-    let agent_type = file.agent_id.as_ref().and_then(|_| {
-        let meta = path.with_extension("meta.json");
-        std::fs::read_to_string(meta)
-            .ok()
-            .and_then(|text| agent_type(&text))
-    });
+    let meta = file.agent_id.as_ref().and_then(|_| meta_of(path));
     let tag = store
         .usage_tag(&file.session_id)?
         .unwrap_or(UsageTag::UNMANAGED);
@@ -184,13 +186,20 @@ pub fn ingest_file(
         path: &key,
         session_id: &file.session_id,
         agent_id: file.agent_id.as_deref(),
-        agent_type: agent_type.as_deref(),
+        agent_meta: meta.as_ref(),
         tag,
         dir: &dir,
         lines: &lines,
         mark: FileMark { read_to, ..now },
     })?;
     Ok(Some((lines.len(), inserted)))
+}
+
+/// What a subagent transcript's `agent-<id>.meta.json` beside it says; none when it is missing or unreadable.
+fn meta_of(transcript: &Path) -> Option<AgentMeta> {
+    std::fs::read_to_string(transcript.with_extension("meta.json"))
+        .ok()
+        .and_then(|text| agent_meta(&text))
 }
 
 /// Reads every file in `files` (see [`ingest_file`]), then re-tags the rows of sessions the store learned since. A
@@ -348,7 +357,7 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
     let since = options
         .since
         .as_deref()
-        .map(|text| since_instant(store, text))
+        .map(|text| super::instant(store, text))
         .transpose()?;
     let tasks = match &options.task {
         Some(name) => {

@@ -789,6 +789,66 @@ fn the_stop_gate_wants_an_ask_or_a_report() {
 }
 
 #[test]
+fn a_session_message_logs_its_address_and_summary_but_never_its_body() {
+    let mut w = world("", false);
+    w.start();
+    let long = "x".repeat(300);
+    let input = json!({
+        "tool_name": "SendMessage",
+        "tool_input": { "to": " headwork-lead ", "summary": long, "message": "the secret body" },
+        "tool_response": {},
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+    let event = w
+        .events()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "tool-used")
+        .unwrap();
+    assert_eq!(event.data["to"], "headwork-lead", "the trimmed address");
+    assert_eq!(
+        event.data["summary"].as_str().map(str::len),
+        Some(120),
+        "the summary, cut"
+    );
+    assert!(!event.data.to_string().contains("secret"), "no body");
+}
+
+#[test]
+fn tool_used_keeps_only_the_tool_for_other_tools_and_drops_empty_or_odd_message_fields() {
+    let mut w = world("", false);
+    w.start();
+    let cases = [
+        (
+            "PushNotification",
+            json!({ "message": "hi" }),
+            json!({ "tool": "PushNotification" }),
+        ),
+        (
+            "SendMessage",
+            json!({ "to": "  ", "summary": "" }),
+            json!({ "tool": "SendMessage", "to": null, "summary": null }),
+        ),
+        (
+            "SendMessage",
+            json!({ "to": "lead\u{1b}[2J", "summary": "ž".repeat(130) }),
+            json!({ "tool": "SendMessage", "to": "lead[2J", "summary": "ž".repeat(120) }),
+        ),
+    ];
+    for (tool, tool_input, logged) in cases {
+        let input = json!({ "tool_name": tool, "tool_input": tool_input, "tool_response": {} });
+        w.hook(HookEvent::PostToolUse, &input);
+        let event = w
+            .events()
+            .into_iter()
+            .rev()
+            .find(|event| event.kind == "tool-used")
+            .unwrap();
+        assert_eq!(event.data, logged, "{tool}");
+    }
+}
+
+#[test]
 fn a_plain_reply_to_the_user_who_just_typed_is_no_silent_stop() {
     let mut w = world("", false);
     w.start();
@@ -1781,6 +1841,15 @@ fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
         w.pre("SendMessage", &message("orchestrator")),
         HookReply::default(),
         "the default address goes through unchanged"
+    );
+    assert_eq!(
+        w.pre("SendMessage", &message("orchestrator [ab12]")),
+        HookReply::default(),
+        "the live address with a ref goes through unchanged, ref and all"
+    );
+    assert!(
+        !w.events().iter().any(|event| event.kind == "readdressed"),
+        "nothing readdressed"
     );
     let readdressed = |reply: &HookReply| -> Value {
         let body: Value = serde_json::from_str(reply.stdout.as_deref().unwrap()).unwrap();

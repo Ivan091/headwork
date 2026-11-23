@@ -10,6 +10,13 @@ use crate::queries::insert_event;
 use crate::records::TaskId;
 use crate::{NOW, Store, StoreError};
 
+/// The event of a job's state change; it names the new state.
+pub(crate) const EVENT_JOB_STATE: &str = "job-state";
+/// The event of a job started again (after a park): it runs from then on.
+pub(crate) const EVENT_JOB_STARTED: &str = "job-started";
+/// The event of a job marked over without touching its process: it is done from then on.
+pub(crate) const EVENT_JOB_FORGOTTEN: &str = "job-forgotten";
+
 /// A park.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ParkRow {
@@ -694,7 +701,7 @@ impl Store {
             actor,
             task.map(TaskId),
             None,
-            "job-state",
+            EVENT_JOB_STATE,
             &serde_json::json!({ "job": id, "state": state, "note": note }),
         )?;
         tx.commit()?;
@@ -730,7 +737,7 @@ impl Store {
             actor,
             task.map(TaskId),
             None,
-            "job-started",
+            EVENT_JOB_STARTED,
             &serde_json::json!({ "job": id, "pid": pid, "image": image }),
         )?;
         tx.commit()?;
@@ -765,7 +772,7 @@ impl Store {
                 actor,
                 task.map(TaskId),
                 None,
-                "job-forgotten",
+                EVENT_JOB_FORGOTTEN,
                 &serde_json::json!({ "job": id, "pid": pid, "reason": reason }),
             )?;
         }
@@ -803,7 +810,7 @@ impl Store {
                 actor,
                 Some(task),
                 None,
-                "ask-superseded",
+                crate::hooks::EVENT_ASK_SUPERSEDED,
                 &serde_json::json!({ "ask": id }),
             )?;
         }

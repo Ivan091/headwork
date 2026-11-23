@@ -37,28 +37,8 @@ pub enum GitHostError {
     },
 }
 
-/// Where a pull request is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrState {
-    /// Open.
-    Open,
-    /// Merged.
-    Merged,
-    /// Closed without a merge.
-    Closed,
-}
-
-impl PrState {
-    /// The spelling the store keeps.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Merged => "merged",
-            Self::Closed => "closed",
-        }
-    }
-}
+/// Where a pull request is: the one vocabulary the store and the graph use too.
+pub use headwork_core::PullState as PrState;
 
 /// A pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1303,3 +1303,60 @@ and the reason.
   newest `transition` at or before it. A real Neo4j and an Obsidian vault were set aside as later exports. The one
   data gap, a message's recipient, is closed by `to` and a short `summary` on the `SendMessage` `tool-used` event,
   never the body.
+- 2026-11-23, dashboard D1 (the graph model): `core/src/graph/` (`mod.rs` facts and output types, `build.rs` the
+  drawing, `tests.rs`) builds the graph from `Facts` the store gathers (`Store::graph_facts`, one read transaction), and
+  `headwork graph [--json] [--at T] [--all | --task <name>]` prints it; the view of now first runs the same
+  lost-session reconcile `board` runs, a past instant only reads. Choices the plan left open:
+  - Review flow nodes are `review-node` nodes joined to their review by a `ran` edge, in the reviewer part's box.
+  - An ask is one `asked` edge from the session to the user once answered, not an answer edge back: the edge carries
+    the count and the last header, and the direction of the talk is the session asking; while open it runs through its
+    ask node, which keeps the stored word (`pending` or `open`). An ask headwork raised itself (no session) is drawn
+    from its task's box. An ask without a header is labelled by the first 40 characters of its question; a superseded
+    ask closes at its `ask-superseded` event, and one closed with no time at all counts as closed from its creation.
+  - Past states come from the logs: task `transition`, `pr-state`, `job-state`, `job-started` (running again after a
+    park), `job-forgotten` (done) and `review-<trigger>` events (`Change`, one `change_at`); review nodes from their
+    start and finish times. The store reads them by the event-type constants their writers use. Node states are one
+    closed set: a node's `graph::Shape` carries its kind and the state type that kind has, so the page can map every
+    word to a colour;
+    a session is `live` or `ended` at a past instant. An event with a word this build does not know is left out and
+    listed in `skipped` (shown by `graph`), not a failure of the whole graph; a table row with one still fails, named.
+  - A resume restarts a session's row, so a session starts at its first event or its row's start, whichever is
+    earlier; a parked stretch between then and the resume shows as live.
+  - A pull request starts at the first event of its task naming its quoted URL, else at its task's start. Pull request
+    rows moved to the archive repository by migration 0017 keep their old URLs in their events; they fall back to their
+    task's start and their state now.
+  - A subagent is drawn in its caller's task box (a helper's under the helper), called by its parent agent when its
+    meta names one (`parentAgentId`) of the same session and that agent is drawn, else by its session. Its meta's
+    `finished` gives its state now; the live view keeps only subagents that still run under a live session. One whose
+    responses were summed into days before 0020 has no times and shows only in the view of now.
+  - A top-level task is `spawned` from the user node when its `task-created` actor is `user` (any CLI `headwork spawn`,
+    also one the orchestrator runs through Bash), else from the orchestrator (its MCP `spawn`). The live view also draws
+    the lead of every live part; a single-task view leaves out the orchestrator's own subagents and asks.
+  - Names: a task name may be taken again after its task closed, so a name points at the task (or session) the view
+    draws, and `--task <name>` takes the newest task of that name queued by the instant (now: a live one first); a name
+    no task had by then is an error, not an empty graph. A message's sender and receiver names resolve to the session that held the name when it was sent. A subagent
+    id never takes a name a task or session has. A
+    message to a name headwork knows that the view does not draw gets no edge; only unknown names become `external`
+    nodes, whose id is a hash of the name without its `[ref]`, so agent-written text is only ever a label.
+  - Messages to sessions headwork runs are counted from the receiver's `prompt` event (`cross_session`, `from`), which
+    also covers senders outside headwork and history before `to` was logged; the sender's `tool-used` event labels the
+    edge with its summary. Messages to anything else (a subagent, an unknown name) are counted from the sender.
+  - Agent-written text (the `SendMessage` `to` and `summary`, a subagent's type, model and description) is trimmed,
+    stripped of control, bidirectional and zero-width characters (`names::kept_text`) and cut (120 characters, 200 for a
+    description, 64 for a type or model); the text output escapes the same characters. D2 must HTML-escape every label
+    and detail and URL-encode every id it puts in a path, with a test.
+  - `headwork graph` stays open to workers, like `board` and `log`, which already show every task and every event
+    (`guard::ADMIN_COMMANDS` lists neither); it adds no data a worker could not read there.
+  - The `agents` table (migration 0020) keeps no task (it is the calling session's) and is filled with the usage rows
+    in their transaction, its times written in the store's own format. A subagent's meta file is written when it is
+    spawned (it holds the caller's `toolUseId` and the `description` the call gave) and rewritten at its end with
+    `finished`; it is read whenever its transcript has new lines and, until a meta says the agent finished, on every
+    read of its transcript even without new lines (the `Stop` hook and the tick), so a meta missing or half written at
+    one read is filled at the next. The migration seeds the table from the usage rows already stored;
+    ids other than plain words are skipped, and a crafted transcript reusing another session's agent id keeps the
+    first session (the files are the user's own).
+  - `graph_facts` reads the whole history and the build indexes it once per build: on this machine's store `headwork
+    graph --all --json` takes 0.18 s in a release build. migration 0021 adds the index `events_type(type, id)` for the
+    type-filtered reads and for D3's reads of new events. Pushing the scope and the instant into SQL waits until a
+    store makes it slow, since it would repeat rules core owns.
+  - The read-only store open for `headwork dash` comes with D2, its first caller.
