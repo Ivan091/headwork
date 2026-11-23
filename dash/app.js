@@ -14,6 +14,7 @@
     review: "show-reviews",
     "review-node": "show-reviews",
     ask: "show-asks",
+    user: "show-user",
   };
   const words = {
     green: ["working", "spawning", "live", "starting", "running", "open-pr"],
@@ -785,7 +786,21 @@
     filter();
   });
   for (const id of new Set(Object.values(toggles))) {
-    byId(id).addEventListener("change", () => {
+    const box = byId(id);
+    try {
+      const saved = localStorage.getItem(id);
+      if (saved !== null) {
+        box.checked = saved === "1";
+      }
+    } catch {
+      box.checked = box.checked;
+    }
+    box.addEventListener("change", () => {
+      try {
+        localStorage.setItem(id, box.checked ? "1" : "0");
+      } catch {
+        box.checked = box.checked;
+      }
       filter();
       layout();
     });
