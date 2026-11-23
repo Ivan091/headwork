@@ -26,6 +26,25 @@ pub struct StatusLine {
     pub tokens: u64,
     /// Their estimate at API list prices, when `[usage.prices]` holds any.
     pub estimate: Option<String>,
+    /// The review running on the task, if one is open.
+    pub review: Option<StatusReview>,
+}
+
+/// The open review of a task, as `status --json` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StatusReview {
+    /// The level: 1 light, 2 standard, 3 strict.
+    pub level: u8,
+    /// The flow's name.
+    pub flow: String,
+    /// The round, from 1.
+    pub round: u8,
+    /// The review's state word (`requested`, `running`, `delivered`, `rechecking`, `asking`).
+    pub state: String,
+    /// The user's focus; empty when none.
+    pub focus: String,
+    /// Findings waiting on the implementing lead.
+    pub findings_awaiting_lead: u32,
 }
 
 /// The status of every top-level task on the board: not closed ones, or all with `all`.
@@ -101,9 +120,25 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             line,
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),
+            review: review(store, top)?,
         });
     }
     Ok(out)
+}
+
+fn review(store: &Store, entry: &BoardTask) -> Result<Option<StatusReview>> {
+    let Some(row) = store.open_review(entry.task.id)? else {
+        return Ok(None);
+    };
+    let counts = store.finding_counts(&row)?;
+    Ok(Some(StatusReview {
+        level: row.level.number(),
+        flow: row.flow,
+        round: row.round,
+        state: row.state.to_string(),
+        focus: row.focus,
+        findings_awaiting_lead: counts.awaiting_lead,
+    }))
 }
 
 fn facts(store: &Store, entry: &BoardTask) -> Result<StatusFacts> {

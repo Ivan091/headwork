@@ -278,6 +278,10 @@ parallel = 6                            # at most this many nodes running at onc
 `in review (level 2)` to the task's line, and the event log carries `review-requested`, `review-started`,
 `review-node`, `review-delivered`, `review-resolved`, `review-verdict`, `review-asked`, `review-finished`.
 
+`status --json` gives each task's entry a `review` field: `null` when no review is open, else
+`{"level": 2, "flow": "code", "round": 1, "state": "running", "focus": "", "findings_awaiting_lead": 0}`
+(`level` 1 to 3; `state` one of `requested`, `running`, `delivered`, `rechecking`, `asking`). The text `line` is unchanged.
+
 ## 12. Milestones (worker-days, one worker each)
 
 | # | Milestone | Effort |
