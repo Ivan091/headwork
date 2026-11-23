@@ -36,12 +36,14 @@ pub enum ReleaseError {
         detail: String,
     },
     /// GitHub refused for the rate limit (`403` or `429`).
-    #[error("{what}: GitHub's rate limit (HTTP {status})")]
+    #[error("{what}: GitHub's rate limit (HTTP {status}, {})", login_note(*signed_in))]
     RateLimited {
         /// What was being fetched.
         what: String,
         /// The HTTP status.
         status: u16,
+        /// Whether the request carried a GitHub token; without one the limit is the address's 60 requests an hour.
+        signed_in: bool,
     },
     /// GitHub has no such release (`404`).
     #[error("{what}: no such release")]
@@ -75,6 +77,14 @@ pub enum ReleaseError {
         /// The processor.
         arch: String,
     },
+}
+
+const fn login_note(signed_in: bool) -> &'static str {
+    if signed_in {
+        "signed in"
+    } else {
+        "without a login: no usable token from GH_TOKEN, GITHUB_TOKEN or `gh auth token --hostname github.com`"
+    }
 }
 
 impl ReleaseError {
@@ -378,6 +388,7 @@ impl Curl {
             status @ (403 | 429) => Err(ReleaseError::RateLimited {
                 what: what.to_owned(),
                 status,
+                signed_in: token.is_some(),
             }),
             status => Err(ReleaseError::Http {
                 what: what.to_owned(),
@@ -648,6 +659,28 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn a_rate_limit_says_whether_it_was_signed_in() {
+        let error = |signed_in| {
+            ReleaseError::RateLimited {
+                what: "the newest release".to_owned(),
+                status: 403,
+                signed_in,
+            }
+            .to_string()
+        };
+        assert_eq!(
+            error(true),
+            "the newest release: GitHub's rate limit (HTTP 403, signed in)",
+            "a signed-in limit names it"
+        );
+        assert!(
+            error(false).contains("without a login: no usable token"),
+            "an anonymous limit says no token was used: {}",
+            error(false)
+        );
+    }
 
     #[test]
     fn each_supported_system_has_its_program() {

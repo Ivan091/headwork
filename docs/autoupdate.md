@@ -82,7 +82,8 @@ Run from the installed binary. Steps:
 2. **Ask GitHub.** `GET https://api.github.com/repos/<repo>/releases/latest` (or the tag of `--to`) with the last
    `ETag` (a `304` does not count against the rate limit) and a GitHub token when one is at hand: `GH_TOKEN`, else
    `GITHUB_TOKEN`, else what `gh auth token --hostname github.com` prints (5,000 requests an hour per user instead of
-   60 per address, which a shared office address used up). No token, or a `401` for it, asks without a login. The
+   60 per address, which a shared office address used up). No token, or a `401` for it, asks without a login; a rate-limit error then says `without a login`, and
+   `signed in` when the token was sent. The
    token reaches `curl` on its standard input (`--header @-`), never its command line, and no log or error carries
    it (`GithubToken` prints as `***`). Release files (step 4) download without it: they are not counted against the
    API's limit, and the token must not reach the file host GitHub redirects to. Through `curl`,
