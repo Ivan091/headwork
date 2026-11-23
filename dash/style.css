@@ -264,3 +264,27 @@ button.on {
   color: var(--muted);
   font-size: 12px;
 }
+
+#legend svg .ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: legend-ring 1.6s ease-out infinite;
+}
+
+@keyframes legend-ring {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  to {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #legend svg .ring {
+    animation: none;
+  }
+}

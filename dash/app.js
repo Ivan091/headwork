@@ -4,6 +4,8 @@
   const FALLBACK_MS = 3000;
   const PLAY_TICK_MS = 400;
   const PULSE_MS = 1500;
+  const RING_MS = 1600;
+  const RING_FRAME_MS = 50;
   const toggles = {
     subagent: "show-subagents",
     helper: "show-subagents",
@@ -91,6 +93,29 @@
     return "grey";
   }
 
+  function isWorking(node) {
+    if (node.kind === "orchestrator") {
+      return node.state === "live";
+    }
+    return TASK_KINDS.includes(node.kind) && tone(node.kind, node.state) === "green";
+  }
+
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  function ringFrame() {
+    const phase = (Date.now() % RING_MS) / RING_MS;
+    const working = cy.nodes("[?working]");
+    if (reducedMotion.matches) {
+      working.style({ "outline-width": 3, "outline-offset": 2, "outline-opacity": 1 });
+      return;
+    }
+    working.style({
+      "outline-width": 3,
+      "outline-offset": 1 + phase * 7,
+      "outline-opacity": 1 - phase,
+    });
+  }
+
   function style() {
     const c = colours();
     return [
@@ -145,6 +170,10 @@
       { selector: "edge[kind = 'asked']", style: { "line-color": c.red, "target-arrow-color": c.red } },
       { selector: "edge[kind = 'depends-on']", style: { "line-style": "dashed" } },
       { selector: "edge[kind = 'part-of']", style: { "line-style": "dotted" } },
+      {
+        selector: "node[?working]",
+        style: { "outline-color": c.green, "outline-width": 3, "outline-offset": 2, "outline-opacity": 1 },
+      },
       { selector: ".hidden", style: { display: "none" } },
       { selector: ".faded", style: { opacity: 0.12 } },
       { selector: "node:selected", style: { "border-width": 3, "border-color": c.violet } },
@@ -299,6 +328,7 @@
           kind: node.kind,
           state: node.state || "",
           tone: tone(node.kind, node.state),
+          working: isWorking(node),
           size: sizeOf(node, 22),
           project: projects.get(node.id) || "",
           raw: node,
@@ -720,6 +750,7 @@
     }
   }
 
+  setInterval(ringFrame, RING_FRAME_MS);
   cy.on("tap", "node", (event) => select(event.target.id()));
   cy.on("tap", (event) => {
     if (event.target === cy) {
@@ -898,6 +929,20 @@
     }
     add(box, "h3", "badges and sizes");
     row(box, (svg) => legendShape(svg, "ellipse", c.green, c.red, 3), "red ring: open findings on the task");
+    row(
+      box,
+      (svg) => {
+        legendShape(svg, "ellipse", c.green);
+        const ring = document.createElementNS(SVG, "path");
+        ring.setAttribute("d", SHAPES.ellipse);
+        ring.setAttribute("fill", "none");
+        ring.setAttribute("stroke", c.green);
+        ring.setAttribute("stroke-width", "2");
+        ring.classList.add("ring");
+        svg.appendChild(ring);
+      },
+      "ring moving outward: the task or orchestrator is working now",
+    );
     add(box, "p", "A “⚠ n” in a task's label counts its open tick findings; “n asks waiting” on you counts open asks.").className =
       "note";
     add(box, "p", "A review shows “n findings (m open)”.").className = "note";
