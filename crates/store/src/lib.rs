@@ -46,8 +46,8 @@ pub use reviews::{
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
 pub use usage::{
-    ByModel, EVENT_HELPER_SESSION, EVENT_USAGE_ROLLED_UP, FileMark, RolledUp, TaskTokens,
-    UsageBatch, UsageQuery, UsageTag, UsageTotal, all_models,
+    ByModel, EVENT_HELPER_SESSION, EVENT_USAGE_ROLLED_UP, FileMark, RoleDelegation, RolledUp,
+    TaskTokens, UsageBatch, UsageQuery, UsageTag, UsageTotal, all_models,
 };
 pub use waiting::{EVENT_SESSION_WAITING, WaitingCandidate};
 

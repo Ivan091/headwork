@@ -200,10 +200,15 @@ web_search_per_1000 = 0.0
 
 ## 7. Where it shows
 
-- `headwork usage [--since 7d] [--by project|task|kind|model|effort|role|agent|folder|day] [--task <name>]
+- `headwork usage [--since 7d] [--by project|task|kind|model|effort|role|agent|folder|day|session|delegation] [--task <name>]
   [--unmanaged] [--json]`: a table, one row per group, a column per token type, a token total and an estimated dollar
   total; `--gaps` lists what section 2 cannot see. Without `--unmanaged`, sessions outside headwork show as one
   `unmanaged` line.
+  `--by delegation` prints one line per role instead: responses and estimated cost in the main session and in
+  subagents (rows with an `agent_id`), the subagents' share of the role's cost, the share of the subagents' cost
+  spent on Opus (models starting `claude-opus`), and the median main-session context (input plus cache writes and
+  reads, in k tokens). The median reads per-response rows only, so days the tick already summed leave it out; with
+  `--json` the lines are in `delegation`, shares as whole percents or null.
 - `board` and `status`: one short column per task with total tokens (`1.2M`) and the estimate (`$4.10`), a lead showing
   its roll-up.
 - The orchestrator MCP tool `usage` (same arguments), so "what did today cost" is answered in one call; a worker's

@@ -596,6 +596,8 @@ text_enum!(
         Day => "day",
         /// The Claude session.
         Session => "session",
+        /// The usage role, main session against subagents.
+        Delegation => "delegation",
     }
 );
 

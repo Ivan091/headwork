@@ -22,7 +22,7 @@ use headwork_core::graph::Graph;
 use headwork_core::names::is_unsafe_char;
 use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_core::usage::{UsageConfig, short_count};
-use headwork_core::{PlaceKind, TaskShape};
+use headwork_core::{PlaceKind, TaskShape, UsageGroup};
 use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
 
 /// `text` with characters that could change how the terminal shows it (control, bidirectional, zero-width) written as
@@ -770,6 +770,10 @@ pub(crate) fn usage(report: &UsageReport) -> String {
         );
         return text;
     }
+    if report.by == UsageGroup::Delegation {
+        delegation_table(&mut text, report);
+        return text;
+    }
     let width = report
         .rows
         .iter()
@@ -807,6 +811,54 @@ pub(crate) fn usage(report: &UsageReport) -> String {
         );
     }
     text
+}
+
+fn percent_cell(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |percent| format!("{percent}%"))
+}
+
+fn delegation_table(text: &mut String, report: &UsageReport) {
+    let width = report
+        .delegation
+        .iter()
+        .map(|line| line.role.chars().count())
+        .chain(["role".len()])
+        .max()
+        .unwrap_or(0);
+    let _ = writeln!(
+        text,
+        "{:<width$}  {:>9}  {:>9}  {:>8}  {:>9}  {:>6}  {:>8}  {:>7}",
+        "role", "main resp", "main cost", "sub resp", "sub cost", "sub %", "opus sub", "ctx med"
+    );
+    for line in &report.delegation {
+        let context = line
+            .median_main_context
+            .map_or_else(|| "-".to_owned(), |tokens| format!("{}k", tokens / 1000));
+        let _ = writeln!(
+            text,
+            "{:<width$}  {:>9}  {:>9}  {:>8}  {:>9}  {:>6}  {:>8}  {:>7}",
+            line.role,
+            short_count(line.main_responses),
+            line.main_dollars,
+            short_count(line.sub_responses),
+            line.sub_dollars,
+            percent_cell(line.subagent_cost_pct),
+            percent_cell(line.opus_of_subagent_pct),
+            context,
+        );
+    }
+    text.push_str(
+        "sub %: subagent share of the role cost; opus sub: share of subagent cost on Opus; ctx med: median main context
+(input + cache), per-response rows only
+",
+    );
+    if !report.unpriced.is_empty() {
+        let _ = writeln!(
+            text,
+            "no price in [usage.prices] for: {} (estimates at API list prices, never a bill)",
+            report.unpriced.join(", ")
+        );
+    }
 }
 
 /// What transcripts cannot show.

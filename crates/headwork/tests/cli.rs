@@ -516,3 +516,57 @@ fn usage_estimates_priced_models_and_lists_the_rest() {
         "doctor warns about the unpriced model: {doctor}"
     );
 }
+
+#[test]
+fn usage_by_delegation_splits_main_session_from_subagents() {
+    let home = home_with_fixture();
+    let prices = "input = 10.0\ncache_read = 0.0\ncache_write_1h = 0.0\noutput = 0.0\n";
+    let config = fixture("config.toml")
+        + &format!(
+            "\n[usage.prices.\"claude-opus\"]\n{prices}\n[usage.prices.\"claude-haiku\"]\n{prices}"
+        );
+    std::fs::write(home.path().join("config.toml"), config).unwrap();
+    let folder = home.path().join(".claude/projects/S--w");
+    let subagents = folder.join("0a/subagents");
+    std::fs::create_dir_all(&subagents).unwrap();
+    let main = [
+        assistant_line("m1", 1, 1_000_000, 0),
+        assistant_line("m2", 1, 3_000_000, 0),
+    ];
+    std::fs::write(folder.join("0a.jsonl"), main.join("\n") + "\n").unwrap();
+    let opus = assistant_line("s1", 1, 1_000_000, 0);
+    let haiku =
+        assistant_line("s2", 1, 3_000_000, 0).replace("claude-opus-5-5", "claude-haiku-5-5");
+    std::fs::write(
+        subagents.join("agent-x1.jsonl"),
+        [opus, haiku].join("\n") + "\n",
+    )
+    .unwrap();
+
+    let output = headwork(home.path(), &["usage", "--by", "delegation", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let lines = json["delegation"].as_array().unwrap();
+    assert_eq!(lines.len(), 1, "{json}");
+    let line = &lines[0];
+    assert_eq!(line["role"], "unmanaged", "{json}");
+    assert_eq!(line["main_responses"], 2, "{json}");
+    assert_eq!(line["main_dollars"], "$40.00", "{json}");
+    assert_eq!(line["sub_responses"], 2, "{json}");
+    assert_eq!(line["sub_dollars"], "$40.00", "{json}");
+    assert_eq!(line["subagent_cost_pct"], 50, "{json}");
+    assert_eq!(line["opus_of_subagent_pct"], 25, "{json}");
+    assert_eq!(
+        line["median_main_context"], 2_000_150,
+        "mean of the two middle contexts: {json}"
+    );
+
+    let text = stdout(&headwork(
+        home.path(),
+        &["usage", "--by", "delegation", "--no-read"],
+    ));
+    assert!(text.contains("tokens by delegation"), "{text}");
+    assert!(text.contains("unmanaged"), "{text}");
+    assert!(text.contains("50%") && text.contains("25%"), "{text}");
+    assert!(text.contains("2000k"), "{text}");
+}

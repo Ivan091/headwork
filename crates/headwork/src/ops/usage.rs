@@ -11,9 +11,12 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result, bail};
 use headwork_core::UsageGroup;
 use headwork_core::usage::{
-    AgentMeta, Estimate, UsageConfig, agent_meta, parse_line, transcript_of,
+    AgentMeta, Delegation, DelegationInput, Estimate, OPUS_PREFIX, UsageConfig, agent_meta,
+    parse_line, transcript_of,
 };
-use headwork_store::{FileMark, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal};
+use headwork_store::{
+    ByModel, FileMark, RoleDelegation, Store, TaskId, UsageBatch, UsageQuery, UsageTag, UsageTotal,
+};
 use serde::Serialize;
 
 use crate::ops::slashed;
@@ -314,6 +317,9 @@ pub struct UsageReport {
     pub total: UsageRow,
     /// Models that spent tokens and have no price in `[usage.prices]`.
     pub unpriced: Vec<String>,
+    /// One line per role, for the `delegation` grouping only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub delegation: Vec<Delegation>,
     /// What the read before the report did, when one ran.
     pub ingest: Option<IngestReport>,
 }
@@ -370,6 +376,7 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
         }
         None => None,
     };
+    let tasks_filter = tasks.clone();
     let rows = store.usage_totals(&UsageQuery {
         by: options.by,
         since: since.clone(),
@@ -377,6 +384,20 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
         unmanaged: options.unmanaged,
     })?;
     let total = UsageRow::priced(sum(rows.iter()), prices);
+    let delegation = if options.by == UsageGroup::Delegation {
+        store
+            .usage_delegation(&UsageQuery {
+                by: options.by,
+                since: since.clone(),
+                tasks: tasks_filter,
+                unmanaged: options.unmanaged,
+            })?
+            .iter()
+            .map(|role| delegation_of(role, prices))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(UsageReport {
         by: options.by,
         since,
@@ -387,7 +408,30 @@ pub fn report(store: &Store, options: &UsageOptions, prices: &UsageConfig) -> Re
             .map(|row| UsageRow::priced(row, prices))
             .collect(),
         total,
+        delegation,
         ingest: None,
+    })
+}
+
+/// One role's main session against its subagents, priced.
+#[must_use]
+pub fn delegation_of(role: &RoleDelegation, prices: &UsageConfig) -> Delegation {
+    let estimate = |models: &ByModel, keep: &dyn Fn(&str) -> bool| {
+        prices.estimate(
+            models
+                .iter()
+                .filter(|(model, _)| keep(model))
+                .map(|(model, tokens)| (model.as_str(), tokens)),
+        )
+    };
+    Delegation::of(&DelegationInput {
+        role: role.role.clone(),
+        main_responses: role.main.responses,
+        main: estimate(&role.main.models, &|_| true),
+        sub_responses: role.sub.responses,
+        sub: estimate(&role.sub.models, &|_| true),
+        sub_opus: estimate(&role.sub.models, &|model| model.starts_with(OPUS_PREFIX)),
+        contexts: role.contexts.clone(),
     })
 }
 
