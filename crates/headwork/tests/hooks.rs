@@ -2363,7 +2363,7 @@ fn part_spawn_keeps_the_model_within_the_allowed_and_fable_with_the_user() {
     w.start();
     let (is_error, text) = part_spawn(
         &mut w,
-        &json!({ "slug": "review", "brief": "Review it.", "model": "opus" }),
+        &json!({ "slug": "review", "brief": "Review it.", "model": "opus", "reason": "an audit" }),
     );
     assert!(is_error && text.contains("opus"), "{text}");
     assert!(
@@ -2382,6 +2382,31 @@ fn part_spawn_keeps_the_model_within_the_allowed_and_fable_with_the_user() {
     );
     assert_eq!(part.state, TaskState::Queued, "and waits for it");
     assert!(text.contains("approval"), "{text}");
+}
+
+#[test]
+fn a_part_on_opus_needs_a_reason_and_it_is_recorded() {
+    let mut w = world(LEADS, false);
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "audit", "brief": "Audit it.", "model": "opus" }),
+    );
+    assert!(is_error && text.contains("reason"), "{text}");
+    assert!(
+        w.store.find_task("demo-sand-audit").unwrap().is_none(),
+        "no part without a reason"
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "audit", "brief": "Audit it.", "model": "opus", "reason": "security audit" }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        part_named(&w, "sand-audit").model,
+        Model::Opus,
+        "the model is kept"
+    );
 }
 
 #[test]
