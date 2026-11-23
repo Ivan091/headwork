@@ -175,6 +175,7 @@ They live in `config.toml`, not in code:
 ```toml
 [usage]
 keep_days = 90
+nudge_context_k = 200
 
 [usage.prices."claude-opus-5-5"]
 input = 0.0
@@ -185,6 +186,11 @@ output = 0.0
 web_search_per_1000 = 0.0
 ```
 
+- `nudge_context_k` (default 200, `0` is off): the `UserPromptSubmit` hook reads the session's new transcript lines and,
+  when the newest main-session response of a worker, lead or part (not a review) holds that many thousand tokens of
+  context (input, cache writes and cache reads), adds one line telling it to hand the next read-heavy step to a
+  `general-purpose` subagent on Sonnet or to run `/compact`. It repeats at 2x, 3x and so on, once per step, recorded as
+  the `context-nudge` event (`step`, `context`).
 - Dollars per million tokens per type (the zeros are placeholders; the user fills in the list prices). A model name
   matches exactly, else the longest configured prefix (`claude-opus` covers every Opus).
 - The estimate is worked out when a report is made, never stored, so a corrected price re-prices the past.

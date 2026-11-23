@@ -386,6 +386,8 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     }
     if call.session.role == Role::Orchestrator {
         waiting.push_str(&update_notices(call.env.home));
+    } else if !text.starts_with("<cross-session-message") && !notification {
+        waiting.push_str(&context_nudge(store, call)?);
     }
     let files = rules::current(store, call.env.home, call.env.config, call.env.host)?;
     let version = store.observe_rules(files.hash(), Actor::Hook)?;
@@ -401,6 +403,41 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
         "headwork: your rules changed (version {version}); they replace the earlier ones.\n\n{rules}{waiting}"
     );
     Ok(HookReply::context(HookEvent::UserPromptSubmit, &text))
+}
+
+/// The event a context nudge logs, with the step and the context in tokens.
+pub const EVENT_CONTEXT_NUDGE: &str = "context-nudge";
+
+/// One line telling a long worker, lead or part session to delegate, when its newest main-session response holds
+/// `[usage] nudge_context_k` thousand tokens or more and it was not nudged at that step yet (`docs/usage.md`). Empty
+/// for a review task, for every other session and while the key is `0`.
+fn context_nudge(store: &mut Store, call: &Call<'_>) -> Result<String> {
+    let usage = &call.env.config.usage;
+    if usage.nudge_context_k == 0 || call.task.is_some_and(|task| task.kind == REVIEW_KIND) {
+        return Ok(String::new());
+    }
+    read_usage(store, call.env, call.session, call.input);
+    let Some(context) = store.latest_context(&call.session.id)? else {
+        return Ok(String::new());
+    };
+    let last = store
+        .session_event(&call.session.id, EVENT_CONTEXT_NUDGE)?
+        .and_then(|data| data.get("step").and_then(Value::as_u64));
+    let Some(step) = usage.nudge_step(context, last) else {
+        return Ok(String::new());
+    };
+    store.append_event(
+        Actor::Hook,
+        call.session.task_id,
+        Some(&call.session.id),
+        EVENT_CONTEXT_NUDGE,
+        &json!({ "step": step, "context": context }),
+    )?;
+    Ok(format!(
+        "\nheadwork: your context is {}k tokens and every turn re-reads it: hand the next read-heavy step (exploring, \
+         builds, test runs, routine edits) to a `general-purpose` subagent on Sonnet, or run /compact.\n",
+        context / 1000
+    ))
 }
 
 /// The user's `review [<flow>] <level> [<focus>]` in a lead's tab (`docs/review-flows.md`, section 3): stores a

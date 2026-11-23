@@ -596,6 +596,18 @@ fn update_refuses_unknown_keys_and_bad_values() {
 fn usage_prices_parse_and_bad_ones_are_refused() {
     let config = Config::parse("[machine]\nhost = \"wmux\"\n", "minimal").unwrap();
     assert_eq!(config.usage.keep_days, 90, "default retention");
+    assert_eq!(config.usage.nudge_context_k, 200, "default nudge");
+    let off = Config::parse(
+        "[machine]
+host = \"wmux\"
+
+[usage]
+nudge_context_k = 0
+",
+        "off",
+    )
+    .unwrap();
+    assert_eq!(off.usage.nudge_context_k, 0, "nudge off");
     assert!(config.usage.prices.is_empty(), "no prices by default");
     let text = "[machine]\nhost = \"wmux\"\n\n[usage]\nkeep_days = 30\n\n[usage.prices.\"claude-opus\"]\ninput = 15.0\noutput = 75\n";
     let config = Config::parse(text, "prices").unwrap();

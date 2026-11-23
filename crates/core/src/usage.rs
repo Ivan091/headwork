@@ -383,6 +383,8 @@ impl ModelPrices {
 pub struct UsageConfig {
     /// Days the per-response rows stay before the tick sums them per day.
     pub keep_days: u32,
+    /// Thousands of context tokens at which a long session is nudged to delegate, and again at each multiple; `0` turns it off.
+    pub nudge_context_k: u32,
     /// Prices by model name or model name prefix.
     pub prices: BTreeMap<String, ModelPrices>,
 }
@@ -391,12 +393,23 @@ impl Default for UsageConfig {
     fn default() -> Self {
         Self {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: BTreeMap::new(),
         }
     }
 }
 
 impl UsageConfig {
+    /// The nudge step a session at `context` tokens is due, given the step it was last nudged at: `context` divided by
+    /// the threshold, when that is a step above the last one. `None` when nudging is off, below the threshold, or the
+    /// step was already nudged.
+    #[must_use]
+    pub fn nudge_step(&self, context: u64, last: Option<u64>) -> Option<u64> {
+        let unit = u64::from(self.nudge_context_k).saturating_mul(1000);
+        let step = context.checked_div(unit)?;
+        (step > 0 && last.is_none_or(|last| step > last)).then_some(step)
+    }
+
     /// The prices of `model`: its own entry, else the longest configured prefix of its name (`claude-opus` covers every
     /// Opus).
     #[must_use]
@@ -823,9 +836,38 @@ mod tests {
     }
 
     #[test]
+    fn nudges_once_per_step_of_the_threshold() {
+        let on = UsageConfig::default();
+        let off = UsageConfig {
+            nudge_context_k: 0,
+            ..UsageConfig::default()
+        };
+        let cases = [
+            (&on, 0, None, None),
+            (&on, 199_999, None, None),
+            (&on, 200_000, None, Some(1)),
+            (&on, 250_000, Some(1), None),
+            (&on, 399_999, Some(1), None),
+            (&on, 400_000, Some(1), Some(2)),
+            (&on, 650_000, None, Some(3)),
+            (&on, 650_000, Some(3), None),
+            (&on, 150_000, Some(2), None),
+            (&off, 900_000, None, None),
+        ];
+        for (config, context, last, want) in cases {
+            assert_eq!(
+                config.nudge_step(context, last),
+                want,
+                "{context} after {last:?}"
+            );
+        }
+    }
+
+    #[test]
     fn models_match_exactly_then_by_the_longest_prefix() {
         let config = UsageConfig {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: [
                 ("claude".to_owned(), prices(1.0, 1.0)),
                 ("claude-opus".to_owned(), prices(15.0, 75.0)),
@@ -844,6 +886,7 @@ mod tests {
     fn estimates_list_unpriced_models_and_print_dollars() {
         let config = UsageConfig {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: [("claude-opus".to_owned(), prices(15.0, 75.0))].into(),
         };
         let spent = Tokens {

@@ -533,6 +533,24 @@ impl Store {
         }))
     }
 
+    /// The context of the session's newest main-session response: input, cache writes and cache reads in tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn latest_context(&self, session: &str) -> Result<Option<u64>, StoreError> {
+        let total: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT input + cache_write_5m + cache_write_1h + cache_read FROM usage
+                 WHERE session_id = ?1 AND agent_id IS NULL ORDER BY at DESC, rowid DESC LIMIT 1",
+                params![session],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(total.map(|total| u64::try_from(total).unwrap_or(0)))
+    }
+
     /// Writes a transcript's newly read responses and its new mark in one transaction; returns how many responses were
     /// new. A response already stored is left as it is.
     ///
