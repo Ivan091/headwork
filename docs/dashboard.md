@@ -141,7 +141,7 @@ messages pulse and nodes appear in the order they happened.
 
 - **Canvas:** the graph, force layout with the user node pinned top and the orchestrator in the middle; each task one node, its parts joined
   to it by lines. Toggle a hierarchical layout (orchestrator → tasks → parts → subagents).
-- **Colour by state:** working green, needs_user red, in_review amber, queued grey, closed faded (hidden by default
+- **Colour by state:** working green (a working task or live orchestrator also has a ring moving outward, still under `prefers-reduced-motion`), needs_user red, in_review amber, queued grey, closed faded (hidden by default
   in live view). Node size by tokens (log scale) when "size by cost" is on.
 - **Side panel on click:** the node's details from `/api/node/<id>`; a "focus" button keeps only its neighbourhood (two
   hops), like Neo4j Browser's expand.
