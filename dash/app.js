@@ -759,7 +759,10 @@
       layout();
     });
   }
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => cy.style(style()));
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    cy.style(style());
+    refreshLegend();
+  });
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (focused) {
@@ -795,6 +798,147 @@
     replayFrom(start);
     play();
   });
+
+  const SVG = "http://www.w3.org/2000/svg";
+  const SHAPES = {
+    star: "M17 1 L20.5 7.5 L28 8.5 L22.5 13.5 L24 21 L17 17.5 L10 21 L11.5 13.5 L6 8.5 L13.5 7.5 Z",
+    hexagon: "M10 9 L14 2 L20 2 L24 9 L20 16 L14 16 Z",
+    ellipse: "M17 3 A8 6 0 1 0 17.01 3 Z",
+    "round-rectangle": "M11 4 H23 V14 H11 Z",
+    tag: "M10 4 H21 L25 9 L21 14 H10 Z",
+    diamond: "M17 1 L25 9 L17 17 L9 9 Z",
+    "round-triangle": "M17 2 L25 16 H9 Z",
+    "round-octagon": "M13 2 H21 L26 7 V11 L21 16 H13 L8 11 V7 Z",
+  };
+  const NODE_ROWS = [
+    ["star", "you (the user)", "violet"],
+    ["hexagon", "the orchestrator", "blue"],
+    ["ellipse", "a lead, worker or part session", "green"],
+    ["ellipse", "a subagent or helper (smaller)", "green"],
+    ["round-rectangle", "a job", "green"],
+    ["tag", "a pull request", "green"],
+    ["diamond", "a review or review node", "amber"],
+    ["round-triangle", "an ask", "red"],
+    ["round-octagon", "an outside address", "grey"],
+  ];
+  const TONE_ROWS = [
+    ["green", "working, running, live, open pull request"],
+    ["amber", "in review, ready, parked, requested"],
+    ["red", "needs you, failed, open ask"],
+    ["grey", "queued or not yet seen"],
+    ["faded", "closed, merged, ended, done"],
+  ];
+  const EDGE_ROWS = [
+    ["", "#line", "spawned, called, opened, reviews"],
+    ["", "#blue", "message between sessions (count on the line)"],
+    ["", "#green", "report to the orchestrator"],
+    ["", "#red", "ask to the user"],
+    ["dashed", "#line", "a task waits for another"],
+    ["", "#violet", "talk happening now (pulse)"],
+  ];
+
+  function legendSvg(parent, build) {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 34 18");
+    svg.setAttribute("aria-hidden", "true");
+    build(svg);
+    parent.appendChild(svg);
+  }
+
+  function legendShape(svg, shape, fill, stroke, width) {
+    const path = document.createElementNS(SVG, "path");
+    path.setAttribute("d", SHAPES[shape]);
+    path.setAttribute("fill", fill);
+    path.setAttribute("stroke", stroke || "none");
+    path.setAttribute("stroke-width", String(width || 0));
+    svg.appendChild(path);
+  }
+
+  function buildLegend() {
+    const box = byId("legend");
+    const c = colours();
+    const row = (parent, draw, text) => {
+      const line = add(parent, "div", "");
+      line.className = "row";
+      legendSvg(line, draw);
+      add(line, "span", text);
+    };
+    add(box, "h3", "shapes");
+    for (const [shape, text, tone] of NODE_ROWS) {
+      row(box, (svg) => legendShape(svg, shape, c[tone]), text);
+    }
+    add(box, "h3", "colours");
+    for (const [tone, text] of TONE_ROWS) {
+      row(box, (svg) => legendShape(svg, "ellipse", c[tone]), text);
+    }
+    row(
+      box,
+      (svg) => {
+        legendShape(svg, "round-rectangle", c.box, c.green, 2);
+      },
+      "a task box, outlined in its state colour; its sessions sit inside",
+    );
+    add(box, "h3", "edges");
+    for (const [style, colour, text] of EDGE_ROWS) {
+      row(
+        box,
+        (svg) => {
+          const line = document.createElementNS(SVG, "line");
+          line.setAttribute("x1", "2");
+          line.setAttribute("x2", "28");
+          line.setAttribute("y1", "9");
+          line.setAttribute("y2", "9");
+          line.setAttribute("stroke", c[colour.slice(1)]);
+          line.setAttribute("stroke-width", "2");
+          if (style) {
+            line.setAttribute("stroke-dasharray", "4 3");
+          }
+          svg.appendChild(line);
+          const head = document.createElementNS(SVG, "path");
+          head.setAttribute("d", "M26 5 L33 9 L26 13 Z");
+          head.setAttribute("fill", c[colour.slice(1)]);
+          svg.appendChild(head);
+        },
+        text,
+      );
+    }
+    add(box, "h3", "badges and sizes");
+    row(box, (svg) => legendShape(svg, "ellipse", c.green, c.red, 3), "red ring: open findings on the task");
+    add(box, "p", "A “⚠ n” in a task's label counts its open tick findings; “n asks waiting” on you counts open asks.").className =
+      "note";
+    add(box, "p", "A review shows “n findings (m open)”.").className = "note";
+    add(box, "p", "With “size by cost”, a bigger node spent more tokens (log scale).").className = "note";
+    add(box, "p", "A violet ring marks the selected node.").className = "note";
+  }
+
+  function refreshLegend() {
+    const box = byId("legend");
+    while (box.firstChild) {
+      box.removeChild(box.firstChild);
+    }
+    buildLegend();
+  }
+
+  const legendToggle = byId("legend-toggle");
+  legendToggle.addEventListener("click", () => {
+    const box = byId("legend");
+    box.hidden = !box.hidden;
+    legendToggle.setAttribute("aria-expanded", String(!box.hidden));
+    legendToggle.classList.toggle("on", !box.hidden);
+    try {
+      localStorage.setItem("legend", box.hidden ? "0" : "1");
+    } catch (error) {
+      status.title = String(error);
+    }
+  });
+  refreshLegend();
+  try {
+    if (localStorage.getItem("legend") === "1") {
+      legendToggle.click();
+    }
+  } catch (error) {
+    status.title = String(error);
+  }
 
   showInstant();
   loadRange().then(load);
