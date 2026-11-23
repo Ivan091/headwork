@@ -606,3 +606,24 @@ fn received_messages_are_read_from_prompt_events() {
         "only cross-session prompts with a sender"
     );
 }
+
+#[test]
+fn an_agents_times_are_each_normalised_before_the_first_and_last_are_taken() {
+    let (mut store, _config) = store();
+    let lines = [
+        line("m1", "2026-11-22T11:30:00+02:00", HAIKU, 1, 1),
+        line("m2", "2026-11-22T10:00:00Z", HAIKU, 1, 1),
+        line("m3", "t", HAIKU, 1, 1),
+    ];
+    record(&mut store, "s1", Some("a5"), None, &lines);
+    let facts = store.graph_facts().unwrap();
+    let agent = &facts.agents[0];
+    assert_eq!(
+        (agent.first_at.as_deref(), agent.last_at.as_deref()),
+        (
+            Some("2026-11-22T09:30:00.000Z"),
+            Some("2026-11-22T10:00:00.000Z")
+        ),
+        "the offset time is the earlier one, and the garbage one is dropped"
+    );
+}

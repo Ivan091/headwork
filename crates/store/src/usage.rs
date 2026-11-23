@@ -183,12 +183,29 @@ fn upsert_agent(
     agent: &str,
     batch: &UsageBatch<'_>,
 ) -> Result<(), StoreError> {
-    let first = batch.lines.iter().map(|line| line.at.as_str()).min();
-    let last = batch.lines.iter().map(|line| line.at.as_str()).max();
-    write_agent(tx, agent, batch.session_id, batch.agent_meta, (first, last))
+    let times = serde_json::to_string(
+        &batch
+            .lines
+            .iter()
+            .map(|line| line.at.as_str())
+            .collect::<Vec<_>>(),
+    )?;
+    let (first, last): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT MIN(t), MAX(t) FROM (SELECT strftime('%Y-%m-%dT%H:%M:%fZ', value) AS t FROM json_each(?1))",
+        params![times],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    write_agent(
+        tx,
+        agent,
+        batch.session_id,
+        batch.agent_meta,
+        (first.as_deref(), last.as_deref()),
+    )
 }
 
-/// The one write of an `agents` row: insert, or widen its times and fill the meta fields given.
+/// The one write of an `agents` row: insert, or widen its times (already in the store's own format) and fill the
+/// meta fields given.
 fn write_agent(
     conn: &rusqlite::Connection,
     agent: &str,
@@ -199,7 +216,7 @@ fn write_agent(
     conn.execute(
         "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, parent_agent_id,
              finished, first_at, last_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%Y-%m-%dT%H:%M:%fZ', ?9), strftime('%Y-%m-%dT%H:%M:%fZ', ?10))
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT (agent_id) DO UPDATE SET
              agent_type = COALESCE(excluded.agent_type, agents.agent_type),
              description = COALESCE(excluded.description, agents.description),
