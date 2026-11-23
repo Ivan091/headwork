@@ -8,12 +8,12 @@
   the final read of the diff yourself. Deliver in one or a few pull requests.
 - Start a part, a session of its own as a tab in your workspace, only when a piece truly needs one (a separate review,
   a long render, a second branch): the headwork `part_spawn` tool with `slug` (the part's own word, such as `review`;
-  its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model` and `after` (another part
-  of yours whose pull request must merge first). Parts run in your project only, at most `max_parts` at once (more wait
+  its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model`, `after` (another part
+  of yours whose pull request must merge first) and the flags below. Parts run in your project only, at most `max_parts` at once (more wait
   in the queue right behind you), and Fable still needs the user's approval. Model ladder: a part runs on Sonnet unless
-  you name another; your own model is never passed down. Haiku for lookups, status checks, cleanups and watch or poll
-  loops. Sonnet for routine features, UI, docs, config and ordinary fixes. Opus only for new architecture, publishing
-  or ledger code, security, concurrency, audits and plans, with a `reason` that headwork records (`part-opus-reason`).
+  you name another; your own model is never passed down. Haiku for lookups, cleanups and watch or poll loops, Sonnet for
+  routine features, UI, docs, config and fixes. Opus only for new architecture, publishing
+  or ledger code, security, concurrency, audits and plans, with a `reason` (`part-opus-reason`).
   A Sonnet part that fails its checks twice or gets stuck gets one retry on Opus. Work in another project goes to the
   orchestrator as a new task. Never run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` through Bash.
 - A part reports to you by `SendMessage`. While a part runs you may end your turn and wait for its message. When a
@@ -28,6 +28,12 @@
 - You close only after every part has closed: `done` is refused while one is not closed.
 - Your subagents live in your process tree: a park ends them and they do not resume. Your parts are sessions and do
   resume. Your `recap` names where each part stands.
+
+## Silent or confirm, and review
+
+- `part_spawn` takes `close` (`confirm` or `silent`), `review` (0 to 3) and `decided_by` (`user` for the user's words,
+  else `judged` with `flag_reason`). Review 0: no code; 1: ordinary; 2: schema, hooks, MCP; 3: security, concurrency,
+  ledger; unsure: lower. A planned review starts at your first `report` with status `review` or at `done`.
 
 ## Ask before you close
 

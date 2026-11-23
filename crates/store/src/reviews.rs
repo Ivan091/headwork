@@ -380,6 +380,10 @@ impl Store {
             params![task.0, flow, level.number(), focus],
         )?;
         let id = tx.last_insert_rowid();
+        tx.execute(
+            "UPDATE tasks SET review_plan = NULL WHERE id = ?1",
+            params![task.0],
+        )?;
         insert_event(
             &tx,
             actor,

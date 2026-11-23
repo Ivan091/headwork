@@ -66,8 +66,11 @@ to the lead's context: "The user asked for a level-N review with the flow F. Cal
 start sessions (a spawn takes about 20 seconds); the lead's tool call does. The stop rule `review-unstarted` refuses a
 lead's stop while a requested review has not started.
 
-Reviews start only on the user's word: `review_start` is refused without a `requested` row (`review-unrequested`), so
-neither a lead nor the orchestrator starts one on its own. A part's tab and the orchestrator's do not take the command;
+A review starts only from a `requested` row: `review_start` is refused without one (`review-unrequested`). The row comes
+from the user's word or from a plan: since 2026-11-23 the orchestrator or a lead may plan a level per task at spawn
+(`review`, with `decided_by` and a reason), and headwork requests it at the lead's first pull request report or at its
+`done` (`review-planned`), exactly as the user's command would. The user's words win: `review N` replaces the plan and
+`no review` clears it. A part's tab and the orchestrator's do not take the command;
 a later `review N` while one runs is refused with the running one's state (`review-running`).
 
 ## 4. Levels
@@ -297,7 +300,6 @@ brief), and is enforced from R3 on.
 
 ## Deferred
 
-`command` and `gate` nodes; reviews a lead starts on its own or that a project requires before merge (the user said
-reviews run when they say so); reviews of another project's task; the Claude Code Workflow tool as the engine, set aside
+`command` and `gate` nodes; reviews that a project requires before merge; reviews of another project's task; the Claude Code Workflow tool as the engine, set aside
 because headwork would see only a run's end result and a park would lose a run in flight (`docs/decisions.md`,
 2026-11-22).

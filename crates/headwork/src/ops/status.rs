@@ -3,10 +3,13 @@
 //! The words are `working`, `needs you`, `in review <PR URLs>`, `finished`, `failed` and the rest of [`TaskStatus`].
 //! It is what the orchestrator tells the user unless asked for more. The roll-up itself is [`headwork_core::status`].
 
+use std::fmt::Write as _;
+
 use anyhow::Result;
+use headwork_core::review::Level;
 use headwork_core::usage::UsageConfig;
-use headwork_core::{StatusFacts, TaskShape, TaskState, TaskStatus};
-use headwork_store::{Board, BoardTask, ByModel, Store};
+use headwork_core::{CloseMode, StatusFacts, TaskShape, TaskState, TaskStatus};
+use headwork_store::{Board, BoardTask, ByModel, Store, Task};
 use serde::Serialize;
 
 /// One top-level task's status.
@@ -28,6 +31,10 @@ pub struct StatusLine {
     pub estimate: Option<String>,
     /// The review running on the task, if one is open.
     pub review: Option<StatusReview>,
+    /// Whether the task's lead asks the user before it closes.
+    pub close: CloseMode,
+    /// The level of the review planned for the task: 1 light, 2 standard, 3 strict; none when no review is planned.
+    pub review_plan: Option<u8>,
 }
 
 /// The open review of a task, as `status --json` reports it.
@@ -112,6 +119,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             | TaskStatus::Parked
             | TaskStatus::Dropped => format!("{task}: {status}"),
         };
+        let line = format!("{line}{}", flag_tags(&top.task));
         out.push(StatusLine {
             task,
             status,
@@ -121,9 +129,24 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),
             review: review(store, top)?,
+            close: top.task.close,
+            review_plan: top.task.review_plan.map(Level::number),
         });
     }
     Ok(out)
+}
+
+/// The tags a task's flags add to its line: ` · silent` and ` · review N planned`.
+#[must_use]
+pub fn flag_tags(task: &Task) -> String {
+    let mut tags = String::new();
+    if task.close == CloseMode::Silent {
+        tags.push_str(" · silent");
+    }
+    if let Some(level) = task.review_plan {
+        let _ = write!(tags, " · review {} planned", level.number());
+    }
+    tags
 }
 
 fn review(store: &Store, entry: &BoardTask) -> Result<Option<StatusReview>> {

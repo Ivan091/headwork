@@ -1,9 +1,11 @@
 //! The guard of spawn → `queued`: whether a new task may exist at all.
 
 use crate::config::Config;
+use crate::flags::FlagDecision;
 use crate::names::{ProjectName, Slug};
+use crate::review::Level;
 use crate::user_go::quoted_list;
-use crate::vocabulary::{Effort, MachineMode, Model};
+use crate::vocabulary::{CloseMode, Effort, MachineMode, Model};
 
 /// A request for a new task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,12 @@ pub struct TaskRequest {
     pub in_main: bool,
     /// A standing role that does not close when idle.
     pub keep: bool,
+    /// Whether the task's lead asks the user before it closes.
+    pub close: CloseMode,
+    /// The review planned for the task: it starts at the first pull request or `done`; none when absent.
+    pub review: Option<Level>,
+    /// How `close` and `review` were chosen, when the spawn named either.
+    pub decision: Option<FlagDecision>,
 }
 
 /// A request that passed the guard, with the values it resolved.

@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod clean;
 pub mod config;
+pub mod flags;
 pub mod graph;
 pub mod guard;
 pub mod layout;
@@ -27,6 +28,7 @@ pub use config::{
     Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
     REVIEW_KIND, ReviewsConfig, SILENT_KIND, UpdateConfig,
 };
+pub use flags::{DecidedBy, DecisionError, FlagDecision, FlagPrompt, PlanMoment, PlannedReview};
 pub use guard::{Decision, Verdict};
 pub use lead::{
     PartSlots, QueueEntry, QueueKey, ShapeError, StatusFacts, TaskShape, TaskStatus, queue_order,
@@ -39,7 +41,7 @@ pub use names::{
 };
 pub use platform::Platform;
 pub use vocabulary::{
-    Actor, AskKind, AskState, Effort, FindingId, FindingVerdict, JobState, MachineMode, Model,
-    NodeState, PermissionMode, PlaceKind, PullState, RecapKind, Resolution, ReviewState, Role,
-    RuleId, SessionState, Severity, TaskState, UnknownWord, UsageGroup, UsageRole,
+    Actor, AskKind, AskState, CloseMode, Effort, FindingId, FindingVerdict, JobState, MachineMode,
+    Model, NodeState, PermissionMode, PlaceKind, PullState, RecapKind, Resolution, ReviewState,
+    Role, RuleId, SessionState, Severity, TaskState, UnknownWord, UsageGroup, UsageRole,
 };

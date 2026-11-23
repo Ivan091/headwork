@@ -140,6 +140,28 @@ impl TaskState {
 }
 
 text_enum!(
+    /// Whether a task's lead asks the user before it closes.
+    CloseMode, "close mode" {
+        /// The lead asks the user for a go before it closes (the default).
+        Confirm => "confirm",
+        /// The lead closes without asking the user.
+        Silent => "silent",
+    }
+);
+
+impl CloseMode {
+    /// The mode a task of this kind gets when none is named: a kind `silent` closes silently, as it did before the flag.
+    #[must_use]
+    pub fn default_for(kind: &str) -> Self {
+        if kind == crate::config::SILENT_KIND {
+            Self::Silent
+        } else {
+            Self::Confirm
+        }
+    }
+}
+
+text_enum!(
     /// The machine-wide mode (design section 6).
     MachineMode, "machine mode" {
         /// Everything runs.

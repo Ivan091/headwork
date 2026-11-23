@@ -161,7 +161,27 @@ const TOOLS: &[ToolDef] = &[
                     "effort": { "type": "string", "enum": ["low", "medium", "high", "xhigh", "max"] },
                     "kind": {
                         "type": "string",
-                        "description": "The task kind; `silent` makes a lead close without asking the user first."
+                        "description": "The task kind: it picks flow, grants, main-only. Kind `silent` still means `close: silent`."
+                    },
+                    "close": {
+                        "type": "string",
+                        "enum": ["confirm", "silent"],
+                        "description": "Whether the lead asks the user before closing. Follow the decision table in your rules."
+                    },
+                    "review": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Planned review: 0 none, 1 light, 2 standard, 3 strict. Follow the decision table in your rules."
+                    },
+                    "decided_by": {
+                        "type": "string",
+                        "enum": ["user", "judged"],
+                        "description": "`user`: the user's words set it; `judged`: the table did. Needed with either."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "One line: why these values. Required when `decided_by` is `judged`."
                     },
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
@@ -476,6 +496,26 @@ const TOOLS: &[ToolDef] = &[
                     "project": {
                         "type": "string",
                         "description": "Only your own project; another project's work goes to the orchestrator as a new task.",
+                    },
+                    "close": {
+                        "type": "string",
+                        "enum": ["confirm", "silent"],
+                        "description": "Whether the lead asks the user before closing. Follow the decision table in your rules."
+                    },
+                    "review": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Planned review: 0 none, 1 light, 2 standard, 3 strict. Follow the decision table in your rules."
+                    },
+                    "decided_by": {
+                        "type": "string",
+                        "enum": ["user", "judged"],
+                        "description": "`user`: the user's words set it; `judged`: the table did. Needed with either."
+                    },
+                    "flag_reason": {
+                        "type": "string",
+                        "description": "One line: why these `close` and `review` values (`reason` is for Opus). Needed when judged."
                     },
                 }),
                 &["slug", "brief"],
@@ -1294,6 +1334,7 @@ impl<'a> Server<'a> {
             },
             str::to_owned,
         );
+        let flags = spawn_flags(args, &kind, "reason")?;
         let model: Option<Model> = args
             .get("model")
             .and_then(Value::as_str)
@@ -1339,6 +1380,9 @@ impl<'a> Server<'a> {
                 effort,
                 in_main,
                 keep: flag(args, "keep"),
+                close: flags.close,
+                review: flags.review,
+                decision: flags.decision,
             },
             brief: &file,
             depends_on,
@@ -1374,6 +1418,7 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .map(str::parse)
             .transpose()?;
+        let flags = spawn_flags(args, "task", "flag_reason")?;
         let opus_reason = match model {
             Some(Model::Opus) => Some(
                 text(args, "reason")
@@ -1403,6 +1448,9 @@ impl<'a> Server<'a> {
                 effort: None,
                 in_main: false,
                 keep: false,
+                close: flags.close,
+                review: flags.review,
+                decision: flags.decision,
             },
             brief: &file,
             depends_on,
@@ -1644,7 +1692,25 @@ impl<'a> Server<'a> {
             }
         }
         let state = moved.unwrap_or(self.store.task(task.id)?.state);
-        to_text(&json!({ "recorded": true, "status": status, "state": state }))
+        let note = if status == "review" {
+            let fresh = self.store.task(task.id)?;
+            super::flags::start_planned(
+                self.store,
+                self.env.config,
+                self.env.home.root(),
+                &fresh,
+                headwork_core::PlanMoment::FirstPullRequest,
+                self.env.actor,
+            )?
+            .note()
+        } else {
+            None
+        };
+        let mut reply = json!({ "recorded": true, "status": status, "state": state });
+        if let Some(note) = note {
+            reply["note"] = Value::String(note);
+        }
+        to_text(&reply)
     }
 
     fn done(&mut self, session: &str, task: Task, args: &Value) -> Result<String> {
@@ -1671,6 +1737,24 @@ impl<'a> Server<'a> {
         ) {
             bail!("the task is already {}", task.state);
         }
+        match super::flags::start_planned(
+            self.store,
+            self.env.config,
+            self.env.home.root(),
+            &task,
+            headwork_core::PlanMoment::Done,
+            self.env.actor,
+        )? {
+            super::flags::PlannedOutcome::Requested { review, level, .. } => bail!(
+                "review-planned: a level-{level} review (review {review}) was planned for this task; commit your work, then \
+                 call `review_start`"
+            ),
+            super::flags::PlannedOutcome::FlowBroken(problem) => bail!(
+                "a review was planned for this task, but {problem}; the plan is cleared and no review started: tell the \
+                 user, then call `done` again"
+            ),
+            super::flags::PlannedOutcome::None | super::flags::PlannedOutcome::AlreadyOpen => {}
+        }
         let summary = args
             .get("summary")
             .and_then(Value::as_str)
@@ -1695,6 +1779,30 @@ fn text(args: &Value, key: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("`{key}` is required and must be a string"))
+}
+
+fn spawn_flags(args: &Value, kind: &str, reason_key: &str) -> Result<super::flags::SpawnFlags> {
+    let close: Option<headwork_core::CloseMode> = args
+        .get("close")
+        .and_then(Value::as_str)
+        .map(str::parse)
+        .transpose()?;
+    let review = match args.get("review") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|number| u8::try_from(number).ok())
+                .ok_or_else(|| anyhow!("`review` must be 0, 1, 2 or 3"))?,
+        ),
+    };
+    super::flags::resolve(
+        kind,
+        close,
+        review,
+        args.get("decided_by").and_then(Value::as_str),
+        args.get(reason_key).and_then(Value::as_str),
+    )
 }
 
 fn flag(args: &Value, key: &str) -> bool {

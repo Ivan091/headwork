@@ -22,10 +22,11 @@ use headwork::ops::update::{Notice, UpdateState};
 use headwork::ops::waiting::FakeSlots;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
+use headwork_core::review::Level;
 use headwork_core::usage::{Tokens, UsageLine};
 use headwork_core::{
-    Actor, Config, Model, PermissionMode, Platform, ProjectName, ReviewState, Role, SILENT_KIND,
-    SessionState, Slug, TaskRequest, TaskState, Trigger,
+    Actor, CloseMode, Config, Model, PermissionMode, Platform, ProjectName, ReviewState, Role,
+    SILENT_KIND, SessionState, Slug, TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
     EventFilter, EventRecord, FileMark, NewSession, Store, Task, UsageBatch, UsageTag,
@@ -82,6 +83,25 @@ fn world_in(hooks: &str, project: &str, keep: bool) -> World {
 
 /// A world as [`world_in`] whose task is of this kind.
 fn world_of(hooks: &str, project: &str, keep: bool, kind: &str) -> World {
+    world_flagged(
+        hooks,
+        project,
+        keep,
+        kind,
+        CloseMode::default_for(kind),
+        None,
+    )
+}
+
+/// A world as [`world_of`] whose task has this close mode and planned review.
+fn world_flagged(
+    hooks: &str,
+    project: &str,
+    keep: bool,
+    kind: &str,
+    close: CloseMode,
+    review: Option<Level>,
+) -> World {
     let dir = tempfile::tempdir().unwrap();
     let dir_text = dir.path().display().to_string().replace('\\', "/");
     let hooks = hooks.replace("@DIR@", &dir_text);
@@ -116,6 +136,9 @@ fn world_of(hooks: &str, project: &str, keep: bool, kind: &str) -> World {
             effort: None,
             in_main: false,
             keep,
+            close,
+            review,
+            decision: None,
         },
         brief: &brief,
         depends_on: None,
@@ -2147,6 +2170,9 @@ impl World {
                 effort: None,
                 in_main: false,
                 keep: false,
+                close: CloseMode::Confirm,
+                review: None,
+                decision: None,
             },
             brief_path: self.dir.path().join("brief.md").display().to_string(),
             depends_on: None,
@@ -2996,6 +3022,9 @@ fn a_freed_slot_runs_the_queue_when_a_task_waits() {
             effort: None,
             in_main: false,
             keep: false,
+            close: CloseMode::Confirm,
+            review: None,
+            decision: None,
         },
         brief: &brief,
         depends_on: None,
@@ -3605,4 +3634,135 @@ fn closing_the_reviewer_lead_s_part_cancels_its_review() {
     assert!(!is_error, "{text}");
     let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
     assert_eq!(review.state, ReviewState::Cancelled, "{review:?}");
+}
+
+#[test]
+fn kind_silent_still_means_a_silent_close() {
+    let w = world_of(LEADS, "", false, SILENT_KIND);
+    assert_eq!(w.task.close, CloseMode::Silent);
+    let plain = world(LEADS, false);
+    assert_eq!(plain.task.close, CloseMode::Confirm);
+}
+
+#[test]
+fn a_silent_flag_on_an_ordinary_kind_closes_without_the_users_go() {
+    let mut w = world_flagged(LEADS, "", false, "task", CloseMode::Silent, None);
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let identity = worker_identity(&w);
+    let (is_error, text) = w.tool(identity, "done", &json!({ "summary": "built" }));
+    assert!(!is_error, "a silent lead closes without asking: {text}");
+}
+
+#[test]
+fn done_with_a_planned_review_requests_it_and_is_refused() {
+    let mut w = world_flagged(
+        REVIEWS,
+        "",
+        false,
+        "task",
+        CloseMode::Silent,
+        Some(Level::Standard),
+    );
+    w.start();
+    assert_eq!(
+        w.store.task(w.task.id).unwrap().review_plan,
+        Some(Level::Standard)
+    );
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("review-planned"), "{text}");
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(
+        (review.state, review.level, review.flow.as_str()),
+        (ReviewState::Requested, Level::Standard, "code"),
+        "{review:?}"
+    );
+    assert_eq!(
+        w.store.task(w.task.id).unwrap().review_plan,
+        None,
+        "the plan is spent"
+    );
+    assert!(
+        w.events()
+            .iter()
+            .any(|event| event.kind == "review-planned"),
+        "the request is logged"
+    );
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("review-open"), "{text}");
+}
+
+#[test]
+fn a_planned_review_is_ignored_while_reviews_are_disabled() {
+    let mut w = world_flagged(
+        LEADS,
+        "",
+        false,
+        "task",
+        CloseMode::Silent,
+        Some(Level::Light),
+    );
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
+    assert!(!is_error, "{text}");
+    assert!(w.store.open_review(w.task.id).unwrap().is_none());
+    assert_eq!(
+        w.store.task(w.task.id).unwrap().review_plan,
+        Some(Level::Light)
+    );
+}
+
+#[test]
+fn the_user_s_flag_words_in_a_lead_s_tab_change_its_flags() {
+    let mut w = world_flagged(
+        REVIEWS,
+        "",
+        false,
+        "task",
+        CloseMode::Confirm,
+        Some(Level::Standard),
+    );
+    w.start();
+    let prompt = |w: &mut World, text: &str| {
+        context(&w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": text })))
+    };
+    let text = prompt(&mut w, "Silent.");
+    assert!(text.contains("the user set this task to silent"), "{text}");
+    assert_eq!(w.store.task(w.task.id).unwrap().close, CloseMode::Silent);
+    let text = prompt(&mut w, "confirm");
+    assert!(text.contains("the user set this task to confirm"), "{text}");
+    assert_eq!(w.store.task(w.task.id).unwrap().close, CloseMode::Confirm);
+    let text = prompt(&mut w, "no review");
+    assert!(
+        text.contains("the user set this task to no review"),
+        "{text}"
+    );
+    assert_eq!(w.store.task(w.task.id).unwrap().review_plan, None);
+    assert!(
+        w.events()
+            .iter()
+            .filter(|event| event.kind == "flags-set")
+            .count()
+            >= 3,
+        "each change is logged"
+    );
+}
+
+#[test]
+fn the_user_s_review_command_clears_the_plan() {
+    let mut w = world_flagged(
+        REVIEWS,
+        "",
+        false,
+        "task",
+        CloseMode::Confirm,
+        Some(Level::Light),
+    );
+    w.start();
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 3" }),
+    );
+    assert_eq!(w.store.task(w.task.id).unwrap().review_plan, None);
 }
