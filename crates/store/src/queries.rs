@@ -1,10 +1,11 @@
 //! Reads and writes of tasks, sessions, asks, projects and events.
 
 use headwork_core::lifecycle::{Dependency, FableGate, StartFacts, droppable};
+use headwork_core::review::Level;
 use headwork_core::{
-    Actor, AskKind, AskState, Config, Effort, MachineMode, PartSlots, PermissionMode,
-    ProjectConfig, ProjectName, Refusal, Role, SessionState, Slug, Step, TaskName, TaskRequest,
-    TaskShape, TaskState, Trigger, admit, apply,
+    Actor, AskKind, AskState, CloseMode, Config, DecidedBy, Effort, MachineMode, PartSlots,
+    PermissionMode, ProjectConfig, ProjectName, Refusal, Role, SessionState, Slug, Step, TaskName,
+    TaskRequest, TaskShape, TaskState, Trigger, admit, apply,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
@@ -19,13 +20,17 @@ pub(crate) const EVENT_TRANSITION: &str = "transition";
 /// The event of a new task; its actor is who created it.
 pub(crate) const EVENT_TASK_CREATED: &str = "task-created";
 
+/// The event a change of a task's close mode or planned review logs.
+pub const EVENT_FLAGS_SET: &str = "flags-set";
+
 /// The answer to a Fable approval ask that lets the task start.
 pub const FABLE_ALLOW: &str = "Allow Fable";
 
 const FABLE_DECLINE: &str = "Use Opus instead";
 
 const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
-                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort, parent_id, lead";
+                            fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort, parent_id, lead, \
+                            close_mode, review_plan";
 
 /// A task to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +110,8 @@ struct RawTask {
     effort: Option<String>,
     parent_id: Option<i64>,
     lead: bool,
+    close_mode: String,
+    review_plan: Option<u8>,
 }
 
 impl RawTask {
@@ -129,6 +136,8 @@ impl RawTask {
             effort: row.get(16)?,
             parent_id: row.get(17)?,
             lead: row.get(18)?,
+            close_mode: row.get(19)?,
+            review_plan: row.get(20)?,
         })
     }
 
@@ -146,6 +155,12 @@ impl RawTask {
             permission_mode: self.permission_mode.parse()?,
             effort: self.effort.map(|effort| effort.parse()).transpose()?,
             keep: self.keep,
+            close: self.close_mode.parse()?,
+            review_plan: self
+                .review_plan
+                .map(Level::try_from)
+                .transpose()
+                .map_err(|error| StoreError::OutOfRange(i64::from(error.0)))?,
             in_main: self.in_main,
             depends_on: self.depends_on.map(TaskId),
             shape: TaskShape::from_columns(self.parent_id.map(TaskId), self.lead)?,
@@ -445,8 +460,8 @@ impl Store {
         tx.execute(
             &format!(
                 "INSERT INTO tasks (project, slug, kind, state, model, keep, in_main, depends_on, brief_path, queued_at,
-                     updated_at, permission_mode, effort, parent_id, lead)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9, ?10, ?11, ?12)"
+                     updated_at, permission_mode, effort, parent_id, lead, close_mode, review_plan)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, {NOW}, {NOW}, ?9, ?10, ?11, ?12, ?13, ?14)"
             ),
             params![
                 request.project.as_str(),
@@ -461,6 +476,8 @@ impl Store {
                 request.effort.map(Effort::as_str),
                 new.shape.parent().map(|id| id.0),
                 new.shape.is_lead(),
+                request.close.as_str(),
+                request.review.map(Level::number),
             ],
         )?;
         let id = TaskId(tx.last_insert_rowid());
@@ -481,11 +498,91 @@ impl Store {
         }
         let data = serde_json::json!({
             "name": name.to_string(), "kind": request.kind, "model": admitted.model, "effort": admitted.effort, "in_main": request.in_main,
-            "keep": request.keep, "shape": new.shape,
+            "keep": request.keep, "shape": new.shape, "close": request.close,
+            "review": request.review.map_or(0, Level::number),
+            "decided_by": request.decision.as_ref().map(|decision| decision.decided_by),
+            "reason": request.decision.as_ref().map(|decision| decision.reason.as_str()),
         });
         insert_event(&tx, actor, Some(id), None, EVENT_TASK_CREATED, &data)?;
         tx.commit()?;
         load_task(&self.conn, id)
+    }
+
+    /// Sets a task's close mode, logging `flags-set` with who decided.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownTask`] or the SQLite error.
+    pub fn set_task_close(
+        &mut self,
+        task: TaskId,
+        close: CloseMode,
+        decided_by: DecidedBy,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE tasks SET close_mode = ?1 WHERE id = ?2",
+            params![close.as_str(), task.0],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::UnknownTask(task.0));
+        }
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            EVENT_FLAGS_SET,
+            &serde_json::json!({ "close": close, "decided_by": decided_by }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Clears a task's planned review without logging it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn clear_review_plan(&mut self, task: TaskId) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE tasks SET review_plan = NULL WHERE id = ?1",
+            params![task.0],
+        )?;
+        Ok(())
+    }
+
+    /// Sets or clears a task's planned review, logging `flags-set` with who decided.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownTask`] or the SQLite error.
+    pub fn set_review_plan(
+        &mut self,
+        task: TaskId,
+        plan: Option<Level>,
+        decided_by: DecidedBy,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE tasks SET review_plan = ?1 WHERE id = ?2",
+            params![plan.map(Level::number), task.0],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::UnknownTask(task.0));
+        }
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            EVENT_FLAGS_SET,
+            &serde_json::json!({ "review": plan.map_or(0, Level::number), "decided_by": decided_by }),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The task with this id.

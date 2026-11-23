@@ -92,7 +92,7 @@ outside its lead's workspace), a line in a lead's next prompt per part waiting o
 `status` (`ops/status.rs`, roll-up in `core/src/lead.rs`), a CLI command and an orchestrator MCP tool.
 `[leads] ask_before_close` (default on) holds a lead's own close and the tick's merged-grace close until the user
 answers its ask headed `Close` with a go (`close-go` event, refusal `lead-close-unasked`); the lead's rules gain "Ask
-before you close" while it is on. A task of kind `silent` (`SILENT_KIND`) never asks: it closes without the go.
+before you close" while it is on. A task whose `close` flag is `silent` (`CloseMode`, `tasks.close_mode`; kind `silent` (`SILENT_KIND`) still maps to it) never asks: it closes without the go. A planned review (`tasks.review_plan`, `review` at spawn, `ops/flags.rs`) is requested at the lead's first `report` with status `review` or at its `done` (refused with `review-planned`); the user's `silent`, `confirm`, `no review` or `review N` in the lead's tab changes the flags.
 Review flows (`docs/review-flows.md`) start with R1: the pure model in `core/src/review/` (the `review [<flow>] <level>
 [<focus>]` parser, flows as TOML graphs and their validation, ready-node scheduling, the review state machine, the
 dispute rule), migration 0019 with `Store::request_review`, `move_review` and the node and finding queries
@@ -154,7 +154,7 @@ cargo run -p headwork -- status [--all] [--json]   # one line per top-level task
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- graph [--json] [--at T] [--all | --task <name>]   # the agents working together as nodes and edges (docs/dashboard.md)
 cargo run -p headwork -- dash [--port 8740] [--open]   # the agent graph as a web page on http://127.0.0.1:8740/, read only, until Ctrl+C
-cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
+cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--close confirm|silent] [--review N --decided-by user|judged --reason "..."] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job
 cargo run -p headwork -- answer <ask-id> <choice>  # answer an ask the tick raised (e.g. keep or delete a worktree) by option number or text

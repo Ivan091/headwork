@@ -249,6 +249,7 @@ fn task_line(
     if t.keep {
         text.push_str(" (keep)");
     }
+    text.push_str(&headwork::ops::status::flag_tags(t));
     match t.shape {
         TaskShape::Lead => text.push_str(" (lead)"),
         TaskShape::Part { parent } if depth == 0 => {
@@ -1053,6 +1054,9 @@ mod tests {
                 effort: None,
                 in_main: false,
                 keep: false,
+                close: headwork_core::CloseMode::Confirm,
+                review: None,
+                decision: None,
             },
             brief_path: "brief.md".to_owned(),
             depends_on: None,
@@ -1076,6 +1080,9 @@ mod tests {
                 effort: Some(headwork_core::Effort::Xhigh),
                 in_main: false,
                 keep: false,
+                close: headwork_core::CloseMode::Confirm,
+                review: None,
+                decision: None,
             },
             brief_path: "brief.md".to_owned(),
             depends_on: None,
@@ -1117,6 +1124,9 @@ mod tests {
                 effort: None,
                 in_main: false,
                 keep: false,
+                close: headwork_core::CloseMode::Confirm,
+                review: None,
+                decision: None,
             },
             brief_path: "brief.md".to_owned(),
             depends_on: None,

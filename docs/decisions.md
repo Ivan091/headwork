@@ -1426,3 +1426,18 @@ and the reason.
 - 2026-11-23, dashboard open by default: starting the orchestrator starts a detached `headwork dash` when `[dash] port`
   is free and opens the page once (`[dash] enabled`, `open`, `port`; all default on, 8740). The user chose this over a
   logon task or opening only on `dash`; a running server is never restarted or reopened.
+- 2026-11-23 Silent and review chosen per task. `silent` moved from a task kind to a `close` flag (`CloseMode`:
+  `confirm`, the default and today's behaviour, or `silent`), stored by migration 0022 (`tasks.close_mode`), because a kind
+  also picks the review flow, `extra_writable` grants and main-only, so one word could not do both jobs. The kind `silent`
+  still maps to `close = silent` when a spawn names no `close` (`CloseMode::default_for`, `SILENT_KIND`), and the migration
+  sets it for existing tasks. A spawn (`spawn` tool, `part_spawn`, `headwork spawn --close --review`) also names a planned
+  review level (`tasks.review_plan`, 0 none). A planned review is not started at spawn, since no work exists then: it is
+  requested, exactly as the user's `review N` prompt does, at the lead's first `report` with status `review` or at its
+  `done` (refused with `review-planned`, then `review-open` until it finishes); the plan is spent in the same store
+  operation, a review already open or a flow that does not load only clears it, and while `[reviews] enabled` is off it stays
+  stored and ignored. This amends 2026-11-22, "reviews start only on the user's word": the user now lets the orchestrator
+  and leads choose the flags by a decision table in their rules, and the user's own words still win and can change a flag
+  at any time by typing `silent`, `confirm`, `no review` or `review N` in the lead's tab (event `flags-set`). A spawn that
+  names either flag must say `decided_by` (`user` or `judged`) and, when judged, a one-line `reason`; both are recorded in
+  the spawn event (`task-created`) with the values. In `part_spawn` the reason is `flag_reason`, since `reason` already
+  justifies Opus.

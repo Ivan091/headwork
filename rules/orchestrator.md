@@ -13,7 +13,7 @@ their reports by session message.
   `brief_writable` under `[hooks]` in `config.toml`. The worker may then edit those files and commit and push them in their
   repository; nothing else there. Paths a project's task kind always writes (car-training's handoff and night results)
   are `extra_writable` entries of that project instead.
-- Model ladder: Haiku for lookups, status checks, cleanups, watch and poll loops and `silent` workers. Sonnet as the
+- Model ladder: Haiku for lookups, status checks, cleanups, watch and poll loops. Sonnet as the
   default for most tasks (routine features, UI, docs, config, ordinary fixes). Opus only for new architecture,
   publishing or ledger code, security, concurrency, audits and plans, and the reviewer of a level-3 review. Fable only
   when the user allowed it for that task. A Sonnet task that fails its checks twice or gets stuck gets one retry on
@@ -55,6 +55,37 @@ their reports by session message.
 - headwork's hard rules are {mode}. A broken rule is logged with its rule id; when enforced, the call is refused with
   the reason.
 
+## Silent or confirm, and review
+
+- Every `spawn` decides two flags. `close` is `confirm` (the lead asks the user before it closes; the default) or
+  `silent` (it closes without asking). `review` is a level 0 to 3 (0 none, 1 light, 2 standard, 3 strict) planned for the
+  task; it needs no work at spawn: it starts when the lead opens its first pull request or calls `done`.
+- When the user's words set a flag ("no confirmation", "review 2", "no review"), pass it with `decided_by: user`. Otherwise
+  decide with the tables below and pass `decided_by: judged` and a one-line `reason`; the spawn is refused without it.
+  The kind `silent` still means `close: silent`, but kinds also pick flows and grants: use the flag.
+- The user can change a flag any time by typing `silent`, `confirm`, `no review` or `review N` in the lead's tab.
+
+| Signal in the task | Choice |
+|---|---|
+| The user said "no confirmation", "just do it", "silent" | silent (the user's words) |
+| The user said "ask me", "show me first" | confirm (the user's words) |
+| Only lookups, status checks, cleanup, a dependency bump, docs typos, a config line | silent |
+| A clear fix fully specified by the brief, small diff, covered by tests | silent |
+| A new feature, UI or behaviour the user will want to see, any design choice | confirm |
+| Publishing, uploads, ledger, releases, security, deletions, anything hard to undo | confirm |
+| A level-3 review is planned | confirm |
+| Unsure | confirm |
+
+| Signal in the task | Review level |
+|---|---|
+| The user named it ("review 2", "no review") | the user's words |
+| No code change (lookups, notes, status, cleanup) | 0 |
+| A small, mechanical or docs-only change | 0 |
+| An ordinary feature or fix, moderate diff | 1 |
+| A new subsystem, migration, store schema, hooks, guards, the MCP surface | 2 |
+| Security, concurrency, publishing or ledger code, data-loss risk, the lifecycle state machine | 3 |
+| Unsure between two levels | the lower one |
+
 ## Dispatching
 
 - You are the dispatcher; the user talks to the leads. Each request for project work becomes one task: spawn it with
@@ -71,8 +102,8 @@ their reports by session message.
 - A lead starts and drops its own parts; you do not spawn siblings for it. Drop, close or force-close a task or a part
   only when the user asks or the task is stuck; dropping a lead drops its parts first.
 - A lead's "finished" does not mean close it: the lead asks the user in its own tab and closes itself after their go
-  (`[leads] ask_before_close`). Close a finished lead only when the user tells you to. A task spawned with kind
-  `silent` closes itself without that ask; give that kind when the user asks for a worker that needs no confirmation.
+  (`[leads] ask_before_close`). Close a finished lead only when the user tells you to. A task spawned with `close:
+  silent` closes itself without that ask (see "Silent or confirm, and review").
 - `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
   once both are done. A dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop
   it.

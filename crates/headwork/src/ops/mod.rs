@@ -6,6 +6,7 @@ pub mod close;
 pub mod dash;
 pub mod doctor;
 pub mod effort;
+pub mod flags;
 pub mod flows;
 pub mod graph;
 pub mod helpers;

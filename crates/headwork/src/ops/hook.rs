@@ -383,6 +383,7 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let mut waiting = waiting_parts(store, call.task)?;
     if !text.starts_with("<cross-session-message") && !notification {
         waiting.push_str(&review_trigger(store, call, text)?);
+        waiting.push_str(&flag_prompt(store, call, text)?);
     }
     if call.session.role == Role::Orchestrator {
         waiting.push_str(&update_notices(call.env.home));
@@ -494,6 +495,31 @@ fn review_trigger(store: &mut Store, call: &Call<'_>, prompt: &str) -> Result<St
         )),
         Err(error) => Err(error.into()),
     }
+}
+
+/// The user's `silent`, `confirm` or `no review` in a lead's tab: sets the task's close mode or clears its planned review,
+/// logs `flags-set` and tells the lead. Empty for every other prompt and session.
+fn flag_prompt(store: &mut Store, call: &Call<'_>, prompt: &str) -> Result<String> {
+    let Some(task) = call.task.filter(|task| task.shape.is_lead()) else {
+        return Ok(String::new());
+    };
+    let Some(parsed) = headwork_core::flags::parse_flag_prompt(prompt) else {
+        return Ok(String::new());
+    };
+    match parsed.close() {
+        Some(mode) => {
+            store.set_task_close(task.id, mode, headwork_core::DecidedBy::User, Actor::User)?;
+        }
+        None => {
+            store.set_review_plan(task.id, None, headwork_core::DecidedBy::User, Actor::User)?;
+        }
+    }
+    Ok(format!(
+        "
+headwork: the user set this task to {}.
+",
+        parsed.words()
+    ))
 }
 
 /// For a lead, one line per part that waits on the user (its state is `needs_user` or an ask of it waits), so the
