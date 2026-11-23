@@ -15,10 +15,6 @@ use crate::vocabulary::{
 /// The longest label an ask without a header takes from its question, in characters.
 pub(super) const ASK_LABEL_CHARS: usize = 40;
 
-fn session_node(session: &str) -> String {
-    format!("session:{session}")
-}
-
 fn agent_node(agent: &str) -> String {
     format!("agent:{agent}")
 }
@@ -177,8 +173,6 @@ struct Draw<'f> {
     agents: BTreeMap<&'f str, &'f AgentFact>,
     sessions: BTreeMap<&'f str, Place>,
     addresses: BTreeMap<&'f str, Place>,
-    /// The node that stands for each drawn task: its newest drawn session, else its box.
-    heads: BTreeMap<i64, String>,
     transitions: BTreeMap<i64, Vec<&'f Change<TaskState>>>,
     pr_changes: BTreeMap<i64, Vec<&'f Change<PullState>>>,
     job_changes: BTreeMap<i64, Vec<&'f Change<JobState>>>,
@@ -246,7 +240,6 @@ impl<'f> Draw<'f> {
                 .collect(),
             sessions: BTreeMap::new(),
             addresses: BTreeMap::new(),
-            heads: BTreeMap::new(),
             transitions,
             pr_changes: by_key(&facts.pr_changes),
             job_changes: by_key(&facts.job_changes),
@@ -288,13 +281,6 @@ impl<'f> Draw<'f> {
             };
             self.claim(&task.name, place);
         }
-        for task in self.drawn.keys().copied() {
-            let head = self
-                .newest
-                .get(&task)
-                .map_or_else(|| task_node(task), |session| session_node(&session.id));
-            self.heads.insert(task, head);
-        }
         for session in &facts.sessions {
             let place = if session.role == Role::Orchestrator {
                 Place::Drawn(ORCHESTRATOR_NODE.to_owned())
@@ -302,10 +288,7 @@ impl<'f> Draw<'f> {
                 session
                     .task
                     .filter(|task| self.is_drawn(*task))
-                    .and_then(|task| self.newest.get(&task))
-                    .map_or(Place::Hidden, |newest| {
-                        Place::Drawn(session_node(&newest.id))
-                    })
+                    .map_or(Place::Hidden, |task| Place::Drawn(task_node(task)))
             };
             self.sessions.insert(&session.id, place.clone());
             self.claim(&session.rc_name, place);
@@ -386,7 +369,6 @@ pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
         id: USER_NODE.to_owned(),
         shape: Shape::User,
         label: "you".to_owned(),
-        parent: None,
         start: None,
         end: None,
         details: BTreeMap::new(),
@@ -396,8 +378,7 @@ pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
     orchestrator(&draw, &mut canvas);
     for task in &facts.tasks {
         if let Some(state) = draw.drawn.get(&task.id) {
-            task_box(&draw, task, *state, &mut canvas);
-            task_session(&draw, task, &mut canvas);
+            task_node_of(&draw, task, *state, &mut canvas);
         }
     }
     subagents(&draw, &mut canvas);
@@ -501,7 +482,6 @@ fn orchestrator(draw: &Draw<'_>, canvas: &mut Canvas) {
             || ORCHESTRATOR_NODE.to_owned(),
             |session| session.rc_name.clone(),
         ),
-        parent: None,
         start: sessions
             .iter()
             .map(|session| session.started_at.clone())
@@ -513,7 +493,7 @@ fn orchestrator(draw: &Draw<'_>, canvas: &mut Canvas) {
     });
 }
 
-fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Canvas) {
+fn task_node_of(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Canvas) {
     let id = task_node(task.id);
     let end = draw.transitions.get(&task.id).and_then(|changes| {
         changes
@@ -522,11 +502,27 @@ fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Can
             .map(|change| change.at.clone())
             .max()
     });
+    let shape = if task.parent.is_some() {
+        Shape::Part(state)
+    } else if task.lead {
+        Shape::Lead(state)
+    } else {
+        Shape::Worker(state)
+    };
+    let newest = draw.newest.get(&task.id);
+    let earlier: Vec<&str> = draw
+        .task_sessions
+        .get(&task.id)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|session| newest.is_none_or(|newest| session.id != newest.id))
+        .filter(|session| draw.until(&session.started_at))
+        .map(|session| session.id.as_str())
+        .collect();
     canvas.put(Node {
         id: id.clone(),
-        shape: Shape::Task(state),
+        shape,
         label: task.name.clone(),
-        parent: draw.task_box(task.parent),
         start: Some(task.queued_at.clone()),
         end,
         details: details([
@@ -538,6 +534,12 @@ fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Can
                 task.effort.map(|effort| effort.as_str().to_owned()),
             ),
             ("last_report", task.last_report.clone()),
+            ("session", newest.map(|session| session.id.clone())),
+            ("name", newest.map(|session| session.rc_name.clone())),
+            (
+                "earlier_sessions",
+                (!earlier.is_empty()).then(|| earlier.join(", ")),
+            ),
         ]),
         tokens: None,
         badges: BTreeMap::new(),
@@ -563,64 +565,10 @@ fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Can
     }
 }
 
-fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
-    let Some(newest) = draw.newest.get(&task.id) else {
-        return;
-    };
-    let state = match draw.at {
-        None => newest.state,
-        Some(_) if alive(&newest.started_at, newest.ended_at.as_deref(), draw.at) => {
-            SessionState::Live
-        }
-        Some(_) => SessionState::Ended,
-    };
-    let shape = if task.parent.is_some() {
-        Shape::Part(state)
-    } else if task.lead {
-        Shape::Lead(state)
-    } else {
-        Shape::Worker(state)
-    };
-    let label = task.effort.map_or_else(
-        || task.model.as_str().to_owned(),
-        |effort| format!("{} {}", task.model.as_str(), effort.as_str()),
-    );
-    let earlier: Vec<&str> = draw
-        .task_sessions
-        .get(&task.id)
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .filter(|session| session.id != newest.id)
-        .filter(|session| draw.until(&session.started_at))
-        .map(|session| session.id.as_str())
-        .collect();
-    canvas.put(Node {
-        id: session_node(&newest.id),
-        shape,
-        label,
-        parent: Some(task_node(task.id)),
-        start: Some(newest.started_at.clone()),
-        end: newest.ended_at.clone(),
-        details: details([
-            ("session", Some(newest.id.clone())),
-            ("name", Some(newest.rc_name.clone())),
-            (
-                "earlier_sessions",
-                (!earlier.is_empty()).then(|| earlier.join(", ")),
-            ),
-        ]),
-        tokens: None,
-        badges: BTreeMap::new(),
-    });
-}
-
 /// Where a subagent is drawn and in what state, or none when this view leaves it out: its caller is not drawn, it is
 /// the orchestrator's in a single-task view, it had not responded yet at the instant (or has no times at all), or,
 /// in the live view, it finished or its caller ended.
-fn agent_shown<'d>(
-    draw: &'d Draw<'_>,
-    agent: &AgentFact,
-) -> Option<(&'d String, Option<String>, AgentState)> {
+fn agent_shown<'d>(draw: &'d Draw<'_>, agent: &AgentFact) -> Option<(&'d String, AgentState)> {
     let caller = draw.of_session(&agent.session)?;
     let home = draw.task_box(draw.session_tasks.get(agent.session.as_str()).copied());
     if matches!(draw.scope, Scope::Task(_)) && home.is_none() {
@@ -646,12 +594,12 @@ fn agent_shown<'d>(
             return None;
         }
     }
-    Some((caller, home, state))
+    Some((caller, state))
 }
 
 fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
     for agent in &draw.facts.agents {
-        let Some((caller, home, state)) = agent_shown(draw, agent) else {
+        let Some((caller, state)) = agent_shown(draw, agent) else {
             continue;
         };
         let id = agent_node(&agent.id);
@@ -662,7 +610,6 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
                 .agent_type
                 .clone()
                 .unwrap_or_else(|| "subagent".to_owned()),
-            parent: home,
             start: agent.first_at.clone(),
             end: agent.last_at.clone(),
             details: details([
@@ -698,16 +645,19 @@ fn helpers(draw: &Draw<'_>, canvas: &mut Canvas) {
             id: id.clone(),
             shape: Shape::Helper,
             label: "headwork:helper".to_owned(),
-            parent: Some(task_node(helper.task)),
             start: Some(helper.at.clone()),
             end: None,
             details: details([("session", Some(helper.session.clone()))]),
             tokens: None,
             badges: BTreeMap::new(),
         });
-        if let Some(head) = draw.heads.get(&helper.task) {
-            canvas.link(EdgeKind::Opened, head, &id, None, Some(&helper.at));
-        }
+        canvas.link(
+            EdgeKind::Opened,
+            &task_node(helper.task),
+            &id,
+            None,
+            Some(&helper.at),
+        );
     }
 }
 
@@ -733,7 +683,6 @@ fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
             id: id.clone(),
             shape: Shape::Job(state),
             label: job.label.clone(),
-            parent: Some(task_node(task)),
             start: Some(job.started_at.clone()),
             end: job.ended_at.clone(),
             details: BTreeMap::new(),
@@ -744,10 +693,9 @@ fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
             .session
             .as_deref()
             .and_then(|session| draw.of_session(session))
-            .or_else(|| draw.heads.get(&task));
-        if let Some(opener) = opener {
-            canvas.link(EdgeKind::Opened, opener, &id, None, Some(&job.started_at));
-        }
+            .cloned()
+            .unwrap_or_else(|| task_node(task));
+        canvas.link(EdgeKind::Opened, &opener, &id, None, Some(&job.started_at));
     }
 }
 
@@ -765,7 +713,6 @@ fn prs(draw: &Draw<'_>, canvas: &mut Canvas) {
             id: id.clone(),
             shape: Shape::Pr(state),
             label: format!("#{}", pr.number),
-            parent: Some(task_node(pr.task)),
             start: Some(pr.first_at.clone()),
             end: None,
             details: details([("url", Some(pr.url.clone()))]),
@@ -795,28 +742,17 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
                 .map_or(&[][..], Vec::as_slice);
             change_at(changes, at, ReviewState::Requested, review.state)
         });
-        let home = task_node(
-            review
-                .part
-                .filter(|part| draw.is_drawn(*part))
-                .unwrap_or(review.task),
-        );
         canvas.put(Node {
             id: id.clone(),
             shape: Shape::Review(state),
             label: format!("{} {}", review.flow, review.level.number()),
-            parent: Some(home.clone()),
             start: Some(review.requested_at.clone()),
             end: review.finished_at.clone(),
             details: BTreeMap::new(),
             tokens: None,
             badges: BTreeMap::new(),
         });
-        let reviewed = draw
-            .heads
-            .get(&review.task)
-            .cloned()
-            .unwrap_or_else(|| task_node(review.task));
+        let reviewed = task_node(review.task);
         canvas.link(
             EdgeKind::Reviews,
             &id,
@@ -849,7 +785,6 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
                 } else {
                     format!("{} {}", run.node, run.item)
                 },
-                parent: Some(home.clone()),
                 start: run.started_at.clone(),
                 end: run.finished_at.clone(),
                 details: details([("round", Some(run.round.to_string()))]),
@@ -931,7 +866,6 @@ fn external(canvas: &mut Canvas, address: &str, at: &str) -> String {
             id: id.clone(),
             shape: Shape::External,
             label: bare_address(address).to_owned(),
-            parent: None,
             start: Some(at.to_owned()),
             end: None,
             details: BTreeMap::new(),
@@ -1003,7 +937,6 @@ fn asks(draw: &Draw<'_>, canvas: &mut Canvas) {
                 id: id.clone(),
                 shape: Shape::Ask(state),
                 label: label.clone(),
-                parent: None,
                 start: Some(ask.created_at.clone()),
                 end: ask.closed_at.clone(),
                 details: details([("question", Some(ask.question.clone()))]),
@@ -1074,18 +1007,6 @@ fn spend_and_badges(draw: &Draw<'_>, canvas: &mut Canvas) {
             }
             if draw.at.is_none() {
                 node.tokens = spend.tasks.get(&task).copied();
-            }
-        } else if let Some(session) = id.strip_prefix("session:") {
-            if draw.at.is_none() {
-                let task = draw.session_tasks.get(session).copied();
-                let sessions = task
-                    .and_then(|task| draw.task_sessions.get(&task))
-                    .map_or(&[][..], Vec::as_slice);
-                let total: u64 = sessions
-                    .iter()
-                    .filter_map(|session| spend.sessions.get(&session.id))
-                    .sum();
-                node.tokens = (total > 0).then_some(total);
             }
         } else if id == ORCHESTRATOR_NODE {
             if draw.at.is_none() {
