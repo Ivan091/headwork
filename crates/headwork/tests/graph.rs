@@ -109,11 +109,6 @@ fn a_subagent_transcript_and_its_meta_become_a_node_in_its_callers_box() {
     let graph = graph(&store, &GraphQuery::default()).unwrap();
     let agent = graph.node("agent:x1").unwrap();
     assert_eq!(
-        agent.parent,
-        Some(format!("task:{}", task.0)),
-        "in its caller's box"
-    );
-    assert_eq!(
         agent.details.get("description").map(String::as_str),
         Some("find the hook"),
         "the label"
@@ -134,8 +129,8 @@ fn a_subagent_transcript_and_its_meta_become_a_node_in_its_callers_box() {
     assert!(
         graph
             .edges_of(EdgeKind::Called)
-            .any(|edge| edge.source == "session:0a" && edge.target == "agent:x1"),
-        "called by its session"
+            .any(|edge| edge.source == format!("task:{}", task.0) && edge.target == "agent:x1"),
+        "called by its task"
     );
 }
 
@@ -228,7 +223,7 @@ fn a_replay_shows_each_instant_as_the_operations_left_it() {
     store.record_pr(task, &seen, Actor::Tick).unwrap();
     let merged = tick(&store);
     store.session_ended("0a", Some(0)).unwrap();
-    let ended = tick(&store);
+    tick(&store);
 
     let task_node = format!("task:{}", task.0);
     let pr_node = graph(
@@ -247,12 +242,9 @@ fn a_replay_shows_each_instant_as_the_operations_left_it() {
     let table = [
         (&before, task_node.as_str(), None),
         (&queued, task_node.as_str(), Some("queued")),
-        (&queued, "session:0a", Some("live")),
         (&queued, pr_node.as_str(), None),
         (&opened, pr_node.as_str(), Some("open")),
         (&merged, pr_node.as_str(), Some("merged")),
-        (&merged, "session:0a", Some("live")),
-        (&ended, "session:0a", Some("ended")),
     ];
     for (at, id, state) in table {
         assert_eq!(state_at(&store, at, id).as_deref(), state, "{id} at {at}");

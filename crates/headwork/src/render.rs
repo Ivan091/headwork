@@ -39,43 +39,23 @@ fn printable(text: &str) -> String {
     shown
 }
 
-/// The agent graph as text: the instant, one line per node indented under the box it sits in, then one line per edge,
+/// The agent graph as text: the instant, one line per node, then one line per edge,
 /// then the events left out.
 pub(crate) fn graph(graph: &Graph) -> String {
     let mut text = String::new();
     if let Some(at) = &graph.at {
         let _ = writeln!(text, "at {at}");
     }
-    let mut stack: Vec<(&str, usize)> = graph
-        .nodes
-        .iter()
-        .filter(|node| node.parent.is_none())
-        .rev()
-        .map(|node| (node.id.as_str(), 0))
-        .collect();
-    while let Some((id, depth)) = stack.pop() {
-        let Some(node) = graph.node(id) else {
-            continue;
-        };
+    for node in &graph.nodes {
         let state = node
             .state()
             .map_or_else(String::new, |state| format!(" [{}]", state.as_str()));
         let _ = writeln!(
             text,
-            "{:indent$}{} {}{state}  {}",
-            "",
+            "{} {}{state}  {}",
             node.kind().as_str(),
             printable(&node.label),
-            node.id,
-            indent = depth * 2
-        );
-        stack.extend(
-            graph
-                .nodes
-                .iter()
-                .filter(|child| child.parent.as_deref() == Some(id))
-                .rev()
-                .map(|child| (child.id.as_str(), depth + 1)),
+            node.id
         );
     }
     for edge in &graph.edges {
@@ -1324,17 +1304,16 @@ mod tests {
     }
 
     #[test]
-    fn graph_nests_boxes_counts_edges_and_escapes_unsafe_characters() {
+    fn graph_lists_nodes_counts_edges_and_escapes_unsafe_characters() {
         use std::collections::BTreeMap;
 
+        use headwork_core::TaskState;
         use headwork_core::graph::{Edge, EdgeKind, Graph, Node, Shape};
-        use headwork_core::{SessionState, TaskState};
 
-        let node = |id: &str, shape: Shape, label: &str, parent: Option<&str>| Node {
+        let node = |id: &str, shape: Shape, label: &str| Node {
             id: id.to_owned(),
             shape,
             label: label.to_owned(),
-            parent: parent.map(str::to_owned),
             start: None,
             end: None,
             details: BTreeMap::new(),
@@ -1344,29 +1323,13 @@ mod tests {
         let view = Graph {
             at: Some("2026-11-23T08:00:00.000Z".to_owned()),
             nodes: vec![
-                node(
-                    "task:1",
-                    Shape::Task(TaskState::Working),
-                    "headwork-lead",
-                    None,
-                ),
-                node(
-                    "session:s1",
-                    Shape::Lead(SessionState::Live),
-                    "opus medium",
-                    Some("task:1"),
-                ),
-                node(
-                    "external:00ff",
-                    Shape::External,
-                    "evil\u{1b}[2J\u{202e}x",
-                    None,
-                ),
+                node("task:1", Shape::Lead(TaskState::Working), "headwork-lead"),
+                node("external:00ff", Shape::External, "evil\u{1b}[2J\u{202e}x"),
             ],
             edges: vec![Edge {
-                id: "message:session:s1->external:00ff".to_owned(),
+                id: "message:task:1->external:00ff".to_owned(),
                 kind: EdgeKind::Message,
-                source: "session:s1".to_owned(),
+                source: "task:1".to_owned(),
                 target: "external:00ff".to_owned(),
                 weight: 3,
                 label: Some("hi\nthere".to_owned()),
@@ -1382,19 +1345,15 @@ mod tests {
             "the instant"
         );
         assert!(
-            lines.contains(&"task headwork-lead [working]  task:1"),
+            lines.contains(&"lead headwork-lead [working]  task:1"),
             "{text}"
-        );
-        assert!(
-            lines.contains(&"  lead opus medium [live]  session:s1"),
-            "indented under its box: {text}"
         );
         assert!(
             lines.contains(&r"external evil\u{1b}[2J\u{202e}x  external:00ff"),
             "escaped: {text}"
         );
         assert!(
-            lines.contains(&r#"session:s1 -message-> external:00ff x3 "hi\u{a}there""#),
+            lines.contains(&r#"task:1 -message-> external:00ff x3 "hi\u{a}there""#),
             "weight and label: {text}"
         );
         assert!(

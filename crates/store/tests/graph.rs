@@ -357,23 +357,18 @@ fn the_facts_draw_a_lead_its_part_and_their_talk() {
     let lead_box = format!("task:{}", lead.id.0);
     let part_box = format!("task:{}", part.id.0);
     let table = [
-        ("session:lead", NodeKind::Lead, Some(lead_box.as_str())),
-        ("session:part", NodeKind::Part, Some(part_box.as_str())),
-        (part_box.as_str(), NodeKind::Task, Some(lead_box.as_str())),
-        ("agent:a1", NodeKind::Subagent, Some(lead_box.as_str())),
+        (lead_box.as_str(), NodeKind::Lead),
+        (part_box.as_str(), NodeKind::Part),
+        ("agent:a1", NodeKind::Subagent),
     ];
-    for (id, kind, parent) in table {
-        let node = graph.node(id).unwrap();
-        assert_eq!(
-            (node.kind(), node.parent.as_deref()),
-            (kind, parent),
-            "{id}"
-        );
+    for (id, kind) in table {
+        assert_eq!(graph.node(id).unwrap().kind(), kind, "{id}");
     }
     let edges = [
-        (EdgeKind::Message, "session:part", "session:lead"),
-        (EdgeKind::Report, "session:lead", "orchestrator"),
-        (EdgeKind::Called, "session:lead", "agent:a1"),
+        (EdgeKind::Message, part_box.as_str(), lead_box.as_str()),
+        (EdgeKind::PartOf, part_box.as_str(), lead_box.as_str()),
+        (EdgeKind::Report, lead_box.as_str(), "orchestrator"),
+        (EdgeKind::Called, lead_box.as_str(), "agent:a1"),
         (EdgeKind::Spawned, "orchestrator", lead_box.as_str()),
     ];
     for (kind, source, target) in edges {
