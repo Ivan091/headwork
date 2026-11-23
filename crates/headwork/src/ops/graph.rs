@@ -80,8 +80,7 @@ pub fn render(graph: &Graph) -> String {
         };
         let state = node
             .state
-            .as_deref()
-            .map_or_else(String::new, |state| format!(" [{state}]"));
+            .map_or_else(String::new, |state| format!(" [{}]", state.as_str()));
         let _ = writeln!(
             text,
             "{:indent$}{} {}{state}  {}",
@@ -125,7 +124,8 @@ pub fn render(graph: &Graph) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use headwork_core::graph::{Edge, EdgeKind, Node, NodeKind};
+    use headwork_core::TaskState;
+    use headwork_core::graph::{Edge, EdgeKind, Node, NodeKind, Status};
 
     use super::*;
 
@@ -134,7 +134,7 @@ mod tests {
             id: id.to_owned(),
             kind,
             label: label.to_owned(),
-            state: Some("working".to_owned()),
+            state: Some(Status::Task(TaskState::Working)),
             parent: parent.map(str::to_owned),
             start: None,
             end: None,

@@ -5,11 +5,14 @@ CREATE TABLE agents (
     description TEXT,
     model TEXT,
     spawn_depth INTEGER,
+    parent_agent_id TEXT,
     first_at TEXT,
     last_at TEXT
 );
 
 CREATE INDEX agents_session ON agents(session_id);
+
+CREATE INDEX events_type ON events(type, id);
 
 INSERT INTO agents (agent_id, session_id, agent_type, first_at, last_at)
 SELECT agent_id, MIN(session_id), MAX(agent_type), MIN(at), MAX(at)

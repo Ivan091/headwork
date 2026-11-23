@@ -216,6 +216,8 @@ pub struct AgentMeta {
     pub model: Option<String>,
     /// 1 for a session's own subagent, more for nested ones.
     pub spawn_depth: Option<i64>,
+    /// The subagent that started a nested one (`parentAgentId`).
+    pub parent_agent_id: Option<String>,
 }
 
 /// The longest subagent id the agent graph records.
@@ -241,6 +243,7 @@ pub fn agent_meta(meta: &str) -> Option<AgentMeta> {
         description: text(&value, &["description"]),
         model: text(&value, &["model"]),
         spawn_depth: value.get("spawnDepth").and_then(Value::as_i64),
+        parent_agent_id: text(&value, &["parentAgentId"]).filter(|id| is_agent_id(id)),
     })
 }
 
@@ -670,7 +673,7 @@ mod tests {
     #[test]
     fn agent_meta_reads_type_label_model_and_depth() {
         let meta = agent_meta(
-            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","spawnDepth":2}"#,
+            r#"{"agentType":"general-purpose","description":"Build the graph","model":"opus","spawnDepth":2,"parentAgentId":"a0b2"}"#,
         );
         assert_eq!(
             meta,
@@ -679,6 +682,7 @@ mod tests {
                 description: Some("Build the graph".to_owned()),
                 model: Some("opus".to_owned()),
                 spawn_depth: Some(2),
+                parent_agent_id: Some("a0b2".to_owned()),
             }),
             "every field"
         );

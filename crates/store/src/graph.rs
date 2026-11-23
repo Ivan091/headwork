@@ -4,8 +4,8 @@
 use std::str::FromStr;
 
 use headwork_core::graph::{
-    AgentFact, AskFact, Facts, HelperFact, JobFact, MessageFact, PrFact, ReportFact, ReviewFact,
-    ReviewNodeFact, SessionFact, TaskFact, TransitionFact,
+    AgentFact, AskFact, Change, Facts, HelperFact, JobFact, MessageFact, PrFact, ReportFact,
+    ReviewFact, ReviewNodeFact, SessionFact, TaskFact, TransitionFact,
 };
 use headwork_core::review::Level;
 use headwork_core::{Actor, UnknownWord};
@@ -30,13 +30,15 @@ pub(crate) fn upsert_agent(
     let last = batch.lines.iter().map(|line| line.at.as_str()).max();
     let meta = batch.agent_meta;
     tx.execute(
-        "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, first_at, last_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO agents (agent_id, session_id, agent_type, description, model, spawn_depth, parent_agent_id,
+             first_at, last_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?9, ?7, ?8)
          ON CONFLICT (agent_id) DO UPDATE SET
              agent_type = COALESCE(excluded.agent_type, agents.agent_type),
              description = COALESCE(excluded.description, agents.description),
              model = COALESCE(excluded.model, agents.model),
              spawn_depth = COALESCE(excluded.spawn_depth, agents.spawn_depth),
+             parent_agent_id = COALESCE(excluded.parent_agent_id, agents.parent_agent_id),
              first_at = CASE WHEN agents.first_at IS NULL OR excluded.first_at < agents.first_at
                  THEN COALESCE(excluded.first_at, agents.first_at) ELSE agents.first_at END,
              last_at = CASE WHEN agents.last_at IS NULL OR excluded.last_at > agents.last_at
@@ -50,6 +52,7 @@ pub(crate) fn upsert_agent(
             meta.and_then(|meta| meta.spawn_depth),
             first,
             last,
+            meta.and_then(|meta| meta.parent_agent_id.as_deref()),
         ],
     )?;
     Ok(())
@@ -78,13 +81,16 @@ fn read_facts(conn: &Connection) -> Result<Facts, StoreError> {
         agents: rows(conn, AGENTS, [], agent)?,
         helpers: rows(conn, HELPERS, params![EVENT_HELPER_SESSION], helper)?,
         jobs: jobs(conn)?,
-        prs: rows(conn, PRS, [], pr)?,
+        prs: prs(conn)?,
         asks: asks(conn)?,
         reviews: reviews(conn)?,
         review_nodes: review_nodes(conn)?,
         messages: rows(conn, MESSAGES, params![EVENT_TOOL], message)?,
         reports: rows(conn, REPORTS, params![EVENT_REPORT], report)?,
         transitions: transitions(conn)?,
+        pr_changes: changes(conn, PR_CHANGES, "pull request")?,
+        job_changes: changes(conn, JOB_CHANGES, "job")?,
+        review_changes: changes(conn, REVIEW_CHANGES, "review")?,
     })
 }
 
@@ -245,7 +251,8 @@ fn transitions(conn: &Connection) -> Result<Vec<TransitionFact>, StoreError> {
 }
 
 const AGENTS: &str =
-    "SELECT agent_id, session_id, agent_type, description, model, spawn_depth, first_at, last_at
+    "SELECT agent_id, session_id, agent_type, description, model, spawn_depth, first_at, last_at,
+         parent_agent_id
      FROM agents ORDER BY first_at, agent_id";
 
 fn agent(row: &Row<'_>) -> rusqlite::Result<AgentFact> {
@@ -258,6 +265,7 @@ fn agent(row: &Row<'_>) -> rusqlite::Result<AgentFact> {
         depth: row.get(5)?,
         first_at: row.get(6)?,
         last_at: row.get(7)?,
+        parent: row.get(8)?,
     })
 }
 
@@ -318,8 +326,17 @@ const PRS: &str = "SELECT p.id, p.task_id, p.number, p.url, p.state,
              WHERE e.task_id = p.task_id AND instr(e.data, '\"' || p.url || '\"') > 0), t.queued_at)
      FROM prs p JOIN tasks t ON t.id = p.task_id ORDER BY p.id";
 
-fn pr(row: &Row<'_>) -> rusqlite::Result<PrFact> {
-    Ok(PrFact {
+struct RawPr {
+    id: i64,
+    task: i64,
+    number: i64,
+    url: String,
+    state: String,
+    first_at: String,
+}
+
+fn raw_pr(row: &Row<'_>) -> rusqlite::Result<RawPr> {
+    Ok(RawPr {
         id: row.get(0)?,
         task: row.get(1)?,
         number: row.get(2)?,
@@ -327,6 +344,72 @@ fn pr(row: &Row<'_>) -> rusqlite::Result<PrFact> {
         state: row.get(4)?,
         first_at: row.get(5)?,
     })
+}
+
+fn prs(conn: &Connection) -> Result<Vec<PrFact>, StoreError> {
+    rows(conn, PRS, [], raw_pr)?
+        .into_iter()
+        .map(|pr| {
+            let id = pr.id;
+            Ok(PrFact {
+                id,
+                task: pr.task,
+                number: pr.number,
+                url: pr.url,
+                state: word(&pr.state, || format!("pull request {id}"))?,
+                first_at: pr.first_at,
+            })
+        })
+        .collect()
+}
+
+/// `pr-state` events, keyed by the pull request of their task and URL.
+const PR_CHANGES: &str = "SELECT p.id, json_extract(e.data, '$.from'), json_extract(e.data, '$.to'), e.at, e.id
+     FROM events e JOIN prs p ON p.task_id = e.task_id AND p.url = json_extract(e.data, '$.url')
+     WHERE e.type = 'pr-state' AND json_valid(e.data) AND json_extract(e.data, '$.to') IS NOT NULL ORDER BY e.id";
+
+/// `job-state` events; they name the new state only.
+const JOB_CHANGES: &str =
+    "SELECT json_extract(data, '$.job'), NULL, json_extract(data, '$.state'), at, id FROM events
+     WHERE type = 'job-state' AND json_valid(data) AND json_extract(data, '$.job') IS NOT NULL
+         AND json_extract(data, '$.state') IS NOT NULL
+     ORDER BY id";
+
+/// `review-<trigger>` events: every review event with a review id and both states.
+const REVIEW_CHANGES: &str = "SELECT json_extract(data, '$.review'), json_extract(data, '$.from'), json_extract(data, '$.to'),
+         at, id
+     FROM events
+     WHERE type LIKE 'review-%' AND json_valid(data) AND json_extract(data, '$.review') IS NOT NULL
+         AND json_extract(data, '$.from') IS NOT NULL AND json_extract(data, '$.to') IS NOT NULL
+     ORDER BY id";
+
+/// The logged state changes a query returns as `(key, from, to, at, event id)`.
+fn changes<S: FromStr<Err = UnknownWord>>(
+    conn: &Connection,
+    sql: &str,
+    what: &str,
+) -> Result<Vec<Change<S>>, StoreError> {
+    type Raw = (i64, Option<String>, String, String, i64);
+    let raw: Vec<Raw> = rows(conn, sql, [], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    raw.into_iter()
+        .map(|(key, from, to, at, event)| {
+            let row = || format!("event {event} ({what} {key})");
+            Ok(Change {
+                key,
+                from: from.map(|from| word(&from, row)).transpose()?,
+                to: word(&to, row)?,
+                at,
+            })
+        })
+        .collect()
 }
 
 struct RawAsk {
@@ -501,4 +584,59 @@ fn report(row: &Row<'_>) -> rusqlite::Result<ReportFact> {
         status: row.get(1)?,
         at: row.get(2)?,
     })
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests fail loudly on a bad fixture")]
+mod tests {
+    use headwork_core::{Actor, Config, PermissionMode, ProjectName, Slug, TaskRequest, TaskShape};
+
+    use crate::{NewPr, NewTask, Store};
+
+    #[test]
+    fn a_pull_request_no_event_names_starts_with_its_task() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/config.toml"
+        ))
+        .unwrap();
+        let config = Config::parse(&text, "config.toml").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store.sync_projects(&config).unwrap();
+        let new = NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("me-sim").unwrap(),
+                slug: Slug::new("sand").unwrap(),
+                kind: "scene".to_owned(),
+                model: None,
+                effort: None,
+                in_main: false,
+                keep: false,
+            },
+            brief_path: "briefs/sand.md".to_owned(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape: TaskShape::Plain,
+        };
+        let task = store
+            .create_task(&config, &new, Actor::Orchestrator)
+            .unwrap();
+        let pr = NewPr {
+            repo: "o/r".to_owned(),
+            number: 5,
+            url: "https://github.com/o/r/pull/5".to_owned(),
+        };
+        store
+            .record_report(task.id, "s1", "review", "x", &[], Some(&pr))
+            .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM events WHERE type = 'report'", [])
+            .unwrap();
+        let facts = store.graph_facts().unwrap();
+        assert_eq!(
+            facts.prs[0].first_at, facts.tasks[0].queued_at,
+            "the task's start"
+        );
+    }
 }

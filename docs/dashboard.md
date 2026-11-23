@@ -53,7 +53,7 @@ panel on click.
 | `job` | `jobs` | label | satellite of its task; colour by state |
 | `pr` | `prs` | `#<number>` | satellite of its task; gate and merge state |
 | `ask` | `asks` open or answered | header, else the start of its question | edge-node between the session and `user` while open; folds into a line on the edge once answered |
-| `external` | a message address headwork does not know | the address | drawn apart; a name headwork knows but this view does not draw gets no edge |
+| `external` | a message address headwork does not know | the address | drawn apart, its id a hash of the address; a name headwork knows but this view does not draw gets no edge |
 
 Projects are not nodes: tasks are coloured or grouped by project (a filter, section 7).
 
@@ -64,7 +64,7 @@ Projects are not nodes: tasks are coloured or grouped by project (a filter, sect
 | `spawned` | orchestrator or user → task (`task-created` event, actor) | who made a top-level task (a part has `part-of`) |
 | `part-of` | lead → part (`tasks.parent_id`) | drawn as nesting, not a line |
 | `depends-on` | task → task (`tasks.depends_on`), part → part (`after`) | dashed |
-| `called` | session → subagent (`usage.agent_id` under `session_id`) | thin |
+| `called` | session → subagent, or parent subagent → nested one (`agents.parent_agent_id`) | thin |
 | `opened` | session → helper, session → job | thin |
 | `message` | session → session (`SendMessage`) | animated pulse when it happens; weight is the message count |
 | `report` | session → orchestrator (`report` events) | carries the last status |
@@ -92,6 +92,7 @@ CREATE TABLE agents (
     description TEXT,
     model TEXT,
     spawn_depth INTEGER,
+    parent_agent_id TEXT,
     first_at TEXT,
     last_at TEXT
 );
@@ -103,9 +104,8 @@ new lines of a subagent transcript it also reads its `agent-<id>.meta.json` (des
 widens `first_at` and `last_at` to the lines it read. The migration seeds the table from the `usage` rows already
 stored (type and times); `headwork usage --backfill` rereads every transcript and adds the descriptions. The task is
 not stored: it is the calling session's, so it follows a session `headwork import` adopts later. Descriptions are the
-short labels the caller gave the `Agent` call, never prompts or output. `spawn_depth` is shown in the details: the meta
-file names no parent agent, and a nested transcript's folder is a workflow run (`subagents/workflows/<run>/`), not its
-parent, so every subagent hangs off its session.
+short labels the caller gave the `Agent` call, never prompts or output. A nested subagent's meta names its parent
+(`parentAgentId`, kept in `parent_agent_id`), and it hangs off that agent; `spawn_depth` is shown in the details.
 
 ## 6. Endpoints
 

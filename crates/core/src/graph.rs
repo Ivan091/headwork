@@ -4,25 +4,24 @@
 //! any, lies after it, with each task's state taken from its transitions ([`state_at`]). Times are the store's RFC 3339
 //! UTC text, which sorts as it reads. Nothing here reads a file or a database; the store gathers the [`Facts`].
 //!
-//! The store keeps no history for the states of pull requests, jobs without an end, reviews and review nodes, so a
-//! view of a past instant shows those as they are now, except that a row with an end time is `running` before it.
+//! Past states come from the store's logs: task `transition`, `pr-state`, `job-state` and `review-<trigger>` events
+//! ([`Change`]), and a review node's start and finish times.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::names::is_orchestrator_address;
+use crate::names::{bare_address, is_orchestrator_address};
 use crate::review::Level;
 use crate::vocabulary::{
-    Actor, AskState, Effort, JobState, Model, NodeState, ReviewState, Role, SessionState, TaskState,
+    Actor, AskState, Effort, JobState, Model, NodeState, PullState, ReviewState, Role,
+    SessionState, TaskState,
 };
 
 /// The id of the one node that stands for the user.
 pub const USER_NODE: &str = "user";
 /// The id of the one node that stands for every orchestrator session.
 pub const ORCHESTRATOR_NODE: &str = "orchestrator";
-/// What a `SendMessage` address may carry after the name to tell two sessions of one name apart: `name [ref]`.
-pub const ADDRESS_REF_MARK: &str = " [";
 
 /// A task as the graph needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +88,8 @@ pub struct AgentFact {
     pub model: Option<String>,
     /// How deep it was nested: 1 for a session's own.
     pub depth: Option<i64>,
+    /// The subagent that started it, for a nested one.
+    pub parent: Option<String>,
     /// Its first response; none when its responses were summed into days before the table existed.
     pub first_at: Option<String>,
     /// Its last response.
@@ -136,8 +137,8 @@ pub struct PrFact {
     pub number: i64,
     /// The URL.
     pub url: String,
-    /// `open`, `merged` or `closed`, as `prs.state` holds it.
-    pub state: String,
+    /// The pull request state now.
+    pub state: PullState,
     /// When the store first learned of it: the first event of its task naming its URL, else its task's start.
     pub first_at: String,
 }
@@ -240,6 +241,19 @@ pub struct TransitionFact {
     pub at: String,
 }
 
+/// A logged state change of a pull request, job or review, keyed by its row id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change<S> {
+    /// The row: a pull request, job or review id.
+    pub key: i64,
+    /// The state before, when the log says it.
+    pub from: Option<S>,
+    /// The state after.
+    pub to: S,
+    /// When.
+    pub at: String,
+}
+
 /// Everything the graph is drawn from, gathered by the store.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
@@ -267,6 +281,12 @@ pub struct Facts {
     pub reports: Vec<ReportFact>,
     /// Every task transition, oldest first.
     pub transitions: Vec<TransitionFact>,
+    /// Every logged pull request state change (`pr-state`), oldest first.
+    pub pr_changes: Vec<Change<PullState>>,
+    /// Every logged job state change (`job-state`), oldest first.
+    pub job_changes: Vec<Change<JobState>>,
+    /// Every logged review state change (`review-<trigger>`), oldest first.
+    pub review_changes: Vec<Change<ReviewState>>,
 }
 
 /// Which tasks to draw.
@@ -369,6 +389,74 @@ kinds!(
     }
 );
 
+/// What a subagent is doing, as far as its transcript tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentState {
+    /// Now: it has responded; its transcript does not say whether it finished.
+    Seen,
+    /// At a past instant: between its first and last response.
+    Running,
+    /// At a past instant: after its last response.
+    Done,
+}
+
+impl AgentState {
+    /// The word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Seen => "seen",
+            Self::Running => "running",
+            Self::Done => "done",
+        }
+    }
+}
+
+/// A node's state, from the vocabulary of what the node stands for; written as its word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Status {
+    /// A task.
+    Task(TaskState),
+    /// A session, or the orchestrator (`live` while one of its sessions is).
+    Session(SessionState),
+    /// A subagent.
+    Agent(AgentState),
+    /// A job.
+    Job(JobState),
+    /// A pull request.
+    Pull(PullState),
+    /// A review.
+    Review(ReviewState),
+    /// A review's flow node.
+    ReviewNode(NodeState),
+    /// An open ask.
+    Ask(AskState),
+}
+
+impl Status {
+    /// The word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Task(state) => state.as_str(),
+            Self::Session(state) => state.as_str(),
+            Self::Agent(state) => state.as_str(),
+            Self::Job(state) => state.as_str(),
+            Self::Pull(state) => state.as_str(),
+            Self::Review(state) => state.as_str(),
+            Self::ReviewNode(state) => state.as_str(),
+            Self::Ask(state) => state.as_str(),
+        }
+    }
+}
+
+impl Serialize for Status {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// One node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Node {
@@ -378,11 +466,10 @@ pub struct Node {
     pub kind: NodeKind,
     /// The text drawn on it.
     pub label: String,
-    /// Its state, drawn as colour: a word of the kind's own vocabulary (task, session, job, review, review node or
-    /// pull request state). At a past instant a session says `live` or `ended` and a subagent `running` or `done`,
-    /// the words that can be told then; now, a subagent says `seen`, as its transcript does not say it finished.
+    /// Its state, drawn as colour: one word of the node kind's own vocabulary ([`Status`]). At a past instant a
+    /// session is `live` or `ended`; now it is its stored state.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub state: Option<Status>,
     /// The box it is drawn in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -457,6 +544,36 @@ pub fn session_node(session: &str) -> String {
 
 fn agent_node(agent: &str) -> String {
     format!("agent:{agent}")
+}
+
+/// The id of the node of a message address headwork does not know: `external:` and a hash of the address, so the
+/// address, written by an agent, is only ever a label and never part of an id.
+#[must_use]
+pub fn external_node(address: &str) -> String {
+    let hash = address
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    format!("external:{hash:016x}")
+}
+
+/// The state of row `key` at `at` from its logged changes: the newest at or before it, else the state before the
+/// first one after it (`first` when the log does not say), else `now`.
+#[must_use]
+pub fn change_at<S: Copy>(changes: &[Change<S>], key: i64, at: &str, first: S, now: S) -> S {
+    let mine = changes.iter().filter(|change| change.key == key);
+    let before = mine
+        .clone()
+        .filter(|change| change.at.as_str() <= at)
+        .max_by(|left, right| left.at.cmp(&right.at));
+    let after = mine
+        .filter(|change| change.at.as_str() > at)
+        .min_by(|left, right| left.at.cmp(&right.at));
+    before.map_or_else(
+        || after.map_or(now, |change| change.from.unwrap_or(first)),
+        |change| change.to,
+    )
 }
 
 /// The state of `task` at `at`: the newest transition at or before it, else the state before its first transition
@@ -665,10 +782,7 @@ impl<'f> Draw<'f> {
     }
 
     fn of_address(&self, address: &str) -> Option<Place> {
-        let bare = address
-            .split_once(ADDRESS_REF_MARK)
-            .map_or(address, |(name, _)| name)
-            .trim();
+        let bare = bare_address(address);
         if is_orchestrator_address(bare) {
             return Some(Place::Drawn(ORCHESTRATOR_NODE.to_owned()));
         }
@@ -804,7 +918,11 @@ fn orchestrator(draw: &Draw<'_>, canvas: &mut Canvas) {
             || ORCHESTRATOR_NODE.to_owned(),
             |session| session.rc_name.clone(),
         ),
-        state: Some(if live.is_empty() { "ended" } else { "live" }.to_owned()),
+        state: Some(Status::Session(if live.is_empty() {
+            SessionState::Ended
+        } else {
+            SessionState::Live
+        })),
         parent: None,
         start: sessions
             .iter()
@@ -821,7 +939,7 @@ fn task_box(draw: &Draw<'_>, task: &TaskFact, state: TaskState, canvas: &mut Can
         id: id.clone(),
         kind: NodeKind::Task,
         label: task.name.clone(),
-        state: Some(state.as_str().to_owned()),
+        state: Some(Status::Task(state)),
         parent: draw.task_box(task.parent),
         start: Some(task.queued_at.clone()),
         end: task_end(&draw.facts.transitions, task.id),
@@ -869,9 +987,11 @@ fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
         NodeKind::Worker
     };
     let state = match draw.at {
-        None => newest.state.as_str(),
-        Some(_) if alive(&newest.started_at, newest.ended_at.as_deref(), draw.at) => "live",
-        Some(_) => "ended",
+        None => newest.state,
+        Some(_) if alive(&newest.started_at, newest.ended_at.as_deref(), draw.at) => {
+            SessionState::Live
+        }
+        Some(_) => SessionState::Ended,
     };
     let label = task.effort.map_or_else(
         || task.model.as_str().to_owned(),
@@ -891,7 +1011,7 @@ fn task_session(draw: &Draw<'_>, task: &TaskFact, canvas: &mut Canvas) {
         id: session_node(&newest.id),
         kind,
         label,
-        state: Some(state.to_owned()),
+        state: Some(Status::Session(state)),
         parent: Some(task_node(task.id)),
         start: Some(newest.started_at.clone()),
         end: newest.ended_at.clone(),
@@ -916,11 +1036,11 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
             continue;
         }
         let state = match (draw.at, agent.first_at.as_deref(), agent.last_at.as_deref()) {
-            (None, _, _) => "seen",
+            (None, _, _) => AgentState::Seen,
             (Some(_), None, _) => continue,
             (Some(at), Some(first), _) if first > at => continue,
-            (Some(at), Some(_), Some(last)) if last <= at => "done",
-            (Some(_), Some(_), _) => "running",
+            (Some(at), Some(_), Some(last)) if last <= at => AgentState::Done,
+            (Some(_), Some(_), _) => AgentState::Running,
         };
         let id = agent_node(&agent.id);
         canvas.put(Node {
@@ -930,7 +1050,7 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
                 .agent_type
                 .clone()
                 .unwrap_or_else(|| "subagent".to_owned()),
-            state: Some(state.to_owned()),
+            state: Some(Status::Agent(state)),
             parent,
             start: agent.first_at.clone(),
             end: agent.last_at.clone(),
@@ -940,9 +1060,14 @@ fn subagents(draw: &Draw<'_>, canvas: &mut Canvas) {
                 ("depth", agent.depth.map(|depth| depth.to_string())),
             ]),
         });
+        let starter = agent
+            .parent
+            .as_deref()
+            .filter(|parent| draw.facts.agents.iter().any(|other| other.id == *parent))
+            .map_or_else(|| caller.clone(), agent_node);
         canvas.link(
             EdgeKind::Called,
-            caller,
+            &starter,
             &id,
             None,
             agent.first_at.as_deref(),
@@ -980,16 +1105,24 @@ fn jobs(draw: &Draw<'_>, canvas: &mut Canvas) {
         if !draw.until(&job.started_at) {
             continue;
         }
-        let state = match (draw.at, job.ended_at.as_deref()) {
-            (Some(at), Some(end)) if end > at => JobState::Running,
-            _ => job.state,
-        };
+        let state = draw
+            .at
+            .map_or(job.state, |at| match job.ended_at.as_deref() {
+                Some(end) if end > at => JobState::Running,
+                _ => change_at(
+                    &draw.facts.job_changes,
+                    job.id,
+                    at,
+                    JobState::Running,
+                    job.state,
+                ),
+            });
         let id = format!("job:{}", job.id);
         canvas.put(Node {
             id: id.clone(),
             kind: NodeKind::Job,
             label: job.label.clone(),
-            state: Some(state.as_str().to_owned()),
+            state: Some(Status::Job(state)),
             parent: Some(task_node(task)),
             start: Some(job.started_at.clone()),
             end: job.ended_at.clone(),
@@ -1016,7 +1149,9 @@ fn prs(draw: &Draw<'_>, canvas: &mut Canvas) {
             id: id.clone(),
             kind: NodeKind::Pr,
             label: format!("#{}", pr.number),
-            state: Some(pr.state.clone()),
+            state: Some(Status::Pull(draw.at.map_or(pr.state, |at| {
+                change_at(&draw.facts.pr_changes, pr.id, at, PullState::Open, pr.state)
+            }))),
             parent: Some(task_node(pr.task)),
             start: Some(pr.first_at.clone()),
             end: None,
@@ -1038,10 +1173,15 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
             continue;
         }
         let id = format!("review:{}", review.id);
-        let state = match (draw.at, review.finished_at.as_deref()) {
-            (Some(at), Some(end)) if end > at => ReviewState::Running,
-            _ => review.state,
-        };
+        let state = draw.at.map_or(review.state, |at| {
+            change_at(
+                &draw.facts.review_changes,
+                review.id,
+                at,
+                ReviewState::Requested,
+                review.state,
+            )
+        });
         let home = task_node(
             review
                 .part
@@ -1052,7 +1192,7 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
             id: id.clone(),
             kind: NodeKind::Review,
             label: format!("{} {}", review.flow, review.level.number()),
-            state: Some(state.as_str().to_owned()),
+            state: Some(Status::Review(state)),
             parent: Some(home.clone()),
             start: Some(review.requested_at.clone()),
             end: review.finished_at.clone(),
@@ -1095,7 +1235,7 @@ fn reviews(draw: &Draw<'_>, canvas: &mut Canvas) {
                 } else {
                     format!("{} {}", run.node, run.item)
                 },
-                state: Some(state.as_str().to_owned()),
+                state: Some(Status::ReviewNode(state)),
                 parent: Some(home.clone()),
                 start: run.started_at.clone(),
                 end: run.finished_at.clone(),
@@ -1126,7 +1266,7 @@ fn messages(draw: &Draw<'_>, canvas: &mut Canvas) {
             Some(Place::Drawn(id)) => id,
             Some(Place::Hidden) => continue,
             None => {
-                let id = format!("external:{}", message.to);
+                let id = external_node(&message.to);
                 if !canvas.nodes.contains_key(&id) {
                     canvas.put(Node {
                         id: id.clone(),
@@ -1212,7 +1352,7 @@ fn asks(draw: &Draw<'_>, canvas: &mut Canvas) {
                 id: id.clone(),
                 kind: NodeKind::Ask,
                 label: label.clone(),
-                state: Some(AskState::Open.as_str().to_owned()),
+                state: Some(Status::Ask(AskState::Open)),
                 parent: None,
                 start: Some(ask.created_at.clone()),
                 end: ask.closed_at.clone(),
@@ -1402,6 +1542,7 @@ mod tests {
                 description: Some("find the hook".to_owned()),
                 model: Some("haiku".to_owned()),
                 depth: Some(1),
+                parent: None,
                 first_at: Some("T05".to_owned()),
                 last_at: Some("T06".to_owned()),
             }],
@@ -1424,7 +1565,7 @@ mod tests {
                 task: 1,
                 number: 41,
                 url: "https://github.com/o/r/pull/41".to_owned(),
-                state: "open".to_owned(),
+                state: PullState::Open,
                 first_at: "T06".to_owned(),
             }],
             asks: vec![
@@ -1452,6 +1593,9 @@ mod tests {
                 transition(1, TaskState::Queued, TaskState::Working, "T02"),
                 transition(3, TaskState::Working, TaskState::Closed, "T05"),
             ],
+            pr_changes: Vec::new(),
+            job_changes: Vec::new(),
+            review_changes: Vec::new(),
         }
     }
 
@@ -1463,6 +1607,7 @@ mod tests {
 
     #[test]
     fn every_node_kind_is_drawn_now() {
+        let stranger = external_node("stranger");
         let graph = build(&facts(), None, Scope::Live);
         let table = [
             ("user", NodeKind::User),
@@ -1478,7 +1623,7 @@ mod tests {
             ("ask:5", NodeKind::Ask),
             ("review:1", NodeKind::Review),
             ("review-node:1:1:correctness:0", NodeKind::ReviewNode),
-            ("external:stranger", NodeKind::External),
+            (stranger.as_str(), NodeKind::External),
         ];
         for (id, kind) in table {
             let node = graph.node(id);
@@ -1522,6 +1667,7 @@ mod tests {
 
     #[test]
     fn every_edge_kind_is_drawn_now() {
+        let stranger = external_node("stranger");
         let graph = build(&facts(), None, Scope::Live);
         let table = [
             (EdgeKind::Spawned, "orchestrator", "task:1"),
@@ -1531,7 +1677,7 @@ mod tests {
             (EdgeKind::Opened, "session:s1", "job:7"),
             (EdgeKind::Message, "session:s2", "session:s1"),
             (EdgeKind::Message, "session:s1", "orchestrator"),
-            (EdgeKind::Message, "session:s1", "external:stranger"),
+            (EdgeKind::Message, "session:s1", stranger.as_str()),
             (EdgeKind::Report, "session:s1", "orchestrator"),
             (EdgeKind::Asked, "session:s1", "user"),
             (EdgeKind::Asked, "session:s2", "ask:5"),
@@ -1558,6 +1704,7 @@ mod tests {
             description: None,
             model: None,
             depth: Some(1),
+            parent: None,
             first_at: Some("T01".to_owned()),
             last_at: None,
         });
@@ -1659,7 +1806,7 @@ mod tests {
     fn states_at_an_instant_follow_the_transitions() {
         let graph = build(&facts(), Some("T01"), Scope::All);
         assert_eq!(
-            graph.node("task:1").unwrap().state.as_deref(),
+            graph.node("task:1").unwrap().state.map(Status::as_str),
             Some("queued"),
             "before its first transition"
         );
@@ -1673,7 +1820,7 @@ mod tests {
         ];
         for (id, state) in table {
             assert_eq!(
-                graph.node(id).unwrap().state.as_deref(),
+                graph.node(id).unwrap().state.map(Status::as_str),
                 Some(state),
                 "state of {id}"
             );
@@ -1802,13 +1949,21 @@ mod tests {
         facts.sessions[0].ended_at = Some("T05".to_owned());
         let graph = build(&facts, None, Scope::Live);
         assert_eq!(
-            graph.node(ORCHESTRATOR_NODE).unwrap().state.as_deref(),
+            graph
+                .node(ORCHESTRATOR_NODE)
+                .unwrap()
+                .state
+                .map(Status::as_str),
             Some("ended"),
             "now"
         );
         let graph = build(&facts, Some("T04"), Scope::Live);
         assert_eq!(
-            graph.node(ORCHESTRATOR_NODE).unwrap().state.as_deref(),
+            graph
+                .node(ORCHESTRATOR_NODE)
+                .unwrap()
+                .state
+                .map(Status::as_str),
             Some("live"),
             "before it ended"
         );
@@ -1824,7 +1979,10 @@ mod tests {
             edge(&graph, EdgeKind::Message, "session:s1", ORCHESTRATOR_NODE).is_some(),
             "by its name"
         );
-        assert!(graph.node("external:boss").is_none(), "not a stranger");
+        assert!(
+            graph.node(&external_node("boss")).is_none(),
+            "not a stranger"
+        );
     }
 
     #[test]
@@ -1835,7 +1993,7 @@ mod tests {
             .push(message("s1", "headwork-old", None, "T06"));
         let graph = build(&facts, None, Scope::Live);
         assert!(
-            graph.node("external:headwork-old").is_none(),
+            graph.node(&external_node("headwork-old")).is_none(),
             "a known task is no stranger"
         );
         let graph = build(&facts, None, Scope::All);
@@ -1956,7 +2114,7 @@ mod tests {
                 .node("agent:a1")
                 .unwrap()
                 .state
-                .as_deref(),
+                .map(Status::as_str),
             Some("seen"),
             "now"
         );
@@ -1977,7 +2135,7 @@ mod tests {
                 .node("session:s1")
                 .unwrap()
                 .state
-                .as_deref(),
+                .map(Status::as_str),
             Some("starting"),
             "now"
         );
@@ -1986,7 +2144,7 @@ mod tests {
                 .node("session:s1")
                 .unwrap()
                 .state
-                .as_deref(),
+                .map(Status::as_str),
             Some("live"),
             "then"
         );
@@ -2008,5 +2166,158 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn past_states_of_pull_requests_jobs_and_reviews_come_from_their_logs() {
+        let mut facts = facts();
+        facts.prs[0].state = PullState::Merged;
+        facts.pr_changes.push(Change {
+            key: 9,
+            from: Some(PullState::Open),
+            to: PullState::Merged,
+            at: "T08".to_owned(),
+        });
+        facts.jobs[0].ended_at = None;
+        facts.jobs[0].state = JobState::Failed;
+        facts.job_changes.push(Change {
+            key: 7,
+            from: None,
+            to: JobState::Failed,
+            at: "T08".to_owned(),
+        });
+        facts.reviews[0].state = ReviewState::Done;
+        facts.review_changes.push(Change {
+            key: 1,
+            from: Some(ReviewState::Requested),
+            to: ReviewState::Running,
+            at: "T04".to_owned(),
+        });
+        facts.review_changes.push(Change {
+            key: 1,
+            from: Some(ReviewState::Running),
+            to: ReviewState::Done,
+            at: "T08".to_owned(),
+        });
+        let table = [
+            ("T07", "pr:9", "open"),
+            ("T09", "pr:9", "merged"),
+            ("T07", "job:7", "running"),
+            ("T09", "job:7", "failed"),
+            ("T03", "review:1", "requested"),
+            ("T05", "review:1", "running"),
+            ("T09", "review:1", "done"),
+        ];
+        for (at, id, state) in table {
+            let graph = build(&facts, Some(at), Scope::All);
+            assert_eq!(
+                graph.node(id).unwrap().state.map(Status::as_str),
+                Some(state),
+                "{id} at {at}"
+            );
+        }
+        assert_eq!(
+            build(&facts, None, Scope::All).node("pr:9").unwrap().state,
+            Some(Status::Pull(PullState::Merged)),
+            "now"
+        );
+    }
+
+    #[test]
+    fn change_at_reads_before_after_first_and_now() {
+        let changes = [
+            Change {
+                key: 1,
+                from: None,
+                to: JobState::Stopping,
+                at: "T05".to_owned(),
+            },
+            Change {
+                key: 1,
+                from: Some(JobState::Stopping),
+                to: JobState::Done,
+                at: "T07".to_owned(),
+            },
+        ];
+        let table = [
+            ("T01", JobState::Running),
+            ("T05", JobState::Stopping),
+            ("T06", JobState::Stopping),
+            ("T09", JobState::Done),
+        ];
+        for (at, state) in table {
+            assert_eq!(
+                change_at(&changes, 1, at, JobState::Running, JobState::Parked),
+                state,
+                "at {at}"
+            );
+        }
+        assert_eq!(
+            change_at(&changes, 2, "T01", JobState::Running, JobState::Parked),
+            JobState::Parked,
+            "no log: now"
+        );
+    }
+
+    #[test]
+    fn a_nested_subagent_is_called_by_its_parent_agent() {
+        let mut facts = facts();
+        let mut child = facts.agents[0].clone();
+        child.id = "a2".to_owned();
+        child.depth = Some(2);
+        child.parent = Some("a1".to_owned());
+        facts.agents.push(child);
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            edge(&graph, EdgeKind::Called, "agent:a1", "agent:a2").is_some(),
+            "from its parent"
+        );
+        assert!(
+            edge(&graph, EdgeKind::Called, "session:s1", "agent:a2").is_none(),
+            "not from the session"
+        );
+        facts.agents[1].parent = Some("gone".to_owned());
+        let graph = build(&facts, None, Scope::Live);
+        assert!(
+            edge(&graph, EdgeKind::Called, "session:s1", "agent:a2").is_some(),
+            "an unknown parent: the session"
+        );
+    }
+
+    #[test]
+    fn an_external_node_id_never_holds_the_address() {
+        let mut facts = facts();
+        let address = "<img src=x onerror=alert(1)>/../../x";
+        facts.messages.push(message("s1", address, None, "T06"));
+        let graph = build(&facts, None, Scope::Live);
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.label == address)
+            .unwrap();
+        assert_eq!(node.id, external_node(address), "a stable id");
+        assert!(
+            node.id.strip_prefix("external:").is_some_and(
+                |hash| hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            ),
+            "only a hash: {}",
+            node.id
+        );
+        assert_ne!(
+            external_node("a"),
+            external_node("b"),
+            "different addresses, different ids"
+        );
+    }
+
+    #[test]
+    fn states_serialise_as_their_words() {
+        let json = serde_json::to_value(Status::ReviewNode(NodeState::Running)).unwrap();
+        assert_eq!(json, "running", "a word");
+        assert_eq!(
+            serde_json::to_value(AgentState::Seen).unwrap(),
+            AgentState::Seen.as_str(),
+            "agent words"
+        );
     }
 }

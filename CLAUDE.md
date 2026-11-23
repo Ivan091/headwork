@@ -123,7 +123,7 @@ The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/gra
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph.rs` (`Facts` in,
 `Graph` out, `state_at` for replay); `Store::graph_facts` (`store/src/graph.rs`) reads them in one transaction. The
-`agents` table (migration 0020) holds each subagent's type, description, model, depth and first and last response,
+`agents` table (migration 0020) holds each subagent's type, description, model, depth, parent agent and first and last response,
 filled by the usage reader with the usage rows; the `SendMessage` `tool-used` event carries `to` and a short `summary`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration

@@ -184,6 +184,19 @@ pub const ORCHESTRATOR_ADDRESS: &str = "orchestrator";
 /// The orchestrator's address until 2026-11-14, when it was called the orchestrator; still an alias of the orchestrator.
 pub const LEGACY_ORCHESTRATOR_ADDRESS: &str = "root";
 
+/// What Claude Code's `SendMessage` tool takes after a session's name when two sessions share it: `name [ref]`, the
+/// `[ref]` copied from its `ListAgents` listing. The name before it is the address.
+pub const ADDRESS_REF_MARK: &str = " [";
+
+/// The name a `SendMessage` address names, without a `[ref]` (see [`ADDRESS_REF_MARK`]).
+#[must_use]
+pub fn bare_address(address: &str) -> &str {
+    address
+        .split_once(ADDRESS_REF_MARK)
+        .map_or(address, |(name, _)| name)
+        .trim()
+}
+
 /// Whether a session message to `name` means the orchestrator.
 #[must_use]
 pub fn is_orchestrator_address(name: &str) -> bool {

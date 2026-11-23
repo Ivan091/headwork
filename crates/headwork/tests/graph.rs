@@ -12,7 +12,7 @@ use headwork::ops::usage::ingest_file;
 use headwork_core::{
     Actor, Config, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape,
 };
-use headwork_store::{NewSession, NewTask, Store, TaskId};
+use headwork_store::{NewPr, NewSession, NewTask, PrSeen, Store, TaskId};
 
 fn config() -> Config {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
@@ -168,4 +168,81 @@ fn graph_replays_a_past_instant_and_refuses_a_task_not_yet_queued() {
             .is_some(),
         "all draws it"
     );
+}
+
+/// The store's clock now, then a pause, so the next write lands strictly later.
+fn tick(store: &Store) -> String {
+    let now = store.instant_ago(0).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    now
+}
+
+fn state_at(store: &Store, at: &str, id: &str) -> Option<String> {
+    let query = GraphQuery {
+        at: Some(at.to_owned()),
+        all: true,
+        task: None,
+    };
+    let graph = graph(store, &query).unwrap();
+    graph.node(id).map(|node| {
+        node.state
+            .map_or_else(String::new, |state| state.as_str().to_owned())
+    })
+}
+
+#[test]
+fn a_replay_shows_each_instant_as_the_operations_left_it() {
+    let before = {
+        let store = Store::open_in_memory().unwrap();
+        tick(&store)
+    };
+    let (mut store, task) = store_with_task();
+    let queued = tick(&store);
+    let pr = NewPr {
+        repo: "o/r".to_owned(),
+        number: 7,
+        url: "https://github.com/o/r/pull/7".to_owned(),
+    };
+    store
+        .record_report(task, "0a", "review", "in review", &[], Some(&pr))
+        .unwrap();
+    let opened = tick(&store);
+    let seen = PrSeen {
+        repo: "o/r",
+        number: 7,
+        url: "https://github.com/o/r/pull/7",
+        state: "merged",
+    };
+    store.record_pr(task, &seen, Actor::Tick).unwrap();
+    let merged = tick(&store);
+    store.session_ended("0a", Some(0)).unwrap();
+    let ended = tick(&store);
+
+    let task_node = format!("task:{}", task.0);
+    let pr_node = graph(
+        &store,
+        &GraphQuery {
+            all: true,
+            ..GraphQuery::default()
+        },
+    )
+    .unwrap()
+    .nodes
+    .iter()
+    .find(|node| node.label == "#7")
+    .map(|node| node.id.clone())
+    .unwrap();
+    let table = [
+        (&before, task_node.as_str(), None),
+        (&queued, task_node.as_str(), Some("queued")),
+        (&queued, "session:0a", Some("live")),
+        (&queued, pr_node.as_str(), None),
+        (&opened, pr_node.as_str(), Some("open")),
+        (&merged, pr_node.as_str(), Some("merged")),
+        (&merged, "session:0a", Some("live")),
+        (&ended, "session:0a", Some("ended")),
+    ];
+    for (at, id, state) in table {
+        assert_eq!(state_at(&store, at, id).as_deref(), state, "{id} at {at}");
+    }
 }

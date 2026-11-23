@@ -294,6 +294,18 @@ text_enum!(
 );
 
 text_enum!(
+    /// Where a pull request is, as `prs.state` holds it.
+    PullState, "pull request state" {
+        /// Open, its gate running or done.
+        Open => "open",
+        /// Merged.
+        Merged => "merged",
+        /// Closed unmerged.
+        Closed => "closed",
+    }
+);
+
+text_enum!(
     /// Where a review is (`docs/review-flows.md`, section 7).
     ReviewState, "review state" {
         /// The user asked for it; the lead has not started it.

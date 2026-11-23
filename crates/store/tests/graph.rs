@@ -11,8 +11,8 @@ use headwork_core::graph::{EdgeKind, NodeKind, Scope, build};
 use headwork_core::lifecycle::SessionFacts;
 use headwork_core::usage::{AgentMeta, Tokens, UsageLine};
 use headwork_core::{
-    Actor, AskKind, Config, PermissionMode, ProjectName, Role, Slug, TaskRequest, TaskShape,
-    Trigger,
+    Actor, AskKind, Config, JobState, PermissionMode, ProjectName, PullState, ReviewState, Role,
+    Slug, TaskRequest, TaskShape, Trigger,
 };
 use headwork_store::{
     FileMark, MIGRATIONS, NewAsk, NewPr, NewSession, NewTask, Store, StoreError, Task, TaskId,
@@ -122,6 +122,7 @@ fn meta(description: &str) -> AgentMeta {
         description: Some(description.to_owned()),
         model: Some("haiku".to_owned()),
         spawn_depth: Some(1),
+        parent_agent_id: None,
     }
 }
 
@@ -410,6 +411,7 @@ fn a_pull_request_starts_at_the_first_event_naming_its_whole_url() {
         number: 4,
         url: "https://github.com/o/r/pull/4".to_owned(),
     };
+    std::thread::sleep(std::time::Duration::from_millis(20));
     store
         .record_report(lead.id, "lead", "review", "second", &[], Some(&other))
         .unwrap();
@@ -424,8 +426,8 @@ fn a_pull_request_starts_at_the_first_event_naming_its_whole_url() {
             .clone()
     };
     assert!(
-        first(4) >= first(41),
-        "#4 is not matched by the event naming #41"
+        first(4) > first(41),
+        "#4 starts at its own event, not at the earlier one naming #41"
     );
 }
 
@@ -447,4 +449,81 @@ fn an_unknown_stored_word_names_its_row() {
         matches!(&error, StoreError::BadRow { row, .. } if row.starts_with("event ")),
         "names the event: {error}"
     );
+}
+
+#[test]
+fn a_nested_agent_keeps_its_parent() {
+    let (mut store, _config) = store();
+    let mut nested = meta("inner");
+    nested.spawn_depth = Some(2);
+    nested.parent_agent_id = Some("a1".to_owned());
+    record(
+        &mut store,
+        "s1",
+        Some("a2"),
+        Some(&nested),
+        &[line("m1", "2026-11-22T10:00:00.000Z", HAIKU, 1, 1)],
+    );
+    record(&mut store, "s1", Some("a2"), Some(&meta("again")), &[]);
+    let facts = store.graph_facts().unwrap();
+    assert_eq!(
+        facts.agents[0].parent.as_deref(),
+        Some("a1"),
+        "kept when a later meta names none"
+    );
+}
+
+#[test]
+fn logged_state_changes_are_read_per_row() {
+    let (mut store, config) = store();
+    let (lead, _) = populate(&mut store, &config);
+    let url = "https://github.com/o/r/pull/41";
+    let events = [
+        (
+            "pr-state",
+            serde_json::json!({ "url": url, "from": "open", "to": "merged" }),
+        ),
+        (
+            "pr-state",
+            serde_json::json!({ "url": "https://github.com/o/r/pull/999", "from": "open", "to": "merged" }),
+        ),
+        (
+            "job-state",
+            serde_json::json!({ "job": 7, "state": "done", "note": null }),
+        ),
+        (
+            "review-started",
+            serde_json::json!({ "review": 3, "from": "requested", "to": "running", "round": 1 }),
+        ),
+        ("review-requested", serde_json::json!({ "review": 3 })),
+    ];
+    for (kind, data) in events {
+        store
+            .append_event(Actor::Tick, Some(lead.id), None, kind, &data)
+            .unwrap();
+    }
+    let facts = store.graph_facts().unwrap();
+    let pr = facts.prs.iter().find(|pr| pr.url == url).unwrap();
+    assert_eq!(
+        facts.pr_changes.len(),
+        1,
+        "only the task's own pull request"
+    );
+    assert_eq!(
+        (facts.pr_changes[0].key, facts.pr_changes[0].to),
+        (pr.id, PullState::Merged),
+        "keyed by its row"
+    );
+    let job = &facts.job_changes[0];
+    assert_eq!(
+        (job.key, job.from, job.to),
+        (7, None, JobState::Done),
+        "job"
+    );
+    assert_eq!(
+        facts.review_changes.len(),
+        1,
+        "a review event without states is no change"
+    );
+    assert_eq!(facts.review_changes[0].to, ReviewState::Running, "review");
 }

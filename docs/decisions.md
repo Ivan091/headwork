@@ -1305,19 +1305,34 @@ and the reason.
   never the body.
 - 2026-11-23, dashboard D1 (the graph model): `core/src/graph.rs` builds the graph from `Facts` the store gathers
   (`Store::graph_facts`, one read transaction), and `headwork graph [--json] [--at T] [--all | --task <name>]` prints
-  it after the same lost-session reconcile `board` runs. Choices the plan left open: a review's flow nodes are drawn as
-  `review-node` nodes joined to their review by a `ran` edge, in the reviewer part's box; an ask without a header is
-  labelled by the first 40 characters of its question; a superseded ask closes at its `ask-superseded` event, and one
-  closed with no time at all counts as closed from its creation; a pull request starts at the first event of its task
-  naming its quoted URL, else at its task's start; a subagent is drawn in its caller's task box, nested ones off the
-  session too (`spawn_depth` in its details: nothing names a parent agent), one whose responses were summed into days
-  before 0020 has no times and shows only in the view of now; a top-level task is `spawned` from the user when the
-  user created it from the CLI, else from the orchestrator; the live view also draws the lead of every live part; a
-  single-task view leaves out the orchestrator's own subagents and asks; a message to a name headwork knows (a task,
-  a session, an orchestrator's own name, a subagent id) that the view does not draw gets no edge, and only unknown
-  names become `external` nodes. The store keeps no history for pull request, review and review node states, nor for a
-  job without an end, so a past view shows those as they are now. The `agents` table (migration 0020) keeps no task (it
-  is the calling session's), is filled with the usage rows in their transaction, seeded by the migration from the
-  usage rows already stored, and completed by `headwork usage --backfill`; ids other than plain words are skipped. A
-  `SendMessage` `to` and `summary` are trimmed, stripped of control characters and cut to 120 characters, and the text
-  output escapes control characters. The read-only store open for `headwork dash` comes with D2, its first caller.
+  it after the same lost-session reconcile `board` runs. Choices the plan left open:
+  - Review flow nodes are `review-node` nodes joined to their review by a `ran` edge, in the reviewer part's box.
+  - An ask is one `asked` edge from the session to the user once answered, not an answer edge back: the edge carries
+    the count and the last header, and the direction of the talk is the session asking; while open it runs through
+    its ask node. An ask without a header is labelled by the first 40 characters of its question; a superseded ask
+    closes at its `ask-superseded` event, and one closed with no time at all counts as closed from its creation.
+  - Past states come from the logs: task `transition`, `pr-state`, `job-state` and `review-<trigger>` events; review
+    nodes from their start and finish times. Node states are one closed set (`graph::Status`), each word from its
+    kind's vocabulary, so the page can map every word to a colour; a session is `live` or `ended` at a past instant.
+  - A pull request starts at the first event of its task naming its quoted URL, else at its task's start.
+  - A subagent is drawn in its caller's task box, called by its parent agent when its meta names one
+    (`parentAgentId`, kept in `agents.parent_agent_id`) and that agent is known, else by its session. One whose
+    responses were summed into days before 0020 has no times and shows only in the view of now.
+  - A top-level task is `spawned` from the user when the user created it from the CLI, else from the orchestrator; the
+    live view also draws the lead of every live part; a single-task view leaves out the orchestrator's own subagents
+    and asks.
+  - A message to a name headwork knows (a task, a session, an orchestrator's own name, a subagent id) that the view
+    does not draw gets no edge; only unknown names become `external` nodes, whose id is a hash of the address
+    (`external_node`), so agent-written text is only ever a label. The `SendMessage` `to` and `summary` are trimmed,
+    stripped of control characters and cut to 120 characters; the text output escapes control characters. D2 must
+    HTML-escape every label and detail and URL-encode every id it puts in a path, with a test.
+  - The `agents` table (migration 0020) keeps no task (it is the calling session's) and is filled with the usage rows
+    in their transaction. A subagent's meta file is written when it is spawned (it holds the caller's `toolUseId`
+    and the `description` the call gave) and rewritten at its end with `finished`, so it is there when the first lines
+    are read; one missing then (a crash) is filled by `headwork usage --backfill`, not checked on every tick. The
+    migration seeds the table from the usage rows already stored. Ids other than plain words are skipped.
+  - `graph_facts` reads the whole history and the build filters it: on this machine's store (10.6k events, 38.5k
+    usage rows, 370 agents) `headwork graph --all --json` takes 0.11 s in a release build. 0020 adds the index
+    `events_type(type, id)` for its type-filtered reads and for D3's reads of new events. Pushing the scope and the
+    instant into SQL waits until a store makes it slow, since it would repeat rules core owns.
+  - The read-only store open for `headwork dash` comes with D2, its first caller.
