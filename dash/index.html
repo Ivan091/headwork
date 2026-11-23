@@ -28,11 +28,13 @@
   </select>
   <input id="search" type="search" placeholder="find a task or session" autocomplete="off">
   <button id="fit" type="button">fit</button>
+  <button id="legend-toggle" type="button" aria-expanded="false" aria-controls="legend" title="what the colours, shapes, edges and badges mean">legend</button>
   <button id="unfocus" type="button" hidden>show all</button>
   <span id="status" role="status"></span>
 </header>
 <main>
   <div id="graph"></div>
+  <aside id="legend" hidden aria-label="legend"></aside>
   <aside id="panel" hidden>
     <div class="panel-head">
       <h2 id="panel-title"></h2>
