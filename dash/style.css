@@ -179,6 +179,31 @@ main {
   cursor: pointer;
 }
 
+#timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+#slider {
+  flex: 1;
+  min-width: 120px;
+}
+
+#instant {
+  min-width: 190px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+button.on {
+  border-color: var(--green);
+  color: var(--green);
+}
+
 @media (max-width: 720px) {
   main {
     flex-direction: column;

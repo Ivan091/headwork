@@ -1376,3 +1376,15 @@ and the reason.
   `document.write` and `eval(` in `app.js` and any fetch path built without encoding. The page polls `/api/graph`
   every 5 seconds until D3's stream replaces it, keeps node positions across refreshes and lays out again only when
   nodes come or go. Subagents start hidden, counted on their caller ("3 subagents"), as the plan's count badge.
+- 2026-11-23, dashboard D3 (live and replay): `/api/stream` sends a server-sent `change` line naming the newest event
+  id at once and whenever the log grows (polled every second, a keep-alive comment line after 15 quiet seconds), at
+  most 8 streams at once (503 beyond), each on its own thread. It is written straight to the socket from
+  `tiny_http::Request::into_writer`, with the head written by hand and a flush per line, because a `tiny_http`
+  response buffers a body of unknown length (32 KB before it picks chunked, then 8 KB chunks) and would hold every line
+  back. The page refetches `/api/graph` on each `change`, so a new spawn shows within about two seconds; when the
+  stream drops it polls every 3 seconds until it is back. `/api/events?since=<id>&limit=<n>` (500 at most) lists what
+  happened, never event data, and `/api/range` gives the log's span for the slider. Replay asks `/api/graph?at=` for
+  snapshots: the slider seeks, play steps 400 ms of page time at 1x, 10x, 100x or 1000x and goes live when it reaches
+  now, and "replay this task" sets the task scope and plays from the task's start. New talk (`message`, `report`,
+  `asked`, `spawned`) pulses on the edge whose last time changed between two snapshots, so live and replay pulse the
+  same way without a second mapping of events to edges.

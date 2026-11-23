@@ -26,6 +26,7 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use error::StoreError;
+pub use graph::{EventMark, EventRange};
 pub use hooks::{
     EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_USER_ONLY_ALLOWED,
     EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,

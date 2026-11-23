@@ -9,6 +9,7 @@ use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_core::graph::{Edge, Node, task_node};
@@ -21,6 +22,12 @@ use crate::ops::graph::{GraphQuery, Which, graph};
 pub const DEFAULT_PORT: u16 = 8740;
 /// How many requests are answered at once.
 const WORKERS: usize = 4;
+/// How many live streams may be open at once; each holds a thread.
+const STREAMS_MAX: usize = 8;
+/// How often a stream looks for new events.
+const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// After how many quiet polls a stream sends a keep-alive line.
+const STREAM_PINGS_EVERY: u32 = 15;
 
 /// A file the page loads, built into the binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +88,17 @@ pub enum Route {
     Graph(GraphQuery),
     /// One node's details: `/api/node/<percent-encoded id>`.
     Node(String),
+    /// The events after an id, oldest first: `/api/events?since=<id>&limit=<n>`.
+    Events {
+        /// The last event id the page has.
+        since: i64,
+        /// At most this many.
+        limit: u32,
+    },
+    /// The span of the event log: `/api/range`.
+    Range,
+    /// Server-sent events: a `change` naming the newest event id whenever the log grows: `/api/stream`.
+    Stream,
     /// Anything else.
     NotFound,
     /// A method other than `GET`.
@@ -108,6 +126,17 @@ pub fn route(method: &str, url: &str, host: Option<&str>, port: u16) -> Route {
     }
     if path == "/api/graph" {
         return graph_query(query).map_or_else(Route::BadRequest, Route::Graph);
+    }
+    if path == "/api/range" {
+        return Route::Range;
+    }
+    if path == "/api/stream" {
+        return Route::Stream;
+    }
+    if path == "/api/events" {
+        return events_query(query).map_or_else(Route::BadRequest, |(since, limit)| {
+            Route::Events { since, limit }
+        });
     }
     if let Some(id) = path.strip_prefix("/api/node/") {
         return decode(id).map_or_else(
@@ -144,6 +173,32 @@ fn graph_query(query: &str) -> Result<GraphQuery, String> {
         }
     }
     Ok(found)
+}
+
+/// The most events one `/api/events` answer holds.
+const EVENTS_MAX: u32 = 500;
+
+fn events_query(query: &str) -> Result<(i64, u32), String> {
+    let mut since = 0;
+    let mut limit = EVENTS_MAX;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key {
+            "since" => {
+                since = value
+                    .parse()
+                    .map_err(|_| format!("`since` is not an event id: {value}"))?;
+            }
+            "limit" => {
+                limit = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("`limit` is not a count: {value}"))?
+                    .clamp(1, EVENTS_MAX);
+            }
+            other => return Err(format!("unknown parameter `{other}`")),
+        }
+    }
+    Ok((since, limit))
 }
 
 /// Percent-decodes a URL component (`+` is a space); none when it is not valid UTF-8 or an escape is broken.
@@ -229,6 +284,17 @@ pub fn answer(db: &Path, route: &Route) -> Answer {
             Ok(graph) => Answer::json(200, &graph),
             Err(error) => Answer::error(400, &format!("{error:#}")),
         },
+        Route::Events { since, limit } => {
+            match Store::open_read_only(db).and_then(|store| store.events_after(*since, *limit)) {
+                Ok(events) => Answer::json(200, &events),
+                Err(error) => Answer::error(500, &error.to_string()),
+            }
+        }
+        Route::Range => match Store::open_read_only(db).and_then(|store| store.event_range()) {
+            Ok(range) => Answer::json(200, &range),
+            Err(error) => Answer::error(500, &error.to_string()),
+        },
+        Route::Stream => Answer::error(500, "the stream is served by its own thread"),
         Route::Node(id) => match node_details(db, id) {
             Ok(Some(details)) => Answer::json(200, &details),
             Ok(None) => Answer::error(404, "no such node"),
@@ -332,14 +398,16 @@ pub fn serve(options: &DashOptions, out: &mut impl Write) -> Result<()> {
     );
     writeln!(out, "{line}")?;
     out.flush()?;
+    let streams = Arc::new(AtomicUsize::new(0));
     let workers: Vec<_> = (0..WORKERS)
         .map(|_| {
             let server = Arc::clone(&server);
             let db = options.db.clone();
             let port = options.port;
+            let streams = Arc::clone(&streams);
             std::thread::spawn(move || {
                 for request in server.incoming_requests() {
-                    handle(request, &db, port);
+                    handle(request, &db, port, &streams);
                 }
             })
         })
@@ -352,7 +420,118 @@ pub fn serve(options: &DashOptions, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn handle(request: tiny_http::Request, db: &Path, port: u16) {
+fn security_headers(content_type: &str) -> Vec<tiny_http::Header> {
+    [
+        ("Content-Type", content_type),
+        ("Cache-Control", "no-store"),
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
+        (
+            "Content-Security-Policy",
+            "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| {
+        tiny_http::Header::from_bytes(field.as_bytes(), value.as_bytes()).ok()
+    })
+    .collect()
+}
+
+/// A live stream's body: a `change` line now and whenever the event log grows, a keep-alive comment line when it is
+/// quiet; it ends when the store cannot be read or the page goes away.
+struct ChangeStream {
+    db: PathBuf,
+    last: Option<i64>,
+    quiet: u32,
+    pending: Vec<u8>,
+    streams: Arc<AtomicUsize>,
+}
+
+impl ChangeStream {
+    fn next_lines(&mut self) -> std::io::Result<()> {
+        loop {
+            let newest = Store::open_read_only(&self.db)
+                .and_then(|store| store.last_event_id())
+                .map_err(std::io::Error::other)?;
+            if self.last != Some(newest) {
+                self.last = Some(newest);
+                self.quiet = 0;
+                self.pending = format!("event: change\ndata: {newest}\n\n").into_bytes();
+                return Ok(());
+            }
+            self.quiet += 1;
+            if self.quiet >= STREAM_PINGS_EVERY {
+                self.quiet = 0;
+                self.pending = b": ping\n\n".to_vec();
+                return Ok(());
+            }
+            std::thread::sleep(STREAM_POLL);
+        }
+    }
+}
+
+impl ChangeStream {
+    /// The next lines to send: at once the first time, then when the log grows or a keep-alive is due.
+    fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
+        self.next_lines()?;
+        Ok(std::mem::take(&mut self.pending))
+    }
+}
+
+impl Drop for ChangeStream {
+    fn drop(&mut self) {
+        self.streams.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn open_stream(request: tiny_http::Request, db: &Path, streams: &Arc<AtomicUsize>) {
+    if streams.fetch_add(1, Ordering::SeqCst) >= STREAMS_MAX {
+        streams.fetch_sub(1, Ordering::SeqCst);
+        let reply = Answer::error(503, "too many live views are open");
+        let mut response =
+            tiny_http::Response::from_data(reply.body).with_status_code(reply.status);
+        for header in security_headers(reply.content_type) {
+            response.add_header(header);
+        }
+        drop(request.respond(response));
+        return;
+    }
+    let body = ChangeStream {
+        db: db.to_path_buf(),
+        last: None,
+        quiet: 0,
+        pending: Vec::new(),
+        streams: Arc::clone(streams),
+    };
+    std::thread::spawn(move || {
+        let mut body = body;
+        let mut socket = request.into_writer();
+        let mut head = String::from("HTTP/1.1 200 OK\r\nConnection: close\r\n");
+        for header in security_headers("text/event-stream") {
+            let _ = write!(head, "{}: {}\r\n", header.field, header.value);
+        }
+        head.push_str("\r\n");
+        if socket
+            .write_all(head.as_bytes())
+            .and_then(|()| socket.flush())
+            .is_err()
+        {
+            return;
+        }
+        while let Ok(chunk) = body.next_chunk() {
+            if socket
+                .write_all(&chunk)
+                .and_then(|()| socket.flush())
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+}
+
+fn handle(request: tiny_http::Request, db: &Path, port: u16, streams: &Arc<AtomicUsize>) {
     let host = request
         .headers()
         .iter()
@@ -364,21 +543,14 @@ fn handle(request: tiny_http::Request, db: &Path, port: u16) {
         host.as_deref(),
         port,
     );
+    if found == Route::Stream {
+        open_stream(request, db, streams);
+        return;
+    }
     let reply = answer(db, &found);
     let mut response = tiny_http::Response::from_data(reply.body).with_status_code(reply.status);
-    for (field, value) in [
-        ("Content-Type", reply.content_type),
-        ("Cache-Control", "no-store"),
-        ("X-Content-Type-Options", "nosniff"),
-        ("Referrer-Policy", "no-referrer"),
-        (
-            "Content-Security-Policy",
-            "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-        ),
-    ] {
-        if let Ok(header) = tiny_http::Header::from_bytes(field.as_bytes(), value.as_bytes()) {
-            response.add_header(header);
-        }
+    for header in security_headers(reply.content_type) {
+        response.add_header(header);
     }
     drop(request.respond(response));
 }
@@ -494,13 +666,24 @@ mod tests {
         ] {
             assert!(!app.contains(banned), "app.js uses {banned}");
         }
-        for fetch in app
-            .match_indices("fetch(")
-            .map(|(at, _)| app.get(at..at + 80).unwrap_or_default())
-        {
+        let built = |text: &str| text.contains('+');
+        for (at, _) in app.match_indices("fetch(") {
+            let rest = app.get(at + "fetch(".len()..).unwrap_or_default();
+            let argument = rest.split([',', ')']).next().unwrap_or_default();
             assert!(
-                fetch.contains("encodeURIComponent") || fetch.contains("graphUrl"),
-                "a fetch builds its path without encoding: {fetch}"
+                !built(argument) || argument.contains("encodeURIComponent"),
+                "a fetch builds its path without encoding: {argument}"
+            );
+        }
+        let graph_url = app
+            .split("function graphUrl()")
+            .nth(1)
+            .and_then(|rest| rest.split("\n  }").next())
+            .unwrap();
+        for line in graph_url.lines().filter(|line| built(line)) {
+            assert!(
+                line.contains("encodeURIComponent"),
+                "graphUrl adds to the path without encoding: {line}"
             );
         }
         let page = ASSETS[0].body;
@@ -568,5 +751,104 @@ mod tests {
             });
             assert!(row.contains(&hex), "{file}: {hex} is not in VENDOR.md");
         }
+    }
+
+    #[test]
+    fn live_and_replay_routes_take_their_queries() {
+        let table = [
+            ("/api/range", Route::Range),
+            ("/api/stream", Route::Stream),
+            (
+                "/api/events",
+                Route::Events {
+                    since: 0,
+                    limit: EVENTS_MAX,
+                },
+            ),
+            (
+                "/api/events?since=42&limit=10",
+                Route::Events {
+                    since: 42,
+                    limit: 10,
+                },
+            ),
+            (
+                "/api/events?limit=100000",
+                Route::Events {
+                    since: 0,
+                    limit: EVENTS_MAX,
+                },
+            ),
+        ];
+        for (url, expected) in table {
+            assert_eq!(route("GET", url, HOST, PORT), expected, "{url}");
+        }
+        for bad in [
+            "/api/events?since=x",
+            "/api/events?limit=-1",
+            "/api/events?what=1",
+        ] {
+            assert!(
+                matches!(route("GET", bad, HOST, PORT), Route::BadRequest(_)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_stream_names_the_newest_event_now_and_when_the_log_grows() {
+        use headwork_core::Actor;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let store = Store::open(&db).unwrap();
+        let first = store.last_event_id().unwrap();
+        let streams = Arc::new(AtomicUsize::new(1));
+        let mut stream = ChangeStream {
+            db,
+            last: None,
+            quiet: 0,
+            pending: Vec::new(),
+            streams: Arc::clone(&streams),
+        };
+        let chunk = stream.next_chunk().unwrap();
+        assert_eq!(
+            chunk,
+            format!("event: change\ndata: {first}\n\n").into_bytes(),
+            "the newest id at once"
+        );
+        store
+            .append_event(Actor::User, None, None, "probe", &serde_json::json!({}))
+            .unwrap();
+        let chunk = stream.next_chunk().unwrap();
+        let next = store.last_event_id().unwrap();
+        assert_eq!(
+            chunk,
+            format!("event: change\ndata: {next}\n\n").into_bytes(),
+            "the new id"
+        );
+        drop(stream);
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            0,
+            "a closed stream frees its place"
+        );
+    }
+
+    #[test]
+    fn the_range_and_events_answer_from_a_store_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        drop(Store::open(&db).unwrap());
+        let range = answer(&db, &Route::Range);
+        assert_eq!(
+            range.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&range.body)
+        );
+        let events = answer(&db, &Route::Events { since: 0, limit: 5 });
+        let parsed: serde_json::Value = serde_json::from_slice(&events.body).unwrap();
+        assert!(parsed.is_array(), "a list: {parsed}");
     }
 }

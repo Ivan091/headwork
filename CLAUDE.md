@@ -127,7 +127,10 @@ reported to and asked whom, now or at a past instant (`--at`). The pure build is
 filled by the usage reader with the usage rows; the `SendMessage` `tool-used` event carries `to` and a short `summary`.
 D2 is `headwork dash` (`ops/dash.rs`): a page on loopback only, through `Store::open_read_only`, with a pure router
 that checks the `Host` header; the page (`dash/index.html`, `app.js`, `style.css`) and the vendored Cytoscape.js and
-fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built into the binary.
+fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built into the binary. D3 adds `/api/range`,
+`/api/events?since=` and `/api/stream` (server-sent `change` lines written straight to the socket when the event log
+grows), and the page's timeline: live, a slider over the log, play at 1x to 1000x, pulses on new talk, and "replay
+this task".
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

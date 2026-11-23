@@ -1,7 +1,9 @@
 "use strict";
 
 (function () {
-  const REFRESH_MS = 5000;
+  const FALLBACK_MS = 3000;
+  const PLAY_TICK_MS = 400;
+  const PULSE_MS = 1500;
   const toggles = {
     subagent: "show-subagents",
     helper: "show-subagents",
@@ -32,11 +34,22 @@
   const panelTitle = byId("panel-title");
   const panelBody = byId("panel-body");
   const unfocusButton = byId("unfocus");
+  const liveButton = byId("live");
+  const playButton = byId("play");
+  const speedSelect = byId("speed");
+  const slider = byId("slider");
+  const instant = byId("instant");
+  const replayTaskButton = byId("replay-task");
 
   let selected = null;
   let focused = null;
   let loading = false;
   let firstLayout = true;
+  let firstGraph = true;
+  let replayAt = null;
+  let pendingLoad = false;
+  let playTimer = null;
+  let fallbackTimer = null;
 
   function colours() {
     const css = getComputedStyle(document.documentElement);
@@ -151,6 +164,17 @@
       { selector: ".hidden", style: { display: "none" } },
       { selector: ".faded", style: { opacity: 0.12 } },
       { selector: "node:selected", style: { "border-width": 3, "border-color": c.violet } },
+      {
+        selector: "edge.pulse",
+        style: {
+          "line-color": c.violet,
+          "target-arrow-color": c.violet,
+          width: 6,
+          "z-index": 10,
+          "transition-property": "line-color, target-arrow-color, width",
+          "transition-duration": "0.4s",
+        },
+      },
     ];
   }
 
@@ -164,7 +188,11 @@
   });
 
   function graphUrl() {
-    return "/api/graph?scope=" + encodeURIComponent(scopeSelect.value);
+    let url = "/api/graph?scope=" + encodeURIComponent(scopeSelect.value);
+    if (replayAt !== null) {
+      url += "&at=" + encodeURIComponent(new Date(replayAt).toISOString());
+    }
+    return url;
   }
 
   function projectsOf(nodes) {
@@ -198,6 +226,7 @@
   function apply(graph) {
     const projects = projectsOf(graph.nodes);
     const known = new Set(graph.nodes.map((node) => node.id));
+    const before = new Map(cy.edges().map((edge) => [edge.id(), edge.data("raw") ? edge.data("raw").at : null]));
     let changed = false;
     cy.batch(() => {
       for (const element of cy.elements()) {
@@ -254,8 +283,19 @@
     if (changed) {
       layout();
     }
+    if (!firstGraph) {
+      for (const edge of graph.edges) {
+        const talk = edge.kind === "message" || edge.kind === "report" || edge.kind === "asked" || edge.kind === "spawned";
+        const was = before.get(edge.id);
+        if (talk && edge.at && was !== edge.at) {
+          cy.getElementById(edge.id).flashClass("pulse", PULSE_MS);
+        }
+      }
+    }
+    firstGraph = false;
     status.classList.remove("error");
-    status.textContent = "updated " + new Date().toLocaleTimeString() + " · " + graph.nodes.length + " nodes";
+    const when = graph.at ? "at " + new Date(graph.at).toLocaleString() : "updated " + new Date().toLocaleTimeString();
+    status.textContent = when + " · " + graph.nodes.length + " nodes";
     if (graph.skipped && graph.skipped.length) {
       status.textContent += " · " + graph.skipped.length + " events skipped";
     }
@@ -334,9 +374,11 @@
 
   async function load() {
     if (loading) {
+      pendingLoad = true;
       return;
     }
     loading = true;
+    pendingLoad = false;
     try {
       const response = await fetch(graphUrl(), { cache: "no-store" });
       const body = await response.json();
@@ -349,7 +391,105 @@
       status.textContent = "cannot read the graph: " + error.message;
     } finally {
       loading = false;
+      if (pendingLoad) {
+        load();
+      }
     }
+  }
+
+  async function loadRange() {
+    try {
+      const response = await fetch("/api/range", { cache: "no-store" });
+      const range = await response.json();
+      if (!response.ok || !range.first_at) {
+        return;
+      }
+      slider.min = String(Date.parse(range.first_at));
+      slider.max = String(Date.now());
+      if (replayAt === null) {
+        slider.value = slider.max;
+      }
+    } catch (error) {
+      status.textContent = "cannot read the log's span: " + error.message;
+    }
+  }
+
+  function showInstant() {
+    instant.textContent = replayAt === null ? "now" : new Date(replayAt).toLocaleString();
+    liveButton.classList.toggle("on", replayAt === null);
+    playButton.textContent = playTimer ? "pause" : "play";
+  }
+
+  function goLive() {
+    stopPlaying();
+    replayAt = null;
+    slider.max = String(Date.now());
+    slider.value = slider.max;
+    showInstant();
+    load();
+  }
+
+  function replayFrom(at) {
+    replayAt = Math.min(Math.max(at, Number(slider.min)), Date.now() - 1000);
+    slider.value = String(replayAt);
+    showInstant();
+    load();
+  }
+
+  function stopPlaying() {
+    if (playTimer) {
+      clearInterval(playTimer);
+      playTimer = null;
+    }
+    showInstant();
+  }
+
+  function play() {
+    if (playTimer) {
+      stopPlaying();
+      return;
+    }
+    if (replayAt === null) {
+      replayFrom(Number(slider.min));
+    }
+    playTimer = setInterval(() => {
+      const next = replayAt + PLAY_TICK_MS * Number(speedSelect.value);
+      if (next >= Date.now() - 1000) {
+        goLive();
+        return;
+      }
+      replayAt = next;
+      slider.value = String(next);
+      showInstant();
+      if (!loading) {
+        load();
+      }
+    }, PLAY_TICK_MS);
+    showInstant();
+  }
+
+  function listen() {
+    if (!window.EventSource) {
+      fallbackTimer = setInterval(() => replayAt === null && load(), FALLBACK_MS);
+      return;
+    }
+    const source = new EventSource("/api/stream");
+    source.addEventListener("change", () => {
+      if (fallbackTimer) {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
+      }
+      if (replayAt === null) {
+        slider.max = String(Date.now());
+        slider.value = slider.max;
+        load();
+      }
+    });
+    source.addEventListener("error", () => {
+      if (!fallbackTimer) {
+        fallbackTimer = setInterval(() => replayAt === null && load(), FALLBACK_MS);
+      }
+    });
   }
 
   function add(parent, tag, text) {
@@ -380,6 +520,9 @@
   function showDetails(details) {
     const node = details.node;
     panelTitle.textContent = node.label;
+    replayTaskButton.hidden = node.kind !== "task";
+    replayTaskButton.dataset.name = node.kind === "task" ? node.label : "";
+    replayTaskButton.dataset.start = node.start || "";
     panelBody.replaceChildren();
     pairs(panelBody, [
       ["kind", node.kind],
@@ -542,6 +685,33 @@
     }
   });
 
-  load();
-  setInterval(load, REFRESH_MS);
+  liveButton.addEventListener("click", goLive);
+  playButton.addEventListener("click", play);
+  slider.addEventListener("input", () => {
+    stopPlaying();
+    replayFrom(Number(slider.value));
+  });
+  replayTaskButton.addEventListener("click", () => {
+    const name = replayTaskButton.dataset.name;
+    const start = Date.parse(replayTaskButton.dataset.start);
+    if (!name || Number.isNaN(start)) {
+      return;
+    }
+    const value = "task:" + name;
+    if (!Array.from(scopeSelect.options).some((option) => option.value === value)) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = name;
+      scopeSelect.appendChild(option);
+    }
+    scopeSelect.value = value;
+    firstLayout = true;
+    stopPlaying();
+    replayFrom(start);
+    play();
+  });
+
+  showInstant();
+  loadRange().then(load);
+  listen();
 })();
