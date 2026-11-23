@@ -3,7 +3,7 @@
 //! A program that outlives its deadline is ended with its whole tree, so a hung `git` or `curl` never holds up the
 //! caller.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -65,17 +65,47 @@ impl Ran {
 ///
 /// Returns [`TimedError::Start`] when the program does not start and [`TimedError::TimedOut`] when it runs too long.
 pub fn run(command: &mut Command, timeout: Duration) -> Result<Ran, TimedError> {
+    run_fed(command, None, timeout)
+}
+
+/// Runs `command` with `input` on its standard input until it exits or `timeout` passes. The input never shows on the
+/// command line, so a secret such as a login token stays out of the process list.
+///
+/// # Errors
+///
+/// Returns [`TimedError::Start`] when the program does not start and [`TimedError::TimedOut`] when it runs too long.
+pub fn run_with_input(
+    command: &mut Command,
+    input: Vec<u8>,
+    timeout: Duration,
+) -> Result<Ran, TimedError> {
+    run_fed(command, Some(input), timeout)
+}
+
+fn run_fed(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Ran, TimedError> {
     let program = command.get_program().to_string_lossy().into_owned();
     let start_error = |source| TimedError::Start {
         program: program.clone(),
         source,
     };
+    let stdin = if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(start_error)?;
+    if let (Some(input), Some(mut pipe)) = (input, child.stdin.take()) {
+        std::thread::spawn(move || drop(pipe.write_all(&input)));
+    }
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let started = Instant::now();

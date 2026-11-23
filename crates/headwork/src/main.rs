@@ -1483,7 +1483,7 @@ fn update_command(
     let home = Home::locate()?;
     let config = home.load_config()?;
     let install_dir = home.expand(dir);
-    let releases = Curl::default();
+    let releases = Curl::discovered();
     let asset = headwork_adapters::release::asset_name()?;
     let host = host_for(&config).ok();
     let env = UpdateEnv {

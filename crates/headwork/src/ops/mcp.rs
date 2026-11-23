@@ -1099,7 +1099,7 @@ impl<'a> Server<'a> {
         };
         if flag(args, "dry_run") {
             let install_dir = self.env.home.expand(super::update::DEFAULT_DIR);
-            let releases = headwork_adapters::release::Curl::default();
+            let releases = headwork_adapters::release::Curl::discovered();
             let env = super::update::UpdateEnv {
                 home: self.env.home,
                 config: self.env.config,

@@ -2,9 +2,13 @@
 //! (`docs/autoupdate.md`, "Installing releases").
 //!
 //! `curl` ships with Windows 10 and later and with macOS, so the binary needs no TLS library of its own. Each call has a
-//! connect timeout and a total timeout. The release API is asked without a login, with the last `ETag`: an unchanged
-//! answer (`304`) does not count against the 60 requests an hour an address may make. [`FakeReleases`] stands in for
-//! GitHub in tests.
+//! connect timeout and a total timeout. The release API is asked with the last `ETag`: an unchanged answer (`304`) does
+//! not count against the rate limit. It is asked with a GitHub token when one is at hand ([`GithubToken::discover`]:
+//! `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token --hostname github.com`), which raises the limit from 60 requests an
+//! hour per address to 5,000 per user, and without a login otherwise or when GitHub refuses the token (`401`). The token
+//! goes to `curl` on its standard input, never on its command line, and is never printed. Release files download
+//! without it: they are not counted against the API's limit, and the token never reaches the file host.
+//! [`FakeReleases`] stands in for GitHub in tests.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -179,6 +183,66 @@ pub fn asset_for(os: &str, arch: &str) -> Result<&'static str, ReleaseError> {
     }
 }
 
+/// A GitHub login token for the release API. It prints as `GithubToken(***)` and has no `Display`, so no log or error
+/// message can carry it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GithubToken(String);
+
+impl fmt::Debug for GithubToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("GithubToken(***)")
+    }
+}
+
+impl GithubToken {
+    /// `text` trimmed, when it can be a token: not empty, not too long, no whitespace or control characters (which
+    /// could inject a header).
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let token = text.trim();
+        let usable = !token.is_empty()
+            && token.len() <= 1024
+            && !token.chars().any(|c| c.is_whitespace() || c.is_control());
+        usable.then(|| Self(token.to_owned()))
+    }
+
+    /// The first usable token of `GH_TOKEN`, `GITHUB_TOKEN`, and what `gh auth token --hostname github.com` prints
+    /// (`gh` at `gh`, given at most 10 seconds); `None` when there is none, so the API is asked without a login.
+    #[must_use]
+    pub fn discover(gh: &Path) -> Option<Self> {
+        Self::first_of(
+            std::env::var("GH_TOKEN").ok(),
+            std::env::var("GITHUB_TOKEN").ok(),
+            || Self::from_gh(gh),
+        )
+    }
+
+    /// The first usable of `gh_token`, `github_token` and what `from_gh` gives, asked only when the first two are not.
+    #[must_use]
+    pub fn first_of(
+        gh_token: Option<String>,
+        github_token: Option<String>,
+        from_gh: impl FnOnce() -> Option<String>,
+    ) -> Option<Self> {
+        [gh_token, github_token]
+            .into_iter()
+            .flatten()
+            .find_map(|text| Self::parse(&text))
+            .or_else(|| from_gh().and_then(|text| Self::parse(&text)))
+    }
+
+    fn from_gh(gh: &Path) -> Option<String> {
+        let mut command = Command::new(gh);
+        command.args(["auth", "token", "--hostname", "github.com"]);
+        let ran = timed::run(&mut command, Duration::from_secs(10)).ok()?;
+        ran.success().then_some(ran.stdout)
+    }
+
+    fn header_line(&self) -> Vec<u8> {
+        format!("Authorization: Bearer {}\n", self.0).into_bytes()
+    }
+}
+
 /// GitHub through `curl`.
 #[derive(Debug, Clone)]
 pub struct Curl {
@@ -186,6 +250,7 @@ pub struct Curl {
     connect: Duration,
     api: Duration,
     download: Duration,
+    token: Option<GithubToken>,
 }
 
 impl Default for Curl {
@@ -203,7 +268,26 @@ impl Curl {
             connect: Duration::from_secs(10),
             api: Duration::from_secs(60),
             download: Duration::from_secs(600),
+            token: None,
         }
+    }
+
+    /// The same `curl`, asking the release API with `token` when there is one.
+    #[must_use]
+    pub fn with_token(self, token: Option<GithubToken>) -> Self {
+        Self { token, ..self }
+    }
+
+    /// `curl` on the `PATH`, with the token [`GithubToken::discover`] finds through `gh` on the `PATH`.
+    #[must_use]
+    pub fn discovered() -> Self {
+        Self::default().with_token(GithubToken::discover(Path::new("gh")))
+    }
+
+    /// Whether the release API is asked with a token.
+    #[must_use]
+    pub const fn authenticated(&self) -> bool {
+        self.token.is_some()
     }
 
     fn command(&self, total: Duration) -> Command {
@@ -216,17 +300,24 @@ impl Curl {
         command
     }
 
-    fn run(command: &mut Command, total: Duration, what: &str) -> Result<String, ReleaseError> {
+    fn run(
+        command: &mut Command,
+        input: Option<Vec<u8>>,
+        total: Duration,
+        what: &str,
+    ) -> Result<String, ReleaseError> {
         let transfer = |detail: String| ReleaseError::Transfer {
             what: what.to_owned(),
             detail,
         };
-        let ran =
-            timed::run(command, total + Duration::from_secs(15)).map_err(|error| match error {
-                TimedError::Start { .. } | TimedError::TimedOut { .. } => {
-                    transfer(error.to_string())
-                }
-            })?;
+        let deadline = total + Duration::from_secs(15);
+        let ran = match input {
+            Some(input) => timed::run_with_input(command, input, deadline),
+            None => timed::run(command, deadline),
+        };
+        let ran = ran.map_err(|error| match error {
+            TimedError::Start { .. } | TimedError::TimedOut { .. } => transfer(error.to_string()),
+        })?;
         if ran.success() {
             Ok(ran.stdout)
         } else {
@@ -239,6 +330,21 @@ impl Curl {
     }
 
     fn api(&self, url: &str, etag: Option<&str>, what: &str) -> Result<Fetched, ReleaseError> {
+        match self.api_as(self.token.as_ref(), url, etag, what) {
+            Err(ReleaseError::Http { status: 401, .. }) if self.token.is_some() => {
+                self.api_as(None, url, etag, what)
+            }
+            answer => answer,
+        }
+    }
+
+    fn api_as(
+        &self,
+        token: Option<&GithubToken>,
+        url: &str,
+        etag: Option<&str>,
+        what: &str,
+    ) -> Result<Fetched, ReleaseError> {
         let mut command = self.command(self.api);
         command
             .arg("--include")
@@ -247,8 +353,12 @@ impl Curl {
         if let Some(etag) = etag.filter(|etag| usable_etag(etag)) {
             command.args(["--header", &format!("If-None-Match: {etag}")]);
         }
+        if token.is_some() {
+            command.args(["--header", "@-"]);
+        }
         command.arg(url);
-        let text = Self::run(&mut command, self.api, what)?;
+        let input = token.map(GithubToken::header_line);
+        let text = Self::run(&mut command, input, self.api, what)?;
         let response = Response::parse(&text).ok_or_else(|| ReleaseError::Parse {
             what: what.to_owned(),
             detail: "no HTTP status line".to_owned(),
@@ -304,7 +414,13 @@ impl ReleaseSource for Curl {
     fn download(&self, url: &str, to: &Path) -> Result<(), ReleaseError> {
         let mut command = self.command(self.download);
         command.arg("--fail").arg("--output").arg(to).arg(url);
-        Self::run(&mut command, self.download, &format!("downloading {url}")).map(drop)
+        Self::run(
+            &mut command,
+            None,
+            self.download,
+            &format!("downloading {url}"),
+        )
+        .map(drop)
     }
 }
 
@@ -583,6 +699,52 @@ mod tests {
         );
         let error = parse_release("{\"message\":\"Not Found\"}", "test").unwrap_err();
         assert!(error.is_transient(), "a garbled answer is retried");
+    }
+
+    #[test]
+    fn a_token_comes_from_gh_token_then_github_token_then_gh() {
+        let token = |text: &str| GithubToken::parse(text);
+        let asked = std::cell::Cell::new(false);
+        let gh = || {
+            asked.set(true);
+            Some("gho_fromgh\n".to_owned())
+        };
+        assert_eq!(
+            GithubToken::first_of(Some("a".to_owned()), Some("b".to_owned()), gh),
+            token("a"),
+            "GH_TOKEN first"
+        );
+        assert!(!asked.get(), "gh not asked when the environment has one");
+        assert_eq!(
+            GithubToken::first_of(Some("  ".to_owned()), Some("b".to_owned()), || None),
+            token("b"),
+            "an empty GH_TOKEN is passed over"
+        );
+        assert_eq!(
+            GithubToken::first_of(None, None, gh),
+            token("gho_fromgh"),
+            "gh's token, trimmed"
+        );
+        assert_eq!(
+            GithubToken::first_of(None, None, || None),
+            None,
+            "anonymous"
+        );
+    }
+
+    #[test]
+    fn a_token_never_prints_and_never_injects_a_header() {
+        let token = GithubToken::parse("ghp_secret").unwrap();
+        assert_eq!(format!("{token:?}"), "GithubToken(***)", "redacted");
+        let curl = Curl::default().with_token(Some(token));
+        assert!(
+            !format!("{curl:?}").contains("ghp_secret"),
+            "curl redacts it"
+        );
+        assert!(curl.authenticated(), "authenticated");
+        assert_eq!(GithubToken::parse("a\r\nX-Injected: yes"), None, "newline");
+        assert_eq!(GithubToken::parse("a b"), None, "space");
+        assert_eq!(GithubToken::parse(""), None, "empty");
     }
 
     #[test]

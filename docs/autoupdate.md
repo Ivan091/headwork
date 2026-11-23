@@ -79,8 +79,13 @@ Run from the installed binary. Steps:
 
 1. **Lock.** Take `<home>/update.lock`. When it is held, touch `<home>/update.pending` and exit: the holder runs again
    for it. `headwork install` waits up to 60 seconds for the same lock instead of failing.
-2. **Ask GitHub.** `GET https://api.github.com/repos/<repo>/releases/latest` (or the tag of `--to`) without a login,
-   with the last `ETag` (a `304` does not count against the 60 requests an hour an address may make). Through `curl`,
+2. **Ask GitHub.** `GET https://api.github.com/repos/<repo>/releases/latest` (or the tag of `--to`) with the last
+   `ETag` (a `304` does not count against the rate limit) and a GitHub token when one is at hand: `GH_TOKEN`, else
+   `GITHUB_TOKEN`, else what `gh auth token --hostname github.com` prints (5,000 requests an hour per user instead of
+   60 per address, which a shared office address used up). No token, or a `401` for it, asks without a login. The
+   token reaches `curl` on its standard input (`--header @-`), never its command line, and no log or error carries
+   it (`GithubToken` prints as `***`). Release files (step 4) download without it: they are not counted against the
+   API's limit, and the token must not reach the file host GitHub redirects to. Through `curl`,
    which Windows 10 and later and macOS ship, from the adapters (`adapters/src/download.rs`, a seam for tests), with a
    connect and a total timeout: no new TLS dependency in the binary. `<repo>` is the project's `allowed_repos` entry.
 3. **Decide** (pure, in `core`, below): off, park or resume running, disk at `watch` level `Stop`, the release already
