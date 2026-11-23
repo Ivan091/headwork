@@ -95,4 +95,4 @@ prompt = "code/verify.md"
 from_level = 2
 after = ["*"]
 each = "finding"
-model = "opus"
+model = { 2 = "sonnet", 3 = "opus" }

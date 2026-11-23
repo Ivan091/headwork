@@ -1414,3 +1414,6 @@ and the reason.
   on Opus needs a `reason`, recorded as the `part-opus-reason` event. The orchestrator and lead rules carry the ladder
   (Haiku lookups and loops, Sonnet default, Opus for architecture, ledger, security, concurrency, audits, plans; one
   Opus retry after two failed checks on Sonnet).
+- 2026-11-23, delegation: leads and workers hand read-heavy steps to Sonnet subagents and keep design, integration and
+  the final read of the diff; the review flow's `verify` node runs on Sonnet at level 2, since it runs once per finding.
+  Analysis in `docs/delegation.md`.

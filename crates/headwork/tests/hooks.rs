@@ -3201,7 +3201,7 @@ fn review_start_needs_the_user_s_request_and_a_clean_tree_then_starts_the_review
     for wanted in [
         "level 2",
         "- `correctness`, model opus",
-        "- `verify`, model opus, after",
+        "- `verify`, model sonnet, after",
         "`review_next`",
         "`demo-sand`",
     ] {

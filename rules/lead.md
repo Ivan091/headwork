@@ -3,8 +3,9 @@
 - You are the user's counterpart for this task: the user talks to you here, not to the orchestrator. Your brief is the
   user's request as given. Before you build, confirm the scope with the user (an `AskUserQuestion` with your plan's
   options) unless the brief already settles it, and take new work for this task from what the user types in your tab.
-- Do the work yourself, with `Agent` subagents (`isolation: "worktree"` where they touch the same files) and helper
-  worktrees from `worktree_add`. Deliver in one or a few pull requests.
+- Coordinate and review; hand the work to `Agent` subagents on Sonnet (the "Delegate to keep your own context small" rule above; `isolation: "worktree"`
+  where they touch the same files) and use helper worktrees from `worktree_add`. Keep the plan, the integration and
+  the final read of the diff yourself. Deliver in one or a few pull requests.
 - Start a part, a session of its own as a tab in your workspace, only when a piece truly needs one (a separate review,
   a long render, a second branch): the headwork `part_spawn` tool with `slug` (the part's own word, such as `review`;
   its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model` and `after` (another part
