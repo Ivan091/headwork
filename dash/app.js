@@ -186,7 +186,28 @@
     wheelSensitivity: 0.3,
     minZoom: 0.05,
     maxZoom: 4,
+    pixelRatio: crispPixelRatio(),
   });
+
+  function crispPixelRatio() {
+    return Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+  }
+
+  function watchPixelRatio() {
+    const query = window.matchMedia("(resolution: " + (window.devicePixelRatio || 1) + "dppx)");
+    query.addEventListener(
+      "change",
+      () => {
+        cy.renderer().redrawHint("eles", true);
+        cy.resize();
+        cy.renderer().forcedPixelRatio = crispPixelRatio();
+        cy.forceRender();
+        watchPixelRatio();
+      },
+      { once: true },
+    );
+  }
+  watchPixelRatio();
 
   function graphUrl() {
     let url = "/api/graph?scope=" + encodeURIComponent(scopeSelect.value);
