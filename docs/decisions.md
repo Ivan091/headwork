@@ -1414,3 +1414,12 @@ and the reason.
   on Opus needs a `reason`, recorded as the `part-opus-reason` event. The orchestrator and lead rules carry the ladder
   (Haiku lookups and loops, Sonnet default, Opus for architecture, ledger, security, concurrency, audits, plans; one
   Opus retry after two failed checks on Sonnet).
+- 2026-11-23, delegation: leads and workers hand read-heavy steps to Sonnet subagents and keep design, integration and
+  the final read of the diff; the review flow's `verify` node runs on Sonnet at level 2, since it runs once per finding.
+  Analysis in `docs/delegation.md`.
+- 2026-11-23, subagent-opus: a worker, lead or part (not a review part) may start an Opus subagent only when the prompt has a
+  line starting `Opus because:`; the marker is a plain line in text the call already carries, so the guard needs no new tool
+  input. Shadow like every rule until enforced.
+- 2026-11-23, context nudge: `[usage] nudge_context_k` (default 200, `0` off) makes the `UserPromptSubmit` hook add one
+  line to a long worker, lead or part session that its context is that large and every turn re-reads it, so it hands
+  read-heavy steps to a Sonnet subagent; once per multiple of the threshold, remembered as a `context-nudge` event.

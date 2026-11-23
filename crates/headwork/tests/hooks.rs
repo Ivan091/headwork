@@ -22,11 +22,14 @@ use headwork::ops::update::{Notice, UpdateState};
 use headwork::ops::waiting::FakeSlots;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
+use headwork_core::usage::{Tokens, UsageLine};
 use headwork_core::{
     Actor, Config, Model, PermissionMode, Platform, ProjectName, ReviewState, Role, SILENT_KIND,
     SessionState, Slug, TaskRequest, TaskState, Trigger,
 };
-use headwork_store::{EventFilter, EventRecord, NewSession, Store, Task};
+use headwork_store::{
+    EventFilter, EventRecord, FileMark, NewSession, Store, Task, UsageBatch, UsageTag,
+};
 use serde_json::{Value, json};
 
 const EXE: &str = "S:/bin/headwork.exe";
@@ -320,6 +323,88 @@ fn the_built_in_rules_name_the_programs_of_their_platform() {
     );
     let unix = platform_words(ORCHESTRATOR_RULES, Platform::Unix);
     assert!(unix.contains("has no scheduler for it yet"), "{unix}");
+}
+
+fn record_context(w: &mut World, id: &str, at: &str, cache_read: u64) {
+    let line = UsageLine {
+        message_id: id.to_owned(),
+        at: at.to_owned(),
+        model: "claude-opus-5-5".to_owned(),
+        effort: None,
+        speed: None,
+        service_tier: None,
+        cwd: None,
+        tokens: Tokens {
+            input: 10,
+            cache_read,
+            ..Tokens::default()
+        },
+    };
+    let tag = w
+        .store
+        .usage_tag(&w.session)
+        .unwrap()
+        .unwrap_or(UsageTag::UNMANAGED);
+    w.store
+        .record_usage(&UsageBatch {
+            path: &format!("{id}.jsonl"),
+            session_id: &w.session,
+            agent_id: None,
+            agent_meta: None,
+            tag,
+            dir: "S:/Code/x",
+            lines: &[line],
+            mark: FileMark {
+                read_to: 1,
+                size: 1,
+                mtime_ms: 1,
+            },
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_long_session_is_nudged_once_per_step_of_the_context_threshold() {
+    let mut w = world("", false);
+    w.start();
+    let prompt = json!({ "prompt": "go" });
+    record_context(&mut w, "m1", "2026-11-23T10:00:00Z", 150_000);
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "below"
+    );
+    record_context(&mut w, "m2", "2026-11-23T10:01:00Z", 250_000);
+    let text = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(text.contains("your context is 250k tokens"), "{text}");
+    assert!(
+        text.contains("`general-purpose` subagent on Sonnet"),
+        "{text}"
+    );
+    assert_eq!(
+        w.hook(HookEvent::UserPromptSubmit, &prompt).stdout,
+        None,
+        "same step"
+    );
+    record_context(&mut w, "m3", "2026-11-23T10:02:00Z", 420_000);
+    let text = context(&w.hook(HookEvent::UserPromptSubmit, &prompt));
+    assert!(text.contains("your context is 420k tokens"), "{text}");
+    let nudges = w
+        .events()
+        .iter()
+        .filter(|event| event.kind == "context-nudge")
+        .count();
+    assert_eq!(nudges, 2, "one event per step");
+}
+
+#[test]
+fn the_context_nudge_is_off_at_zero() {
+    let mut w = world("", false);
+    w.start();
+    w.config.usage.nudge_context_k = 0;
+    record_context(&mut w, "m1", "2026-11-23T10:00:00Z", 900_000);
+    let reply = w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    assert_eq!(reply.stdout, None, "off");
 }
 
 #[test]
@@ -3025,7 +3110,7 @@ fn a_helper_claude_gets_a_session_id_and_counts_under_the_task() {
     );
     assert_eq!(
         w.store.usage_tag(&id).unwrap(),
-        Some(headwork_store::UsageTag {
+        Some(UsageTag {
             task: Some(w.task.id),
             role: headwork_core::UsageRole::Helper
         }),
@@ -3201,7 +3286,7 @@ fn review_start_needs_the_user_s_request_and_a_clean_tree_then_starts_the_review
     for wanted in [
         "level 2",
         "- `correctness`, model opus",
-        "- `verify`, model opus, after",
+        "- `verify`, model sonnet, after",
         "`review_next`",
         "`demo-sand`",
     ] {

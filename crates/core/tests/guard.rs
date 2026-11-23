@@ -737,6 +737,7 @@ fn skills_and_agents() {
     let fable = ToolCall::Agent {
         tool: "Agent",
         model: Some("fable"),
+        reason: false,
     };
     assert_eq!(deny(fable), Some(RuleId::WorkerFable), "fable");
     let allowed = Scope {
@@ -749,13 +750,42 @@ fn skills_and_agents() {
         None,
         "the orchestrator may"
     );
+    let agent = |model: Option<&'static str>, reason: bool| ToolCall::Agent {
+        tool: "Agent",
+        model,
+        reason,
+    };
     assert_eq!(
-        deny(ToolCall::Agent {
-            tool: "Agent",
-            model: Some("opus")
-        }),
-        None,
+        deny(agent(Some("opus"), false)),
+        Some(RuleId::SubagentOpus),
         "opus"
+    );
+    assert_eq!(
+        deny(agent(Some("Opus"), false)),
+        Some(RuleId::SubagentOpus),
+        "opus case"
+    );
+    assert_eq!(
+        deny(agent(Some("claude-opus-5-5"), false)),
+        Some(RuleId::SubagentOpus),
+        "full id"
+    );
+    assert_eq!(deny(agent(Some("opus"), true)), None, "opus with reason");
+    assert_eq!(deny(agent(Some("sonnet"), false)), None, "sonnet");
+    assert_eq!(deny(agent(None, false)), None, "no model");
+    let reviewer = Scope {
+        reviewer: true,
+        ..worker("sand")
+    };
+    assert_eq!(
+        rule(&check_tool(&reviewer, &agent(Some("opus"), false))),
+        None,
+        "review part"
+    );
+    assert_eq!(
+        rule(&check_tool(&orchestrator(), &agent(Some("opus"), false))),
+        None,
+        "orchestrator opus"
     );
 }
 

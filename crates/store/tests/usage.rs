@@ -460,3 +460,45 @@ fn a_roll_up_keeps_every_total_and_runs_once() {
     let days = keys(&store, &query(UsageGroup::Day));
     assert!(days.contains(&("2026-08-01".to_owned(), 3, 43)), "{days:?}");
 }
+
+#[test]
+fn delegation_splits_the_main_session_from_subagents_per_role() {
+    let (mut store, config) = store();
+    let sand = task(&mut store, &config, "sand", TaskShape::Plain);
+    session(&mut store, "s1", Some(sand.id), Role::Worker);
+    let main = [
+        line("m1", "2026-11-22T10:00:00.000Z", "claude-opus-5-5", 100, 5),
+        line("m2", "2026-11-22T11:00:00.000Z", "claude-opus-5-5", 300, 5),
+    ];
+    let sub = [line(
+        "a1",
+        "2026-11-22T10:30:00.000Z",
+        "claude-haiku-5-5",
+        7,
+        1,
+    )];
+    record(&mut store, "s1", None, &main);
+    record(&mut store, "s1", Some("x1"), &sub);
+    let roles = store
+        .usage_delegation(&query(UsageGroup::Delegation))
+        .unwrap();
+    assert_eq!(roles.len(), 1);
+    let role = &roles[0];
+    assert_eq!(role.role, "worker");
+    assert_eq!((role.main.responses, role.sub.responses), (2, 1));
+    assert_eq!(
+        role.sub.models.keys().collect::<Vec<_>>(),
+        ["claude-haiku-5-5"]
+    );
+    assert_eq!(
+        role.contexts.iter().copied().sum::<u64>(),
+        110 + 310,
+        "input plus cache, main session only"
+    );
+    let later = UsageQuery {
+        since: Some("2026-11-22T10:45:00.000Z".to_owned()),
+        ..query(UsageGroup::Delegation)
+    };
+    let roles = store.usage_delegation(&later).unwrap();
+    assert_eq!((roles[0].main.responses, roles[0].sub.responses), (1, 0));
+}

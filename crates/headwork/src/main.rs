@@ -359,7 +359,8 @@ enum Command {
     /// Tokens spent by every Claude session, read from Claude Code's transcripts: one line per group, a column per token
     /// type. Reads the transcripts changed since the last read first.
     Usage {
-        /// Group by: project, task, kind, model, effort, role, agent, folder, day or session.
+        /// Group by: project, task, kind, model, effort, role, agent, folder, day, session or delegation (main session against
+        /// subagents per role).
         #[arg(long, default_value = "task")]
         by: String,
         /// Only responses at or after this time: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now

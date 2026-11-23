@@ -55,6 +55,15 @@ impl Tokens {
             .saturating_add(self.output)
     }
 
+    /// The context a response read: input of every kind, cache reads and writes included.
+    #[must_use]
+    pub const fn context(&self) -> u64 {
+        self.input
+            .saturating_add(self.cache_write_5m)
+            .saturating_add(self.cache_write_1h)
+            .saturating_add(self.cache_read)
+    }
+
     /// Cache reads per thousand input tokens of every kind, none when there was no input.
     #[must_use]
     pub const fn cache_hit_permille(&self) -> Option<u64> {
@@ -383,6 +392,8 @@ impl ModelPrices {
 pub struct UsageConfig {
     /// Days the per-response rows stay before the tick sums them per day.
     pub keep_days: u32,
+    /// Thousands of context tokens at which a long session is nudged to delegate, and again at each multiple; `0` turns it off.
+    pub nudge_context_k: u32,
     /// Prices by model name or model name prefix.
     pub prices: BTreeMap<String, ModelPrices>,
 }
@@ -391,12 +402,23 @@ impl Default for UsageConfig {
     fn default() -> Self {
         Self {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: BTreeMap::new(),
         }
     }
 }
 
 impl UsageConfig {
+    /// The nudge step a session at `context` tokens is due, given the step it was last nudged at: `context` divided by
+    /// the threshold, when that is a step above the last one. `None` when nudging is off, below the threshold, or the
+    /// step was already nudged.
+    #[must_use]
+    pub fn nudge_step(&self, context: u64, last: Option<u64>) -> Option<u64> {
+        let unit = u64::from(self.nudge_context_k).saturating_mul(1000);
+        let step = context.checked_div(unit)?;
+        (step > 0 && last.is_none_or(|last| step > last)).then_some(step)
+    }
+
     /// The prices of `model`: its own entry, else the longest configured prefix of its name (`claude-opus` covers every
     /// Opus).
     #[must_use]
@@ -459,6 +481,109 @@ impl fmt::Display for Estimate {
             (0, false) => f.write_str("?"),
             (_, true) => write!(f, "${}.{:02}", cents / 100, cents % 100),
             (_, false) => write!(f, "${}.{:02}+?", cents / 100, cents % 100),
+        }
+    }
+}
+
+/// The prefix of the model names that count as Opus in the delegation figures.
+pub const OPUS_PREFIX: &str = "claude-opus";
+
+/// What one role spent in its main session and in its subagents, before the shares are worked out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DelegationInput {
+    /// The usage role.
+    pub role: String,
+    /// Responses of the main session.
+    pub main_responses: u64,
+    /// The main session's estimate.
+    pub main: Estimate,
+    /// Responses of the subagents.
+    pub sub_responses: u64,
+    /// The subagents' estimate.
+    pub sub: Estimate,
+    /// The part of the subagents' estimate spent by Opus models.
+    pub sub_opus: Estimate,
+    /// The context of each main-session response, as [`Tokens::context`].
+    pub contexts: Vec<u64>,
+}
+
+/// One role's delegation: how much it did itself and how much it handed to subagents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Delegation {
+    /// The usage role.
+    pub role: String,
+    /// Responses of the main session.
+    pub main_responses: u64,
+    /// The main session's estimate, millionths of a dollar.
+    pub main_micros: u64,
+    /// The main session's estimate as printed.
+    pub main_dollars: String,
+    /// Responses of the subagents.
+    pub sub_responses: u64,
+    /// The subagents' estimate, millionths of a dollar.
+    pub sub_micros: u64,
+    /// The subagents' estimate as printed.
+    pub sub_dollars: String,
+    /// The subagents' share of the role's estimate, percent; none when the role cost nothing.
+    pub subagent_cost_pct: Option<u64>,
+    /// The share of the subagents' estimate spent on Opus, percent; none when they cost nothing.
+    pub opus_of_subagent_pct: Option<u64>,
+    /// The median main-session context in tokens; none without per-response rows.
+    pub median_main_context: Option<u64>,
+    /// Models that spent tokens and have no price.
+    pub unpriced: Vec<String>,
+}
+
+/// `part` of `whole` in percent, rounded; none when `whole` is zero.
+#[must_use]
+pub fn percent(part: u64, whole: u64) -> Option<u64> {
+    if whole == 0 {
+        return None;
+    }
+    let scaled = u128::from(part)
+        .saturating_mul(100)
+        .saturating_add(u128::from(whole) / 2)
+        / u128::from(whole);
+    Some(u64::try_from(scaled).unwrap_or(u64::MAX))
+}
+
+/// The median of `values`, the mean of the two middle ones (rounded down) when their number is even; none when empty.
+#[must_use]
+pub fn median(values: &[u64]) -> Option<u64> {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let middle = sorted.len() / 2;
+    let high = *sorted.get(middle)?;
+    if sorted.len() % 2 == 1 {
+        return Some(high);
+    }
+    let low = *sorted.get(middle.checked_sub(1)?)?;
+    Some(low.midpoint(high))
+}
+
+impl Delegation {
+    /// Works the shares out of one role's sums.
+    #[must_use]
+    pub fn of(input: &DelegationInput) -> Self {
+        let mut unpriced = input.main.unpriced.clone();
+        unpriced.extend(input.sub.unpriced.iter().cloned());
+        unpriced.sort();
+        unpriced.dedup();
+        Self {
+            role: input.role.clone(),
+            main_responses: input.main_responses,
+            main_micros: input.main.micros,
+            main_dollars: input.main.to_string(),
+            sub_responses: input.sub_responses,
+            sub_micros: input.sub.micros,
+            sub_dollars: input.sub.to_string(),
+            subagent_cost_pct: percent(
+                input.sub.micros,
+                input.main.micros.saturating_add(input.sub.micros),
+            ),
+            opus_of_subagent_pct: percent(input.sub_opus.micros, input.sub.micros),
+            median_main_context: median(&input.contexts),
+            unpriced,
         }
     }
 }
@@ -823,9 +948,38 @@ mod tests {
     }
 
     #[test]
+    fn nudges_once_per_step_of_the_threshold() {
+        let on = UsageConfig::default();
+        let off = UsageConfig {
+            nudge_context_k: 0,
+            ..UsageConfig::default()
+        };
+        let cases = [
+            (&on, 0, None, None),
+            (&on, 199_999, None, None),
+            (&on, 200_000, None, Some(1)),
+            (&on, 250_000, Some(1), None),
+            (&on, 399_999, Some(1), None),
+            (&on, 400_000, Some(1), Some(2)),
+            (&on, 650_000, None, Some(3)),
+            (&on, 650_000, Some(3), None),
+            (&on, 150_000, Some(2), None),
+            (&off, 900_000, None, None),
+        ];
+        for (config, context, last, want) in cases {
+            assert_eq!(
+                config.nudge_step(context, last),
+                want,
+                "{context} after {last:?}"
+            );
+        }
+    }
+
+    #[test]
     fn models_match_exactly_then_by_the_longest_prefix() {
         let config = UsageConfig {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: [
                 ("claude".to_owned(), prices(1.0, 1.0)),
                 ("claude-opus".to_owned(), prices(15.0, 75.0)),
@@ -844,6 +998,7 @@ mod tests {
     fn estimates_list_unpriced_models_and_print_dollars() {
         let config = UsageConfig {
             keep_days: 90,
+            nudge_context_k: 200,
             prices: [("claude-opus".to_owned(), prices(15.0, 75.0))].into(),
         };
         let spent = Tokens {
@@ -901,5 +1056,85 @@ mod tests {
         for (count, expected) in cases {
             assert_eq!(short_count(count), expected, "{count}");
         }
+    }
+
+    #[test]
+    fn medians_take_the_middle() {
+        let cases: [(&[u64], Option<u64>); 5] = [
+            (&[], None),
+            (&[7], Some(7)),
+            (&[9, 1, 5], Some(5)),
+            (&[4, 1, 3, 2], Some(2)),
+            (&[u64::MAX, u64::MAX], Some(u64::MAX)),
+        ];
+        for (values, expected) in cases {
+            assert_eq!(median(values), expected, "{values:?}");
+        }
+    }
+
+    #[test]
+    fn percents_round_and_refuse_nothing_over_nothing() {
+        let cases = [
+            (0, 0, None),
+            (5, 0, None),
+            (0, 10, Some(0)),
+            (1, 3, Some(33)),
+            (2, 3, Some(67)),
+            (10, 10, Some(100)),
+        ];
+        for (part, whole, expected) in cases {
+            assert_eq!(percent(part, whole), expected, "{part}/{whole}");
+        }
+    }
+
+    fn estimate(micros: u64) -> Estimate {
+        Estimate {
+            micros,
+            unpriced: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn delegation_shares_follow_the_costs() {
+        let delegation = Delegation::of(&DelegationInput {
+            role: "lead".to_owned(),
+            main_responses: 10,
+            main: estimate(6_000_000),
+            sub_responses: 4,
+            sub: estimate(2_000_000),
+            sub_opus: estimate(500_000),
+            contexts: vec![100_000, 50_000, 200_000],
+        });
+        assert_eq!(delegation.subagent_cost_pct, Some(25));
+        assert_eq!(delegation.opus_of_subagent_pct, Some(25));
+        assert_eq!(delegation.median_main_context, Some(100_000));
+        assert_eq!(delegation.main_dollars, "$6.00");
+        assert_eq!(delegation.sub_dollars, "$2.00");
+    }
+
+    #[test]
+    fn a_role_without_subagents_has_no_opus_share() {
+        let delegation = Delegation::of(&DelegationInput {
+            role: "worker".to_owned(),
+            main_responses: 1,
+            main: estimate(1_000_000),
+            ..DelegationInput::default()
+        });
+        assert_eq!(delegation.subagent_cost_pct, Some(0));
+        assert_eq!(delegation.opus_of_subagent_pct, None);
+        assert_eq!(delegation.median_main_context, None);
+    }
+
+    #[test]
+    fn a_response_context_is_every_input_kind() {
+        let tokens = Tokens {
+            input: 1,
+            cache_write_5m: 2,
+            cache_write_1h: 4,
+            cache_read: 8,
+            output: 100,
+            ..Tokens::default()
+        };
+        assert_eq!(tokens.context(), 15);
     }
 }

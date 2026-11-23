@@ -28,6 +28,14 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
 - Before an irreversible step (deleting a branch or a ref, a force push, `git reset --hard`, removing files no commit
   holds, rewriting a ledger), make a backup you can restore from, such as a branch or tag on the old commit or a copy
   of the files, and name it in your report. Deleting folders stays the user's.
+- Delegate to keep your own context small: every turn re-reads your whole conversation, so each file read, build log
+  and test output you take in is paid for again on every later turn. Hand read-heavy steps with a compact result to a
+  `general-purpose` subagent on Sonnet (leave `model` unset; Sonnet is the default): exploring code or logs, running
+  builds, tests and the gate and reporting only failures, routine edits that follow a clear spec. Ask for concrete
+  output (paths, line numbers, failing test names). Keep design, integration, the user's questions and the final read
+  of the diff yourself, and make small edits in files you already hold yourself. Opus for a subagent only for
+  architecture, security, concurrency, audits or plans, with a line `Opus because: <why>` in its prompt. Never use
+  `fork` for work: a fork inherits your whole context and your model.
 - Open a helper agent session of your own (a separate program shown in wmux) with the headwork `helper_tab` tool: it
   becomes a new tab in your own workspace, never a new workspace or a split, and closes with it. In-process subagents
   (the `Agent` tool) need no tab.
@@ -61,8 +69,9 @@ Never close another task: force-closing is for the user and the orchestrator.
 
 ## When your brief makes you a lead
 
-- You own one large feature end to end. Split it, do the parts in your own worktree with `Agent` subagents (`isolation:
-  "worktree"` where parts touch the same files), and deliver in one or a few pull requests.
+- You own one large feature end to end. Split it, hand the pieces to `Agent` subagents on Sonnet (`isolation:
+  "worktree"` where they touch the same files), review and integrate their work, and deliver in one or a few pull
+  requests.
 - A part that needs a worktree of its own beside yours (its own branch and pull request) gets one from the headwork
   `worktree_add` tool, never from a worktree script or `git worktree add`: it is writable for you and removed when your
   task closes. After a merge you may fast-forward the main checkout with `git -C <main> pull --ff-only`, nothing else

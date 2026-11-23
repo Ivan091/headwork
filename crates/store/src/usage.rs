@@ -338,7 +338,7 @@ const fn group_key(by: UsageGroup) -> (&'static str, bool) {
         UsageGroup::Kind => ("t.kind", true),
         UsageGroup::Model => ("r.model", false),
         UsageGroup::Effort => ("CASE r.effort WHEN '' THEN '-' ELSE r.effort END", false),
-        UsageGroup::Role => ("r.role", false),
+        UsageGroup::Role | UsageGroup::Delegation => ("r.role", false),
         UsageGroup::Agent => (
             "CASE r.agent_type WHEN '' THEN 'main' ELSE r.agent_type END",
             false,
@@ -347,6 +347,52 @@ const fn group_key(by: UsageGroup) -> (&'static str, bool) {
         UsageGroup::Day => ("substr(r.at, 1, 10)", false),
         UsageGroup::Session => ("r.session_id", false),
     }
+}
+
+fn filter_of(query: &UsageQuery) -> (String, Vec<rusqlite::types::Value>) {
+    let mut filters = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(since) = &query.since {
+        values.push(since.clone().into());
+        filters.push(format!("r.at >= ?{}", values.len()));
+    }
+    if let Some(tasks) = &query.tasks {
+        let mut marks = Vec::new();
+        for task in tasks {
+            values.push(task.0.into());
+            marks.push(format!("?{}", values.len()));
+        }
+        filters.push(format!("r.task_id IN ({})", marks.join(", ")));
+    }
+    let filter = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", filters.join(" AND "))
+    };
+    (filter, values)
+}
+
+const DELEGATION_ROWS: &str = "WITH r AS (
+         SELECT at, task_id, role, model, agent_id IS NOT NULL AS sub, 1 AS responses, input, cache_write_5m,
+                cache_write_1h, cache_read, output, thinking, web_searches, web_fetches
+         FROM usage
+         UNION ALL
+         SELECT day || 'T00:00:00.000Z', task_id, role, model, agent_type <> '', responses, input, cache_write_5m,
+                cache_write_1h, cache_read, output, thinking, web_searches, web_fetches
+         FROM usage_daily
+     )";
+
+/// One role's tokens in its main session and in its subagents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleDelegation {
+    /// The usage role.
+    pub role: String,
+    /// The main session's total.
+    pub main: UsageTotal,
+    /// The subagents' total.
+    pub sub: UsageTotal,
+    /// The context of each main-session response still stored per response (summed days have none).
+    pub contexts: Vec<u64>,
 }
 
 fn read_tokens(row: &rusqlite::Row<'_>, from: usize) -> rusqlite::Result<[i64; 9]> {
@@ -533,6 +579,24 @@ impl Store {
         }))
     }
 
+    /// The context of the session's newest main-session response: input, cache writes and cache reads in tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn latest_context(&self, session: &str) -> Result<Option<u64>, StoreError> {
+        let total: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT input + cache_write_5m + cache_write_1h + cache_read FROM usage
+                 WHERE session_id = ?1 AND agent_id IS NULL ORDER BY at DESC, rowid DESC LIMIT 1",
+                params![session],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(total.map(|total| u64::try_from(total).unwrap_or(0)))
+    }
+
     /// Writes a transcript's newly read responses and its new mark in one transaction; returns how many responses were
     /// new. A response already stored is left as it is.
     ///
@@ -658,25 +722,7 @@ impl Store {
             "'unmanaged'"
         };
         let no_task_key = if by_task { "r.role" } else { key };
-        let mut filters = Vec::new();
-        let mut values: Vec<rusqlite::types::Value> = Vec::new();
-        if let Some(since) = &query.since {
-            values.push(since.clone().into());
-            filters.push(format!("r.at >= ?{}", values.len()));
-        }
-        if let Some(tasks) = &query.tasks {
-            let mut marks = Vec::new();
-            for task in tasks {
-                values.push(task.0.into());
-                marks.push(format!("?{}", values.len()));
-            }
-            filters.push(format!("r.task_id IN ({})", marks.join(", ")));
-        }
-        let filter = if filters.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", filters.join(" AND "))
-        };
+        let (filter, values) = filter_of(query);
         let sql = format!(
             "{ROWS}
              SELECT CASE WHEN r.role = 'unmanaged' THEN {unmanaged_key}
@@ -721,5 +767,79 @@ impl Store {
                 .then_with(|| a.key.cmp(&b.key))
         });
         Ok(totals)
+    }
+
+    /// Per role, what the main session and the subagents spent, with the context of each main-session response; the
+    /// query's `by` is ignored. Largest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn usage_delegation(&self, query: &UsageQuery) -> Result<Vec<RoleDelegation>, StoreError> {
+        let (filter, values) = filter_of(query);
+        let sql = format!(
+            "{DELEGATION_ROWS}
+             SELECT r.role, r.sub, r.model, {TOKEN_SUMS}
+             FROM r {filter}
+             GROUP BY r.role, r.sub, r.model"
+        );
+        let rows = self
+            .conn
+            .prepare(&sql)?
+            .query_map(params_from_iter(values.clone()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, String>(2)?,
+                    read_tokens(row, 3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut roles: BTreeMap<String, RoleDelegation> = BTreeMap::new();
+        for (role, sub, model, sums) in rows {
+            let (responses, tokens) = tokens_of(sums)?;
+            let entry = roles.entry(role.clone()).or_insert_with(|| RoleDelegation {
+                main: UsageTotal::named(&role),
+                sub: UsageTotal::named(&role),
+                role,
+                contexts: Vec::new(),
+            });
+            let side = if sub { &mut entry.sub } else { &mut entry.main };
+            side.responses = side.responses.saturating_add(responses);
+            side.tokens += tokens;
+            *side.models.entry(model).or_default() += tokens;
+        }
+        let context_sql = format!(
+            "SELECT r.role, r.input + r.cache_write_5m + r.cache_write_1h + r.cache_read
+             FROM usage r {filter}{}r.agent_id IS NULL",
+            if filter.is_empty() {
+                " WHERE "
+            } else {
+                " AND "
+            }
+        );
+        let contexts = self
+            .conn
+            .prepare(&context_sql)?
+            .query_map(params_from_iter(values), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (role, context) in contexts {
+            if let Some(entry) = roles.get_mut(&role) {
+                entry.contexts.push(read_count(context)?);
+            }
+        }
+        let mut roles: Vec<RoleDelegation> = roles.into_values().collect();
+        roles.sort_by(|a, b| {
+            let spent = |role: &RoleDelegation| {
+                role.main
+                    .tokens
+                    .total()
+                    .saturating_add(role.sub.tokens.total())
+            };
+            spent(b).cmp(&spent(a)).then_with(|| a.role.cmp(&b.role))
+        });
+        Ok(roles)
     }
 }

@@ -175,7 +175,7 @@ cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # i
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts
 cargo run -p headwork -- shadow-report [--since 24h|7d|2026-11-19|<RFC 3339>]   # would-deny events by rule id, optionally from a time on
-cargo run -p headwork -- usage [--by task|model|role|agent|day|...] [--since 7d] [--task N] [--unmanaged] [--backfill] [--gaps]   # tokens by type (docs/usage.md)
+cargo run -p headwork -- usage [--by task|model|role|agent|day|delegation|...] [--since 7d] [--task N] [--unmanaged] [--backfill] [--gaps]   # tokens by type (docs/usage.md)
 cargo run -p headwork -- orchestrator      # run the orchestrator session, recorded in the store (old name: root)
 ```
 
