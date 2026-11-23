@@ -1441,3 +1441,8 @@ and the reason.
   names either flag must say `decided_by` (`user` or `judged`) and, when judged, a one-line `reason`; both are recorded in
   the spawn event (`task-created`) with the values. In `part_spawn` the reason is `flag_reason`, since `reason` already
   justifies Opus.
+- 2026-11-23, one node per task in the agent graph: a task and its lead's (or worker's) session are one node (`lead`,
+  `worker`, `part`), coloured by the task's state; the session it ran in, and the ones before it, are details, not nodes.
+  There are no compound boxes (`Node.parent` is gone): a part hangs off its lead by a dotted `part-of` line, helpers,
+  jobs, pull requests, reviews and subagents by their own lines. Messages, reports and asks end on the task node. The
+  user's request: orchestrator to task to lead or worker, and no separate task square.

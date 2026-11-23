@@ -4,8 +4,6 @@
   --text: #1d1d1f;
   --muted: #6b6b70;
   --line: #d6d6da;
-  --box: rgba(60, 60, 70, 0.05);
-  --box-line: #c4c4cc;
   --green: #2e9e5b;
   --red: #d64545;
   --amber: #d9a21b;
@@ -22,8 +20,6 @@
     --text: #ececef;
     --muted: #9a9aa2;
     --line: #3a3a40;
-    --box: rgba(255, 255, 255, 0.04);
-    --box-line: #4a4a52;
     --green: #47c47a;
     --red: #ef6464;
     --amber: #e8b53a;
