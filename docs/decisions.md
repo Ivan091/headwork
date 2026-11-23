@@ -1446,3 +1446,9 @@ and the reason.
   There are no compound boxes (`Node.parent` is gone): a part hangs off its lead by a dotted `part-of` line, helpers,
   jobs, pull requests, reviews and subagents by their own lines. Messages, reports and asks end on the task node. The
   user's request: orchestrator to task to lead or worker, and no separate task square.
+
+- 2026-11-23, the dash follows updates. The dash process embeds its page and code at start, `ensure` leaves a port that
+  answers alone, and an update only swaps the file on disk, so an old dash kept serving the old page. The server now
+  polls the installed program beside it every 5 s (`Stamp`); on a change it starts the installed `headwork dash --takeover`
+  (retries the bind for 30 s) and exits. Its stream sends the build first (`event: build`), and the page reloads when
+  the build changes after a reconnect.

@@ -526,6 +526,13 @@
       return;
     }
     const source = new EventSource("/api/stream");
+    let build = null;
+    source.addEventListener("build", (event) => {
+      if (build !== null && build !== event.data) {
+        location.reload();
+      }
+      build = event.data;
+    });
     source.addEventListener("change", () => {
       if (fallbackTimer) {
         clearInterval(fallbackTimer);

@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_core::graph::{Edge, Node, Shape, task_node};
 use headwork_store::{SpendOf, Store, TaskId};
+
+use crate::ops::install::Stamp;
 use serde::Serialize;
 
 use crate::ops::graph::{GraphQuery, Which, graph};
@@ -30,6 +32,12 @@ const STREAMS_MAX: usize = 8;
 const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 /// After how many quiet polls a stream sends a keep-alive line.
 const STREAM_PINGS_EVERY: u32 = 15;
+/// How often the server looks at the installed program.
+const BUILD_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a replacement server keeps trying to take the port from the one it replaces.
+const TAKEOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a replacement server waits between tries.
+const TAKEOVER_STEP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A file the page loads, built into the binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +170,7 @@ pub fn ensure(
             bind: IpAddr::from([127, 0, 0, 1]),
             port: config.port,
             db: PathBuf::new(),
+            takeover: false,
         }));
     }
     true
@@ -428,6 +437,43 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
     }))
 }
 
+/// The installed program beside the one running: a hot-reload install moves the running copy aside and puts the new
+/// build under the usual name in the same folder.
+fn installed_beside(running: &Path) -> Option<PathBuf> {
+    running
+        .parent()
+        .map(|dir| dir.join(crate::ops::install::program_name()))
+}
+
+/// Whether the installed build differs from the one the server started with; an unreadable file counts as unchanged.
+#[must_use]
+pub fn build_changed(started: Option<Stamp>, now: Option<Stamp>) -> bool {
+    matches!((started, now), (Some(started), Some(now)) if started != now)
+}
+
+fn build_stamp(installed: Option<&Path>) -> Option<Stamp> {
+    installed.and_then(|path| Stamp::of(path).ok())
+}
+
+fn watch_build(installed: PathBuf, started: Option<Stamp>, port: u16) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(BUILD_POLL);
+            if !build_changed(started, build_stamp(Some(&installed))) {
+                continue;
+            }
+            let mut command = std::process::Command::new(&installed);
+            command.args(["dash", "--port", &port.to_string(), "--takeover"]);
+            if let Ok(home) = crate::home::Home::locate() {
+                command.env(crate::home::HOME_VAR, home.root());
+            }
+            if headwork_adapters::proc::spawn_detached(&mut command).is_ok() {
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 /// Where and how `dash` listens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashOptions {
@@ -437,6 +483,21 @@ pub struct DashOptions {
     pub port: u16,
     /// The store file.
     pub db: PathBuf,
+    /// Whether this server replaces one an update outdated: it keeps trying to bind the port for a while.
+    pub takeover: bool,
+}
+
+fn bind(address: SocketAddr, takeover: bool) -> Result<tiny_http::Server> {
+    let deadline = std::time::Instant::now() + TAKEOVER_WAIT;
+    loop {
+        match tiny_http::Server::http(address) {
+            Ok(server) => return Ok(server),
+            Err(error) if !takeover || std::time::Instant::now() >= deadline => {
+                return Err(anyhow!("listening on {address}: {error}"));
+            }
+            Err(_) => std::thread::sleep(TAKEOVER_STEP),
+        }
+    }
 }
 
 /// The page's address.
@@ -462,10 +523,14 @@ pub fn serve(options: &DashOptions, out: &mut impl Write) -> Result<()> {
             .with_context(|| format!("opening {} read only", options.db.display()))?,
     );
     let address = SocketAddr::new(options.bind, options.port);
-    let server = Arc::new(
-        tiny_http::Server::http(address)
-            .map_err(|error| anyhow!("listening on {address}: {error}"))?,
-    );
+    let server = Arc::new(bind(address, options.takeover)?);
+    let running = std::env::current_exe().ok();
+    let installed = running.as_deref().and_then(installed_beside);
+    let started = build_stamp(installed.as_deref());
+    let build = started.map_or_else(|| "unknown".to_owned(), |stamp| stamp.to_string());
+    if let Some(installed) = installed {
+        watch_build(installed, started, options.port);
+    }
     let mut line = String::new();
     let _ = write!(
         line,
@@ -481,9 +546,10 @@ pub fn serve(options: &DashOptions, out: &mut impl Write) -> Result<()> {
             let db = options.db.clone();
             let port = options.port;
             let streams = Arc::clone(&streams);
+            let build = build.clone();
             std::thread::spawn(move || {
                 for request in server.incoming_requests() {
-                    handle(request, &db, port, &streams);
+                    handle(request, &db, port, &streams, &build);
                 }
             })
         })
@@ -517,6 +583,7 @@ fn security_headers(content_type: &str) -> Vec<tiny_http::Header> {
 /// A live stream's body: a `change` line now and whenever the event log grows, a keep-alive comment line when it is
 /// quiet; it ends when the store cannot be read or the page goes away.
 struct ChangeStream {
+    build: String,
     db: PathBuf,
     last: Option<i64>,
     quiet: u32,
@@ -531,9 +598,14 @@ impl ChangeStream {
                 .and_then(|store| store.last_event_id())
                 .map_err(std::io::Error::other)?;
             if self.last != Some(newest) {
+                let hello = if self.last.is_none() {
+                    format!("event: build\ndata: {}\n\n", self.build)
+                } else {
+                    String::new()
+                };
                 self.last = Some(newest);
                 self.quiet = 0;
-                self.pending = format!("event: change\ndata: {newest}\n\n").into_bytes();
+                self.pending = format!("{hello}event: change\ndata: {newest}\n\n").into_bytes();
                 return Ok(());
             }
             self.quiet += 1;
@@ -561,7 +633,7 @@ impl Drop for ChangeStream {
     }
 }
 
-fn open_stream(request: tiny_http::Request, db: &Path, streams: &Arc<AtomicUsize>) {
+fn open_stream(request: tiny_http::Request, db: &Path, streams: &Arc<AtomicUsize>, build: &str) {
     if streams.fetch_add(1, Ordering::SeqCst) >= STREAMS_MAX {
         streams.fetch_sub(1, Ordering::SeqCst);
         let reply = Answer::error(503, "too many live views are open");
@@ -574,6 +646,7 @@ fn open_stream(request: tiny_http::Request, db: &Path, streams: &Arc<AtomicUsize
         return;
     }
     let body = ChangeStream {
+        build: build.to_owned(),
         db: db.to_path_buf(),
         last: None,
         quiet: 0,
@@ -607,7 +680,13 @@ fn open_stream(request: tiny_http::Request, db: &Path, streams: &Arc<AtomicUsize
     });
 }
 
-fn handle(request: tiny_http::Request, db: &Path, port: u16, streams: &Arc<AtomicUsize>) {
+fn handle(
+    request: tiny_http::Request,
+    db: &Path,
+    port: u16,
+    streams: &Arc<AtomicUsize>,
+    build: &str,
+) {
     let host = request
         .headers()
         .iter()
@@ -620,7 +699,7 @@ fn handle(request: tiny_http::Request, db: &Path, port: u16, streams: &Arc<Atomi
         port,
     );
     if found == Route::Stream {
-        open_stream(request, db, streams);
+        open_stream(request, db, streams, build);
         return;
     }
     let reply = answer(db, &found);
@@ -819,6 +898,7 @@ mod tests {
             bind: "0.0.0.0".parse().unwrap(),
             port: 0,
             db: PathBuf::from("x.db"),
+            takeover: false,
         };
         let error = serve(&options, &mut Vec::new()).unwrap_err().to_string();
         assert!(error.contains("loopback only"), "{error}");
@@ -901,6 +981,7 @@ mod tests {
         let first = store.last_event_id().unwrap();
         let streams = Arc::new(AtomicUsize::new(1));
         let mut stream = ChangeStream {
+            build: "7:9".to_owned(),
             db,
             last: None,
             quiet: 0,
@@ -910,8 +991,8 @@ mod tests {
         let chunk = stream.next_chunk().unwrap();
         assert_eq!(
             chunk,
-            format!("event: change\ndata: {first}\n\n").into_bytes(),
-            "the newest id at once"
+            format!("event: build\ndata: 7:9\n\nevent: change\ndata: {first}\n\n").into_bytes(),
+            "the build and the newest id at once"
         );
         store
             .append_event(Actor::User, None, None, "probe", &serde_json::json!({}))
@@ -928,6 +1009,30 @@ mod tests {
             streams.load(Ordering::SeqCst),
             0,
             "a closed stream frees its place"
+        );
+    }
+
+    #[test]
+    fn only_a_readable_different_build_counts_as_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one");
+        std::fs::write(&one, b"a").unwrap();
+        let two = dir.path().join("two");
+        std::fs::write(&two, b"longer").unwrap();
+        let first = Stamp::of(&one).ok();
+        let second = Stamp::of(&two).ok();
+        assert!(build_changed(first, second), "another file");
+        assert!(!build_changed(first, first), "the same file");
+        assert!(!build_changed(first, None), "unreadable now");
+        assert!(!build_changed(None, second), "unknown at start");
+    }
+
+    #[test]
+    fn the_installed_program_sits_beside_the_running_one() {
+        let installed = installed_beside(Path::new("bin/headwork.old-5.exe")).unwrap();
+        assert_eq!(
+            installed,
+            Path::new("bin").join(crate::ops::install::program_name())
         );
     }
 

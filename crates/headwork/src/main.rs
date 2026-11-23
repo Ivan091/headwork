@@ -312,6 +312,9 @@ enum Command {
         /// Open the page in the default browser.
         #[arg(long)]
         open: bool,
+        /// Keep trying to take the port from the server this one replaces after an update.
+        #[arg(long, hide = true)]
+        takeover: bool,
     },
     /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
     Doctor {
@@ -666,7 +669,12 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return rule_test(&probe, json, out);
         }
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
-        Command::Dash { port, bind, open } => return dash_command(port, bind, open, out),
+        Command::Dash {
+            port,
+            bind,
+            open,
+            takeover,
+        } => return dash_command(port, bind, open, takeover, out),
         Command::Flow {
             action: FlowAction::Check { name, json },
         } => return flow_check_command(name.as_deref(), json, out),
@@ -1072,6 +1080,7 @@ fn dash_command(
     port: u16,
     bind: std::net::IpAddr,
     open: bool,
+    takeover: bool,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
     let home = Home::locate()?;
@@ -1080,6 +1089,7 @@ fn dash_command(
         bind,
         port,
         db: home.store_path(),
+        takeover,
     };
     if open {
         headwork::ops::dash::open_in_browser(&headwork::ops::dash::url(&options));
