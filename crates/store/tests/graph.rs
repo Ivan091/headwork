@@ -34,6 +34,22 @@ fn store() -> (Store, Config) {
 }
 
 fn task(store: &mut Store, config: &Config, slug: &str, shape: TaskShape<TaskId>) -> Task {
+    task_closing(
+        store,
+        config,
+        slug,
+        shape,
+        headwork_core::CloseMode::Confirm,
+    )
+}
+
+fn task_closing(
+    store: &mut Store,
+    config: &Config,
+    slug: &str,
+    shape: TaskShape<TaskId>,
+    close: headwork_core::CloseMode,
+) -> Task {
     let new = NewTask {
         request: TaskRequest {
             project: ProjectName::new("me-sim").unwrap(),
@@ -43,7 +59,7 @@ fn task(store: &mut Store, config: &Config, slug: &str, shape: TaskShape<TaskId>
             effort: None,
             in_main: false,
             keep: false,
-            close: headwork_core::CloseMode::Confirm,
+            close,
             review: None,
             decision: None,
         },
@@ -746,4 +762,43 @@ fn spend_is_summed_per_task_session_and_subagent() {
         0,
         "nothing spent"
     );
+}
+
+#[test]
+fn a_tasks_close_mode_is_read_and_drawn_as_a_silent_badge() {
+    let (mut store, config) = store();
+    let quiet = task_closing(
+        &mut store,
+        &config,
+        "quiet",
+        TaskShape::Plain,
+        headwork_core::CloseMode::Silent,
+    );
+    let asking = task(&mut store, &config, "asking", TaskShape::Plain);
+    let facts = store.graph_facts().unwrap();
+    let fact = |id: TaskId| facts.tasks.iter().find(|task| task.id == id.0).unwrap();
+    assert_eq!(
+        fact(quiet.id).close,
+        headwork_core::CloseMode::Silent,
+        "silent read"
+    );
+    assert_eq!(
+        fact(asking.id).close,
+        headwork_core::CloseMode::Confirm,
+        "confirm read"
+    );
+    assert_eq!(
+        fact(quiet.id).created_by,
+        Actor::Orchestrator,
+        "later columns still line up"
+    );
+    assert!(!fact(quiet.id).queued_at.is_empty(), "queued_at still read");
+    let graph = build(&facts, None, Scope::Live);
+    let silent = |id: TaskId| {
+        graph
+            .node(&format!("task:{}", id.0))
+            .and_then(|node| node.badges.get("silent").copied())
+    };
+    assert_eq!(silent(quiet.id), Some(1), "silent task badged");
+    assert_eq!(silent(asking.id), None, "confirm task not badged");
 }

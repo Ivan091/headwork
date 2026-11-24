@@ -1236,4 +1236,9 @@ fn a_silent_task_carries_the_silent_badge() {
     };
     assert_eq!(silent("task:2"), Some(1), "task 2 is silent");
     assert_eq!(silent("task:1"), None, "task 1 asks before it closes");
+    let then = build(&facts, Some("T05"), Scope::Live);
+    let then_silent = then
+        .node("task:2")
+        .and_then(|node| node.badges.get("silent").copied());
+    assert_eq!(then_silent, Some(1), "the badge holds in a replayed view");
 }
