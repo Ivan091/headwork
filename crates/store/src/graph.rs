@@ -358,6 +358,7 @@ struct RawTask {
     parent: Option<i64>,
     depends_on: Option<i64>,
     lead: bool,
+    close_mode: String,
     actor: Option<String>,
     queued_at: String,
     last_report: Option<String>,
@@ -375,15 +376,16 @@ fn raw_task(row: &Row<'_>) -> rusqlite::Result<RawTask> {
         parent: row.get(7)?,
         depends_on: row.get(8)?,
         lead: row.get(9)?,
-        actor: row.get(10)?,
-        queued_at: row.get(11)?,
-        last_report: row.get(12)?,
+        close_mode: row.get(10)?,
+        actor: row.get(11)?,
+        queued_at: row.get(12)?,
+        last_report: row.get(13)?,
     })
 }
 
 fn tasks(conn: &Connection) -> Result<Vec<TaskFact>, StoreError> {
     let sql = format!(
-        "SELECT t.id, t.project, t.slug, t.kind, t.state, t.model, t.effort, t.parent_id, t.depends_on, t.lead,
+        "SELECT t.id, t.project, t.slug, t.kind, t.state, t.model, t.effort, t.parent_id, t.depends_on, t.lead, t.close_mode,
              (SELECT e.actor FROM events e WHERE e.task_id = t.id AND e.type = '{EVENT_TASK_CREATED}' ORDER BY e.id LIMIT 1),
              t.queued_at, t.last_report
          FROM tasks t ORDER BY t.id"
@@ -404,6 +406,7 @@ fn tasks(conn: &Connection) -> Result<Vec<TaskFact>, StoreError> {
                 parent: task.parent,
                 depends_on: task.depends_on,
                 lead: task.lead,
+                close: word(&task.close_mode, at)?,
                 created_by: task
                     .actor
                     .map_or(Ok(Actor::Orchestrator), |actor| word(&actor, at))?,

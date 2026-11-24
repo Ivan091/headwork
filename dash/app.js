@@ -286,6 +286,9 @@
     if (node.kind === "user" && badges.asks) {
       label += " · " + badges.asks + " ask" + (badges.asks > 1 ? "s" : "") + " waiting";
     }
+    if (TASK_KINDS.includes(node.kind) && badges.silent) {
+      label += " · silent";
+    }
     if (TASK_KINDS.includes(node.kind) && badges.findings) {
       label += " · ⚠ " + badges.findings;
     }
@@ -987,6 +990,7 @@
     }
     add(box, "h3", "badges and sizes");
     row(box, (svg) => legendShape(svg, "ellipse", c.green, c.red, 3), "red ring: open findings on the task");
+    add(box, "p", "\"· silent\" after a task's state: it closes without asking the user");
     row(
       box,
       (svg) => {

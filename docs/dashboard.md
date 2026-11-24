@@ -147,7 +147,7 @@ messages pulse and nodes appear in the order they happened.
   hops), like Neo4j Browser's expand.
 - **Filters:** project, task state, kinds (hide subagents, jobs, prs), time window, "only live".
 - **Slider:** bottom bar from the first event to now, play and speed buttons, "live" snaps back to now.
-- **Badges:** open asks to the user counted on the user node; tick findings (`findings`) as warning badges on the node
+- **Badges:** `silent` on a task that closes without asking (drawn as "· silent" after its state); open asks to the user counted on the user node; tick findings (`findings`) as warning badges on the node
   they name.
 - **Search:** type a task or session name to jump to it.
 - Light and dark theme from the system setting. No external requests.
