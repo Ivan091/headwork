@@ -459,8 +459,8 @@
 
   function layout() {
     const visible = cy.elements().not(".hidden");
-    const options =
-      layoutSelect.value === "breadthfirst"
+    const force = layoutSelect.value !== "breadthfirst";
+    const options = !force
         ? { name: "breadthfirst", directed: true, roots: "#orchestrator", spacingFactor: 1.2, animate: false }
         : {
             name: "fcose",
@@ -475,7 +475,6 @@
     const before = new Map();
     visible.nodes().forEach((node) => before.set(node.id(), { x: node.position("x"), y: node.position("y") }));
     visible.layout(options).run();
-    const force = layoutSelect.value !== "breadthfirst";
     if (force) {
       untangleVisible(visible);
     }

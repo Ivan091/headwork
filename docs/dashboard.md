@@ -139,7 +139,7 @@ messages pulse and nodes appear in the order they happened.
 
 ## 7. The page
 
-- **Canvas:** the graph, force layout with the user node pinned top and the orchestrator in the middle; each task one node, its parts joined
+- **Canvas:** the graph, force layout (the user node and the orchestrator start pinned top and in the middle, but the crossing reducer below may move them); each task one node, its parts joined
   to it by lines. Toggle a hierarchical layout (orchestrator → tasks → parts → subagents).
 - **Colour by state:** working green (a working task or live orchestrator also has a ring moving outward, still under `prefers-reduced-motion`), needs_user red, in_review amber, queued grey, closed faded (hidden by default
   in live view). Node size by tokens (log scale) when "size by cost" is on.
@@ -151,6 +151,10 @@ messages pulse and nodes appear in the order they happened.
   they name.
 - **Search:** type a task or session name to jump to it.
 - Light and dark theme from the system setting. No external requests.
+  After each force layout (not the hierarchy one), `dash/untangle.js` treats edges as straight lines and moves nodes: a node swaps
+  places with another of its own connected component, or moves beside a neighbour, only while that lowers the crossings of its
+  edges. It stops after 15 rounds or 150 ms, and does nothing above 120 nodes or on a bad position. A failure keeps the force
+  result. Relayouts animate from the old positions. `node dash/untangle.test.js` tests it.
 
 ## 8. Security
 
@@ -197,12 +201,3 @@ D1 first; D2 and D3 in order; D4 last. Each milestone is usable on its own: D1 g
 - Several machines on one page (the store is per machine).
 - Sessions outside headwork (`unmanaged` in `usage`) as nodes; they have no task and no edges beyond their subagents.
 - A hosted or shared dashboard; it stays on loopback.
-
-After each force layout, `dash/untangle.js` moves nodes (swaps and moves next to neighbours) while that lowers the count of crossing straight edges.
-
-### Fewer crossings
-
-After each force layout (not the hierarchy one), `dash/untangle.js` treats edges as straight lines and moves nodes: a node swaps
-places with another of its own connected component, or moves beside a neighbour, only while that lowers the crossings of its
-edges. It stops after 15 rounds or 150 ms, and does nothing above 120 nodes or on a bad position. A failure keeps the force
-result. Relayouts animate from the old positions. `node dash/untangle.test.js` tests it.

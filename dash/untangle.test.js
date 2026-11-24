@@ -51,4 +51,20 @@ const xTangle = () => ({
   const spots = new Set(ids.map((id) => out.positions[id].x + "," + out.positions[id].y));
   assert.strictEqual(spots.size, 4);
 }
+{
+  const ids = ["a", "b", "c", "d", "e"];
+  const pos = { a: { x: 0, y: 0 }, b: { x: 100, y: 100 }, c: { x: 0, y: 100 }, d: { x: 100, y: 0 }, e: { x: 50, y: 50 } };
+  const edges = [["a", "b"], ["c", "d"], ["a", "a"], ["a", "ghost"], ["ghost", "e"]];
+  const out = u.untangle(ids, edges, pos, D);
+  assert.strictEqual(out.crossings, 0);
+  for (const x of ids) {
+    for (const y of ids) {
+      if (x < y) {
+        const p = out.positions[x];
+        const q = out.positions[y];
+        assert.ok(Math.hypot(p.x - q.x, p.y - q.y) >= D.gap, "gap holds between " + x + " and " + y);
+      }
+    }
+  }
+}
 console.log("untangle tests passed");

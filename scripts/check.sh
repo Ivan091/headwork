@@ -29,6 +29,9 @@ if [[ "$quick" == false ]]; then
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 fi
 
+step "untangle tests"
+node dash/untangle.test.js
+
 step "line length"
 long=$(git ls-files -- ':!docs/' '*.rs' '*.sh' '*.toml' '*.sql' '*.yml' | xargs awk 'length > 140 { print FILENAME ":" FNR }')
 if [[ -n "$long" ]]; then
