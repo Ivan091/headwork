@@ -432,6 +432,20 @@
     });
   }
 
+  function untangleVisible(visible) {
+    const nodes = visible.nodes();
+    const ids = nodes.map((node) => node.id());
+    const positions = {};
+    nodes.forEach((node) => {
+      positions[node.id()] = node.position();
+    });
+    const edges = visible.edges().map((edge) => [edge.source().id(), edge.target().id()]);
+    const result = window.HeadworkUntangle.untangle(ids, edges, positions, { gap: 50, rounds: 15 });
+    cy.batch(() => {
+      nodes.forEach((node) => node.position(result.positions[node.id()]));
+    });
+  }
+
   function layout() {
     const visible = cy.elements().not(".hidden");
     const options =
@@ -441,14 +455,16 @@
             name: "fcose",
             quality: "default",
             randomize: firstLayout,
-            animate: !firstLayout,
-            animationDuration: 400,
+            animate: false,
             nodeDimensionsIncludeLabels: true,
             nodeRepulsion: 6000,
             idealEdgeLength: 70,
             packComponents: true,
           };
     visible.layout(options).run();
+    if (layoutSelect.value !== "breadthfirst") {
+      untangleVisible(visible);
+    }
     if (firstLayout) {
       cy.fit(visible, 30);
       firstLayout = false;

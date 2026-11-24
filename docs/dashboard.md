@@ -197,3 +197,5 @@ D1 first; D2 and D3 in order; D4 last. Each milestone is usable on its own: D1 g
 - Several machines on one page (the store is per machine).
 - Sessions outside headwork (`unmanaged` in `usage`) as nodes; they have no task and no edges beyond their subagents.
 - A hosted or shared dashboard; it stays on loopback.
+
+After each force layout, `dash/untangle.js` moves nodes (swaps and moves next to neighbours) while that lowers the count of crossing straight edges.

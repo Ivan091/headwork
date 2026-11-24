@@ -87,6 +87,11 @@ pub const ASSETS: &[Asset] = &[
         content_type: "text/javascript; charset=utf-8",
         body: include_str!("../../../../dash/vendor/cytoscape-fcose.js"),
     },
+    Asset {
+        path: "/untangle.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: include_str!("../../../../dash/untangle.js"),
+    },
 ];
 
 /// What a request asks for.

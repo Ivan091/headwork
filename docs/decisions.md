@@ -1452,3 +1452,4 @@ and the reason.
   polls the installed program beside it every 5 s (`Stamp`); on a change it starts the installed `headwork dash --takeover`
   (retries the bind for 30 s) and exits. Its stream sends the build first (`event: build`), and the page reloads when
   the build changes after a reconnect.
+- 2026-11-24: dash force layout is followed by a local-search crossing reducer (dash/untangle.js), no new dependency.
