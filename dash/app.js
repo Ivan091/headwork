@@ -43,6 +43,7 @@
   const slider = byId("slider");
   const instant = byId("instant");
   const replayTaskButton = byId("replay-task");
+  const hideDone = byId("hide-done");
 
   let selected = null;
   let focused = null;
@@ -414,7 +415,9 @@
         const toggle = toggles[node.data("kind")];
         const offByKind = toggle && !byId(toggle).checked;
         const offByProject = project && node.data("project") && node.data("project") !== project;
-        node.toggleClass("hidden", Boolean(offByKind || offByProject));
+        const kind = node.data("kind");
+        const done = hideDone.checked && kind !== "user" && kind !== "orchestrator" && tone(kind, node.data("state")) === "faded";
+        node.toggleClass("hidden", Boolean(offByKind || offByProject || done));
       }
       for (const edge of cy.edges()) {
         const hidden = edge.source().hasClass("hidden") || edge.target().hasClass("hidden");
@@ -825,7 +828,7 @@
     }
     filter();
   });
-  for (const id of new Set(Object.values(toggles))) {
+  for (const id of new Set([...Object.values(toggles), "hide-done"])) {
     const box = byId(id);
     try {
       const saved = localStorage.getItem(id);
