@@ -55,6 +55,8 @@ pub struct TaskFact {
     pub depends_on: Option<i64>,
     /// Whether it is a lead.
     pub lead: bool,
+    /// Whether it closes without asking the user (`silent`) or asks first (`confirm`).
+    pub close: crate::CloseMode,
     /// The actor of its `task-created` event: `user` for a CLI `headwork spawn` (whoever typed it), `orchestrator`
     /// for the orchestrator's MCP `spawn`, `worker` for a lead's `part_spawn`.
     pub created_by: Actor,
@@ -587,7 +589,8 @@ pub struct Node {
     /// Tokens spent so far, in the view of now, for a task (its own), a session, the orchestrator and a subagent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
-    /// Counts drawn on the node: open tick `findings` on a task, open `asks` on the user, review `findings` (and
+    /// Counts drawn on the node: `silent` (1) on a task that closes without asking, open tick `findings` on a
+    /// task, open `asks` on the user, review `findings` (and
     /// `open` ones) on a review and its flow nodes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub badges: BTreeMap<String, u32>,

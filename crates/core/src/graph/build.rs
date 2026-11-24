@@ -1002,6 +1002,14 @@ fn spend_and_badges(draw: &Draw<'_>, canvas: &mut Canvas) {
                     )
                 })
                 .count();
+            if draw
+                .facts
+                .tasks
+                .iter()
+                .any(|fact| fact.id == task && fact.close == crate::CloseMode::Silent)
+            {
+                node.badges.insert("silent".to_owned(), 1);
+            }
             if open > 0 {
                 node.badges.insert("findings".to_owned(), count(open));
             }

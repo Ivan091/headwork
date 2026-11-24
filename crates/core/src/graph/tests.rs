@@ -26,6 +26,7 @@ fn task(
         parent,
         depends_on: None,
         lead,
+        close: crate::CloseMode::Confirm,
         created_by: Actor::Orchestrator,
         queued_at: at.to_owned(),
         last_report: None,
@@ -1221,4 +1222,18 @@ fn the_view_of_now_carries_tokens_and_every_view_its_badges() {
         "both open at T05"
     );
     assert_eq!(tokens(&then, "task:1"), None, "no tokens at a past instant");
+}
+
+#[test]
+fn a_silent_task_carries_the_silent_badge() {
+    let mut facts = facts();
+    facts.tasks[1].close = crate::CloseMode::Silent;
+    let graph = build(&facts, None, Scope::Live);
+    let silent = |id: &str| {
+        graph
+            .node(id)
+            .and_then(|node| node.badges.get("silent").copied())
+    };
+    assert_eq!(silent("task:2"), Some(1), "task 2 is silent");
+    assert_eq!(silent("task:1"), None, "task 1 asks before it closes");
 }
