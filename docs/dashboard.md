@@ -199,3 +199,10 @@ D1 first; D2 and D3 in order; D4 last. Each milestone is usable on its own: D1 g
 - A hosted or shared dashboard; it stays on loopback.
 
 After each force layout, `dash/untangle.js` moves nodes (swaps and moves next to neighbours) while that lowers the count of crossing straight edges.
+
+### Fewer crossings
+
+After each force layout (not the hierarchy one), `dash/untangle.js` treats edges as straight lines and moves nodes: a node swaps
+places with another of its own connected component, or moves beside a neighbour, only while that lowers the crossings of its
+edges. It stops after 15 rounds or 150 ms, and does nothing above 120 nodes or on a bad position. A failure keeps the force
+result. Relayouts animate from the old positions. `node dash/untangle.test.js` tests it.

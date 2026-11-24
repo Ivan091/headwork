@@ -41,12 +41,19 @@
   }
 
   function untangle(ids, edgeList, positions, options) {
-    const gap = (options && options.gap) || 40;
-    const rounds = (options && options.rounds) || 12;
+    const gap = options.gap;
+    const rounds = options.rounds;
+    const maxNodes = options.maxNodes;
+    const deadline = Date.now() + options.budgetMs;
     const pos = {};
     for (const id of ids) {
-      pos[id] = { x: positions[id].x, y: positions[id].y };
+      const p = positions[id];
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || ids.length > maxNodes) {
+        return { positions: positions, crossings: -1 };
+      }
+      pos[id] = { x: p.x, y: p.y };
     }
+    const group = components(ids, edgeList);
     const all = edgeList.filter((e) => e[0] !== e[1] && pos[e[0]] && pos[e[1]]);
     const mine = {};
     for (const id of ids) {
@@ -62,6 +69,9 @@
     for (let round = 0; round < rounds && best > 0; round++) {
       let improved = false;
       for (const id of ids) {
+        if (Date.now() > deadline) {
+          break;
+        }
         if (mine[id].length === 0) {
           continue;
         }
@@ -72,7 +82,7 @@
         }
         const candidates = [];
         for (const other of ids) {
-          if (other !== id) {
+          if (other !== id && group[other] === group[id]) {
             candidates.push({ swap: other, p: pos[other] });
           }
         }
@@ -133,6 +143,30 @@
     return { positions: pos, crossings: best };
   }
 
+  function components(ids, edgeList) {
+    const parent = {};
+    for (const id of ids) {
+      parent[id] = id;
+    }
+    const find = (x) => {
+      while (parent[x] !== x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+      }
+      return x;
+    };
+    for (const e of edgeList) {
+      if (parent[e[0]] !== undefined && parent[e[1]] !== undefined) {
+        parent[find(e[0])] = find(e[1]);
+      }
+    }
+    const out = {};
+    for (const id of ids) {
+      out[id] = find(id);
+    }
+    return out;
+  }
+
   function sharedBetween(a, b, edges, pos) {
     let total = 0;
     for (const e of edges.mine[a]) {
@@ -145,7 +179,7 @@
     return total;
   }
 
-  const api = { untangle, countAll };
+  const api = { untangle, countAll, DEFAULTS: { gap: 50, rounds: 15, maxNodes: 120, budgetMs: 150 } };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

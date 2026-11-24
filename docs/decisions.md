@@ -1453,3 +1453,4 @@ and the reason.
   (retries the bind for 30 s) and exits. Its stream sends the build first (`event: build`), and the page reloads when
   the build changes after a reconnect.
 - 2026-11-24: dash force layout is followed by a local-search crossing reducer (dash/untangle.js), no new dependency.
+- 2026-11-24: the crossing reducer runs after fcose only (not breadthfirst), with gap 50, 15 rounds, 150 ms, 120 nodes; swaps stay inside a connected component so packed components are not stretched; fcose runs unanimated and the untangled result is animated from the old positions. Node size and a dragged or pinned node are not considered: the orchestrator may move.

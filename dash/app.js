@@ -433,17 +433,28 @@
   }
 
   function untangleVisible(visible) {
-    const nodes = visible.nodes();
-    const ids = nodes.map((node) => node.id());
-    const positions = {};
-    nodes.forEach((node) => {
-      positions[node.id()] = node.position();
-    });
-    const edges = visible.edges().map((edge) => [edge.source().id(), edge.target().id()]);
-    const result = window.HeadworkUntangle.untangle(ids, edges, positions, { gap: 50, rounds: 15 });
-    cy.batch(() => {
-      nodes.forEach((node) => node.position(result.positions[node.id()]));
-    });
+    const tool = window.HeadworkUntangle;
+    if (!tool) {
+      return;
+    }
+    try {
+      const nodes = visible.nodes();
+      const ids = nodes.map((node) => node.id());
+      const positions = {};
+      nodes.forEach((node) => {
+        positions[node.id()] = node.position();
+      });
+      const edges = visible.edges().map((edge) => [edge.source().id(), edge.target().id()]);
+      const result = tool.untangle(ids, edges, positions, tool.DEFAULTS);
+      if (result.crossings < 0) {
+        return;
+      }
+      cy.batch(() => {
+        nodes.forEach((node) => node.position(result.positions[node.id()]));
+      });
+    } catch (error) {
+      status.textContent = "untangle failed: " + error.message;
+    }
   }
 
   function layout() {
@@ -461,9 +472,23 @@
             idealEdgeLength: 70,
             packComponents: true,
           };
+    const before = new Map();
+    visible.nodes().forEach((node) => before.set(node.id(), { x: node.position("x"), y: node.position("y") }));
     visible.layout(options).run();
-    if (layoutSelect.value !== "breadthfirst") {
+    const force = layoutSelect.value !== "breadthfirst";
+    if (force) {
       untangleVisible(visible);
+    }
+    if (force && !firstLayout) {
+      visible.nodes().forEach((node) => {
+        const from = before.get(node.id());
+        if (!from) {
+          return;
+        }
+        const to = { x: node.position("x"), y: node.position("y") };
+        node.position(from);
+        node.animate({ position: to }, { duration: 400 });
+      });
     }
     if (firstLayout) {
       cy.fit(visible, 30);

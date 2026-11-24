@@ -910,6 +910,22 @@ mod tests {
     }
 
     #[test]
+    fn the_crossing_reducer_is_served_as_script_and_loaded_before_the_page_script() {
+        let asset = ASSETS
+            .iter()
+            .find(|asset| asset.path == "/untangle.js")
+            .unwrap();
+        assert!(
+            asset.content_type.starts_with("text/javascript"),
+            "script type"
+        );
+        let page = ASSETS[0].body;
+        let tool = page.find("/untangle.js").unwrap();
+        let app = page.find("/app.js").unwrap();
+        assert!(tool < app, "untangle.js loads before app.js");
+    }
+
+    #[test]
     fn vendored_files_match_their_checksums() {
         use sha2::{Digest, Sha256};
 
