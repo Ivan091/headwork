@@ -87,6 +87,11 @@ pub const ASSETS: &[Asset] = &[
         content_type: "text/javascript; charset=utf-8",
         body: include_str!("../../../../dash/vendor/cytoscape-fcose.js"),
     },
+    Asset {
+        path: "/untangle.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: include_str!("../../../../dash/untangle.js"),
+    },
 ];
 
 /// What a request asks for.
@@ -902,6 +907,22 @@ mod tests {
         };
         let error = serve(&options, &mut Vec::new()).unwrap_err().to_string();
         assert!(error.contains("loopback only"), "{error}");
+    }
+
+    #[test]
+    fn the_crossing_reducer_is_served_as_script_and_loaded_before_the_page_script() {
+        let asset = ASSETS
+            .iter()
+            .find(|asset| asset.path == "/untangle.js")
+            .unwrap();
+        assert!(
+            asset.content_type.starts_with("text/javascript"),
+            "script type"
+        );
+        let page = ASSETS[0].body;
+        let tool = page.find("/untangle.js").unwrap();
+        let app = page.find("/app.js").unwrap();
+        assert!(tool < app, "untangle.js loads before app.js");
     }
 
     #[test]

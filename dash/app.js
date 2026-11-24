@@ -432,23 +432,63 @@
     });
   }
 
+  function untangleVisible(visible) {
+    const tool = window.HeadworkUntangle;
+    if (!tool) {
+      return;
+    }
+    try {
+      const nodes = visible.nodes();
+      const ids = nodes.map((node) => node.id());
+      const positions = {};
+      nodes.forEach((node) => {
+        positions[node.id()] = node.position();
+      });
+      const edges = visible.edges().map((edge) => [edge.source().id(), edge.target().id()]);
+      const result = tool.untangle(ids, edges, positions, tool.DEFAULTS);
+      if (result.crossings < 0) {
+        return;
+      }
+      cy.batch(() => {
+        nodes.forEach((node) => node.position(result.positions[node.id()]));
+      });
+    } catch (error) {
+      status.textContent = "untangle failed: " + error.message;
+    }
+  }
+
   function layout() {
     const visible = cy.elements().not(".hidden");
-    const options =
-      layoutSelect.value === "breadthfirst"
+    const force = layoutSelect.value !== "breadthfirst";
+    const options = !force
         ? { name: "breadthfirst", directed: true, roots: "#orchestrator", spacingFactor: 1.2, animate: false }
         : {
             name: "fcose",
             quality: "default",
             randomize: firstLayout,
-            animate: !firstLayout,
-            animationDuration: 400,
+            animate: false,
             nodeDimensionsIncludeLabels: true,
             nodeRepulsion: 6000,
             idealEdgeLength: 70,
             packComponents: true,
           };
+    const before = new Map();
+    visible.nodes().forEach((node) => before.set(node.id(), { x: node.position("x"), y: node.position("y") }));
     visible.layout(options).run();
+    if (force) {
+      untangleVisible(visible);
+    }
+    if (force && !firstLayout) {
+      visible.nodes().forEach((node) => {
+        const from = before.get(node.id());
+        if (!from) {
+          return;
+        }
+        const to = { x: node.position("x"), y: node.position("y") };
+        node.position(from);
+        node.animate({ position: to }, { duration: 400 });
+      });
+    }
     if (firstLayout) {
       cy.fit(visible, 30);
       firstLayout = false;
