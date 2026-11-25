@@ -5,6 +5,7 @@ requires = ["headwork"]
 why = """Ivan091/headwork was replaced by a public repository with a rewritten history starting 2026-11-22; \
 an older clone shares no history with it. The old history is in the private Ivan091/headwork-archive."""
 check = "git merge-base --is-ancestor 1a26a2797cb7c4cdde6c87fa45560f383273362c HEAD"
+pull = false
 
 [[step]]
 kind = "agent"

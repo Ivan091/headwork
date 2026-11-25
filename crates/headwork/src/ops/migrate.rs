@@ -302,7 +302,7 @@ pub fn describe(entry: &Entry, home: &Home, config: &Config) -> String {
                 .filter(|(_, value)| !value.is_empty())
                 .map(|(label, value)| format!("{label}: {value}")),
         );
-        if !entry.in_head {
+        if !entry.in_head && note.pull {
             lines.push(
                 "pull: not in this checkout yet; apply runs git pull --ff-only first".to_owned(),
             );
@@ -493,6 +493,7 @@ pub fn apply(
     let start = options.from.unwrap_or(0);
     if start == 0
         && !entry.in_head
+        && note.pull
         && let Some(outcome) = run.pull(entry, options)?
     {
         return Ok(outcome);

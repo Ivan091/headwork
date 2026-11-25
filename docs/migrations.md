@@ -101,7 +101,7 @@ user first, with an optional `backup` that runs before it) or `user` (the user d
   `orchestrator_repos` (code-home). headwork's own notes come from `Ivan091/headwork` the same way; a note with a
   `since` release that is not installed yet waits for `update`.
 - A note whose commit is not in the local `HEAD` yet gets an implicit first agent step: `git pull --ff-only` in that
-  checkout (a confirm step when the checkout is dirty or not on the default branch). Filters (`os`, `machines`,
+  checkout (a confirm step when the checkout is dirty or not on the default branch); `pull = false` in a note skips it, for a note that repairs a checkout a fast-forward cannot reach. Filters (`os`, `machines`,
   `requires`) decide where a note applies.
 - The applied record is per machine and local: a store table (new migration: `migrations_applied` with repo, id,
   state, who, when, output) and events `migration-applied` / `migration-skipped`. A note whose `check` passes is
@@ -197,7 +197,7 @@ the line that goes on once the user agreed: `headwork migrate apply <note> --fro
 its `backup`, then `run`; a user step counts as done). Exit 1 means a step failed and nothing is recorded; when every step
 ran the note is recorded as applied. When the note's file is not in the checkout's `HEAD` yet, `apply` first runs
 `git pull --ff-only` there (step 0): by itself on a clean checkout of the default branch, else it stops with a confirm
-ask.
+ask. A note with `pull = false` skips step 0.
 
 `migrate check` validates `<path>/migrations/*.toml` in the working tree: ids match file names and are unique, `agent`
 steps and `confirm` steps carry `run`, `user` steps carry `say`, and an `agent` step holds none of `login`, `secret`,

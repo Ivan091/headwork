@@ -102,9 +102,17 @@ pub struct Note {
     /// A command that exits 0 when the note is already applied.
     #[serde(default)]
     pub check: Option<String>,
+    /// Whether `apply` first pulls a checkout that lacks the note; `false` for a note that repairs a checkout a
+    /// fast-forward cannot reach, such as one of a rewritten history.
+    #[serde(default = "pull_by_default")]
+    pub pull: bool,
     /// The steps, in order.
     #[serde(default)]
     pub step: Vec<Step>,
+}
+
+const fn pull_by_default() -> bool {
+    true
 }
 
 /// A note file that does not parse.
@@ -446,6 +454,13 @@ say = "Run `headwork tick --install`."
             step: vec![step(StepKind::Agent, Some(run), None)],
             ..sample()
         }
+    }
+
+    #[test]
+    fn a_note_pulls_unless_it_says_not_to() {
+        assert!(sample().pull, "default");
+        let note = Note::parse("id = \"a\"\ntitle = \"b\"\npull = false\n").expect("parses");
+        assert!(!note.pull, "pull = false");
     }
 
     #[test]
