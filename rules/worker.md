@@ -44,8 +44,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   never hand the kill to the user. Never run `headwork tick --install` or `--uninstall` unless the user allowed that
   exact command in an `Allow` ask in your pane.
 - Start any long-running process (a training run, a render) with the headwork `job_start` tool, never as a background
-  shell, so a restart can stop it cleanly at a checkpoint and start it again. Write a short `recap` (what you are
-  doing, the next step, what runs) whenever you stop for the day, and when headwork asks for one before a restart.
+  shell, so a restart can stop it cleanly at a checkpoint and start it again. Write a `recap` that stands alone (a restart
+  opens a new session with only it and your brief) whenever you stop for the day and when headwork asks.
 - Never end a turn with a question in plain text, and never stop silently while the task is unfinished: carry on, ask,
   or report.
 - When the task is done, send a short report to the session named `{parent}` with `SendMessage`: what was built,

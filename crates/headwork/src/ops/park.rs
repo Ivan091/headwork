@@ -21,13 +21,20 @@ use super::{Env, jobs, recap};
 
 /// What a session is told when a park begins.
 pub const PARK_PROMPT: &str = "headwork: the machine is about to restart. Reach a safe point now and call the \
-    headwork `recap` tool with what you were doing, your next step and what is running. Register any long process \
-    with `job_register`. Do not start new work.";
+    headwork `recap` tool once. After the restart a new session with an empty context takes over from your recap and \
+    your brief alone, so write it to continue from without this conversation: what was done and what is left; the \
+    decisions you took and why; open questions and anything waiting on the user; the exact next step; the files, \
+    branch, worktree and pull requests involved; what runs, with the command to start it again; and the user's \
+    standing constraints and wishes from this conversation. Register any long process with `job_register`. Do not \
+    start new work.";
 
-/// What the orchestrator is told when a park begins. It keeps running; the restart ends it and the resume reopens it.
-pub const ORCHESTRATOR_PARK_PROMPT: &str = "headwork: the machine is about to restart. Call the headwork `recap` tool with \
-    what you are coordinating, what waits on the user and your next step. Do not start new work. headwork reopens \
-    you after the restart with this recap.";
+/// What the orchestrator is told when a park begins. It keeps running; the restart ends it and the resume opens a new
+/// orchestrator session.
+pub const ORCHESTRATOR_PARK_PROMPT: &str = "headwork: the machine is about to restart. Call the headwork `recap` tool once. \
+    After the restart a new orchestrator session with an empty context takes over from your recap, the board and the \
+    log alone, so write it to continue from without this conversation: what the user asked for and what became of each \
+    request; what each task is doing and why it was shaped that way; the decisions you took and why; what waits on the \
+    user; your exact next step; and the user's standing constraints and preferences. Do not start new work.";
 
 /// How a park waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,7 +521,7 @@ fn begin_orchestrator(
     }))
 }
 
-/// Records an orchestrator that runs outside headwork on the park, so the resume reopens its conversation under headwork.
+/// Records an orchestrator that runs outside headwork on the park, so the resume opens a new session for it from a mechanical recap.
 /// It has no headwork tools, so it is not asked for a recap and gets a mechanical one.
 fn begin_unmanaged_orchestrator(
     store: &mut Store,
@@ -541,7 +548,7 @@ fn begin_unmanaged_orchestrator(
 
 /// Why an orchestrator found running outside headwork leaves no recap of its own.
 const UNMANAGED_PROBLEM: &str = "it runs outside headwork (restored by the host or started without `headwork \
-    orchestrator`), so it has no `recap` tool; the resume reopens its conversation under headwork";
+    orchestrator`), so it has no `recap` tool; the resume opens a new session from a mechanical recap";
 
 /// An orchestrator session the store knows that runs outside headwork: the host sees its Claude session in a surface,
 /// but the store does not count it as running (the host reopened it after a restart with a plain `claude --resume`,
@@ -600,16 +607,12 @@ fn finish_orchestrator(
                 "the orchestrator wrote no recap before the deadline".to_owned()
             }
             Some(UNMANAGED_PROBLEM) => {
-                "the orchestrator ran outside headwork, so it could not write a recap; its \
-                conversation holds where it stood"
-                    .to_owned()
+                "the orchestrator ran outside headwork, so it could not write a recap".to_owned()
             }
             Some(problem) => format!("the orchestrator could not be asked for a recap: {problem}"),
             None => "the orchestrator could not be asked for a recap".to_owned(),
         };
-        let body = format!(
-            "# Recap (mechanical)\n\n- {reason}\n- read the board and the inbox to see where the tasks stand\n"
-        );
+        let body = recap::orchestrator_mechanical(store, &reason)?;
         store.add_park_recap(
             park,
             &NewRecap {

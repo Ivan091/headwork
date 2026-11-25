@@ -517,7 +517,6 @@ pub(crate) fn resumed(report: &ResumeReport) -> String {
 
 fn outcome_line(outcome: &TaskOutcome) -> String {
     match outcome {
-        TaskOutcome::Resumed { surface } => format!("resumed in {surface}"),
         TaskOutcome::Fresh { surface, reason } => {
             format!("started fresh in {surface} ({reason})")
         }

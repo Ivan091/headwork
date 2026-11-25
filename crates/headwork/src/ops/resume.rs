@@ -1,9 +1,10 @@
 //! `resume`: bring parked sessions back after a restart (design section 6.2).
 //!
 //! Each parked (and, by hand, interrupted) task gets its pane again in its project's workspace, running
-//! `headwork launch --resume`, which continues the same Claude session under the same name and hands it its recap. A
-//! session whose conversation is gone starts fresh from its brief and recap. Jobs that asked to be restarted run
-//! again, and a summary for the orchestrator is written to `recaps/<park-id>.md`.
+//! `headwork launch --fresh`: a new Claude session under the same name that starts from the task's brief and its
+//! recap, never the old conversation, so the context stays small. The orchestrator comes back the same way. What a
+//! session knew therefore travels in its recap (`park`, `recap`). Jobs that asked to be restarted run again, and a
+//! summary for the orchestrator is written to `recaps/<park-id>.md`.
 //!
 //! Every session, the orchestrator too, comes back in the permission mode it was last in: the last `permissionMode`
 //! its transcript records (the user may have switched it with shift+tab), else the one its hooks last reported, else
@@ -23,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use headwork_adapters::host::{Target, TerminalHost};
 use headwork_core::config::{CrashResume, ParkPolicy};
 use headwork_core::lifecycle::Trigger;
-use headwork_core::{JobState, MachineMode, PermissionMode, PlaceKind, Role, TaskState};
+use headwork_core::{JobState, MachineMode, PermissionMode, PlaceKind, RecapKind, Role, TaskState};
 use headwork_store::{NewSession, Place, SessionRow, Store, Task};
 use serde::Serialize;
 
@@ -45,16 +46,11 @@ pub struct ResumeOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "lowercase")]
 pub enum TaskOutcome {
-    /// The conversation continues in a new pane.
-    Resumed {
-        /// The host surface.
-        surface: String,
-    },
-    /// The conversation could not be restored; a new session starts from the brief and recap.
+    /// A new session starts in a new pane from the brief and the recap.
     Fresh {
         /// The host surface.
         surface: String,
-        /// Why.
+        /// Why it is new.
         reason: String,
     },
     /// Left alone, with the reason.
@@ -105,17 +101,6 @@ pub struct ResumeReport {
     pub summary: String,
     /// Tasks started from the queue afterwards.
     pub queue_started: usize,
-}
-
-/// Whether Claude's transcript of a session exists under any project folder of `claude_dir`.
-#[must_use]
-pub fn transcript_exists(claude_dir: &Path, session: &str) -> bool {
-    let file = format!("{session}.jsonl");
-    std::fs::read_dir(claude_dir.join("projects"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|folder| folder.path().join(&file).is_file())
 }
 
 /// The permission mode Claude's transcript of a session last records, when it has one headwork knows.
@@ -261,7 +246,7 @@ pub fn resume(store: &mut Store, env: &Env<'_>, opts: &ResumeOptions) -> Result<
                 .iter()
                 .filter(|t| matches!(
                     t.outcome,
-                    TaskOutcome::Resumed { .. } | TaskOutcome::Fresh { .. }
+                    TaskOutcome::Fresh { .. }
                 ))
                 .count(),
             super::slashed(&summary)
@@ -355,15 +340,15 @@ fn resume_task(
         env.actor,
     )?;
     let mode = parked_mode(opts, store.session_of(task.id)?.as_ref());
-    let (session_id, fresh_reason) = session_for(store, env, opts, task)?;
+    ensure_handoff(store, env, task, crash)?;
+    let (session_id, fresh_reason) = session_for(store, env, task)?;
     if let Some(mode) = mode {
         store.set_session_mode(&session_id, mode, env.actor)?;
     }
-    let flags: &[&str] = match (&fresh_reason, crash) {
-        (None, false) => &["--resume"],
-        (None, true) => &["--resume", "--crash"],
-        (Some(_), false) => &["--fresh"],
-        (Some(_), true) => &["--fresh", "--crash"],
+    let flags: &[&str] = if crash {
+        &["--fresh", "--crash"]
+    } else {
+        &["--fresh"]
     };
     let opened = open_pane(store, env, task, &dir, &session_id, flags).or_else(|first| {
         store.append_event(
@@ -378,9 +363,9 @@ fn resume_task(
     Ok(match opened {
         Ok(surface) => ResumedTask {
             name,
-            outcome: match fresh_reason {
-                None => TaskOutcome::Resumed { surface },
-                Some(reason) => TaskOutcome::Fresh { surface, reason },
+            outcome: TaskOutcome::Fresh {
+                surface,
+                reason: fresh_reason,
             },
             open_question,
         },
@@ -401,6 +386,34 @@ fn resume_task(
             }
         }
     })
+}
+
+/// Makes sure the file the new session reads holds what the old one knew. A park wrote it; after a crash (or when it is
+/// missing) it is built now from the task's newest recap and the facts the store and the worktree still hold.
+fn ensure_handoff(store: &Store, env: &Env<'_>, task: &Task, crash: bool) -> Result<()> {
+    if !crash && env.home.handoff_path(&task.name).is_file() {
+        return Ok(());
+    }
+    let own = store
+        .latest_recap(task.id)?
+        .filter(|recap| recap.kind == RecapKind::Session);
+    let facts = super::recap::mechanical(
+        store,
+        env,
+        task,
+        if crash {
+            "resumed after a crash"
+        } else {
+            "resumed with no recap on file"
+        },
+    )?;
+    super::recap::write_handoff(
+        env,
+        task,
+        own.as_ref().map(|recap| recap.body.as_str()),
+        &facts,
+    )?;
+    Ok(())
 }
 
 fn open_pane(
@@ -489,9 +502,8 @@ fn write_summary(
     }
     for task in tasks {
         let line = match &task.outcome {
-            TaskOutcome::Resumed { surface } => format!("resumed in pane {surface}"),
             TaskOutcome::Fresh { surface, reason } => {
-                format!("started fresh in pane {surface} from its brief and recap: {reason}")
+                format!("new session in pane {surface} from its brief and recap: {reason}")
             }
             TaskOutcome::Skipped { reason } => format!("not resumed: {reason}"),
             TaskOutcome::Failed { error } => format!("could not be resumed: {error}"),
@@ -522,12 +534,14 @@ fn write_summary(
     }
     if let Some(OrchestratorPlan::Back { session, .. }) = orchestrator {
         let _ = writeln!(text, "\n## Orchestrator\n");
-        match store.latest_session_recap(&session.id)? {
-            Some(recap) => {
-                let _ = writeln!(text, "Your recap ({}, {}):\n", recap.kind, recap.created_at);
-                let _ = writeln!(text, "{}", recap.body.trim_end());
-            }
-            None => text.push_str("You left no recap; read the board and the inbox.\n"),
+        if let Some(recap) = store.latest_session_recap(&session.id)? {
+            let _ = writeln!(text, "Your recap ({}, {}):\n", recap.kind, recap.created_at);
+            let _ = writeln!(text, "{}", recap.body.trim_end());
+        } else {
+            let body = super::recap::orchestrator_mechanical(store, "no recap was written")?;
+            text.push_str("You left no recap of your own; this one was built from the store:\n\n");
+            text.push_str(body.trim_end());
+            text.push('\n');
         }
     }
     std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
@@ -621,8 +635,8 @@ fn resume_orchestrator(
     }
 }
 
-/// Opens the orchestrator's pane in the `orchestrator` workspace, in the folder it ran in: the same conversation when Claude still
-/// has it, else a new orchestrator session that starts from the recap in the summary.
+/// Opens the orchestrator's pane in the `orchestrator` workspace, in the folder it ran in, as a new orchestrator session
+/// that starts from the recap in the summary.
 fn open_orchestrator(
     store: &mut Store,
     env: &Env<'_>,
@@ -639,40 +653,26 @@ fn open_orchestrator(
     })?;
     let dir = PathBuf::from(dir);
     let mode = parked_mode(opts, Some(old));
-    let fresh_reason = if transcript_exists(&opts.claude_dir, &old.id) {
-        store.session_resumed(&old.id, env.actor)?;
-        None
-    } else {
-        Some(format!("the transcript of session {} is gone", old.id))
-    };
-    let session = if fresh_reason.is_none() {
-        old.id.clone()
-    } else {
-        let id = uuid::Uuid::new_v4().to_string();
-        store.record_session(
-            &NewSession {
-                id: id.clone(),
-                task_id: None,
-                role: Role::Orchestrator,
-                rc_name: old.rc_name.clone(),
-                host: env.config.machine.host.as_str().to_owned(),
-                host_workspace: None,
-                host_surface: None,
-            },
-            env.actor,
-        )?;
-        store.set_session_dir(&id, &super::slashed(&dir))?;
-        id
-    };
+    let session = uuid::Uuid::new_v4().to_string();
+    store.record_session(
+        &NewSession {
+            id: session.clone(),
+            task_id: None,
+            role: Role::Orchestrator,
+            rc_name: old.rc_name.clone(),
+            host: env.config.machine.host.as_str().to_owned(),
+            host_workspace: None,
+            host_surface: None,
+        },
+        env.actor,
+    )?;
+    store.set_session_dir(&session, &super::slashed(&dir))?;
     let mut argv = vec![
         env.exe.display().to_string(),
         "orchestrator".to_owned(),
         "--session".to_owned(),
         session.clone(),
     ];
-    if fresh_reason.is_none() {
-        argv.push("--resume".to_owned());
-    }
     if let Some(mode) = mode {
         argv.extend(["--mode".to_owned(), mode.as_str().to_owned()]);
     }
@@ -705,10 +705,9 @@ fn open_orchestrator(
         },
         env.actor,
     )?;
-    let surface = pane.surface.to_string();
-    Ok(match fresh_reason {
-        None => TaskOutcome::Resumed { surface },
-        Some(reason) => TaskOutcome::Fresh { surface, reason },
+    Ok(TaskOutcome::Fresh {
+        surface: pane.surface.to_string(),
+        reason: FRESH_REASON.to_owned(),
     })
 }
 
@@ -721,39 +720,26 @@ fn chrono_free_stamp() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The session a task comes back as: its own when Claude still has the transcript, else a new one and the reason.
-fn session_for(
-    store: &mut Store,
-    env: &Env<'_>,
-    opts: &ResumeOptions,
-    task: &Task,
-) -> Result<(String, Option<String>)> {
-    match store.session_of(task.id)? {
-        Some(old) if transcript_exists(&opts.claude_dir, &old.id) => {
-            store.session_resumed(&old.id, env.actor)?;
-            Ok((old.id, None))
-        }
-        other => {
-            let reason = match other {
-                Some(old) => format!("the transcript of session {} is gone", old.id),
-                None => "the task had no session".to_owned(),
-            };
-            let id = uuid::Uuid::new_v4().to_string();
-            store.record_session(
-                &NewSession {
-                    id: id.clone(),
-                    task_id: Some(task.id),
-                    role: Role::Worker,
-                    rc_name: task.name.to_string(),
-                    host: env.config.machine.host.as_str().to_owned(),
-                    host_workspace: None,
-                    host_surface: None,
-                },
-                env.actor,
-            )?;
-            Ok((id, Some(reason)))
-        }
-    }
+/// Why every resumed session is a new one.
+pub const FRESH_REASON: &str =
+    "a resume always opens a new session so its context is fresh; the recap carries what it knew";
+
+/// The new session a task comes back as, and why it is new.
+fn session_for(store: &mut Store, env: &Env<'_>, task: &Task) -> Result<(String, String)> {
+    let id = uuid::Uuid::new_v4().to_string();
+    store.record_session(
+        &NewSession {
+            id: id.clone(),
+            task_id: Some(task.id),
+            role: Role::Worker,
+            rc_name: task.name.to_string(),
+            host: env.config.machine.host.as_str().to_owned(),
+            host_workspace: None,
+            host_surface: None,
+        },
+        env.actor,
+    )?;
+    Ok((id, FRESH_REASON.to_owned()))
 }
 
 /// Whether a resume started now would close the host surface `surface`.

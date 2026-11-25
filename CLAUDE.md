@@ -286,8 +286,10 @@ See `docs/decisions.md` (2026-11-18, folder trust).
 Before restarting the computer, tell the orchestrator "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
 up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, then
 closes the panes and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
-back with the same Claude sessions (names, Remote Control, recaps, and the permission mode each was last in: its
-transcript's last `permissionMode`, else the one its hooks reported), registered jobs restart, and
+back as new Claude sessions with an empty context (resume never continues the old conversation; the recap carries what
+the session knew: its own, or a mechanical one from the store, and after a crash the handoff file is built at resume),
+with the same names and Remote Control, the permission mode each was last in (its transcript's last `permissionMode`,
+else the one its hooks reported), registered jobs restart, and
 `<home>/recaps/park-<id>.md` is the summary for the orchestrator. Nothing installs a logon task. To resume at logon the user
 would run:
 
@@ -299,12 +301,12 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 
 The orchestrator (started with `headwork orchestrator`, which records the pane it runs in) is parked and resumed too:
 park takes the recap it wrote in the turn that started the park, else asks it for one in its pane and waits (event
-`orchestrator-asked`, or `orchestrator-unasked` with the reason), and leaves it running (the restart ends it), and resume reopens it in an `orchestrator` workspace in the folder it ran in, with
-the same conversation and its recorded name, at logon too and after a crash. An orchestrator that still runs is left
+`orchestrator-asked`, or `orchestrator-unasked` with the reason), and leaves it running (the restart ends it), and resume opens a new orchestrator session in an `orchestrator` workspace in the folder it ran in, with
+its recorded name and the recap in the summary (a mechanical one from the board and the log when it wrote none), at logon too and after a crash. An orchestrator that still runs is left
 alone. An orchestrator conversation the store knows that runs outside headwork (wmux reopens Claude panes after a reboot
 with a plain `claude --resume <id>`, so the store saw it end) is found by its session id in the host's surface states:
 park records it with a mechanical recap (it has no `recap` tool), and resume, after a park or a crash, closes that pane
-and reopens the conversation under headwork. A `headwork resume` started inside a pane it is about to close (such an
+and opens a new session under headwork from the mechanical recap. A `headwork resume` started inside a pane it is about to close (such an
 orchestrator running it through Bash) goes on as a detached process. See `docs/decisions.md` (2026-11-14, the root
 parks and resumes; 2026-11-21, an orchestrator running outside headwork).
 

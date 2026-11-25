@@ -31,7 +31,7 @@ pub enum StartMode {
         /// The session was cut off, not parked.
         crash: bool,
     },
-    /// The earlier conversation is gone; a new one starts from the brief and the recap.
+    /// A new conversation starts from the brief and the recap, as every resume does.
     Fresh {
         /// The session was cut off, not parked.
         crash: bool,
@@ -54,8 +54,9 @@ pub fn first_prompt(home: &Home, task: &Task, mode: StartMode) -> String {
             cause(crash)
         ),
         StartMode::Fresh { crash } => format!(
-            "You are the worker session {}. Your earlier conversation could not be restored after a {}. \
-             Read your brief at {} and your recap at {handoff}, then continue where the recap says.",
+            "You are the worker session {}, started again after a {} as a new session so your context is fresh. \
+             Read your brief at {} and your recap at {handoff}: they hold everything the earlier session knew. \
+             Continue where the recap says; if it names a question you had open, ask it again with AskUserQuestion.",
             task.name,
             cause(crash),
             task.brief_path
@@ -412,8 +413,9 @@ pub fn orchestrator_prompt(start: &OrchestratorStart) -> String {
         )
     } else {
         format!(
-            "You are the orchestrator session. Your earlier conversation could not be restored after a restart. Read \
-             HANDOFF.md beside CLAUDE.md.{summary} Then continue where the recap says."
+            "You are the orchestrator session, started again after a restart as a new session so your context is \
+             fresh. Read HANDOFF.md beside CLAUDE.md.{summary} It holds everything the earlier session knew. Continue \
+             where the recap says; if it names a question you had open, ask it again with AskUserQuestion."
         )
     }
 }

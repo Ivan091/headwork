@@ -138,7 +138,8 @@ first drops or force-closes its parts.
 
 **drop.** Dropping a lead drops its live parts first (cascade); dropping a part is the lead's or the orchestrator's.
 
-**park and resume** (`ops/park.rs`, `ops/resume.rs`). Park needs nothing new: it parks every live task. Resume brings
+**park and resume** (`ops/park.rs`, `ops/resume.rs`). Park needs nothing new: it parks every live task. Resume opens a new session for
+each (never the old conversation; the recap carries the knowledge) and brings
 back each lead before its parts (ordered by `parent_id`, then age), so the lead's `ensure_workspace` reopens the
 workspace and the parts become tabs in it again, in the order they were made. A part whose lead is not resumed (it
 crashed with `resume_after_crash` off) waits for it.

@@ -1475,3 +1475,14 @@ and the reason. This log is closed: new decisions go into `docs/decisions/`, one
 - 2026-11-25: `config adopt` uses a shared or machine file that already exists in the repository as it is (never writes it, checks that merging it with the split local part reproduces the live config) so a second machine can adopt against the shared file; `--force` still replaces them. The adopt migration note has the user commit the machine file through a pull request before the `--write` step.
 - 2026-11-25: a note file that cannot be read from git is invalid on its own and the rest of its repository is kept; `check` and the list share one parser and validator, with the extension matched in any case.
 - 2026-11-25: release notes take a migration note's title from Python's `tomllib` (on every runner), not a second hand-written TOML parser; a file it cannot parse is listed by its path
+
+- 2026-11-25, resume always opens a new session. `headwork resume` no longer continues the old Claude conversation for
+  workers, leads, parts or the orchestrator (`launch --fresh`, `orchestrator --session <new id>` with no `--resume`):
+  every session came back with all of its earlier context, so cache reads dominated the cost (about 97 % of tokens). The
+  knowledge travels in the recap instead. The park prompts and the `recap` tool say what a recap must hold (done and left,
+  decisions and why, open questions, the next step, files and branches, jobs with their start command, the user's standing
+  constraints). A session that wrote none gets a mechanical one from the store: a task's brief, branch, uncommitted
+  files, last report, pull requests, parts, jobs and recent log; the orchestrator's from the board, queue, asks, jobs,
+  added rules and the log (`ops/recap.rs`). A task interrupted by a crash had no handoff file, so resume now writes it
+  from the newest recap and the live facts before opening the pane. `machine.resume_after_crash` stays. `launch
+  --resume` and `orchestrator --resume` remain for by-hand use; resume never passes them.
