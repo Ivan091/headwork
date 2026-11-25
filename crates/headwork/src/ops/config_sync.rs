@@ -324,10 +324,14 @@ fn restore_if_only_eol_differs(repo: &Path, file: &Path) -> Result<(), String> {
     let Ok(local) = std::fs::read_to_string(file) else {
         return Ok(());
     };
-    let Ok(head) = git_ok(repo, &["show", &format!("HEAD:{name}")]) else {
+    let Ok(shown) = git_in(repo, &["show", &format!("HEAD:{name}")]) else {
         return Ok(());
     };
-    if lf(&local).trim_end() == lf(&head).trim_end() && local.trim_end() != head.trim_end() {
+    if !shown.success() {
+        return Ok(());
+    }
+    let head = shown.stdout;
+    if lf(&local) == lf(&head) && local != head {
         git_ok(repo, &["checkout", "HEAD", "--", &name])?;
     }
     Ok(())
