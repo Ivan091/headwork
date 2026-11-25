@@ -41,7 +41,13 @@ if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -f "${GITHUB_EVENT_PATH:-}" 
   body_file=$(mktemp)
   changed_file=$(mktemp)
   number=$(node scripts/pr-body.js --number)
-  if [[ -z "${GH_TOKEN:-}" || -z "$number" ]] || ! gh pr view "$number" --repo "${GITHUB_REPOSITORY:-}" --json body -q .body > "$body_file"; then
+  live=false
+  if [[ -n "${GH_TOKEN:-}" && -n "$number" ]]; then
+    if gh pr view "$number" --repo "${GITHUB_REPOSITORY:-}" --json body -q .body > "$body_file"; then
+      live=true
+    fi
+  fi
+  if [[ "$live" == false ]]; then
     node scripts/pr-body.js > "$body_file"
   fi
   git diff --name-only "origin/${GITHUB_BASE_REF:-master}...HEAD" > "$changed_file"

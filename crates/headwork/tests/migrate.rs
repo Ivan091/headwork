@@ -362,7 +362,8 @@ fn notes_for_other_machines_are_not_applicable_and_a_skipped_one_stays_skipped()
             &machine,
             id,
             &format!(
-                "id = \"{id}\"\ntitle = \"Filtered\"\n{filter}\ncheck = \"false\"\npull = false\n\n[[step]]\nkind = \"agent\"\nrun = \"false\"\n"
+                "id = \"{id}\"\ntitle = \"Filtered\"\n{filter}\ncheck = \"false\"\npull = false\n\n\
+                 [[step]]\nkind = \"agent\"\nrun = \"false\"\n"
             ),
         );
     }

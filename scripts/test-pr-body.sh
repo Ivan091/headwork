@@ -20,6 +20,7 @@ got=$(body_of '{"pull_request":{"body":"Summary\nMigration: none"}}')
 [[ -z "$(body_of '{"pull_request":{"body":null}}')" ]] || fail "null body"
 [[ -z "$(body_of '{"pull_request":{}}')" ]] || fail "no body"
 [[ -z "$(body_of '{"push":{}}')" ]] || fail "no pull request"
-number=$(printf '%s' '{"pull_request":{"number":42}}' > "$dir/event.json" && GITHUB_EVENT_PATH="$dir/event.json" node "$root/scripts/pr-body.js" --number)
+printf '%s' '{"pull_request":{"number":42}}' > "$dir/event.json"
+number=$(GITHUB_EVENT_PATH="$dir/event.json" node "$root/scripts/pr-body.js" --number)
 [[ "$number" == 42 ]] || fail "number: $number"
 echo "pr body tests passed"
