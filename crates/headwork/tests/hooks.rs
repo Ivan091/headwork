@@ -1251,6 +1251,7 @@ fn mcp_tools_follow_the_role() {
         [
             "board",
             "inbox",
+            "migrate_list",
             "report",
             "done",
             "recap",
@@ -1281,6 +1282,8 @@ fn mcp_tools_follow_the_role() {
             "reap",
             "update",
             "config_sync",
+            "migrate_list",
+            "migrate_mark",
             "rules",
             "rule_add",
             "rule_retire",

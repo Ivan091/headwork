@@ -340,6 +340,37 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "migrate_list",
+        description: concat!(
+            "The migration notes of this machine's repositories (`headwork migrate list`): pending, applied, skipped and not ",
+            "applicable, read from each repository's default branch. `fetch` (default false) fetches first. A pending note is ",
+            "run with `headwork migrate apply <repo>/<id>` in a main-folder task; the orchestrator asks the user for its ",
+            "confirm and user steps.",
+        ),
+        roles: BOTH,
+        schema: || {
+            object(
+                json!({ "fetch": { "type": "boolean", "description": "Fetch each repository first; default false." } }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
+        name: "migrate_mark",
+        description: "Record a migration note as applied or skipped without running it, with the reason (`headwork migrate mark`).",
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "note": { "type": "string", "description": "<repo>/<id>, or the id when only one repository has it." },
+                    "state": { "type": "string", "enum": ["applied", "skipped"] },
+                    "reason": { "type": "string" },
+                }),
+                &["note", "state", "reason"],
+            )
+        },
+    },
+    ToolDef {
         name: "rules",
         description: "The rules added at run time that are still active.",
         roles: ORCHESTRATOR,
@@ -989,8 +1020,8 @@ impl<'a> Server<'a> {
                 self.job_stop(&task, args)
             }
             "job_forget" => self.job_forget(&session, role, args),
-            "config_sync" => self.config_sync(args),
-            "update" => self.update(args),
+            "config_sync" | "update" => self.admin_tool(name, args),
+            "migrate_list" | "migrate_mark" => self.migrate_tool(name, args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -1157,6 +1188,44 @@ impl<'a> Server<'a> {
                 .ok_or_else(|| anyhow!("no job {id} of yours"))?;
         }
         to_text(&jobs::forget(self.store, id, reason, self.env.actor)?)
+    }
+
+    fn admin_tool(&self, name: &str, args: &Value) -> Result<String> {
+        if name == "update" {
+            return self.update(args);
+        }
+        self.config_sync(args)
+    }
+
+    fn migrate_tool(&mut self, name: &str, args: &Value) -> Result<String> {
+        if name == "migrate_mark" {
+            return self.migrate_mark(args);
+        }
+        self.migrate_list(args)
+    }
+
+    fn migrate_list(&self, args: &Value) -> Result<String> {
+        let report = super::migrate::report(
+            self.store,
+            self.env.home,
+            self.env.config,
+            flag(args, "fetch"),
+        )?;
+        to_text(&report)
+    }
+
+    fn migrate_mark(&mut self, args: &Value) -> Result<String> {
+        let state = headwork_core::migrate::Settled::parse(&text(args, "state")?)
+            .ok_or_else(|| anyhow!("`state` is `applied` or `skipped`"))?;
+        super::migrate::mark(
+            self.store,
+            self.env.home,
+            self.env.config,
+            &text(args, "note")?,
+            state,
+            &text(args, "reason")?,
+            self.env.actor,
+        )
     }
 
     fn config_sync(&self, args: &Value) -> Result<String> {

@@ -222,3 +222,23 @@ fn check_fails_on_a_broken_note_in_the_working_tree() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(text(&output).contains("broken.toml"), "{}", text(&output));
 }
+
+#[test]
+fn a_step_that_names_the_machine_needs_a_name_when_there_is_no_sources_file() {
+    let machine = Machine::new();
+    std::fs::write(
+        machine.origin.join("migrations/named.toml"),
+        "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"test {machine} = pc\"\n",
+    )
+    .unwrap();
+    git(&machine.origin, &["add", "."]);
+    git(&machine.origin, &["commit", "-q", "-m", "named"]);
+    let refused = machine.run(&["migrate", "apply", "named"]);
+    assert!(!refused.status.success(), "no name");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--machine"),
+        "{refused:?}"
+    );
+    let applied = machine.run(&["migrate", "apply", "named", "--machine", "pc"]);
+    assert_eq!(applied.status.code(), Some(0), "{applied:?}");
+}

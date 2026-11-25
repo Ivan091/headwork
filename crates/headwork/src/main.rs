@@ -521,6 +521,9 @@ enum MigrateAction {
         /// The user agreed to the step `--from` names, or did it.
         #[arg(long, requires = "from")]
         confirmed: bool,
+        /// The machine's name for steps that use it, when this machine has no `sources.toml`.
+        #[arg(long)]
+        machine: Option<String>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -2350,10 +2353,15 @@ fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCo
             note,
             from,
             confirmed,
+            machine,
             json,
         } => {
-            let options = ApplyOptions { from, confirmed };
-            let outcome = notes::apply(&mut store, &home, &config, &note, options, actor)?;
+            let options = ApplyOptions {
+                machine,
+                from,
+                confirmed,
+            };
+            let outcome = notes::apply(&mut store, &home, &config, &note, &options, actor)?;
             if json {
                 json_out(out, &outcome)?;
             } else {

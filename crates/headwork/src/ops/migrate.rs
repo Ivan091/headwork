@@ -405,8 +405,10 @@ impl fmt::Display for Outcome {
 }
 
 /// What `apply` is asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ApplyOptions {
+    /// The machine's name for `{machine}` in the steps, when `sources.toml` does not give it.
+    pub machine: Option<String>,
     /// Start at this step (0 is the pull before the steps) instead of the check.
     pub from: Option<usize>,
     /// The user agreed to the step `from` names, or did it.
@@ -423,7 +425,7 @@ pub fn apply(
     home: &Home,
     config: &Config,
     address: &str,
-    options: ApplyOptions,
+    options: &ApplyOptions,
     actor: Actor,
 ) -> Result<Outcome> {
     let found = report(store, home, config, true)?;
@@ -465,7 +467,10 @@ pub fn apply(
             });
         }
     }
-    let name = machine(home, config).name;
+    let name = options
+        .machine
+        .clone()
+        .or_else(|| machine(home, config).name);
     let uses_name = note.step.iter().any(|s| {
         [&s.run, &s.backup, &s.say]
             .into_iter()
@@ -474,7 +479,7 @@ pub fn apply(
     });
     if uses_name && name.is_none() {
         bail!(
-            "`{}` names the machine, and this one has no sources.toml to take it from",
+            "`{}` names the machine, and this one has no sources.toml to take it from: pass --machine <name>",
             entry.address()
         );
     }
@@ -537,7 +542,7 @@ impl Runner<'_> {
         )
     }
 
-    fn pull(&mut self, entry: &Entry, options: ApplyOptions) -> Result<Option<Outcome>> {
+    fn pull(&mut self, entry: &Entry, options: &ApplyOptions) -> Result<Option<Outcome>> {
         let reference = self.repo.default_ref()?;
         let on_default = self.repo.branch()? == reference.trim_start_matches("origin/");
         let clean = !self.repo.dirty()?;
