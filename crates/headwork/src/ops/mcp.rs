@@ -321,6 +321,25 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "config_sync",
+        description: concat!(
+            "Regenerate this machine's config.toml from the shared, machine and local layers (`headwork config sync`): ",
+            "pull the config repository (`pull`, default true), merge, validate on a scratch home and replace the file ",
+            "atomically. A failure leaves config.toml as it was and says which file and key. `dry_run` validates and ",
+            "shows the diff and writes nothing. Use it after a config change merged in the repository.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "pull": { "type": "boolean", "description": "Run `git pull --ff-only` in the repository first; default true." },
+                    "dry_run": { "type": "boolean", "description": "Validate and report the diff, write nothing." },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "rules",
         description: "The rules added at run time that are still active.",
         roles: ORCHESTRATOR,
@@ -970,6 +989,7 @@ impl<'a> Server<'a> {
                 self.job_stop(&task, args)
             }
             "job_forget" => self.job_forget(&session, role, args),
+            "config_sync" => self.config_sync(args),
             "update" => self.update(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
@@ -1137,6 +1157,25 @@ impl<'a> Server<'a> {
                 .ok_or_else(|| anyhow!("no job {id} of yours"))?;
         }
         to_text(&jobs::forget(self.store, id, reason, self.env.actor)?)
+    }
+
+    fn config_sync(&self, args: &Value) -> Result<String> {
+        let options = super::config_sync::SyncOptions {
+            pull: args.get("pull").and_then(Value::as_bool).unwrap_or(true),
+            dry_run: flag(args, "dry_run"),
+        };
+        let log = super::config_sync::Logging {
+            store: Some(&*self.store),
+            actor: self.env.actor,
+        };
+        let report = super::config_sync::sync(
+            self.env.home,
+            self.env.exe,
+            options,
+            headwork_core::Platform::current(),
+            log,
+        )?;
+        to_text(&report)
     }
 
     fn update(&self, args: &Value) -> Result<String> {

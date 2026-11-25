@@ -31,7 +31,7 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync,
 rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
@@ -170,6 +170,7 @@ cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over without touching any process
 cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
+cargo run -p headwork -- config sync [--no-pull] [--dry-run] | check | show [--origin] | rollback | adopt --machine M [--write]   # the config generated from shared, machine and local layers (docs/config-sync.md)
 cargo run -p headwork -- flow check [<name>] [--json]   # validate the review flows (built-in and <home>/flows); exit 1 on a problem
 cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # install the newest GitHub release, smoke-tested (docs/autoupdate.md)
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs

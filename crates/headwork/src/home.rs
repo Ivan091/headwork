@@ -152,7 +152,40 @@ impl Home {
                 path.display()
             )
         })?;
-        let mut config = Config::parse(&text, &path.display().to_string())?;
+        let config = Config::parse(&text, &path.display().to_string())?;
+        self.with_overlays(config)
+    }
+
+    /// Where the repository and machine a synced config comes from are named (`docs/config-sync.md`).
+    #[must_use]
+    pub fn sources_path(&self) -> PathBuf {
+        self.root.join("sources.toml")
+    }
+
+    /// The untracked layer of a synced config: secrets and local tweaks.
+    #[must_use]
+    pub fn local_config_path(&self) -> PathBuf {
+        self.root.join("config.local.toml")
+    }
+
+    /// The effective config before the last sync.
+    #[must_use]
+    pub fn prev_config_path(&self) -> PathBuf {
+        self.root.join("config.toml.prev")
+    }
+
+    /// Where each key of the last synced config came from.
+    #[must_use]
+    pub fn origin_path(&self) -> PathBuf {
+        self.root.join("config.origin.json")
+    }
+
+    /// Adds each project's `.headwork.toml` where the main checkout has one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an overlay is invalid.
+    pub fn with_overlays(&self, mut config: Config) -> Result<Config> {
         for project in config.projects.values_mut() {
             let overlay = self.expand(&project.main).join(OVERLAY_FILE);
             if let Some(overlay) = read_overlay(&overlay)? {

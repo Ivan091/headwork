@@ -1361,6 +1361,8 @@ pub struct AfterReport {
     pub checkout: Forward,
     /// The fresh `headwork update` started because another was asked for meanwhile or a newer release appeared.
     pub again: Option<Started>,
+    /// The outcome of `headwork config sync --no-pull`, when this machine syncs its config.
+    pub config: Option<String>,
 }
 
 impl fmt::Display for AfterReport {
@@ -1386,6 +1388,9 @@ impl fmt::Display for AfterReport {
         }
         if let Some(again) = &self.again {
             write!(f, "; another update runs (pid {})", again.pid)?;
+        }
+        if let Some(config) = &self.config {
+            write!(f, "; {config}")?;
         }
         Ok(())
     }
@@ -1439,6 +1444,9 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
     )?;
     store.resolve_findings(FindingId::UpdateFailed, &[], env.actor)?;
     drop(store);
+    let config = std::env::current_exe()
+        .ok()
+        .and_then(|exe| super::config_sync::after_install(env.home, &exe, env.actor));
     let mut state = UpdateState::load(env.home);
     if let Some(text) = install_notice(from, this, &checkout, env.home) {
         state.notice(env.clock.now_ms(), text);
@@ -1464,6 +1472,7 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
         to: this.text.to_owned(),
         checkout,
         again,
+        config,
     })
 }
 
