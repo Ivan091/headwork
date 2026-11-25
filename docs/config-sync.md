@@ -103,7 +103,7 @@ Triggers:
 
 - **The Mac adoption brief** (`briefs/mac-adopt-headwork-flow.md`) shrinks to: pull claude_config, `headwork config adopt --machine mac` (or write `machines/mac/headwork.toml` from a template), review, ship it through `sync-config`, then `headwork config sync`. The pasted prices prompt goes away, because the prices are shared.
 - **The orchestrator's rules** (`rules/orchestrator.md`): a config change is a claude-config task that edits `headwork/config.toml` or `machines/<m>/headwork.toml` in a PR. After the merge, `headwork config sync` runs on each machine (the orchestrator's tool here, a line for the user on the other machine). Never edit `~/.headwork/config.toml` by hand. `orchestrator_writable` may drop `~/.headwork/config.toml` if it is there.
-- **The workers' rules**: one line saying that config changes go through claude-config, not `~/.headwork`.
+- **The workers' rules** stay as they are (the rules are near the hook's size limit, and a worker cannot write `~/.headwork` anyway).
 - **`headwork import`** still writes `config.toml`; on a synced machine move its additions into the sources (a later step may write them there directly).
 - **claude_config**: add `headwork/`, add `machines/mac/` (so far only `machines/windows/` exists), and `.gitignore` allowlist entries. `install.sh` needs no change: headwork's own sync does the copy, so the merge logic lives in one place.
 - **Docs**: a new `docs/config-sync.md`, one line per choice in `docs/decisions.md`, and the CLAUDE.md summary.

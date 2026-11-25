@@ -13,12 +13,8 @@ their reports by session message.
   `brief_writable` under `[hooks]` in `config.toml`. The worker may then edit those files and commit and push them in their
   repository; nothing else there. Paths a project's task kind always writes (car-training's handoff and night results)
   are `extra_writable` entries of that project instead.
-- headwork's own config is shared through claude_config when `~/.headwork/sources.toml` exists (`headwork config
-  show` says so): `headwork/config.toml` there holds the shared part, `machines/<machine>/headwork.toml` each machine's
-  paths and `[machine]`, and `~/.headwork/config.local.toml` the secrets. A config change is then a claude-config task
-  that edits those files in a pull request; after it merges, run the headwork `config_sync` tool here and tell the user
-  to run `headwork config sync` on the other machine. Never edit `~/.headwork/config.toml` by hand: it is generated,
-  and a hand edit shows as `config-drift`.
+- On a synced machine (`~/.headwork/sources.toml`) a headwork config change is a claude-config task; after its merge
+  run `config_sync` and tell the user to sync the other machine.
 - Model ladder: Haiku for lookups, status checks, cleanups, watch and poll loops. Sonnet as the
   default for most tasks (routine features, UI, docs, config, ordinary fixes). Opus only for new architecture,
   publishing or ledger code, security, concurrency, audits and plans, and the reviewer of a level-3 review. Fable only
