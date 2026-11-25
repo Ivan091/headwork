@@ -688,17 +688,50 @@ impl fmt::Display for Checked {
     }
 }
 
+/// The addresses of the pending notes, with the fetch first when `fetch` is set.
+///
+/// # Errors
+///
+/// Fails when the store cannot be read.
+pub fn pending(store: &Store, home: &Home, config: &Config, fetch: bool) -> Result<Vec<String>> {
+    Ok(report(store, home, config, fetch)?
+        .pending()
+        .iter()
+        .map(|entry| entry.address())
+        .collect())
+}
+
 /// The addresses of the pending notes, read from the refs fetched before; for `doctor`.
 ///
 /// # Errors
 ///
 /// Fails when the store cannot be read.
 pub fn pending_cached(store: &Store, home: &Home, config: &Config) -> Result<Vec<String>> {
-    Ok(report(store, home, config, false)?
-        .pending()
-        .iter()
-        .map(|entry| entry.address())
-        .collect())
+    pending(store, home, config, false)
+}
+
+/// Leaves a notice for the orchestrator about pending notes it was not told of, once each; used after `config sync`.
+///
+/// Does nothing while an update holds the lock: the update tells them itself.
+///
+/// # Errors
+///
+/// Fails when the store, the lock or `update.json` cannot be handled.
+pub fn announce(home: &Home, config: &Config) -> Result<()> {
+    let store = home.open_store()?;
+    let addresses = pending(&store, home, config, true)?;
+    if addresses.is_empty() {
+        return Ok(());
+    }
+    let Some(_lock) = super::update::UpdateLock::try_take(home)? else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(0));
+    let mut state = super::update::UpdateState::load(home);
+    state.tell_migrations(now, &addresses);
+    state.save(home)
 }
 
 /// The line the orchestrator is told, for notes it was not told about yet; `None` when there are none.

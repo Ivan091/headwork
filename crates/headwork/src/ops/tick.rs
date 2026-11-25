@@ -186,6 +186,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("queue", Run::queue)?;
     run.stage("update", Run::update)?;
     run.stage("config", Run::config)?;
+    run.stage("migrations", Run::migrations)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -324,6 +325,24 @@ impl<'b> Run<'_, 'b> {
         }
         self.sweep(FindingId::ConfigStale)?;
         self.sweep(FindingId::ConfigDrift)
+    }
+
+    /// Reports migration notes that wait for this machine; fetches each repository's default branch but never runs a step.
+    fn migrations(&mut self) -> Result<()> {
+        let env = self.env();
+        let report = super::migrate::report(self.store, env.home, env.config, true)?;
+        for entry in report.pending() {
+            let address = entry.address();
+            self.standing(
+                &format!("migration-pending:{address}"),
+                FindingId::MigrationPending,
+                None,
+                Status::Standing,
+                &serde_json::json!({ "note": address, "title": entry.title }),
+                None,
+            )?;
+        }
+        self.sweep(FindingId::MigrationPending)
     }
 
     /// Reads every transcript changed since its last read: the sessions whose hooks did not run, subagents that ran in

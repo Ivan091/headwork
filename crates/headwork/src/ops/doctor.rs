@@ -221,6 +221,9 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     if let Ok(config) = &config {
         checks.push(trust_check(d, config, store.as_ref()));
         if let Some(store) = &store {
+            checks.push(migrations_check(d, config, store));
+        }
+        if let Some(store) = &store {
             checks.push(usage_prices_check(config, store));
         }
     }
@@ -896,6 +899,30 @@ fn update_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check
         )
     } else {
         Check::ok("update", detail)
+    }
+}
+
+/// A warning when a migration note of a configured repository waits for this machine; reads the refs fetched before,
+/// so `doctor` stays fast.
+fn migrations_check(d: &Doctor<'_>, config: &Config, store: &Store) -> Check {
+    match super::migrate::pending_cached(store, d.home, config) {
+        Ok(pending) if pending.is_empty() => {
+            Check::ok("migrations-pending", "no migration note waits")
+        }
+        Ok(pending) => Check::warn(
+            "migrations-pending",
+            format!(
+                "{} migration note(s) pending: {}",
+                pending.len(),
+                pending.join(", ")
+            ),
+            "run `headwork migrate list`, then `headwork migrate apply <note>`",
+        ),
+        Err(error) => Check::warn(
+            "migrations-pending",
+            format!("{error:#}"),
+            "check the store and the configured checkouts",
+        ),
     }
 }
 

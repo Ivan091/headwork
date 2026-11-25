@@ -2084,6 +2084,12 @@ fn config_command(action: ConfigAction, out: &mut impl Write) -> Result<ExitCode
                 actor,
             };
             let report = sync::sync(&home, &exe, options, platform, log)?;
+            if report.ok && !dry_run {
+                drop(headwork::ops::migrate::announce(
+                    &home,
+                    &home.load_config()?,
+                ));
+            }
             if json {
                 json_out(out, &report)?;
             } else {
