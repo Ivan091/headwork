@@ -10,6 +10,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   notes paths your project grants your task kind or your brief lists on a `Writes:` line: write those, and in their
   repository only `git add` and `git rm` of them by name, `git commit` (no `-a`, no `--amend`), `git push` (no force)
   and `git pull`.
+- Never edit `~/.headwork/config.toml`: where the machine syncs it, it is generated from claude_config
+  (`docs/config-sync.md`), so a headwork config change is a claude-config task.
 - Deliver with {deliver}. Never commit or push on the default branch; make a kebab-case branch, write single-line
   Conventional Commits without AI attribution, and open a pull request.
 - Publishing, uploads, logins and releases are the user's alone; never run them, unless the user allowed that command

@@ -79,7 +79,7 @@ Triggers:
 
 - **By hand or by the orchestrator** (a new MCP tool, `config_sync`): the main path.
 - **`update` and `install`** run `config sync --no-pull` after installing, because a new build may know new keys or new rules. On a failure they keep the old file and report it.
-- **The tick does not pull or write.** It only compares the sources' last commit and the merge result with the effective file, and raises a standing finding `config-stale` (the sources changed since the last sync) or `config-drift` (`config.toml` was hand-edited). Each finding leaves one line in the orchestrator's next prompt. No network, no surprise rewrites.
+- **The tick does not pull or write.** It only compares the sources' last commit and the merge result with the effective file, and raises a standing finding `config-stale` (the sources changed since the last sync) or `config-drift` (`config.toml` was hand-edited), shown on the board like the other standing findings. No network, no surprise rewrites.
 - `sync-config` (the claude_config delivery skill) ends with `headwork config sync` when it shipped a change under `headwork/` or `machines/*/headwork.toml`.
 
 ## 5. Failure handling
@@ -93,7 +93,7 @@ Triggers:
 
 | Check | Fails / warns when |
 |---|---|
-| `config-sources` | `sources.toml` names a missing repository or machine file, or a machine name with no `machines/<name>/headwork.toml` (warn: "not synced; hand-written config"). |
+| `config-sources` | ok "not synced (hand-written config)" without `sources.toml`; fails when it names a missing repository or machine file. |
 | `config-stale` | The repository HEAD or the merge result differs from what the last sync recorded (warn: run `headwork config sync`). |
 | `config-drift` | `config.toml` differs from the recorded sync output: a hand edit that the next sync would overwrite (warn, naming the keys). |
 | `config-secret` | A tracked source holds a secret key (fail). |
@@ -104,7 +104,7 @@ Triggers:
 - **The Mac adoption brief** (`briefs/mac-adopt-headwork-flow.md`) shrinks to: pull claude_config, `headwork config adopt --machine mac` (or write `machines/mac/headwork.toml` from a template), review, ship it through `sync-config`, then `headwork config sync`. The pasted prices prompt goes away, because the prices are shared.
 - **The orchestrator's rules** (`rules/orchestrator.md`): a config change is a claude-config task that edits `headwork/config.toml` or `machines/<m>/headwork.toml` in a PR. After the merge, `headwork config sync` runs on each machine (the orchestrator's tool here, a line for the user on the other machine). Never edit `~/.headwork/config.toml` by hand. `orchestrator_writable` may drop `~/.headwork/config.toml` if it is there.
 - **The workers' rules**: one line saying that config changes go through claude-config, not `~/.headwork`.
-- **`headwork import`** writes its additions into the machine file when `sources.toml` exists, else into `config.toml` as today.
+- **`headwork import`** still writes `config.toml`; on a synced machine move its additions into the sources (a later step may write them there directly).
 - **claude_config**: add `headwork/`, add `machines/mac/` (so far only `machines/windows/` exists), and `.gitignore` allowlist entries. `install.sh` needs no change: headwork's own sync does the copy, so the merge logic lives in one place.
 - **Docs**: a new `docs/config-sync.md`, one line per choice in `docs/decisions.md`, and the CLAUDE.md summary.
 

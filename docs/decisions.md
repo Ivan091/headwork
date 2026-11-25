@@ -1459,3 +1459,4 @@ and the reason.
 - 2026-11-25: merge order shared, machine, `config.local.toml`; tables merge per key, scalars and arrays are replaced, `extend.<key>` appends, `unset = [...]` removes and is an error when it matches nothing; a project exists on a machine only where that machine gives its `main`.
 - 2026-11-25: a machine names itself in `~/.headwork/sources.toml`, never by hostname; the merged `machine.host` must suit the OS. Secrets (`machine.notify_ntfy`) live only in `config.local.toml`, and tracked layers that set them are refused.
 - 2026-11-25: the tick never pulls or writes the config; it reports `config-stale` and `config-drift`. `update` and `install` re-apply the sources without pulling.
+- 2026-11-25: `config-stale` and `config-drift` are standing findings without a prompt notice; `import` keeps writing `config.toml` on a synced machine for now; a missing machine file fails doctor `config-sources`.
