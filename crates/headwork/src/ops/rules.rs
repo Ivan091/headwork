@@ -133,6 +133,72 @@ impl RuleFiles {
         })
     }
 
+    /// The rules folder.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// What the rules folder lacks or has stale: the built-in role files that are missing and `added.md` when it differs from
+    /// the rules added with `rule_add`. Empty when the folder is as [`RuleFiles::render`]'s pointer says.
+    #[must_use]
+    pub fn folder_problems(&self) -> Vec<String> {
+        self.folder_wanted()
+            .into_iter()
+            .filter(|(name, text, replace)| {
+                let current = std::fs::read_to_string(self.dir.join(name)).ok();
+                current.is_none_or(|found| *replace && found != *text)
+            })
+            .map(|(name, _, _)| name.to_owned())
+            .collect()
+    }
+
+    /// Writes what [`RuleFiles::folder_problems`] lists: missing role files (never overwriting an override) and a current
+    /// `added.md`. Returns the names written.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the folder or a file cannot be written.
+    pub fn sync_folder(&self) -> Result<Vec<String>> {
+        let problems = self.folder_problems();
+        if problems.is_empty() {
+            return Ok(problems);
+        }
+        std::fs::create_dir_all(&self.dir)
+            .with_context(|| format!("creating {}", self.dir.display()))?;
+        for (name, text, _) in self.folder_wanted() {
+            if problems.iter().any(|problem| problem == name) {
+                let path = self.dir.join(name);
+                std::fs::write(&path, text)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+        }
+        Ok(problems)
+    }
+
+    fn folder_wanted(&self) -> Vec<(&'static str, String, bool)> {
+        let mut wanted = vec![
+            ("orchestrator.md", self.orchestrator.clone(), false),
+            ("worker.md", self.worker.clone(), false),
+            ("lead.md", self.lead.clone(), false),
+            ("reviewer.md", self.reviewer.clone(), false),
+        ];
+        let added: Vec<String> = self
+            .added
+            .iter()
+            .map(|rule| format!("- ({}) {}", rule.scope, rule.body.trim()))
+            .collect();
+        wanted.push((
+            "added.md",
+            format!("## Rules added with rule_add\n\n{}\n", added.join("\n")),
+            true,
+        ));
+        if self.added.is_empty() {
+            wanted.pop();
+        }
+        wanted
+    }
+
     /// The hash of every rules file; a change bumps the rules version.
     #[must_use]
     pub fn hash(&self) -> &str {
@@ -207,11 +273,15 @@ impl RuleFiles {
         if text.len() <= CONTEXT_LIMIT {
             return text;
         }
+        let dir = slashed(&self.dir);
+        let added = if self.added.is_empty() {
+            String::new()
+        } else {
+            format!(", {dir}/added.md (rules added with rule_add)")
+        };
         format!(
-            "headwork: your rules are longer than a hook may inject. Read them now, in this order: {}/global.md (if \
-             present), {}/{}.md, and your project's file there.",
-            slashed(&self.dir),
-            slashed(&self.dir),
+            "headwork: your rules are longer than a hook may inject. Read them now, in this order: {dir}/global.md (if \
+             present), {dir}/{}.md, your project's file there (if present){added}.",
             role.as_str()
         )
     }
@@ -229,7 +299,9 @@ pub fn current(
     host: &dyn TerminalHost,
 ) -> Result<RuleFiles> {
     let address = orchestrator_address(store, host)?;
-    RuleFiles::load(home, config, &store.active_rules()?, &address)
+    let files = RuleFiles::load(home, config, &store.active_rules()?, &address)?;
+    files.sync_folder().ok();
+    Ok(files)
 }
 
 /// Where workers send their messages to the orchestrator.

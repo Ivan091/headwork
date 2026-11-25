@@ -209,6 +209,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     if let Ok(config) = &config {
         checks.push(host_check(d, config));
         checks.push(shell_check(config));
+        checks.push(rules_folder_check(d, config, store.as_ref()));
     }
     checks.push(gh_check(d));
     checks.push(claude_check(d));
@@ -380,6 +381,41 @@ fn unenforced_keys_check(config: &Config) -> Check {
             keys.join(", ")
         ),
         "nothing to do; remove them or leave them as documentation (docs/decisions.md, 2026-11-16)",
+    )
+}
+
+fn rules_folder_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check {
+    let added = store
+        .and_then(|store| store.active_rules().ok())
+        .unwrap_or_default();
+    let files = match super::rules::RuleFiles::load(d.home, config, &added, "orchestrator") {
+        Ok(files) => files,
+        Err(error) => {
+            return Check::fail(
+                "rules-folder",
+                format!("{error:#}"),
+                "fix the unreadable rules file",
+            );
+        }
+    };
+    let problems = files.folder_problems();
+    if problems.is_empty() {
+        return Check::ok(
+            "rules-folder",
+            format!(
+                "{} holds the rules the hook points to",
+                files.dir().display()
+            ),
+        );
+    }
+    Check::warn(
+        "rules-folder",
+        format!(
+            "{} lacks or has stale: {}",
+            files.dir().display(),
+            problems.join(", ")
+        ),
+        "the next hook call writes them; or run `headwork board`",
     )
 }
 
