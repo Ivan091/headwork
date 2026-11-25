@@ -69,7 +69,7 @@ Hostnames are not used: they change, macOS rewrites them, and they say nothing a
 
 | Command | Does |
 |---|---|
-| `headwork config sync [--no-pull] [--dry-run]` | `git fetch`, then `git merge --ff-only @{upstream}` in the repository (SSH, batch mode, as `clean` does; unrelated unstaged changes, such as wmux's edits to `CLAUDE.md`, never stop it, and only a merge that would overwrite a local change is retried with `--autostash`), merge, validate, then write `config.toml` atomically (temp file + rename) and keep `config.toml.prev` and `config.origin.json`. Prints a diff against the old effective file. Logs `config-synced` with the repository commit. |
+| `headwork config sync [--no-pull] [--dry-run]` | `git fetch`, then `git merge --ff-only @{upstream}` in the repository (SSH, batch mode, as `clean` does; unrelated unstaged changes, such as wmux's edits to `CLAUDE.md`, never stop it, and a merge that would overwrite a local change is refused with git's message, never stashed), merge, validate, then write `config.toml` atomically (temp file + rename) and keep `config.toml.prev` and `config.origin.json`. Prints a diff against the old effective file. Logs `config-synced` with the repository commit. |
 | `headwork config show [--origin] [--json]` | The effective config, each key tagged `shared` / `windows` / `local` / `default`. |
 | `headwork config check` | Merge and validate without writing. Its exit code means pass or fail, so CI or a session can run it before a PR. |
 | `headwork config rollback` | Puts `config.toml.prev` back. |

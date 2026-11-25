@@ -290,26 +290,16 @@ fn git_ok(repo: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Fetches and fast-forwards the checked-out branch, whatever the working tree holds.
+/// Fetches and fast-forwards the checked-out branch, whatever unrelated changes the working tree holds.
 ///
 /// A plain `git pull` refuses a tree with unstaged changes when `pull.rebase` is set, and a source repository that
 /// another tool edits (wmux rewrites its block in `CLAUDE.md`) is never clean. So this fetches, then merges
-/// `@{upstream}` with `--ff-only`, which leaves unrelated local changes alone; only when the merge would overwrite a
-/// local change does it retry with `--autostash`. A failure leaves `config.toml` untouched.
+/// `@{upstream}` with `--ff-only`, which leaves unrelated local changes alone and refuses, with git's own message,
+/// a merge that would overwrite one. It never stashes, so no local edit leaves the working tree. A failure leaves
+/// `config.toml` untouched.
 fn pull(repo: &Path) -> Result<String, String> {
     git_ok(repo, &["fetch", "--quiet"])?;
-    git_ok(repo, &["merge", "--ff-only", "--quiet", "@{upstream}"]).or_else(|_plain| {
-        git_ok(
-            repo,
-            &[
-                "merge",
-                "--ff-only",
-                "--autostash",
-                "--quiet",
-                "@{upstream}",
-            ],
-        )
-    })
+    git_ok(repo, &["merge", "--ff-only", "--quiet", "@{upstream}"])
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

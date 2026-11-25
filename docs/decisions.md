@@ -1460,3 +1460,4 @@ and the reason.
 - 2026-11-25: a machine names itself in `~/.headwork/sources.toml`, never by hostname; the merged `machine.host` must suit the OS. Secrets (`machine.notify_ntfy`) live only in `config.local.toml`, and tracked layers that set them are refused.
 - 2026-11-25: the tick never pulls or writes the config; it reports `config-stale` and `config-drift`. `update` and `install` re-apply the sources without pulling.
 - 2026-11-25: `config-stale` and `config-drift` are standing findings without a prompt notice; `import` keeps writing `config.toml` on a synced machine for now; a missing machine file fails doctor `config-sources`.
+- 2026-11-25: `config sync` fetches and merges `@{upstream}` with `--ff-only` and never stashes, so a source repository with unrelated unstaged changes syncs and one whose local change clashes with the incoming commit fails with git's message and leaves `config.toml` alone.

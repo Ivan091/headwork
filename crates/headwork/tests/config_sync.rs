@@ -547,3 +547,70 @@ fn sync_pulls_into_a_dirty_repository() {
             .contains("max_workers = 7")
     );
 }
+
+fn with_origin(synced: &Synced) -> (tempfile::TempDir, tempfile::TempDir) {
+    std::fs::write(synced.repo.path().join("CLAUDE.md"), "wmux block\n").unwrap();
+    synced.commit_repo("claude");
+    let origin = tempfile::tempdir().unwrap();
+    git(origin.path(), &["init", "-q", "--bare"]);
+    let origin_arg = origin.path().to_str().unwrap().to_owned();
+    git(
+        synced.repo.path(),
+        &["remote", "add", "origin", &origin_arg],
+    );
+    git(synced.repo.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+    let other = tempfile::tempdir().unwrap();
+    git(
+        other.path(),
+        &["clone", "-q", &origin_arg, other.path().to_str().unwrap()],
+    );
+    (origin, other)
+}
+
+fn push_from(other: &Path, file: &str, text: &str) {
+    std::fs::write(other.join(file), text).unwrap();
+    git(other, &["commit", "-q", "-a", "-m", "upstream change"]);
+    git(other, &["push", "-q"]);
+}
+
+#[test]
+fn a_local_edit_the_pull_would_overwrite_fails_the_sync_and_keeps_both() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    push_from(other.path(), "CLAUDE.md", "upstream block\n");
+    std::fs::write(synced.repo.path().join("CLAUDE.md"), "wmux block edited\n").unwrap();
+    let before = std::fs::read_to_string(synced.config()).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("merge --ff-only"), "{text}");
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(synced.repo.path().join("CLAUDE.md")).unwrap(),
+        "wmux block edited\n"
+    );
+}
+
+#[test]
+fn a_diverged_branch_fails_the_sync_with_the_merge_error() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    push_from(other.path(), "CLAUDE.md", "upstream block\n");
+    std::fs::write(synced.repo.path().join("CLAUDE.md"), "local block\n").unwrap();
+    synced.commit_repo("local");
+    let before = std::fs::read_to_string(synced.config()).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("fast-forward"), "{text}");
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
+}
+
+#[test]
+fn a_repository_without_an_upstream_fails_the_sync() {
+    let synced = adopted();
+    let before = std::fs::read_to_string(synced.config()).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
+}
