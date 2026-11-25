@@ -69,7 +69,7 @@ Hostnames are not used: they change, macOS rewrites them, and they say nothing a
 
 | Command | Does |
 |---|---|
-| `headwork config sync [--no-pull] [--dry-run]` | `git fetch`, then `git merge --ff-only @{upstream}` in the repository (SSH, batch mode, as `clean` does; unrelated unstaged changes, such as wmux's edits to `CLAUDE.md`, never stop it, and a merge that would overwrite a local change is refused with git's message, never stashed), merge, validate, then write `config.toml` atomically (temp file + rename) and keep `config.toml.prev` and `config.origin.json`. Prints a diff against the old effective file. Logs `config-synced` with the repository commit. |
+| `headwork config sync [--no-pull] [--dry-run]` | `git fetch`, then `git merge --ff-only @{upstream}` in the repository (SSH, batch mode, as `clean` does; unrelated unstaged changes, such as wmux's edits to `CLAUDE.md`, never stop it, and a merge that would overwrite a local change is refused with git's message, never stashed; a shared or machine file whose only local difference is its line endings is first checked out from `HEAD`, so a CRLF checkout never blocks it), merge, validate, then write `config.toml` atomically (temp file + rename) and keep `config.toml.prev` and `config.origin.json`. Prints a diff against the old effective file. Logs `config-synced` with the repository commit. |
 | `headwork config show [--origin] [--json]` | The effective config, each key tagged `shared` / `windows` / `local` / `default`. |
 | `headwork config check` | Merge and validate without writing. Its exit code means pass or fail, so CI or a session can run it before a PR. |
 | `headwork config rollback` | Puts `config.toml.prev` back. |
@@ -86,6 +86,7 @@ Triggers:
 
 - The runtime reads only the generated file. A source that fails to parse, an `unset` typo, a machine-only key in the shared file, a secret in a tracked file, a host that does not suit the OS, a duplicate key, a failed pull or a merge conflict in the repository: each fails the sync with the file and key named. `config.toml` is left untouched and the event `config-sync-failed` is logged.
 - The candidate is validated the way `update` smoke-tests a build: `Config::parse`, the project-overlay load, and `doctor --json` run on a scratch home holding the candidate. The new file is written only when doctor finds no new failure.
+- Sources are read and written with LF line endings only (`adopt --write` writes LF; reads ignore a CR before a line break), so `core.autocrlf` cannot change what a sync builds.
 - A pull that is not a fast-forward (local edits in the repository) stops the sync. It never resets or merges.
 - `config rollback` gets back to the previous file in one step.
 
