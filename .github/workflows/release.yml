@@ -80,6 +80,7 @@ jobs:
           --title "headwork $TAG"
           --generate-notes
       - name: migration notes
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v0.1.${{ github.run_number }}

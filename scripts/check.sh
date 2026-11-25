@@ -34,11 +34,16 @@ node dash/untangle.test.js
 
 step "migration notes"
 bash scripts/test-migration-line.sh
+bash scripts/test-release-migration-notes.sh
+bash scripts/test-pr-body.sh
 cargo run -q --locked -p headwork -- migrate check .
 if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
   body_file=$(mktemp)
   changed_file=$(mktemp)
-  node scripts/pr-body.js > "$body_file"
+  number=$(node scripts/pr-body.js --number)
+  if [[ -z "${GH_TOKEN:-}" || -z "$number" ]] || ! gh pr view "$number" --repo "${GITHUB_REPOSITORY:-}" --json body -q .body > "$body_file"; then
+    node scripts/pr-body.js > "$body_file"
+  fi
   git diff --name-only "origin/${GITHUB_BASE_REF:-master}...HEAD" > "$changed_file"
   bash scripts/migration-line.sh "$body_file" "$changed_file"
   rm -f "$body_file" "$changed_file"

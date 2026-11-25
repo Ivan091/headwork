@@ -2,4 +2,4 @@
 
 ## Migration
 
-Migration: none (reason)
+Migration: <migrations/<id>.toml, or none (<reason>)>
