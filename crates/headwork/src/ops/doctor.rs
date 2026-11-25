@@ -198,6 +198,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
             "run `headwork import` to write config.toml from the orchestrate projects.conf, or write one as in docs/design.md section 5",
         )),
     }
+    checks.extend(config_sync_checks(d));
     if config.is_ok() {
         checks.push(deprecated_keys_check(d));
         if let Ok(config) = &config {
@@ -236,6 +237,93 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         }
     }
     DoctorReport { checks }
+}
+
+/// The checks of a synced config: `config-sources` always, the rest when `sources.toml` exists.
+fn config_sync_checks(d: &Doctor<'_>) -> Vec<Check> {
+    use super::config_sync::{self, ProblemKind};
+    let inspection = match config_sync::inspect(d.home, d.platform) {
+        Ok(Some(inspection)) => inspection,
+        Ok(None) => {
+            return vec![Check::ok(
+                "config-sources",
+                "not synced (hand-written config)",
+            )];
+        }
+        Err(error) => {
+            return vec![Check::fail(
+                "config-sources",
+                format!("{error:#}"),
+                "fix sources.toml: `repo = \"<folder>\"` and `machine = \"<name>\"`",
+            )];
+        }
+    };
+    let layout = &inspection.layout;
+    let mut checks = Vec::new();
+    let missing = [
+        (!layout.repo.is_dir(), &layout.repo),
+        (!layout.shared_file.is_file(), &layout.shared_file),
+        (!layout.machine_file.is_file(), &layout.machine_file),
+    ]
+    .into_iter()
+    .find_map(|(missing, path)| missing.then(|| slashed(path)));
+    checks.push(missing.map_or_else(
+        || {
+            Check::ok(
+                "config-sources",
+                format!(
+                    "synced from {} for machine {}",
+                    slashed(&layout.repo),
+                    layout.machine
+                ),
+            )
+        },
+        |path| {
+            Check::fail(
+                "config-sources",
+                format!("{path} is missing"),
+                "clone or pull the config repository and add the machine file, or fix sources.toml",
+            )
+        },
+    ));
+    checks.push(inspection.stale().map_or_else(
+        || Check::ok("config-stale", "config.toml matches the sources"),
+        |reason| Check::warn("config-stale", reason, "run `headwork config sync`"),
+    ));
+    checks.push(inspection.drift(d.home).map_or_else(
+        || Check::ok("config-drift", "config.toml is what the last sync wrote"),
+        |reason| {
+            Check::warn(
+                "config-drift",
+                reason,
+                "put the change in the repository and run `headwork config sync`; the next sync overwrites the file",
+            )
+        },
+    ));
+    checks.push(match &inspection.candidate {
+        Err(problem) if problem.kind == ProblemKind::Secret => Check::fail(
+            "config-secret",
+            problem.message.clone(),
+            "move the secret to config.local.toml and remove it from the repository's history",
+        ),
+        Err(_) | Ok(_) => Check::ok("config-secret", "no secret in a tracked source"),
+    });
+    checks.push(match d.home.load_config() {
+        Ok(config) if !config_sync::host_suits(config.machine.host, d.platform) => Check::fail(
+            "config-host",
+            format!(
+                "machine.host = \"{}\" does not suit this OS",
+                config.machine.host.as_str()
+            ),
+            "set machine.host in the machine's file, then run `headwork config sync`",
+        ),
+        Ok(config) => Check::ok(
+            "config-host",
+            format!("host {} suits this OS", config.machine.host.as_str()),
+        ),
+        Err(_) => Check::ok("config-host", "no loadable config to check"),
+    });
+    checks
 }
 
 /// Trusts every project's main checkout in Claude Code's state file, so no worker stops at the trust prompt, and

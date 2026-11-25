@@ -1280,6 +1280,7 @@ fn mcp_tools_follow_the_role() {
             "clean",
             "reap",
             "update",
+            "config_sync",
             "rules",
             "rule_add",
             "rule_retire",

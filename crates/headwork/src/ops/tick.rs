@@ -185,6 +185,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("waiting", Run::waiting)?;
     run.stage("queue", Run::queue)?;
     run.stage("update", Run::update)?;
+    run.stage("config", Run::config)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -295,6 +296,36 @@ impl<'b> Run<'_, 'b> {
     /// Runs one stage of the tick. A stage that fails is recorded as a `tick-error` finding and the next stage runs
     /// anyway, so one bad pane or host call never skips the asks, the queue, the update poll or the tick's record. A
     /// failure to record it, which means the store itself is gone, ends the tick.
+    /// Reports a synced config that fell behind its sources or was edited by hand; never pulls or writes (`docs/config-sync.md`).
+    fn config(&mut self) -> Result<()> {
+        let home = self.env().home;
+        if let Some(inspection) =
+            super::config_sync::inspect(home, headwork_core::Platform::current())?
+        {
+            for (key, rule, reason) in [
+                ("config-stale", FindingId::ConfigStale, inspection.stale()),
+                (
+                    "config-drift",
+                    FindingId::ConfigDrift,
+                    inspection.drift(home),
+                ),
+            ] {
+                if let Some(reason) = reason {
+                    self.standing(
+                        key,
+                        rule,
+                        None,
+                        Status::Standing,
+                        &serde_json::json!({ "reason": reason }),
+                        None,
+                    )?;
+                }
+            }
+        }
+        self.sweep(FindingId::ConfigStale)?;
+        self.sweep(FindingId::ConfigDrift)
+    }
+
     /// Reads every transcript changed since its last read: the sessions whose hooks did not run, subagents that ran in
     /// the background, and sessions headwork did not start. Unreadable files are logged as `usage-error`.
     fn usage(&mut self) -> Result<()> {

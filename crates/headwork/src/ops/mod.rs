@@ -3,6 +3,7 @@
 pub mod answer;
 pub mod clean;
 pub mod close;
+pub mod config_sync;
 pub mod dash;
 pub mod doctor;
 pub mod effort;

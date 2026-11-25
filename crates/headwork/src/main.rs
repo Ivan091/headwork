@@ -301,6 +301,11 @@ enum Command {
         #[command(subcommand)]
         action: FlowAction,
     },
+    /// The effective config generated from the shared, machine and local layers (`docs/config-sync.md`).
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Serve the agent graph as a web page on loopback, read only, until stopped (docs/dashboard.md).
     Dash {
         /// The port to listen on.
@@ -473,6 +478,62 @@ enum FlowAction {
     Check {
         /// One flow's name; every flow when absent.
         name: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// What `config` does.
+#[derive(Debug, Subcommand)]
+enum ConfigAction {
+    /// Merge and validate the sources without writing anything. Exits 1 on a problem.
+    Check {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pull the repository, merge the layers, validate the result and replace `config.toml` atomically.
+    Sync {
+        /// Do not run `git pull --ff-only` first.
+        #[arg(long)]
+        no_pull: bool,
+        /// Validate and print the diff, write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the effective config, or each key with the layer it came from.
+    Show {
+        /// One line per key: key, layer, value.
+        #[arg(long)]
+        origin: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put the previous `config.toml` back, keeping the replaced one as `config.toml.rolled-back`.
+    Rollback {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Split today's `config.toml` into shared, machine and local files and set up `sources.toml`.
+    Adopt {
+        /// This machine's name, the folder under `machines/` in the repository.
+        #[arg(long)]
+        machine: String,
+        /// The repository folder; the Claude folder when absent.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Write the files instead of printing them.
+        #[arg(long)]
+        write: bool,
+        /// Overwrite files that exist.
+        #[arg(long)]
+        force: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -678,6 +739,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Flow {
             action: FlowAction::Check { name, json },
         } => return flow_check_command(name.as_deref(), json, out),
+        Command::Config { action } => return config_command(action, out),
         Command::Orchestrator {
             name,
             agent,
@@ -841,6 +903,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Doctor { .. }
         | Command::Dash { .. }
         | Command::Flow { .. }
+        | Command::Config { .. }
         | Command::Orchestrator { .. }
         | Command::Hook { .. }
         | Command::Mcp { .. }
@@ -1557,6 +1620,13 @@ fn install_command(dir: &str, json: bool, out: &mut impl Write) -> Result<ExitCo
         );
     };
     let report = install(&source, &home.expand(dir), verify_installed)?;
+    let config = headwork::ops::config_sync::after_install(
+        &home,
+        &home
+            .expand(dir)
+            .join(headwork::ops::install::program_name()),
+        Identity::from_env().actor(),
+    );
     let (sessions, backup) = if home.root().join("state.db").exists() {
         let store = home.open_store()?;
         let sessions = reload::classify(
@@ -1570,12 +1640,15 @@ fn install_command(dir: &str, json: bool, out: &mut impl Write) -> Result<ExitCo
     if json {
         json_out(
             out,
-            &serde_json::json!({ "install": report, "sessions": sessions, "backup": backup }),
+            &serde_json::json!({ "install": report, "sessions": sessions, "backup": backup, "config": config }),
         )?;
     } else {
         out.write_all(render::installed(&report, &sessions).as_bytes())?;
         if let Some(backup) = backup {
             writeln!(out, "{backup}")?;
+        }
+        if let Some(config) = config {
+            writeln!(out, "{config}")?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1907,6 +1980,134 @@ fn flow_check_command(name: Option<&str>, json: bool, out: &mut impl Write) -> R
             ExitCode::FAILURE
         },
     )
+}
+
+fn config_command(action: ConfigAction, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::config_sync::{self as sync, AdoptOptions, Logging, SyncOptions};
+    let home = Home::locate()?;
+    let platform = Platform::current();
+    let actor = Identity::from_env().actor();
+    let exit = |ok: bool| {
+        if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }
+    };
+    match action {
+        ConfigAction::Check { json } => {
+            let report = sync::check(&home, platform);
+            if json {
+                json_out(out, &report)?;
+            } else {
+                out.write_all(report.to_string().as_bytes())?;
+            }
+            Ok(exit(report.ok))
+        }
+        ConfigAction::Sync {
+            no_pull,
+            dry_run,
+            json,
+        } => {
+            let exe = std::env::current_exe().context("finding the headwork program")?;
+            let store = home.open_store()?;
+            let options = SyncOptions {
+                pull: !no_pull,
+                dry_run,
+            };
+            let log = Logging {
+                store: Some(&store),
+                actor,
+            };
+            let report = sync::sync(&home, &exe, options, platform, log)?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                out.write_all(report.to_string().as_bytes())?;
+            }
+            Ok(exit(report.ok))
+        }
+        ConfigAction::Show { origin, json } => {
+            require_synced(&home)?;
+            config_show(&home, origin, json, out)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ConfigAction::Rollback { json } => {
+            require_synced(&home)?;
+            let store = home.open_store()?;
+            let log = Logging {
+                store: Some(&store),
+                actor,
+            };
+            let report = sync::rollback(&home, log)?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                writeln!(
+                    out,
+                    "restored config.toml.prev as {}; the replaced file is {}",
+                    report.restored.display(),
+                    report.kept_as.display()
+                )?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        ConfigAction::Adopt {
+            machine,
+            repo,
+            write,
+            force,
+            json,
+        } => {
+            let options = AdoptOptions {
+                machine,
+                repo,
+                write,
+                force,
+            };
+            let report = sync::adopt(&home, &options, platform)?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                out.write_all(report.to_string().as_bytes())?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn config_show(home: &Home, origin: bool, json: bool, out: &mut impl Write) -> Result<()> {
+    if origin {
+        let keys = headwork::ops::config_sync::show_origins(home)?;
+        if json {
+            json_out(out, &keys)?;
+        } else {
+            for key in keys {
+                writeln!(out, "{}\t{}\t{}", key.key, key.layer, key.value)?;
+            }
+        }
+    } else {
+        let path = home.config_path();
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if json {
+            json_out(out, &serde_json::json!({ "config": text }))?;
+        } else {
+            out.write_all(text.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+fn require_synced(home: &Home) -> Result<()> {
+    if home.sources_path().exists() {
+        Ok(())
+    } else {
+        bail!(
+            "not synced: {} does not exist; `headwork config adopt --machine <name>` sets it up",
+            home.sources_path().display()
+        )
+    }
 }
 
 fn doctor_command(
