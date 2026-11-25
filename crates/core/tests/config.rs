@@ -153,10 +153,6 @@ fn heavy_keys_still_load_and_are_named_as_retired() {
         "{}\n[project.extra]\nmain = \"S:/x\"\nheavy_slots = 2\nheavy_gate = \"scripts/heavy.sh\"\n",
         fixture("config.toml").replace("[project.me-sim]", "[project.me-sim]\nheavy_slots = 1")
     );
-    let text = text.replace(
-        "[project.extra]\nmain = \"S:/x\"\n",
-        "[project.extra]\nmain = \"S:/x\"\n",
-    );
     assert!(
         Config::retired_keys(&fixture("config.toml")).is_empty(),
         "the fixture is current"

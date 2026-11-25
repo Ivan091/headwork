@@ -455,7 +455,9 @@ fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
         "heavy_slots set"
     );
     assert!(
-        detail(&report, "config-keys").contains("project.me-sim.heavy_slots (not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots)"),
+        detail(&report, "config-keys").contains(
+            "project.me-sim.heavy_slots (not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots)"
+        ),
         "{}",
         detail(&report, "config-keys")
     );
