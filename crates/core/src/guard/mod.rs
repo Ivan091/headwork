@@ -732,6 +732,9 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
             "never push to the default branch: push your task branch and open a pull request",
         );
     }
+    if let Some(denied) = check_forced_push(scope, args, refspecs) {
+        return denied;
+    }
     if scope.allowed_repos.is_empty() {
         return Decision::Allow;
     }
@@ -758,6 +761,49 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
             )
         }
         Some(_) | None => Decision::Allow,
+    }
+}
+
+/// A push that rewrites a remote branch: a plain force or a `+refspec` is refused; `--force-with-lease` and
+/// `--force-if-includes` are allowed only to the task's own branch.
+fn check_forced_push(scope: &Scope, args: &[String], refspecs: &[&str]) -> Option<Decision> {
+    let plain = args.iter().any(|arg| {
+        arg == "--force"
+            || (!arg.starts_with("--")
+                && arg.starts_with('-')
+                && arg.get(1..).is_some_and(|letters| letters.contains('f')))
+    }) || refspecs.iter().any(|spec| spec.starts_with('+'));
+    if plain {
+        return Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "a plain force push is refused: after a rebase use `git push --force-with-lease` to your own task branch",
+        ));
+    }
+    let lease = args.iter().any(|arg| {
+        arg == "--force-if-includes"
+            || arg == "--force-with-lease"
+            || arg.starts_with("--force-with-lease=")
+    });
+    if !lease {
+        return None;
+    }
+    let own = scope.branch.as_deref();
+    let only_own = if refspecs.is_empty() {
+        own.is_some()
+    } else {
+        refspecs.iter().all(|spec| {
+            let target = spec.rsplit(':').next().unwrap_or(spec);
+            let target = target.trim_start_matches("refs/heads/");
+            Some(target) == own || (target == "HEAD" && own.is_some())
+        })
+    };
+    if only_own {
+        None
+    } else {
+        Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "`--force-with-lease` is for your own task branch only",
+        ))
     }
 }
 

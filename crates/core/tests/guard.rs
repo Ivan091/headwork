@@ -393,6 +393,96 @@ fn worker_bash_table() {
 }
 
 #[test]
+fn worker_force_push_table() {
+    let table: &[(&str, &str, bool, Option<RuleId>)] = &[
+        ("git push --force-with-lease", "sand", false, None),
+        (
+            "git push --force-with-lease origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease=sand:abc123 origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease --force-if-includes origin HEAD",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-if-includes origin sand:sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease origin other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin sand other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin master",
+            "sand",
+            false,
+            Some(RuleId::WorkerDefaultBranch),
+        ),
+        (
+            "git push --force-with-lease",
+            "master",
+            false,
+            Some(RuleId::WorkerDefaultBranch),
+        ),
+        (
+            "git push --force",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push -f origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push origin +sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --force origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+    ];
+    for (command, branch, background, expected) in table {
+        let call = ToolCall::Bash {
+            command,
+            background: *background,
+        };
+        assert_eq!(
+            rule(&check_tool(&worker(branch), &call)),
+            *expected,
+            "{command} on {branch}"
+        );
+    }
+}
+
+#[test]
 fn worker_admin_table() {
     let table: &[(&str, Option<RuleId>)] = &[
         ("headwork board", None),

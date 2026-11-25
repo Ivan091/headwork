@@ -483,6 +483,8 @@ text_enum!(
         WorkerDefaultBranch => "worker-default-branch" | "child-default-branch",
         /// A worker pushes to a repository its project does not allow.
         WorkerPushRepo => "worker-push-repo" | "child-push-repo",
+        /// A worker force pushes without a lease, or leases a branch that is not its own task branch.
+        WorkerForcePush => "worker-force-push",
         /// A worker uses a global delivery skill where its project names its own delivery command.
         WorkerGlobalSkill => "worker-global-skill" | "child-global-skill",
         /// A worker starts a Fable subagent without the user's approval.
