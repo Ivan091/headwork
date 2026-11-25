@@ -413,7 +413,9 @@ fn show_leaves_the_machine_placeholder_visible_when_the_name_is_unknown() {
     add_note(
         &machine,
         "named",
-        "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"echo {machine}\"\n",
+        &format!(
+            "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"echo {PLACEHOLDER}\"\n"
+        ),
     );
     machine.run(&["migrate", "list"]);
     let shown = text(&machine.run(&["migrate", "show", "named"]));
