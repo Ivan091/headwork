@@ -232,7 +232,7 @@ pub fn report(store: &Store, home: &Home, config: &Config, fetch: bool) -> Resul
     let mut errors = Vec::new();
     for source in sources(home, config) {
         let repo = NoteRepo::new(&source.dir);
-        if !repo.exists() {
+        if !repo.exists() || !repo.has_origin() {
             continue;
         }
         if fetch && let Err(error) = repo.fetch() {

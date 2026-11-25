@@ -1994,3 +1994,96 @@ fn a_merged_grace_close_leaves_a_reused_pid_alone() {
     );
     assert!(count(&w, "pid-reused") >= 1, "logged");
 }
+
+fn origin_with_note(w: &World) {
+    let origin = w.dir.path().join("origin");
+    std::fs::create_dir_all(origin.join("migrations")).unwrap();
+    git_in(&origin, &["init", "-q", "-b", "master"]);
+    std::fs::write(
+        origin.join("migrations/n.toml"),
+        "id = \"n\"\ntitle = \"Note\"\ncheck = \"false\"\npull = false\n\n[[step]]\nkind = \"agent\"\nrun = \"true\"\n",
+    )
+    .unwrap();
+    git_in(&origin, &["add", "."]);
+    git_in(&origin, &["commit", "-q", "-m", "note"]);
+    let main = w.dir.path().join("demo");
+    git_in(
+        &main,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git_in(&main, &["fetch", "-q", "origin", "master"]);
+}
+
+#[test]
+fn a_pending_migration_note_is_a_finding_until_it_is_applied() {
+    let mut w = world();
+    origin_with_note(&w);
+    let report = run_tick(&mut w);
+    assert!(
+        rules(&report).contains(&(FindingId::MigrationPending, Status::Standing)),
+        "{:?}",
+        rules(&report)
+    );
+    assert_eq!(
+        w.store
+            .open_finding_keys(FindingId::MigrationPending)
+            .unwrap(),
+        ["migration-pending:demo/n"],
+        "raised once"
+    );
+
+    let applied = headwork::ops::migrate::apply(
+        &mut w.store,
+        &w.home,
+        &w.config,
+        "demo/n",
+        &headwork::ops::migrate::ApplyOptions::default(),
+        Actor::User,
+    )
+    .unwrap();
+    assert_eq!(applied.exit_code(), 0, "{applied}");
+
+    let report = run_tick(&mut w);
+    assert!(
+        !rules(&report).contains(&(FindingId::MigrationPending, Status::Standing)),
+        "{:?}",
+        rules(&report)
+    );
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::MigrationPending)
+            .unwrap()
+            .is_empty(),
+        "cleared"
+    );
+}
+
+#[test]
+fn a_repository_that_cannot_be_read_keeps_its_findings_and_raises_a_tick_error() {
+    let mut w = world();
+    origin_with_note(&w);
+    run_tick(&mut w);
+    let main = w.dir.path().join("demo");
+    git_in(&main, &["remote", "set-url", "origin", "/no/such/origin"]);
+    git_in(&main, &["update-ref", "-d", "refs/remotes/origin/master"]);
+    let report = run_tick(&mut w);
+    assert!(
+        rules(&report).contains(&(FindingId::TickError, Status::Standing)),
+        "{:?}",
+        rules(&report)
+    );
+    assert_eq!(
+        w.store
+            .open_finding_keys(FindingId::MigrationPending)
+            .unwrap(),
+        ["migration-pending:demo/n"],
+        "the finding of the unreadable repository stays"
+    );
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::TickError)
+            .unwrap()
+            .contains(&"tick-error:migrations:demo".to_owned()),
+        "the error names the repository"
+    );
+}

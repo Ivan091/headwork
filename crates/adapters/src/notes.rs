@@ -72,6 +72,12 @@ impl NoteRepo {
         self.dir.join(".git").exists()
     }
 
+    /// Whether the checkout has a remote named `origin`; one without has no notes to read.
+    #[must_use]
+    pub fn has_origin(&self) -> bool {
+        self.git(&["remote", "get-url", "origin"]).is_ok()
+    }
+
     /// The remote ref of the default branch, such as `origin/master`: what `origin/HEAD` points at, else `origin/main`
     /// or `origin/master`, whichever exists.
     ///
