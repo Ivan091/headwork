@@ -131,6 +131,9 @@ fn adopt_splits_the_config_and_the_split_round_trips() {
     let shared = std::fs::read_to_string(synced.repo.path().join("headwork/config.toml")).unwrap();
     let machine = std::fs::read_to_string(synced.machine_file()).unwrap();
     let local = std::fs::read_to_string(synced.home.path().join("config.local.toml")).unwrap();
+    for text in [&shared, &machine, &local] {
+        assert!(!text.contains('\r'), "no CR written: {text:?}");
+    }
     assert!(shared.contains("[models]"), "{shared}");
     assert!(!shared.contains("main = "), "no main in shared: {shared}");
     assert!(
@@ -619,6 +622,81 @@ fn a_source_that_differs_only_in_line_endings_does_not_stop_the_pull() {
         std::fs::read_to_string(synced.repo.path().join("CLAUDE.md")).unwrap(),
         "wmux block edited\n"
     );
+    let pulled = std::fs::read_to_string(&local)
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert_eq!(pulled, format!("{original}\n"));
+}
+
+#[test]
+fn a_machine_file_with_only_line_ending_changes_is_restored_too() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    let machine = other.path().join("machines/test/headwork.toml");
+    let original = std::fs::read_to_string(&machine)
+        .unwrap()
+        .replace("\r\n", "\n");
+    push_from(
+        other.path(),
+        "machines/test/headwork.toml",
+        &format!("{original}\n"),
+    );
+    std::fs::write(synced.machine_file(), original.replace('\n', "\r\n")).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let pulled = std::fs::read_to_string(synced.machine_file())
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert_eq!(pulled, format!("{original}\n"));
+}
+
+#[test]
+fn a_trailing_newline_edit_is_a_real_edit_and_is_kept() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    let shared = other.path().join("headwork").join("config.toml");
+    let original = std::fs::read_to_string(&shared)
+        .unwrap()
+        .replace("\r\n", "\n");
+    push_from(
+        other.path(),
+        "headwork/config.toml",
+        &format!("{original}\n"),
+    );
+    let local = synced.repo.path().join("headwork").join("config.toml");
+    let edited = format!("{original}\n\n");
+    std::fs::write(&local, &edited).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), edited);
+}
+
+#[test]
+fn crlf_sources_build_the_same_config_as_lf_sources() {
+    let synced = adopted();
+    let first = synced.run(&["config", "sync", "--no-pull"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let lf_config = std::fs::read_to_string(synced.config()).unwrap();
+    for file in [
+        synced.repo.path().join("headwork/config.toml"),
+        synced.machine_file(),
+    ] {
+        let text = std::fs::read_to_string(&file)
+            .unwrap()
+            .replace("\r\n", "\n");
+        std::fs::write(&file, text.replace('\n', "\r\n")).unwrap();
+    }
+    let second = synced.run(&["config", "sync", "--no-pull"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), lf_config);
+    let check = synced.run(&["config", "check"]);
+    assert!(check.status.success(), "{}", stderr(&check));
 }
 
 #[test]
