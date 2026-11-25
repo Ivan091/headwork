@@ -61,6 +61,10 @@ pub const LOCK_FILE: &str = "update.lock";
 /// child process between its `fork` and `exec` (an `flock` on unix belongs to the open file, which a forked child
 /// shares until `exec` closes it).
 pub const LOCK_GRACE: Duration = Duration::from_secs(2);
+/// How long a prompt hook waits for the lock before it leaves the notices for the next prompt.
+///
+/// Long enough for a forked child to `exec` and close its shared copy of a released lock, short enough for a hook.
+pub const NOTICE_GRACE: Duration = Duration::from_millis(500);
 /// Touched by an update that found the lock taken, so the holder runs again.
 pub const PENDING_FILE: &str = "update.pending";
 /// The working memory: last poll, `ETag`, the newest release seen, the last failure and result.
@@ -1540,7 +1544,7 @@ pub fn take_notices(home: &Home) -> Result<Vec<String>> {
     if UpdateState::load(home).notices.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(_lock) = UpdateLock::try_take(home)? else {
+    let Some(_lock) = UpdateLock::take_waiting(home, NOTICE_GRACE)? else {
         return Ok(Vec::new());
     };
     let mut state = UpdateState::load(home);
