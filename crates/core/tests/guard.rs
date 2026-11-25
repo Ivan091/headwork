@@ -507,6 +507,12 @@ fn worker_force_push_table() {
             Some(RuleId::WorkerForcePush),
         ),
         (
+            "git push --force-with-lease --branches origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
             "git push --force-with-lease --mirror origin",
             "sand",
             false,

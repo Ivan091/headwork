@@ -47,7 +47,14 @@ const COMMIT_WIDE: &[&str] = &[
 ];
 
 /// `git push` options that delete or push more than the current branch.
-const PUSH_WIDE: &[&str] = &["--delete", "--mirror", "--all", "--prune", "--tags"];
+const PUSH_WIDE: &[&str] = &[
+    "--delete",
+    "--mirror",
+    "--all",
+    "--branches",
+    "--prune",
+    "--tags",
+];
 
 /// How a `git push` forces the remote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

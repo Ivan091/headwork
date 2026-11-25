@@ -44,8 +44,10 @@ pub const fn backoff_s(failures: u32) -> u64 {
     60_u64 << if exponent > last { last } else { exponent }
 }
 
-const TRANSIENT_MARKERS: [&str; 13] = [
+const TRANSIENT_MARKERS: [&str; 15] = [
     "permission denied",
+    "odmowa dostępu",
+    "używany przez inny proces",
     "being used by another process",
     "resource busy",
     "access is denied",
