@@ -182,6 +182,9 @@ pub struct UpdateState {
     /// Notices waiting for the orchestrator's next prompt, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<Notice>,
+    /// Migration notes the orchestrator was told are pending, so each is told once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migrations_told: Vec<String>,
 }
 
 impl UpdateState {
@@ -229,6 +232,16 @@ impl UpdateState {
         self.last_failure.as_ref().filter(|failure| {
             failure.kind == FailureKind::Deterministic || failure.attempts >= REPORT_TRANSIENT_FROM
         })
+    }
+
+    /// Leaves a notice for the pending migration notes not told before.
+    pub fn tell_migrations(&mut self, now_ms: u64, pending: &[String]) {
+        let mut told: std::collections::BTreeSet<String> =
+            self.migrations_told.iter().cloned().collect();
+        if let Some(text) = super::migrate::announcement(pending, &mut told) {
+            self.notice(now_ms, text);
+            self.migrations_told = told.into_iter().collect();
+        }
     }
 
     fn notice(&mut self, now_ms: u64, text: String) {
@@ -1450,6 +1463,11 @@ pub fn after(env: &UpdateEnv<'_>, from: &str, this: ThisBuild<'_>) -> Result<Aft
     let mut state = UpdateState::load(env.home);
     if let Some(text) = install_notice(from, this, &checkout, env.home) {
         state.notice(env.clock.now_ms(), text);
+    }
+    if let Ok(store) = env.home.open_store()
+        && let Ok(pending) = super::migrate::pending(&store, env.home, env.config, true)
+    {
+        state.tell_migrations(env.clock.now_ms(), &pending);
     }
     let pending = env.home.root().join(PENDING_FILE);
     let asked = pending.exists();

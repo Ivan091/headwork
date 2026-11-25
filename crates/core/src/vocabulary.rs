@@ -568,6 +568,8 @@ text_enum!(
         ConfigStale => "config-stale",
         /// `config.toml` was edited by hand after the last `headwork config sync` wrote it.
         ConfigDrift => "config-drift",
+        /// A migration note of a configured repository applies to this machine and is not applied or skipped yet.
+        MigrationPending => "migration-pending",
     }
 );
 

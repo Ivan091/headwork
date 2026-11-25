@@ -73,7 +73,7 @@ Hostnames are not used: they change, macOS rewrites them, and they say nothing a
 | `headwork config show [--origin] [--json]` | The effective config, each key tagged `shared` / `windows` / `local` / `default`. |
 | `headwork config check` | Merge and validate without writing. Its exit code means pass or fail, so CI or a session can run it before a PR. |
 | `headwork config rollback` | Puts `config.toml.prev` back. |
-| `headwork config adopt --machine <name>` | One-time migration: splits today's live `config.toml` into shared / machine / local by the machine-only and secret key lists, writes the three files for review, and writes `sources.toml`. |
+| `headwork config adopt --machine <name>` | One-time migration: splits today's live `config.toml` into shared / machine / local by the machine-only and secret key lists, writes the three files for review, and writes `sources.toml`. A shared or machine file that already exists in the repository (a second machine joins; its machine file came through a pull request) is used as it is and never written: the merge of the existing files with the split local part must still reproduce the live config, else nothing is written. `--force` replaces them. |
 
 Triggers:
 

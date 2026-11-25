@@ -1,0 +1,31 @@
+id = "2026-11-22-public-history"
+title = "Replace a clone of the old headwork history with the public one"
+since = "2026-11-22"
+requires = ["headwork"]
+why = """Ivan091/headwork was replaced by a public repository with a rewritten history starting 2026-11-22; \
+an older clone shares no history with it. The old history is in the private Ivan091/headwork-archive."""
+check = "git merge-base --is-ancestor 1a26a2797cb7c4cdde6c87fa45560f383273362c HEAD"
+pull = false
+
+[[step]]
+kind = "agent"
+run = "git status --short && git branch -vv && git stash list"
+
+[[step]]
+kind = "user"
+say = """Look at the output of the first step: push or bundle every unpushed branch and commit or save \
+uncommitted work you want to keep, then say go."""
+
+[[step]]
+kind = "confirm"
+run = "git fetch origin && git checkout master && git reset --hard origin/master"
+backup = "git branch -f backup-before-public-history HEAD"
+
+[[step]]
+kind = "agent"
+run = "git config core.hooksPath .githooks"
+
+[[step]]
+kind = "user"
+say = """Set user.email to the GitHub noreply address, globally and in this repository: GitHub blocks \
+pushes that expose a private email. Pull request numbers restarted at 1."""

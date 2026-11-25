@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use headwork::home::Home;
 use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
@@ -301,6 +301,12 @@ enum Command {
         #[command(subcommand)]
         action: FlowAction,
     },
+    /// Migration notes: what a change asks of this machine, read from each repository's default branch on GitHub
+    /// (`docs/migrations.md`).
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
     /// The effective config generated from the shared, machine and local layers (`docs/config-sync.md`).
     Config {
         #[command(subcommand)]
@@ -478,6 +484,83 @@ enum FlowAction {
     Check {
         /// One flow's name; every flow when absent.
         name: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// How `migrate mark` records a note.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SettledArg {
+    /// Done by hand.
+    Applied,
+    /// Left out on purpose.
+    Skipped,
+}
+
+impl From<SettledArg> for headwork_core::migrate::Settled {
+    fn from(arg: SettledArg) -> Self {
+        match arg {
+            SettledArg::Applied => Self::Applied,
+            SettledArg::Skipped => Self::Skipped,
+        }
+    }
+}
+
+/// What `migrate` does.
+#[derive(Debug, Subcommand)]
+enum MigrateAction {
+    /// The notes of every configured repository: pending, applied, skipped, not applicable.
+    List {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Read the refs fetched before; touch no network.
+        #[arg(long)]
+        no_fetch: bool,
+    },
+    /// One note in full.
+    Show {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a note: its check, then its steps in order. Stops at the first confirm step (exit 3) or user step (exit 4)
+    /// and prints what to ask; exit 1 when a step fails.
+    Apply {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// Go on from this step (0 is the pull before the steps), skipping the check.
+        #[arg(long)]
+        from: Option<usize>,
+        /// The user agreed to the step `--from` names, or did it.
+        #[arg(long, requires = "from")]
+        confirmed: bool,
+        /// The machine's name for steps that use it, when this machine has no `sources.toml`.
+        #[arg(long)]
+        machine: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record a note as applied or skipped without running it.
+    Mark {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// How to record it.
+        #[arg(value_enum)]
+        state: SettledArg,
+        /// Why.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Validate the notes in `<path>/migrations/` (the working tree), for gates. Exits 1 on a problem.
+    Check {
+        /// The repository folder; the current folder when absent.
+        path: Option<PathBuf>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -739,6 +822,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Flow {
             action: FlowAction::Check { name, json },
         } => return flow_check_command(name.as_deref(), json, out),
+        Command::Migrate { action } => return migrate_command(action, out),
         Command::Config { action } => return config_command(action, out),
         Command::Orchestrator {
             name,
@@ -904,6 +988,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Dash { .. }
         | Command::Flow { .. }
         | Command::Config { .. }
+        | Command::Migrate { .. }
         | Command::Orchestrator { .. }
         | Command::Hook { .. }
         | Command::Mcp { .. }
@@ -2020,6 +2105,12 @@ fn config_command(action: ConfigAction, out: &mut impl Write) -> Result<ExitCode
                 actor,
             };
             let report = sync::sync(&home, &exe, options, platform, log)?;
+            if report.ok && !dry_run {
+                drop(headwork::ops::migrate::announce(
+                    &home,
+                    &home.load_config()?,
+                ));
+            }
             if json {
                 json_out(out, &report)?;
             } else {
@@ -2233,6 +2324,110 @@ fn orchestrator_command(home: &Home, start: &OrchestratorStart) -> Result<ExitCo
     let code = launch_orchestrator(home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+struct Notes {
+    home: Home,
+    config: Config,
+    store: Store,
+    actor: Actor,
+}
+
+impl Notes {
+    fn open() -> Result<Self> {
+        let home = Home::locate()?;
+        let config = home.load_config()?;
+        let store = home.open_store()?;
+        Ok(Self {
+            home,
+            config,
+            store,
+            actor: Identity::from_env().actor(),
+        })
+    }
+}
+
+fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::migrate::{self as notes, ApplyOptions};
+    match action {
+        MigrateAction::Check { path, json } => {
+            let checked = notes::check(&path.unwrap_or_else(|| PathBuf::from(".")))?;
+            if json {
+                json_out(out, &checked)?;
+            } else {
+                write!(out, "{checked}")?;
+            }
+            Ok(if checked.problems.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
+        MigrateAction::List { json, no_fetch } => {
+            let n = Notes::open()?;
+            let report = notes::report(&n.store, &n.home, &n.config, !no_fetch)?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                write!(out, "{report}")?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        MigrateAction::Show { note, json } => {
+            let n = Notes::open()?;
+            let report = notes::report(&n.store, &n.home, &n.config, false)?;
+            let entry = report.find(&note)?;
+            if json {
+                json_out(out, entry)?;
+            } else {
+                write!(
+                    out,
+                    "{}",
+                    notes::describe(entry, &n.store, &n.home, &n.config)
+                )?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        MigrateAction::Apply {
+            note,
+            from,
+            confirmed,
+            machine,
+            json,
+        } => {
+            let mut n = Notes::open()?;
+            let options = ApplyOptions {
+                machine,
+                from,
+                confirmed,
+            };
+            let outcome = notes::apply(&mut n.store, &n.home, &n.config, &note, &options, n.actor)?;
+            if json {
+                json_out(out, &outcome)?;
+            } else {
+                write!(out, "{outcome}")?;
+            }
+            Ok(ExitCode::from(outcome.exit_code()))
+        }
+        MigrateAction::Mark {
+            note,
+            state,
+            reason,
+        } => {
+            let mut n = Notes::open()?;
+            let said = notes::mark(
+                &mut n.store,
+                &n.home,
+                &n.config,
+                &note,
+                state.into(),
+                &reason,
+                n.actor,
+            )?;
+            writeln!(out, "{said}")?;
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 #[cfg(test)]

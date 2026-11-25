@@ -12,6 +12,7 @@ pub mod guard;
 pub mod layout;
 pub mod lead;
 pub mod lifecycle;
+pub mod migrate;
 pub mod names;
 pub mod platform;
 pub mod process;

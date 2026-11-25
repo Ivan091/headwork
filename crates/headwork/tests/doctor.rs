@@ -650,3 +650,93 @@ fn a_free_lock_or_a_fresh_one_is_fine() {
         "a tick that just began"
     );
 }
+
+fn install_with_note() -> Install {
+    let install = install();
+    let root = install.dir.path();
+    let origin = root.join("origin");
+    std::fs::create_dir_all(origin.join("migrations")).unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "git {args:?}: {done:?}");
+    };
+    git(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        origin.join("migrations/n.toml"),
+        "id = \"n\"\ntitle = \"Note\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"true\"\n",
+    )
+    .unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "note"]);
+    let clone = root.join("clone");
+    git(
+        root,
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "S:/Code/me-sim/me-sim",
+        &clone.display().to_string().replace('\\', "/"),
+    );
+    std::fs::write(path, text).unwrap();
+    install
+}
+
+#[test]
+fn doctor_warns_while_a_migration_note_waits_and_is_quiet_once_it_is_applied() {
+    let install = install_with_note();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "migrations-pending"),
+        Status::Warn,
+        "pending"
+    );
+    let check = report
+        .checks
+        .iter()
+        .find(|c| c.id == "migrations-pending")
+        .unwrap();
+    assert!(check.detail.contains("me-sim/n"), "{}", check.detail);
+
+    let mut store = install.home.open_store().unwrap();
+    store
+        .settle_migration(
+            "me-sim",
+            "n",
+            headwork_core::migrate::Settled::Applied,
+            "",
+            "done",
+            Actor::User,
+        )
+        .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "migrations-pending"), Status::Ok, "settled");
+}
+
+#[test]
+fn doctor_finds_no_pending_note_without_a_repository_that_has_an_origin() {
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "migrations-pending"),
+        Status::Ok,
+        "no notes"
+    );
+}

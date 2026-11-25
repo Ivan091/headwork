@@ -6,6 +6,7 @@
 pub mod disk;
 pub mod git;
 pub mod host;
+pub mod notes;
 pub mod proc;
 pub mod release;
 pub mod runtime;

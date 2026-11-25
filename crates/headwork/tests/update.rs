@@ -1296,3 +1296,40 @@ fn doctor_says_the_tick_polls_only_when_a_tick_is_running() {
         "{unscheduled}"
     );
 }
+
+#[test]
+fn migration_notes_are_told_once_and_the_record_survives_a_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    std::fs::create_dir_all(home.root()).unwrap();
+    let pending = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+
+    let mut state = UpdateState::load(&home);
+    state.tell_migrations(1_000, &pending(&["demo/a", "demo/b"]));
+    assert_eq!(state.notices.len(), 1, "one notice for both");
+    assert!(
+        state.notices[0]
+            .text
+            .contains("2 migration note(s) pending: demo/a, demo/b"),
+        "{}",
+        state.notices[0].text
+    );
+    state.save(&home).unwrap();
+
+    let mut reloaded = UpdateState::load(&home);
+    assert_eq!(reloaded.migrations_told, ["demo/a", "demo/b"], "persisted");
+    reloaded.tell_migrations(2_000, &pending(&["demo/a", "demo/b"]));
+    assert_eq!(reloaded.notices.len(), 1, "told already: no second notice");
+
+    reloaded.tell_migrations(3_000, &pending(&["demo/a", "demo/c"]));
+    assert_eq!(reloaded.notices.len(), 2, "a new note is told");
+    assert!(
+        reloaded.notices[1]
+            .text
+            .contains("1 migration note(s) pending: demo/c"),
+        "{}",
+        reloaded.notices[1].text
+    );
+    reloaded.tell_migrations(4_000, &[]);
+    assert_eq!(reloaded.notices.len(), 2, "nothing pending, nothing told");
+}
