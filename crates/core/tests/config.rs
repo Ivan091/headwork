@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use headwork_core::config::{
-    ConfigError, Delivery, HostKind, ParkPolicy, PushMode, TaskVars, TemplateProblem,
-    WorktreeCommand, check_template, expand_home,
+    ConfigError, Delivery, HostKind, ParkPolicy, PushMode, RETIRED_PROJECT_KEYS, TaskVars,
+    TemplateProblem, WorktreeCommand, check_template, expand_home,
 };
 use headwork_core::lifecycle::MergePolicy;
 use headwork_core::{Config, LayoutMode, Model, ProjectName, ProjectOverlay};
@@ -665,4 +665,26 @@ fn a_kind_takes_its_own_default_model() {
         Model::Sonnet,
         "unlisted kind"
     );
+}
+
+#[test]
+fn every_retired_key_is_still_a_project_field() {
+    let base = fixture("config.toml");
+    for key in RETIRED_PROJECT_KEYS {
+        let accepted = ["1", "\"x\""].iter().any(|value| {
+            let text = base.replace(
+                "[project.me-sim]",
+                &format!(
+                    "[project.me-sim]
+{key} = {value}"
+                ),
+            );
+            Config::parse(&text, "test").is_ok()
+                && Config::retired_keys(&text).contains(&format!("project.me-sim.{key}"))
+        });
+        assert!(
+            accepted,
+            "{key} is listed as retired but the parser no longer accepts it"
+        );
+    }
 }

@@ -552,6 +552,10 @@ impl LayoutConfig {
     }
 }
 
+/// The `[project.<name>]` keys that are still accepted and no longer enforced; each must stay a field of
+/// [`ProjectConfig`].
+pub const RETIRED_PROJECT_KEYS: &[&str] = &["heavy_slots", "heavy_gate"];
+
 /// `[project.<name>]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -949,7 +953,6 @@ impl Config {
     /// (`heavy_slots`, `heavy_gate`). Text that does not parse has none.
     #[must_use]
     pub fn retired_keys(text: &str) -> Vec<String> {
-        const RETIRED: &[&str] = &["heavy_slots", "heavy_gate"];
         let Ok(table) = toml::from_str::<toml::Table>(text) else {
             return Vec::new();
         };
@@ -960,7 +963,7 @@ impl Config {
             .iter()
             .filter_map(|(name, project)| project.as_table().map(|keys| (name, keys)))
             .flat_map(|(name, keys)| {
-                RETIRED
+                RETIRED_PROJECT_KEYS
                     .iter()
                     .filter(|key| keys.contains_key(**key))
                     .map(move |key| format!("project.{name}.{key}"))

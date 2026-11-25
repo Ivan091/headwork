@@ -394,6 +394,7 @@ fn worker_bash_table() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one table of every force push case")]
 fn worker_force_push_table() {
     let table: &[(&str, &str, bool, Option<RuleId>)] = &[
         ("git push --force-with-lease", "sand", false, None),
@@ -1573,6 +1574,14 @@ fn a_reviewer_lead_with_work_left_may_not_stop_unless_it_asks() {
     );
 }
 
+type Row<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    &'a [&'a str],
+    &'a str,
+    Option<RuleId>,
+);
+
 fn lease_scope(branch: Option<&str>, task_branch: Option<&str>, allowed_repos: &[&str]) -> Scope {
     Scope {
         branch: branch.map(str::to_owned),
@@ -1591,7 +1600,7 @@ fn worker_force_push_uses_the_recorded_task_branch() {
         command,
         background: false,
     };
-    let table: &[(Option<&str>, Option<&str>, &[&str], &str, Option<RuleId>)] = &[
+    let table: &[Row<'_>] = &[
         (
             None,
             None,
