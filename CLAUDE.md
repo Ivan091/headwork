@@ -31,8 +31,8 @@ docs/                   design, research, trials, decisions
 ```
 
 
-The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync,
-rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, report, done, recap, job_start,
+The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
+rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, migrate_list, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -132,6 +132,14 @@ fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built int
 grows), and the page's timeline: live, a slider over the log, play at 1x to 1000x, pulses on new talk, and "replay
 this task". D4 adds tokens (`Facts::spend`, `Store::spend_of`) for "size by cost" and the panel, and badges: open tick
 findings on a task, open asks on the user, review findings on a review and its flow nodes.
+Migration notes (`docs/migrations.md`) tell another machine what a change asks of it: one TOML file per note in a repository's
+`migrations/`, read from the remote default branch (`adapters/src/notes.rs`: fetch in batch ssh mode, `git show`, never the working
+tree), parsed and checked by `core/src/migrate.rs`, recorded per machine in `migrations_applied` (migration 0023,
+`store/src/migrations.rs`) and run by `headwork migrate` (`ops/migrate.rs`: sources are the projects' main checkouts, the
+claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `doctor` check `migrations-pending`, the tick
+finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
+`scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
+release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -172,6 +180,7 @@ cargo run -p headwork -- recap <name>      # a task's newest recap
 cargo run -p headwork -- doctor            # check the install; exit 1 on a problem
 cargo run -p headwork -- config sync [--no-pull] [--dry-run] | check | show [--origin] | rollback | adopt --machine M [--write]   # the config generated from shared, machine and local layers (docs/config-sync.md)
 cargo run -p headwork -- flow check [<name>] [--json]   # validate the review flows (built-in and <home>/flows); exit 1 on a problem
+cargo run -p headwork -- migrate list [--json] [--no-fetch] | show <note> | apply <note> [--from N --confirmed] [--machine M] | mark <note> applied|skipped --reason "..." | check [<path>]   # migration notes (docs/migrations.md)
 cargo run -p headwork -- update [--dry-run] [--wait M] [--to TAG] [--json]   # install the newest GitHub release, smoke-tested (docs/autoupdate.md)
 target/release/headwork.exe install       # install this build into ~/.local/bin while the old one runs
 cargo run -p headwork -- clean [--dry-run] [--gc]   # remove worktrees of merged/closed tasks and finished agent worktrees; gc quiet main checkouts

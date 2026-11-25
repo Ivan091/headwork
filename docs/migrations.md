@@ -1,4 +1,6 @@
-# Plan: migration notes for every machine
+# Migration notes for every machine
+
+Status: the headwork part is built (section 10); the other repositories follow in the tasks of section 8.
 
 Goal: when a change on one machine needs a step on the others (the Mac, a second PC), the change carries a
 machine-readable note, and headwork on every machine finds the notes it has not applied, runs the safe steps, and asks the
@@ -59,26 +61,33 @@ Note format (`migrations/2026-11-25-config-sync-adopt.toml`):
 ```toml
 id = "2026-11-25-config-sync-adopt"
 title = "Take headwork's config from claude_config"
-since = "v0.1.55"                 # headwork: a release tag; other repos: the commit that adds the file is enough
-os = ["windows", "macos"]         # optional filters
-machines = []                     # empty = every machine
-requires = ["headwork"]           # only machines with this project's main
+since = "v0.1.55"
+os = ["windows", "macos"]
+machines = []
+requires = ["headwork"]
 why = "Config moved to shared layers (docs/config-sync.md)."
-check = "headwork config check"   # exits 0 when already applied: a fresh machine skips the note
+check = "headwork config check"
 
 [[step]]
-kind = "agent"                    # agent: idempotent, runs without asking
+kind = "agent"
 run = "headwork config adopt --machine {machine} --repo ~/.claude"
 
 [[step]]
-kind = "confirm"                  # destructive or writes outside the repo: Allow ask naming `run`, backup first
+kind = "confirm"
 run = "headwork config adopt --machine {machine} --repo ~/.claude --write"
 backup = "cp ~/.headwork/config.toml ~/.headwork/config.toml.pre-adopt"
 
 [[step]]
-kind = "user"                     # logins, secrets, admin, scheduled tasks: the agent asks, never runs it
+kind = "user"
 say = "Run `headwork tick --install` after the Allow ask."
 ```
+
+Fields: `id` (the file name without `.toml`), `title`, `why`; optional `since` (a release tag or a date), `os` (`windows`,
+`macos`, `linux`; empty means all), `machines` (names from `sources.toml`; empty means every machine), `requires`
+(projects whose main checkout the machine must have) and `check` (a command that exits 0 when the note is already
+applied, so a fresh machine skips it). A `[[step]]` is `agent` (idempotent, runs without asking), `confirm` (asks the
+user first, with an optional `backup` that runs before it) or `user` (the user does it). `agent` and `confirm` steps need
+`run`, `user` steps need `say`; `{machine}` in a step is replaced by the machine's name.
 
 ## 4. How a machine finds what it has not applied
 
@@ -154,3 +163,47 @@ me-sim-site: exempt, no machine state.
 | Agent steps | run without asking when `kind = "agent"` | ask before every step |
 | Who applies | orchestrator spawns `<project>-migrate` tasks on a notice | the tick runs agent steps itself |
 | Enforcement | `Migration:` line in every PR + validator + trigger heuristic in headwork's gate | line only |
+
+## 10. What is built (headwork)
+
+| Part | Where |
+|---|---|
+| Note model, validator, filters, pending computation, `{machine}` expansion | `crates/core/src/migrate.rs` (pure; table tests) |
+| Applied record: table `migrations_applied` (repo, note id, state, actor, at, output, reason), events `migration-applied` and `migration-skipped` | `crates/store/migrations/0023_migrations_applied.sql`, `crates/store/src/migrations.rs` |
+| Reading a repository: `git fetch` of the default branch in batch ssh mode, `git ls-tree` and `git show` on `origin/<default>:migrations/`, never the working tree | `crates/adapters/src/notes.rs` |
+| Sources, list, apply, mark, check, announcements | `crates/headwork/src/ops/migrate.rs` |
+| Surfacing | `doctor` check `migrations-pending` (no fetch), tick stage `migrations` with the standing finding `migration-pending` (fetches, runs nothing), `update.json` notices after `update` and `config sync` (each note told once) |
+| MCP | `migrate_list` (orchestrator and workers), `migrate_mark` (orchestrator) |
+| Gate | `scripts/check.sh` step "migration notes": `migrate check .`, and on a pull request the `Migration:` line (`scripts/migration-line.sh`, `.github/pull_request_template.md`) |
+| Release | `scripts/release-migration-notes.sh`, called by `release.yml`, appends a "Migration notes" section |
+| Backfilled notes | `migrations/2026-11-22-public-history.toml`, `migrations/2026-11-25-config-sync-adopt.toml` (from `briefs/mac-adopt-headwork-flow.md`) |
+
+Commands:
+
+```bash
+headwork migrate list [--json] [--no-fetch]
+headwork migrate show <note>
+headwork migrate apply <note> [--from N --confirmed] [--machine NAME] [--json]
+headwork migrate mark <note> applied|skipped --reason "..."
+headwork migrate check [<path>] [--json]
+```
+
+A note is addressed as `<repo>/<id>` (the repository is the project name, `claude-config`, or the folder name of an
+`orchestrator_repos` entry); a bare id works while only one repository has it.
+
+`apply` runs the note's `check` first; exit 0 records the note as applied without running a step. Otherwise it runs the
+`agent` steps in order and stops at the first `confirm` step (exit 3) or `user` step (exit 4), printing what to ask and
+the line that goes on once the user agreed: `headwork migrate apply <note> --from <step> --confirmed` (a confirm step runs
+its `backup`, then `run`; a user step counts as done). Exit 1 means a step failed and nothing is recorded; when every step
+ran the note is recorded as applied. When the note's file is not in the checkout's `HEAD` yet, `apply` first runs
+`git pull --ff-only` there (step 0): by itself on a clean checkout of the default branch, else it stops with a confirm
+ask.
+
+`migrate check` validates `<path>/migrations/*.toml` in the working tree: ids match file names and are unique, `agent`
+steps and `confirm` steps carry `run`, `user` steps carry `say`, and an `agent` step holds none of `login`, `secret`,
+`token`, `schtasks`, `launchctl`, `sudo`, `tick --install`, `tick --uninstall`, `--settings`, `push --force`, `push -f`,
+`reset --hard`, `rm -r`.
+
+The `Migration:` line of a pull request is either `Migration: migrations/<id>.toml` (the file must exist) or
+`Migration: none`; `none` needs a reason in parentheses when the change touches `plugin/`,
+`crates/headwork/src/ops/install.rs`, `schedule.rs`, `launchd.rs` or `.gitignore`.
