@@ -245,3 +245,222 @@ fn a_step_that_names_the_machine_needs_a_name_when_there_is_no_sources_file() {
     let applied = machine.run(&["migrate", "apply", "named", "--machine", "pc"]);
     assert_eq!(applied.status.code(), Some(0), "{applied:?}");
 }
+
+fn add_note(machine: &Machine, id: &str, text: &str) {
+    std::fs::write(machine.origin.join(format!("migrations/{id}.toml")), text).unwrap();
+    git(&machine.origin, &["add", "."]);
+    git(&machine.origin, &["commit", "-q", "-m", id]);
+}
+
+fn head(machine: &Machine) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&machine.clone)
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn a_note_that_says_pull_false_is_not_pulled_by_apply() {
+    let machine = Machine::new();
+    add_note(
+        &machine,
+        "nopull",
+        "id = \"nopull\"\ntitle = \"No pull\"\ncheck = \"false\"\npull = false\n\n[[step]]\nkind = \"agent\"\nrun = \"true\"\n",
+    );
+    let before = head(&machine);
+    let applied = machine.run(&["migrate", "apply", "nopull"]);
+    assert_eq!(applied.status.code(), Some(0), "{applied:?}");
+    assert_eq!(head(&machine), before, "the checkout stays where it was");
+    assert!(
+        !machine.clone.join("migrations/nopull.toml").exists(),
+        "not pulled"
+    );
+    assert!(
+        machine.list().contains("applied         me-sim/nopull"),
+        "applied all the same"
+    );
+}
+
+#[test]
+fn a_failing_step_leaves_the_note_pending_with_a_failure_exit() {
+    let machine = Machine::new();
+    add_note(
+        &machine,
+        "failing",
+        "id = \"failing\"\ntitle = \"Fails\"\ncheck = \"false\"\npull = false\n\n\
+         [[step]]\nkind = \"agent\"\nrun = \"echo first-step\"\n\n\
+         [[step]]\nkind = \"agent\"\nrun = \"echo boom; exit 7\"\n",
+    );
+    let output = machine.run(&["migrate", "apply", "failing"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let said = text(&output);
+    assert!(said.contains("step 2 failed"), "{said}");
+    assert!(
+        said.contains("first-step") && said.contains("boom"),
+        "earlier and failing output are both kept: {said}"
+    );
+    assert!(
+        machine.list().contains("pending         me-sim/failing"),
+        "still pending"
+    );
+}
+
+#[test]
+fn from_without_confirmed_asks_again_and_runs_nothing() {
+    let machine = Machine::new();
+    let output = machine.run(&["migrate", "apply", "steps", "--from", "2"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(
+        !text(&output).contains("$ echo"),
+        "nothing ran: {}",
+        text(&output)
+    );
+    assert!(
+        machine.list().contains("pending         me-sim/steps"),
+        "still pending"
+    );
+}
+
+#[test]
+fn from_past_the_last_step_is_refused() {
+    let machine = Machine::new();
+    let output = machine.run(&["migrate", "apply", "steps", "--from", "9", "--confirmed"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("past the last one"),
+        "{output:?}"
+    );
+    assert!(
+        machine.list().contains("pending         me-sim/steps"),
+        "still pending"
+    );
+}
+
+#[test]
+fn applying_an_invalid_note_fails_and_prints_the_problems() {
+    let machine = Machine::new();
+    let output = machine.run(&["migrate", "apply", "broken"]);
+    assert!(!output.status.success(), "{output:?}");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("not a valid note"), "{said}");
+    assert!(said.contains("must not contain `sudo`"), "{said}");
+}
+
+#[test]
+fn notes_for_other_machines_are_not_applicable_and_a_skipped_one_stays_skipped() {
+    let machine = Machine::new();
+    for (id, filter) in [
+        ("other-os", "os = [\"no-such-os\"]"),
+        ("other-name", "machines = [\"nobody\"]"),
+        ("other-project", "requires = [\"no-such-project\"]"),
+    ] {
+        add_note(
+            &machine,
+            id,
+            &format!(
+                "id = \"{id}\"\ntitle = \"Filtered\"\n{filter}\ncheck = \"false\"\npull = false\n\n[[step]]\nkind = \"agent\"\nrun = \"false\"\n"
+            ),
+        );
+    }
+    let listed = text(&machine.run(&["migrate", "list"]));
+    for id in ["other-os", "other-name", "other-project"] {
+        assert!(
+            listed.contains(&format!("not-applicable  me-sim/{id}")),
+            "{id}: {listed}"
+        );
+    }
+    let applied = machine.run(&["migrate", "apply", "other-os"]);
+    assert_eq!(applied.status.code(), Some(0), "{applied:?}");
+    assert!(
+        text(&applied).contains("not applicable"),
+        "{}",
+        text(&applied)
+    );
+
+    machine.run(&["migrate", "mark", "steps", "skipped", "--reason", "no"]);
+    let again = machine.run(&["migrate", "apply", "steps"]);
+    assert!(text(&again).contains("already skipped"), "{}", text(&again));
+}
+
+#[test]
+fn a_failed_fetch_is_reported_by_list_and_refuses_apply() {
+    let machine = Machine::new();
+    git(
+        &machine.clone,
+        &["remote", "set-url", "origin", "/no/such/origin"],
+    );
+    let listed = text(&machine.run(&["migrate", "list"]));
+    assert!(listed.contains("problem: me-sim: fetch failed"), "{listed}");
+    assert!(
+        listed.contains("me-sim/steps"),
+        "cached notes are listed: {listed}"
+    );
+    let applied = machine.run(&["migrate", "apply", "steps"]);
+    assert!(!applied.status.success(), "{applied:?}");
+    assert!(
+        String::from_utf8_lossy(&applied.stderr).contains("fetch failed"),
+        "{applied:?}"
+    );
+}
+
+#[test]
+fn show_leaves_the_machine_placeholder_visible_when_the_name_is_unknown() {
+    let machine = Machine::new();
+    add_note(
+        &machine,
+        "named",
+        "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"echo {machine}\"\n",
+    );
+    machine.run(&["migrate", "list"]);
+    let shown = text(&machine.run(&["migrate", "show", "named"]));
+    assert!(shown.contains("echo {machine}"), "{shown}");
+    assert!(shown.contains("machine: unknown"), "{shown}");
+}
+
+#[test]
+fn show_tells_how_a_settled_note_was_settled() {
+    let machine = Machine::new();
+    machine.run(&[
+        "migrate", "mark", "steps", "skipped", "--reason", "not here",
+    ]);
+    let shown = text(&machine.run(&["migrate", "show", "steps"]));
+    assert!(shown.contains("settled: skipped by"), "{shown}");
+    assert!(shown.contains("not here"), "{shown}");
+}
+
+#[test]
+fn repository_keys_never_name_two_checkouts() {
+    use headwork::home::Home;
+    use headwork::ops::migrate::sources;
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(Some(dir.path().join("home"))).unwrap();
+    let config = headwork_core::Config::parse(
+        &format!(
+            "[machine]\nhost = \"wmux\"\n\n[hooks]\norchestrator_repos = [\"{0}/a/Notes\", \"{0}/b/notes\", \"{0}/c/demo\"]\n\n\
+             [project.notes]\nmain = \"{0}/p/notes\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
+             worktree_path = \"{{main}}-{{slug}}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/notes\"]\n\n\
+             [project.demo]\nmain = \"{0}/p/demo\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
+             worktree_path = \"{{main}}-{{slug}}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/demo\"]\n",
+            forward(dir.path())
+        ),
+        "test",
+    )
+    .unwrap();
+    let keys: Vec<String> = sources(&home, &config)
+        .into_iter()
+        .map(|source| source.repo)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "demo",
+            "notes",
+            "notes-notes",
+            "notes-notes-2",
+            "demo-notes"
+        ],
+        "{keys:?}"
+    );
+}
