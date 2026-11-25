@@ -1697,6 +1697,15 @@ fn the_mechanical_recap_lists_prs_parts_and_jobs_and_leaves_tool_events_out_of_t
             &serde_json::json!({}),
         )
         .unwrap();
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(lead.id),
+            None,
+            "long-event",
+            &serde_json::json!({ "note": "y".repeat(400) }),
+        )
+        .unwrap();
     for _ in 0..60 {
         w.store
             .append_event(
@@ -1718,6 +1727,10 @@ fn the_mechanical_recap_lists_prs_parts_and_jobs_and_leaves_tool_events_out_of_t
     assert!(text.contains(&format!("- part {} (", part.name)), "{text}");
     assert!(text.contains("- job `train` (checkpoint, "), "{text}");
     assert!(text.contains("restart no)"), "{text}");
+    assert!(text.contains("--exact helper_sleeper --ignored`"), "{text}");
+    assert!(text.contains("long-event"), "{text}");
+    assert!(text.contains(&format!("{}...", "y".repeat(100))), "{text}");
+    assert!(!text.contains(&"y".repeat(200)), "{text}");
     assert!(
         text.contains(&format!(", checkpoint {}", checkpoint.display())),
         "{text}"
