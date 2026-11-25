@@ -1,5 +1,7 @@
 //! When a failed worktree removal may be tried again: pure backoff over the failure count and the time since the last
-//! attempt. Only a transient failure (a file held open, a lock) backs off; any other refusal, such as a tree that still
+//! attempt.
+//!
+//! Only a transient failure (a file held open, a lock) backs off; any other refusal, such as a tree that still
 //! holds work, asks the user at once, since trying again cannot change it.
 
 /// Failures after which headwork stops retrying and asks the user to keep or delete the worktree.
