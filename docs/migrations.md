@@ -82,32 +82,40 @@ kind = "user"
 say = "Run `headwork tick --install` after the Allow ask."
 ```
 
-Fields: `id` (the file name without `.toml`), `title`, `why`; optional `since` (a release tag or a date), `os` (`windows`,
-`macos`, `linux`; empty means all), `machines` (names from `sources.toml`; empty means every machine), `requires`
-(projects whose main checkout the machine must have) and `check` (a command that exits 0 when the note is already
-applied, so a fresh machine skips it). A `[[step]]` is `agent` (idempotent, runs without asking), `confirm` (asks the
+Fields: `id` (the file name without `.toml`), `title`, `why`; optional `since` (a release tag or a date, for the reader
+only: headwork does not compare it with the installed release), `os` (`windows`, `macos`, `linux`; empty means all),
+`machines` (names from `sources.toml`; empty means every machine), `requires` (projects whose main checkout the machine
+must have), `check` (a command that exits 0 when the note is already applied, so a fresh machine skips it; only `apply`
+runs it) and `pull` (default `true`; `false` skips the implicit `git pull --ff-only` of section 4, for a note that
+repairs a checkout a fast-forward cannot reach). A `[[step]]` is `agent` (idempotent, runs without asking), `confirm` (asks the
 user first, with an optional `backup` that runs before it) or `user` (the user does it). `agent` and `confirm` steps need
 `run`, `user` steps need `say`; `{machine}` in a step is replaced by the machine's name.
 
 ## 4. How a machine finds what it has not applied
 
 - `headwork migrate` (new command, also MCP tools for the orchestrator): `list` (pending, applied, skipped,
-  not applicable), `show <id>`, `apply <id>` (runs agent steps; stops at the first confirm or user step and prints the
-  ask), `mark <id> applied|skipped --reason`.
+  not applicable, invalid), `show <id>`, `apply <id>` (runs agent steps; stops at the first confirm or user step and
+  prints the ask), `mark <id> applied|skipped --reason`, `check [<path>]`.
 - Source of truth is GitHub: the notes are read from each repository's default branch on GitHub, never from a
   local checkout. `headwork migrate` runs `git fetch` (SSH, batch mode, as `clean` does) in the local clone and reads
   `origin/<default>:migrations/` with `git show`, so a machine sees a new note before it pulls and whatever its
   checkout is on. Repositories: every configured project, the claude_config repo from `sources.toml`,
-  `orchestrator_repos` (code-home). headwork's own notes come from `Ivan091/headwork` the same way; a note with a
-  `since` release that is not installed yet waits for `update`.
+  `orchestrator_repos` (code-home). headwork's own notes come from `Ivan091/headwork` the same way. A note's `since` is documentation only:
+  headwork never compares it with the installed release, so a note can be pending before `update` installs the change
+  it needs; the note's `check` decides, and only `apply` runs it.
 - A note whose commit is not in the local `HEAD` yet gets an implicit first agent step: `git pull --ff-only` in that
-  checkout (a confirm step when the checkout is dirty or not on the default branch); `pull = false` in a note skips it, for a note that repairs a checkout a fast-forward cannot reach. Filters (`os`, `machines`,
-  `requires`) decide where a note applies.
+  checkout (a confirm step when the checkout is dirty or not on the default branch; once confirmed it first checks out
+  the default branch when the tree is clean, and refuses when it is not); `pull = false` in a note skips it. Filters
+  (`os`, `machines`, `requires`) decide where a note applies.
 - The applied record is per machine and local: a store table (new migration: `migrations_applied` with repo, id,
   state, who, when, output) and events `migration-applied` / `migration-skipped`. A note whose `check` passes is
   recorded as applied without running, so a fresh machine or a lost store rebuilds its record from the checks.
+- Pending ignores `check` on purpose: `doctor` and the tick never run a note's command, because a check may be slow,
+  need the network or have side effects, and the tick only reads. A note whose `check` would pass stays pending until
+  `apply` runs it, which records it applied without running a step; `mark` does the same by hand.
 - Surfacing: `doctor` check `migrations-pending` (warn); tick finding `migration-pending` (reports only, never runs
-  steps, like `config-stale`); `update` and `config sync` leave a line in `update.json` notices, so the orchestrator's
+  steps, like `config-stale`; a repository that cannot be fetched or read is a `tick-error` finding with the reason,
+  and one whose notes cannot be read keeps its standing findings); `update` and `config sync` leave a line in `update.json` notices, so the orchestrator's
   next prompt says "2 migration notes pending: ...".
 - Who applies them: the orchestrator spawns one main-folder task per repository (`<project>-migrate`), which runs
   `headwork migrate apply`, asks the user for each confirm and user step, and reports. Without headwork (a bare new
@@ -128,9 +136,9 @@ The validator refuses a note that puts a login, secret, `schtasks`, `launchctl`,
 
 | Where | What | Verdict |
 |---|---|---|
-| `headwork migrate check [<repo>]` | validates the note files (schema, ids, step kinds, banned commands in `agent`) | **yes**, in headwork's `check.sh` and the others' ship scripts |
+| `headwork migrate check [<path>]` | validates the note files (schema, ids, step kinds, banned commands in `agent`) | **yes**, in headwork's `check.sh` and the others' ship scripts |
 | PR body line `Migration:` | `create-pr`, `contribute`, `ship-pr` skills and me-sim / me-studio `ship.sh` refuse a PR without it | **yes** |
-| Trigger heuristic | the gate lists files touching trigger paths (section 2: `migrations/` of the store aside, `plugin/`, `.gitignore`, `install.sh`, `machines/`, `*schtasks*`, `deploy.sh`, ...) and fails when the PR says `none` without a reason | **yes**, warn locally, fail in headwork's CI gate |
+| Trigger heuristic | `scripts/migration-line.sh` fails when the PR says `none` without a reason while the change touches `plugin/`, `crates/headwork/src/ops/install.rs`, `schedule.rs`, `launchd.rs` or `.gitignore` at the root (the store's own `migrations/` is no trigger) | **yes**, in headwork's CI gate (a pull request run, also when the body is edited); locally the line is not checked |
 | headwork guard rule | a worker's `done` with a merged PR whose body lacks `Migration:` | **later**: shadow first, after the line exists everywhere |
 | `AGENTS.md` | the rule in one place; `migrate_local.py` becomes a step of a note | **yes** |
 
@@ -145,7 +153,7 @@ and `update`, so one notice covers both.
 
 | Task | Repository | Changes | Review |
 |---|---|---|---|
-| `headwork-migrate` (first; the others wait for its format) | headwork | `docs/migrations.md` (format, decision table); pure model and validator in `core/src/migrate.rs`; fetch and read from GitHub's default branch; store migration for the local applied record; `headwork migrate` CLI and MCP tools; `doctor`, tick, update notices; `release.yml` "Migration notes" section; `check.sh` step and gate heuristic; `migrations/` with backfilled notes (rewritten history, config adopt, plugin restart) | 2 |
+| `headwork-migrate` (first; the others wait for its format) | headwork | `docs/migrations.md` (format, decision table); pure model and validator in `core/src/migrate.rs`; fetch and read from GitHub's default branch; store migration for the local applied record; `headwork migrate` CLI and MCP tools; `doctor`, tick, update notices; `release.yml` "Migration notes" section; `check.sh` step and gate heuristic; `migrations/` with backfilled notes (rewritten history, config adopt) | 2 |
 | `claude-config-migrations` | claude_config | `AGENTS.md` rule (section 2 table in short, the `Migration:` line); `commit`, `create-pr`, `contribute`, `ship-pr`, `sync-config` skills; `docs/other-machine.md` ends with `headwork migrate list`; `migrations/` backfilled from the Mac brief (install profile, `--settings`, mac machine file); the Box Mac's repo noted as out of scope | 1 |
 | `me-studio-migrations` | me-studio | `ship.sh` `Migration:` line and `migrate check`; `migrations/`; notes for the dashboard task, hourly release, ledger location, `deploy.sh` | 1 |
 | `me-sim-migrations` | me-sim | `ship.sh` the same; `migrations/`; `_local/` adoption if any ignored folders exist | 1 |
@@ -188,22 +196,32 @@ headwork migrate mark <note> applied|skipped --reason "..."
 headwork migrate check [<path>] [--json]
 ```
 
-A note is addressed as `<repo>/<id>` (the repository is the project name, `claude-config`, or the folder name of an
-`orchestrator_repos` entry); a bare id works while only one repository has it.
+A note is addressed as `<repo>/<id>`; a bare id works while only one repository has it. Repository keys: a project's name;
+`claude-config` for the `sources.toml` repository; the lower-case folder name of each `orchestrator_repos` entry. A
+folder already listed is skipped. When a key is already taken by another folder it gets a suffix, in this order of
+sources: `-config` for the config repository, `-notes` for an orchestrator repository, then `-2`, `-3`, so one key never
+names two repositories (a project named `notes` and an orchestrator folder `Notes` give `notes` and `notes-notes`).
 
-`apply` runs the note's `check` first; exit 0 records the note as applied without running a step. Otherwise it runs the
+`apply` fetches first and refuses to run when the note's repository failed to fetch or read (an applied note must come from
+the newest notes; `--from` resumes from the refs already fetched). It exits 1 and prints the problems for a note that is
+not valid, and for `--from` past the last step; a note that does not apply on this machine exits 0 as not applicable.
+It runs the note's `check` first; exit 0 records the note as applied without running a step. Otherwise it runs the
 `agent` steps in order and stops at the first `confirm` step (exit 3) or `user` step (exit 4), printing what to ask and
 the line that goes on once the user agreed: `headwork migrate apply <note> --from <step> --confirmed` (a confirm step runs
-its `backup`, then `run`; a user step counts as done). Exit 1 means a step failed and nothing is recorded; when every step
+its `backup`, then `run`; a user step counts as done). Exit 1 means a step failed (or ran past ten minutes) and nothing is recorded; the output of the earlier steps and of the
+failing one is printed; when every step
 ran the note is recorded as applied. When the note's file is not in the checkout's `HEAD` yet, `apply` first runs
 `git pull --ff-only` there (step 0): by itself on a clean checkout of the default branch, else it stops with a confirm
 ask. A note with `pull = false` skips step 0.
 
-`migrate check` validates `<path>/migrations/*.toml` in the working tree: ids match file names and are unique, `agent`
+`migrate show` prints the steps as they would run, with `{machine}` left in place when the machine's name is unknown, and
+how a settled note was settled. `migrate check` validates `<path>/migrations/*.toml` (the extension in any case) in the
+working tree, with the same parser and validator as the list: ids match file names and are unique, `agent`
 steps and `confirm` steps carry `run`, `user` steps carry `say`, and an `agent` step holds none of `login`, `secret`,
 `token`, `schtasks`, `launchctl`, `sudo`, `tick --install`, `tick --uninstall`, `--settings`, `push --force`, `push -f`,
 `reset --hard`, `rm -r`.
 
 The `Migration:` line of a pull request is either `Migration: migrations/<id>.toml` (the file must exist) or
-`Migration: none`; `none` needs a reason in parentheses when the change touches `plugin/`,
+`Migration: none`; `none` is a whole word, optionally followed by a reason in parentheses (anything else, such as the
+placeholder of the pull request template, fails), and needs the reason when the change touches `plugin/`,
 `crates/headwork/src/ops/install.rs`, `schedule.rs`, `launchd.rs` or `.gitignore`.
