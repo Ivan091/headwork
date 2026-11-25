@@ -18,6 +18,7 @@ git tag v1
 printf 'id = "new"\ntitle = "A \\"quoted\\" title"\n' > migrations/new.toml
 printf "id = \"lit\"\ntitle = 'Literal title'\n" > migrations/lit.toml
 printf 'id = "bare"\n' > migrations/bare.toml
+printf 'id = "trail"\ntitle   =   "Trailing comment"   # not part of the title\n' > migrations/trail.toml
 printf 'not a note\n' > migrations/readme.md
 git add .
 git commit -q -m second
@@ -32,6 +33,7 @@ fail() {
 since=$(notes HEAD v1 2> /dev/null)
 grep -qF -- '- A "quoted" title (`migrations/new.toml`)' <<< "$since" || fail "escaped quotes: $since"
 grep -qF -- '- Literal title (`migrations/lit.toml`)' <<< "$since" || fail "literal string: $since"
+grep -qF -- '- Trailing comment (`migrations/trail.toml`)' <<< "$since" || fail "trailing comment: $since"
 grep -qF -- '- migrations/bare.toml (`migrations/bare.toml`)' <<< "$since" || fail "missing title: $since"
 grep -qF 'Old note' <<< "$since" && fail "a note of the previous release is listed: $since"
 grep -qF 'readme.md' <<< "$since" && fail "a non-toml file is listed: $since"

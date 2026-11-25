@@ -18,14 +18,12 @@ fi
 
 [[ -n "$added" ]] || exit 0
 
+python=python3
+read_title='import sys, tomllib; print(tomllib.loads(sys.stdin.read()).get("title", ""))'
+command -v python3 > /dev/null 2>&1 || python=python
+
 title_of() {
-  local raw
-  raw=$(git show "$commit:$1" 2> /dev/null | sed -n -E 's/^title[[:space:]]*=[[:space:]]*(.*)$/\1/p' | head -1)
-  case "$raw" in
-    \"*\") raw=${raw#\"}; raw=${raw%\"}; printf '%s' "$raw" | sed -e 's|\\"|"|g' -e 's|\\\\|\\|g' ;;
-    \'*\') raw=${raw#\'}; raw=${raw%\'}; printf '%s' "$raw" ;;
-    *) ;;
-  esac
+  git show "$commit:$1" 2> /dev/null     | "$python" -c "$read_title" 2> /dev/null
 }
 
 printf '## Migration notes\n\n'
