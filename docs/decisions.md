@@ -1478,11 +1478,12 @@ and the reason. This log is closed: new decisions go into `docs/decisions/`, one
 
 - 2026-11-25, resume always opens a new session. `headwork resume` no longer continues the old Claude conversation for
   workers, leads, parts or the orchestrator (`launch --fresh`, `orchestrator --session <new id>` with no `--resume`):
-  every session came back with all of its earlier context, so cache reads dominated the cost (about 97 % of tokens). The
+  every session came back with all of its earlier context, so cache reads dominated the cost (`headwork usage --by delegation`). The
   knowledge travels in the recap instead. The park prompts and the `recap` tool say what a recap must hold (done and left,
   decisions and why, open questions, the next step, files and branches, jobs with their start command, the user's standing
   constraints). A session that wrote none gets a mechanical one from the store: a task's brief, branch, uncommitted
   files, last report, pull requests, parts, jobs and recent log; the orchestrator's from the board, queue, asks, jobs,
   added rules and the log (`ops/recap.rs`). A task interrupted by a crash had no handoff file, so resume now writes it
   from the newest recap and the live facts before opening the pane. `machine.resume_after_crash` stays. `launch
-  --resume` and `orchestrator --resume` remain for by-hand use; resume never passes them.
+  --resume` and `orchestrator --resume` remain for by-hand use; resume never passes them. This supersedes every earlier entry that says a resumed
+  session continues its conversation (`--resume <uuid>`), including the park and resume entries of 2026-11-14 and 2026-11-21.

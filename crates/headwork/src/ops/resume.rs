@@ -340,8 +340,27 @@ fn resume_task(
         env.actor,
     )?;
     let mode = parked_mode(opts, store.session_of(task.id)?.as_ref());
-    ensure_handoff(store, env, task, crash)?;
-    let (session_id, fresh_reason) = session_for(store, env, task)?;
+    let prepared =
+        ensure_handoff(store, env, task, crash).and_then(|()| session_for(store, env, task));
+    let (session_id, fresh_reason) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let error = format!("{error:#}");
+            store.append_event(
+                env.actor,
+                Some(task.id),
+                None,
+                "launch-error",
+                &serde_json::json!({ "error": error }),
+            )?;
+            store.transition(task.id, &Trigger::LaunchFailed, env.actor)?;
+            return Ok(ResumedTask {
+                name,
+                outcome: TaskOutcome::Failed { error },
+                open_question,
+            });
+        }
+    };
     if let Some(mode) = mode {
         store.set_session_mode(&session_id, mode, env.actor)?;
     }
@@ -371,6 +390,7 @@ fn resume_task(
         },
         Err(error) => {
             let error = format!("{error:#}");
+            store.session_ended(&session_id, None)?;
             store.append_event(
                 env.actor,
                 Some(task.id),
@@ -395,8 +415,15 @@ fn ensure_handoff(store: &Store, env: &Env<'_>, task: &Task, crash: bool) -> Res
         return Ok(());
     }
     let own = store
-        .latest_recap(task.id)?
-        .filter(|recap| recap.kind == RecapKind::Session);
+        .latest_recap_of_kind(task.id, RecapKind::Session)?
+        .map(|recap| {
+            format!(
+                "(written by the session before the restart, at {})
+
+{}",
+                recap.created_at, recap.body
+            )
+        });
     let facts = super::recap::mechanical(
         store,
         env,
@@ -407,12 +434,7 @@ fn ensure_handoff(store: &Store, env: &Env<'_>, task: &Task, crash: bool) -> Res
             "resumed with no recap on file"
         },
     )?;
-    super::recap::write_handoff(
-        env,
-        task,
-        own.as_ref().map(|recap| recap.body.as_str()),
-        &facts,
-    )?;
+    super::recap::write_handoff(env, task, own.as_deref(), &facts)?;
     Ok(())
 }
 
@@ -538,7 +560,10 @@ fn write_summary(
             let _ = writeln!(text, "Your recap ({}, {}):\n", recap.kind, recap.created_at);
             let _ = writeln!(text, "{}", recap.body.trim_end());
         } else {
-            let body = super::recap::orchestrator_mechanical(store, "no recap was written")?;
+            let body = super::recap::orchestrator_mechanical(store, "no recap was written")
+                .unwrap_or_else(|error| {
+                    format!("the recap could not be built from the store: {error:#}")
+                });
             text.push_str("You left no recap of your own; this one was built from the store:\n\n");
             text.push_str(body.trim_end());
             text.push('\n');
@@ -682,11 +707,24 @@ fn open_orchestrator(
         "--home".to_owned(),
         env.home.root().display().to_string(),
     ]);
-    let (workspace, fresh) = env.host.ensure_workspace(ORCHESTRATOR_WORKSPACE, &dir)?;
-    let target = place::tab(env.host, &workspace, fresh)?;
-    let pane = env
+    let opened = env
         .host
-        .spawn(&workspace, &dir, ORCHESTRATOR_WORKSPACE, &argv, &target)?;
+        .ensure_workspace(ORCHESTRATOR_WORKSPACE, &dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|(workspace, fresh)| {
+            let target = place::tab(env.host, &workspace, fresh)?;
+            let pane = env
+                .host
+                .spawn(&workspace, &dir, ORCHESTRATOR_WORKSPACE, &argv, &target)?;
+            Ok((workspace, target, pane))
+        });
+    let (workspace, target, pane) = match opened {
+        Ok(opened) => opened,
+        Err(error) => {
+            store.session_ended(&session, None)?;
+            return Err(error);
+        }
+    };
     let pane_id = match &target {
         Target::Pane { pane, .. } => Some(pane.as_str()),
         Target::Tab => None,
@@ -705,6 +743,7 @@ fn open_orchestrator(
         },
         env.actor,
     )?;
+    store.session_ended(&old.id, None)?;
     Ok(TaskOutcome::Fresh {
         surface: pane.surface.to_string(),
         reason: FRESH_REASON.to_owned(),

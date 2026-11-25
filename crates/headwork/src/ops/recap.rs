@@ -10,7 +10,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use headwork_core::{Actor, RecapKind};
-use headwork_store::{BoardTask, EventFilter, EventRecord, NewRecap, Store, Task};
+use headwork_store::{BoardTask, EVENT_TOOL, EventFilter, EventRecord, NewRecap, Store, Task};
 
 use super::Env;
 
@@ -23,16 +23,13 @@ const EVENT_LIMIT: u32 = 40;
 /// How many characters of an event's details a recap keeps.
 const DETAIL_LIMIT: usize = 160;
 
-/// Event types too frequent to say anything about where a session stood.
-const NOISY_EVENTS: [&str; 2] = ["tool-used", "usage-read"];
+/// Event types too frequent to say anything about where a session stood, left out of the query itself.
+const NOISY_EVENTS: [&str; 1] = [EVENT_TOOL];
 
 /// The log lines of `events`, newest last, noisy types left out and details cut short.
 fn event_lines(events: &[EventRecord]) -> String {
     let mut text = String::new();
-    for event in events
-        .iter()
-        .filter(|event| !NOISY_EVENTS.contains(&event.kind.as_str()))
-    {
+    for event in events {
         let mut detail = event.data.to_string();
         if detail.chars().count() > DETAIL_LIMIT {
             detail = detail.chars().take(DETAIL_LIMIT).collect::<String>() + "...";
@@ -142,10 +139,13 @@ pub fn mechanical(store: &Store, env: &Env<'_>, task: &Task, reason: &str) -> Re
             job.cwd
         );
     }
-    let events = store.events(EventFilter {
-        task: Some(task.id),
-        limit: EVENT_LIMIT,
-    })?;
+    let events = store.events_without(
+        EventFilter {
+            task: Some(task.id),
+            limit: EVENT_LIMIT,
+        },
+        &NOISY_EVENTS,
+    )?;
     let lines = event_lines(&events);
     if !lines.is_empty() {
         text.push_str("- recent log of this task, oldest first:\n");
@@ -260,10 +260,13 @@ pub fn orchestrator_mechanical(store: &Store, reason: &str) -> Result<String> {
             );
         }
     }
-    let events = store.events(EventFilter {
-        task: None,
-        limit: EVENT_LIMIT,
-    })?;
+    let events = store.events_without(
+        EventFilter {
+            task: None,
+            limit: EVENT_LIMIT,
+        },
+        &NOISY_EVENTS,
+    )?;
     let lines = event_lines(&events);
     if !lines.is_empty() {
         text.push_str("\n## Recent log, oldest first\n\n");

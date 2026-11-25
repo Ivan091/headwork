@@ -462,6 +462,8 @@ review = { send_file = false }
 
 ## 6. Park and resume
 
+> Since 2026-11-25 a resume opens a new session instead of continuing the old conversation (`docs/decisions.md`); where this section says `--resume`, read a new session started from the recap.
+
 ### 6.1 `agentctl park`
 
 ```

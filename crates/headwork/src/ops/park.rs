@@ -612,7 +612,9 @@ fn finish_orchestrator(
             Some(problem) => format!("the orchestrator could not be asked for a recap: {problem}"),
             None => "the orchestrator could not be asked for a recap".to_owned(),
         };
-        let body = recap::orchestrator_mechanical(store, &reason)?;
+        let body = recap::orchestrator_mechanical(store, &reason).unwrap_or_else(|error| {
+            format!("the recap could not be built from the store: {error:#}")
+        });
         store.add_park_recap(
             park,
             &NewRecap {
