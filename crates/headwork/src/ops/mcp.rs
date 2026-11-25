@@ -961,14 +961,7 @@ impl<'a> Server<'a> {
             "close" => self.close_task(args),
             "answer" => self.answer(args),
             "queue" => self.queue(args),
-            "clean" => {
-                let flag = |key| args.get(key).and_then(Value::as_bool).unwrap_or(false);
-                let options = super::clean::CleanOptions {
-                    dry_run: flag("dry_run"),
-                    gc: flag("gc"),
-                };
-                to_text(&super::clean::clean(self.store, &self.env, options)?)
-            }
+            "clean" => self.clean(args),
             "reap" => {
                 let options = super::reap::ReapOptions {
                     dry_run: flag(args, "dry_run"),
@@ -1020,12 +1013,22 @@ impl<'a> Server<'a> {
                 self.job_stop(&task, args)
             }
             "job_forget" => self.job_forget(&session, role, args),
-            "config_sync" | "update" => self.admin_tool(name, args),
-            "migrate_list" | "migrate_mark" => self.migrate_tool(name, args),
+            "config_sync" => self.config_sync(args),
+            "update" => self.update(args),
+            "migrate_list" => self.migrate_list(args),
+            "migrate_mark" => self.migrate_mark(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
         }
+    }
+
+    fn clean(&mut self, args: &Value) -> Result<String> {
+        let options = super::clean::CleanOptions {
+            dry_run: flag(args, "dry_run"),
+            gc: flag(args, "gc"),
+        };
+        to_text(&super::clean::clean(self.store, &self.env, options)?)
     }
 
     fn lead_tool(&mut self, name: &str, session: &str, args: &Value) -> Result<String> {
@@ -1190,20 +1193,6 @@ impl<'a> Server<'a> {
         to_text(&jobs::forget(self.store, id, reason, self.env.actor)?)
     }
 
-    fn admin_tool(&self, name: &str, args: &Value) -> Result<String> {
-        if name == "update" {
-            return self.update(args);
-        }
-        self.config_sync(args)
-    }
-
-    fn migrate_tool(&mut self, name: &str, args: &Value) -> Result<String> {
-        if name == "migrate_mark" {
-            return self.migrate_mark(args);
-        }
-        self.migrate_list(args)
-    }
-
     fn migrate_list(&self, args: &Value) -> Result<String> {
         let report = super::migrate::report(
             self.store,
@@ -1229,9 +1218,10 @@ impl<'a> Server<'a> {
     }
 
     fn config_sync(&self, args: &Value) -> Result<String> {
+        let dry_run = flag(args, "dry_run");
         let options = super::config_sync::SyncOptions {
             pull: args.get("pull").and_then(Value::as_bool).unwrap_or(true),
-            dry_run: flag(args, "dry_run"),
+            dry_run,
         };
         let log = super::config_sync::Logging {
             store: Some(&*self.store),
@@ -1244,6 +1234,9 @@ impl<'a> Server<'a> {
             headwork_core::Platform::current(),
             log,
         )?;
+        if report.ok && !dry_run {
+            drop(super::migrate::announce(self.env.home, self.env.config));
+        }
         to_text(&report)
     }
 
