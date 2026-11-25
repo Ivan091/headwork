@@ -8,7 +8,9 @@ by step (`docs/design.md`, section 7.3).
 - `docs/design.md` is the approved design. It still says `agentctl`; read it as `headwork`. Section 8 lists the
   milestones.
 - `docs/research.md` and `docs/trials/` hold the research and trial results the design builds on.
-- `docs/decisions.md` records choices the design left open. Add a line there whenever you take one.
+- `docs/decisions/` records choices the design left open, one file per entry (`<date>-<slug>.md`); add one whenever you
+  take a choice. `docs/decisions.md` holds the entries up to 2026-11-25 and takes no new lines.
+- `docs/contention.md` is the analysis of concurrent tasks contending in one project and the plan that follows from it.
 
 ## Layout
 
@@ -51,13 +53,22 @@ URLs, the stored branch, the branch checked out), a later pull request takes a `
 A lead gets helper worktrees for its parts from the worker tool `worktree_add` (`ops/helpers.rs`, migration 0012): made by
 the project's `worktree_new` at `worktree_path` with the part's slug, writable for the task, removed at close (one that
 holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
-the main checkout with `git pull --ff-only`; `install = true` on a project lets its workers run `headwork install` and
-a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`);
+the main checkout with `git pull --ff-only`; the guard rule `worker-force-push` refuses a plain force, `-f` or `+refspec`
+and allows `--force-with-lease` only to the task's own recorded branch, one branch at a time (`--all`, `--branches`,
+`--mirror`, `--tags`, `--prune`, `--delete` are refused); `install = true` on a project lets its workers run
+`headwork install` and a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`). The project keys
+`heavy_slots` and `heavy_gate` are retired: still read, not enforced, and `doctor` warns under `config-keys`, since gates
+take machine-wide slots from `%LOCALAPPDATA%/heavy-slots`;
 `[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
 them excluded); `orchestrator_writable` gives it the edits there. A worker may write paths outside its folder only
 when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ path, kinds }]` for its task kind, and
 under `[hooks] brief_writable` the files its brief lists on a `Writes:` line; in their repository it may then `add`,
 `rm`, `commit`, `push` (no force) and `pull` those paths only, whatever the branch.
+A worktree removal that failed transiently (a file lock) backs off 1, 2, 4, 8 and 16
+minutes (`core/src/removal.rs`, counts in `worktrees`, migration 0024); any other refusal, and the sixth transient
+failure, make the tick ask keep or delete, and nothing is retried until it is answered (the answer clears the counts);
+`close --force` and a user's `headwork clean` try at once (`RemovalMode::Now`), and a close still backing off skips
+its transition (`docs/decisions/2026-11-25-worktree-removal-backoff.md`).
 `headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with

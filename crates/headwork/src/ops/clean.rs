@@ -14,9 +14,10 @@ use headwork_core::clean::{
 };
 use headwork_core::lifecycle::WorktreeEnd;
 use headwork_core::{JobState, ProjectConfig, ProjectName, SessionState};
-use headwork_store::{EventFilter, Store, TaskId, WorktreeRow};
+use headwork_store::{Store, TaskId, WorktreeRow};
 use serde::Serialize;
 
+use super::close::RemovalMode;
 use super::{Env, slashed};
 
 /// The folder, inside a main checkout, where Claude Code puts its agents' worktrees.
@@ -385,14 +386,22 @@ fn task_worktree(
                 .map_or(Outcome::Removed, |error| Outcome::Failed { error })
         }
         (false, true) => {
-            if recorded.row.state != "present" {
+            let was = recorded.row.state.as_str();
+            if was != "present" {
                 store.set_worktree_state(task.id, "present", env.actor)?;
             }
-            match super::close::remove_worktree(store, env, task.id, false)? {
+            match super::close::remove_worktree(store, env, task.id, RemovalMode::Now)? {
                 WorktreeEnd::Removed | WorktreeEnd::NoWorktree => Outcome::Removed,
-                WorktreeEnd::Present | WorktreeEnd::Kept => Outcome::Failed {
-                    error: last_refusal(store, task.id)?,
-                },
+                WorktreeEnd::Present | WorktreeEnd::Kept => {
+                    let error = store
+                        .removal_attempts(task.id)?
+                        .last_error
+                        .unwrap_or_else(|| "the remove command refused".to_owned());
+                    if was == "kept" {
+                        store.set_worktree_state(task.id, "kept", env.actor)?;
+                    }
+                    Outcome::Failed { error }
+                }
             }
         }
     };
@@ -409,21 +418,6 @@ fn mark_removed(store: &mut Store, env: &Env<'_>, recorded: &Recorded<'_>) -> Re
         store.set_worktree_state(recorded.task, "removed", env.actor)?;
     }
     Ok(())
-}
-
-fn last_refusal(store: &Store, task: TaskId) -> Result<String> {
-    let events = store.events(EventFilter {
-        task: Some(task),
-        limit: 20,
-    })?;
-    Ok(events
-        .iter()
-        .rev()
-        .find(|event| event.kind == "worktree-refused")
-        .and_then(|event| event.data.get("error"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("the remove command refused")
-        .to_owned())
 }
 
 fn agent_worktree(

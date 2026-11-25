@@ -437,6 +437,33 @@ fn an_ignored_config_key_is_flagged() {
 }
 
 #[test]
+fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
+    let install = install();
+    let clean = run(&install, &FakeProbe::default());
+    assert_eq!(status(&clean, "config-keys"), Status::Ok, "no heavy keys");
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen("[project.me-sim]", "[project.me-sim]\nheavy_slots = 2", 1),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "config-keys"),
+        Status::Warn,
+        "heavy_slots set"
+    );
+    assert!(
+        detail(&report, "config-keys").contains(
+            "project.me-sim.heavy_slots (not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots)"
+        ),
+        "{}",
+        detail(&report, "config-keys")
+    );
+}
+
+#[test]
 fn doctor_trusts_every_project_main_checkout_and_reports_it() {
     let install = install();
     let file = install.home.claude_json().to_path_buf();

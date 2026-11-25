@@ -13,7 +13,7 @@ pub mod stop;
 use serde::Serialize;
 
 use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
-use grants::{GrantedGit, granted_git};
+use grants::{ForceKind, GrantedGit, PushForm, classify_push, granted_git};
 pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
 
@@ -229,6 +229,8 @@ pub struct Scope {
     pub allowed_repos: Vec<String>,
     /// The branch checked out in the session's folder.
     pub branch: Option<String>,
+    /// The branch the store records for the task's worktree; `branch` stands in when none is recorded.
+    pub task_branch: Option<String>,
     /// The branches that count as default.
     pub default_branches: Vec<String>,
     /// Git remotes of the session's folder: name and `owner/name`.
@@ -343,6 +345,9 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
 /// in; `None` is a folder the guard cannot tell, such as after `cd -` or `popd`.
 fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decision {
     let mut cwd = Some(scope.cwd.clone());
+    let substituted = ["$(", "`", "${", "<("]
+        .iter()
+        .any(|mark| line.contains(mark));
     for command in commands(line) {
         match command.program_name().as_str() {
             "cd" | "pushd" => {
@@ -357,7 +362,9 @@ fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decisi
         }
         let decision = match role {
             Role::Orchestrator => check_orchestrator_command(scope, &command, cwd.as_deref()),
-            Role::Worker => check_worker_command(scope, &command, cwd.as_deref(), background),
+            Role::Worker => {
+                check_worker_command(scope, &command, cwd.as_deref(), background, substituted)
+            }
         };
         if decision != Decision::Allow {
             return decision;
@@ -450,6 +457,7 @@ fn check_worker_command(
     command: &SimpleCommand,
     cwd: Option<&str>,
     background: bool,
+    substituted: bool,
 ) -> Decision {
     if let Some(decision) = user_only(scope, command) {
         return decision;
@@ -476,9 +484,13 @@ fn check_worker_command(
     if command.program_name() != "git" {
         return Decision::Allow;
     }
-    let Some((sub, args)) = git_subcommand(command) else {
+    let Some(line) = git_line(command) else {
         return Decision::Allow;
     };
+    if let Some(decision) = check_git_shape(&line, substituted) {
+        return decision;
+    }
+    let GitLine { sub, args, .. } = line;
     match check_git_outside(scope, command, cwd, &sub, &args) {
         GitPlace::Own => {}
         GitPlace::Granted => return Decision::Allow,
@@ -712,13 +724,9 @@ fn is_git_write(sub: &str, args: &[String]) -> bool {
 }
 
 fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
-    let positional: Vec<&str> = args
-        .iter()
-        .map(String::as_str)
-        .filter(|arg| !arg.starts_with('-'))
-        .collect();
-    let remote = positional.first().copied().unwrap_or("origin");
-    let refspecs = positional.get(1..).unwrap_or_default();
+    let form = classify_push(args);
+    let remote = form.positional.first().copied().unwrap_or("origin");
+    let refspecs = form.positional.get(1..).unwrap_or_default();
     let targets_default = refspecs.iter().any(|spec| {
         let target = spec.rsplit(':').next().unwrap_or(spec);
         let target = target
@@ -731,6 +739,9 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
             RuleId::WorkerDefaultBranch,
             "never push to the default branch: push your task branch and open a pull request",
         );
+    }
+    if let Some(denied) = check_forced_push(scope, &form) {
+        return denied;
     }
     if scope.allowed_repos.is_empty() {
         return Decision::Allow;
@@ -761,21 +772,169 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
     }
 }
 
+/// A push that rewrites a remote branch: a plain force or a `+refspec` is refused; `--force-with-lease` and
+/// `--force-if-includes` are allowed only to the task's own branch, never with `--all`, `--mirror`, `--tags` or `--prune`.
+fn check_forced_push(scope: &Scope, form: &PushForm<'_>) -> Option<Decision> {
+    match form.force {
+        ForceKind::None => return None,
+        ForceKind::Plain => {
+            return Some(Decision::deny(
+                RuleId::WorkerForcePush,
+                "a plain force push is refused: after a rebase use `git push --force-with-lease` to your own task branch",
+            ));
+        }
+        ForceKind::Lease => {}
+    }
+    let own = scope.task_branch.as_deref().or(scope.branch.as_deref());
+    let checked_out_is_own = own.is_some() && scope.branch.as_deref() == own;
+    let refspecs = form.positional.get(1..).unwrap_or_default();
+    let only_own = !form.wide
+        && form.plain_lease_options()
+        && refspecs.len() <= 1
+        && if refspecs.is_empty() {
+            checked_out_is_own
+        } else {
+            refspecs.iter().all(|spec| {
+                let target = spec.rsplit(':').next().unwrap_or(spec);
+                let target = target.trim_start_matches("refs/heads/");
+                (target == "HEAD" && checked_out_is_own)
+                    || (target != "HEAD" && Some(target) == own)
+            })
+        };
+    if only_own {
+        None
+    } else {
+        Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "`--force-with-lease` is for your own task branch only, written as `git push --force-with-lease [origin] [HEAD|<branch>]`",
+        ))
+    }
+}
+
 fn is_default(scope: &Scope, branch: &str) -> bool {
     scope.default_branches.iter().any(|name| name == branch)
 }
 
+/// A git command line read past its global options.
+#[derive(Debug)]
+struct GitLine {
+    /// The subcommand as written, which may be an alias.
+    sub: String,
+    /// The words after it.
+    args: Vec<String>,
+    /// It sets configuration: `-c`, `--config-env`, or a `GIT_CONFIG*` assignment the shell reader turned into `-c`.
+    configured: bool,
+}
+
 /// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
-fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
+fn git_line(command: &SimpleCommand) -> Option<GitLine> {
     let mut args = command.args().iter();
+    let mut configured = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" => {
+            "-c" | "--config-env" => {
+                configured = true;
                 args.next();
             }
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--attr-source"
+            | "--super-prefix" => {
+                args.next();
+            }
+            flag if flag.starts_with("--config-env=") => configured = true,
             flag if flag.starts_with('-') => {}
-            sub => return Some((sub.to_owned(), args.cloned().collect())),
+            sub => {
+                return Some(GitLine {
+                    sub: sub.to_owned(),
+                    args: args.cloned().collect(),
+                    configured,
+                });
+            }
         }
+    }
+    None
+}
+
+/// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
+fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
+    git_line(command).map(|line| (line.sub, line.args))
+}
+
+/// Git's own commands a worker runs; a subcommand outside this list may be an alias, which can run a push.
+const GIT_BUILTINS: &[&str] = &[
+    "add",
+    "am",
+    "apply",
+    "bisect",
+    "blame",
+    "branch",
+    "cat-file",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "describe",
+    "diff",
+    "fetch",
+    "for-each-ref",
+    "format-patch",
+    "gc",
+    "grep",
+    "init",
+    "log",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "merge",
+    "merge-base",
+    "mv",
+    "notes",
+    "pull",
+    "push",
+    "rebase",
+    "reflog",
+    "remote",
+    "reset",
+    "restore",
+    "rev-list",
+    "rev-parse",
+    "revert",
+    "rm",
+    "shortlog",
+    "show",
+    "stash",
+    "status",
+    "submodule",
+    "switch",
+    "symbolic-ref",
+    "tag",
+    "update-ref",
+    "worktree",
+];
+
+/// Refuses, before any other git rule, the shapes in which a push cannot be read from the command line: a push, a
+/// force or an unknown subcommand (an alias) together with configuration set on the line, and a forced push whose words
+/// come from a substitution (`$(...)`, backticks, `${...}`) the reader cannot see into.
+fn check_git_shape(line: &GitLine, substituted: bool) -> Option<Decision> {
+    let forces = line
+        .args
+        .iter()
+        .any(|word| word.starts_with("--force") || word.starts_with('+'));
+    let pushes = line.sub == "push";
+    let alias = !GIT_BUILTINS.contains(&line.sub.as_str());
+    if line.configured && (pushes || forces || alias) {
+        return Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "a push, a force or an alias with `-c`, `--config-env` or `GIT_CONFIG*` settings is refused: settings can \
+             change what is pushed; run it without them",
+        ));
+    }
+    if substituted && (forces || (pushes && classify_push(&line.args).force != ForceKind::None)) {
+        return Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "a forced push built from `$(...)`, backticks or `${...}` is refused: write its refspec out",
+        ));
     }
     None
 }

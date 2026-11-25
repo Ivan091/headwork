@@ -29,8 +29,6 @@ merge = "deliver"
 main_only = ["car-training", "pro-render", "publish", "release"]
 user_only = ["scripts/publish-now.sh", "scripts/publish.sh", "scripts/reupload.sh", "scripts/release.sh"]
 allowed_repos = ["Ivan091/me-sim"]
-heavy_slots = 2
-heavy_gate = "scripts/heavy.sh"
 review = { send_file = true }
 long_jobs = ["scripts/rl-run.sh", "cargo run --release -p render"]
 jobs.car-training = { park_policy = "checkpoint", checkpoint = "{out}/checkpoint.json" }

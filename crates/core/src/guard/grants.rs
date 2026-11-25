@@ -46,16 +46,169 @@ const COMMIT_WIDE: &[&str] = &[
     "-p",
 ];
 
-/// `git push` options that force, delete or push more than the branch.
+/// `git push` options that delete or push more than the current branch.
 const PUSH_WIDE: &[&str] = &[
-    "--force",
-    "--force-with-lease",
-    "--force-if-includes",
     "--delete",
     "--mirror",
     "--all",
+    "--branches",
     "--prune",
+    "--tags",
 ];
+
+/// Every long option of `git push`. Git takes any unique prefix of one, so a written option is matched against them.
+const PUSH_LONG: &[&str] = &[
+    "--all",
+    "--branches",
+    "--mirror",
+    "--tags",
+    "--follow-tags",
+    "--delete",
+    "--prune",
+    "--dry-run",
+    "--porcelain",
+    "--force",
+    "--force-with-lease",
+    "--force-if-includes",
+    "--recurse-submodules",
+    "--atomic",
+    "--signed",
+    "--push-option",
+    "--receive-pack",
+    "--exec",
+    "--repo",
+    "--set-upstream",
+    "--thin",
+    "--quiet",
+    "--verbose",
+    "--progress",
+    "--verify",
+    "--ipv4",
+    "--ipv6",
+];
+
+/// The long options a written one may stand for: itself when it is one, else every option it is a prefix of. A
+/// `--no-` form names no force and nothing wide.
+fn long_options(name: &str) -> Vec<&'static str> {
+    if name.starts_with("--no-") {
+        return Vec::new();
+    }
+    if let Some(exact) = PUSH_LONG.iter().find(|option| **option == name) {
+        return vec![exact];
+    }
+    PUSH_LONG
+        .iter()
+        .copied()
+        .filter(|option| name.len() > 2 && option.starts_with(name))
+        .collect()
+}
+
+/// How a `git push` forces the remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ForceKind {
+    /// No force.
+    None,
+    /// `--force-with-lease` or `--force-if-includes`, without a plain force.
+    Lease,
+    /// `--force`, `-f` (also inside a group of short flags), a `+refspec`, or `--mirror` and `--prune`, which rewrite
+    /// and delete remote branches as a force does.
+    Plain,
+}
+
+/// What a `git push` command line asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PushForm<'a> {
+    /// How it forces.
+    pub force: ForceKind,
+    /// It deletes or pushes more than one branch (`--all`, `--mirror`, `--tags`, `--prune`, `--delete`, `-d`).
+    pub wide: bool,
+    /// The remote and then the refspecs, as written; every word after `--`, and a short-option word holding `:`, is one.
+    pub positional: Vec<&'a str>,
+    /// Every option word before `--`, as written.
+    pub options: Vec<&'a str>,
+    /// The line has a `--`.
+    pub separator: bool,
+}
+
+/// Long options a lease push may carry besides the lease itself: nothing that changes what is pushed.
+const LEASE_COMPANIONS: &[&str] = &[
+    "--force-with-lease",
+    "--force-if-includes",
+    "--set-upstream",
+    "--quiet",
+    "--verbose",
+    "--progress",
+];
+
+/// Short options a lease push may carry.
+const LEASE_SHORT: &[&str] = &["-u", "-q", "-v"];
+
+impl PushForm<'_> {
+    /// Whether every option is one a lease push may carry and there is no `--`, so the refspecs alone say what it
+    /// pushes.
+    pub(super) fn plain_lease_options(&self) -> bool {
+        !self.separator
+            && self.options.iter().all(|word| {
+                let name = word.split('=').next().unwrap_or(word);
+                if LEASE_SHORT.contains(&name) {
+                    return true;
+                }
+                let names = long_options(name);
+                !names.is_empty() && names.iter().all(|option| LEASE_COMPANIONS.contains(option))
+            })
+    }
+}
+
+/// Reads a `git push` command line once for every rule that looks at it.
+pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
+    let mut plain = false;
+    let mut lease = false;
+    let mut wide = false;
+    let mut separator = false;
+    let mut positional = Vec::new();
+    let mut options = Vec::new();
+    for word in args {
+        let name = word.split('=').next().unwrap_or(word);
+        let short = word.starts_with('-') && !word.starts_with("--");
+        if separator || !word.starts_with('-') || (short && word.contains(':')) {
+            plain |= word.starts_with('+');
+            positional.push(word.as_str());
+        } else if word == "--" {
+            separator = true;
+        } else if let Some(letters) = word
+            .strip_prefix('-')
+            .filter(|letters| !letters.starts_with('-'))
+        {
+            options.push(word.as_str());
+            plain |= letters.contains('f');
+            wide |= letters.contains('d');
+        } else {
+            options.push(word.as_str());
+            let names = long_options(name);
+            plain |= names
+                .iter()
+                .any(|option| matches!(*option, "--force" | "--mirror" | "--prune"));
+            lease |= names
+                .iter()
+                .any(|option| matches!(*option, "--force-with-lease" | "--force-if-includes"));
+            wide |= names.iter().any(|option| PUSH_WIDE.contains(option));
+        }
+    }
+    let force = if plain {
+        ForceKind::Plain
+    } else if lease {
+        ForceKind::Lease
+    } else {
+        ForceKind::None
+    };
+    PushForm {
+        force,
+        wide,
+        positional,
+        options,
+        separator,
+    }
+}
 
 /// The paths a brief lists on its `Writes:` lines, as written: each word after the mark, without backticks, quotes and
 /// trailing punctuation. A line may start with a list marker.
@@ -237,19 +390,13 @@ fn within_grants(
 
 /// A push without force, deletion or a mirror.
 fn check_push(args: &[String]) -> Result<(), String> {
-    for word in args {
-        let name = word.split('=').next().unwrap_or(word);
-        let short_force = word
-            .strip_prefix('-')
-            .filter(|letters| !letters.starts_with('-'))
-            .is_some_and(|letters| letters.contains(['f', 'd']));
-        let forced_refspec =
-            !word.starts_with('-') && (word.starts_with('+') || word.starts_with(':'));
-        if PUSH_WIDE.contains(&name) || short_force || forced_refspec {
-            return Err(format!(
-                "`git push {word}` forces, deletes or pushes more than the branch"
-            ));
-        }
+    let form = classify_push(args);
+    let deletes = form.positional.iter().any(|word| word.starts_with(':'));
+    if form.force != ForceKind::None || form.wide || deletes {
+        return Err(format!(
+            "`git push {}` forces, deletes or pushes more than the branch",
+            args.join(" ")
+        ));
     }
     Ok(())
 }

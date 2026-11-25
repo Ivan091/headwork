@@ -42,6 +42,7 @@ fn worker(branch: &str) -> Scope {
         own_delivery: true,
         allowed_repos: vec!["Ivan091/me-sim".to_owned()],
         branch: Some(branch.to_owned()),
+        task_branch: None,
         default_branches: DEFAULT_BRANCHES.iter().map(|b| (*b).to_owned()).collect(),
         remotes: vec![
             ("origin".to_owned(), "Ivan091/me-sim".to_owned()),
@@ -378,6 +379,327 @@ fn worker_bash_table() {
         ("cargo test", "sand", true, None),
         ("scripts/ship.sh -m 'feat: x'", "sand", false, None),
         ("cargo build", "master", false, None),
+    ];
+    for (command, branch, background, expected) in table {
+        let call = ToolCall::Bash {
+            command,
+            background: *background,
+        };
+        assert_eq!(
+            rule(&check_tool(&worker(branch), &call)),
+            *expected,
+            "{command} on {branch}"
+        );
+    }
+}
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one table of every force push case")]
+fn worker_force_push_table() {
+    let table: &[(&str, &str, bool, Option<RuleId>)] = &[
+        ("git push --force-with-lease", "sand", false, None),
+        (
+            "git push --force-with-lease origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease=sand:abc123 origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease --force-if-includes origin HEAD",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-if-includes origin sand:sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease origin other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin sand other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin master",
+            "sand",
+            false,
+            Some(RuleId::WorkerDefaultBranch),
+        ),
+        (
+            "git push --force-with-lease",
+            "master",
+            false,
+            Some(RuleId::WorkerDefaultBranch),
+        ),
+        (
+            "git push --force",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push -f origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push origin +sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --force origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push -fu origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin +sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin HEAD:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin HEAD:sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease origin refs/heads/sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease --all origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin -- -y:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin -y:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c alias.p=push p --force origin master:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c alias.p=push p --force-with-lease origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git --attr-source HEAD push --force origin sand:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --atomic origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin sand sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push -u --force-with-lease=sand origin HEAD",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching git push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "env GIT_CONFIG_PARAMETERS=x git push --force-with-lease origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "FOO=1 git push --force-with-lease origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git -c alias.a=b -c alias.b=push a --force origin HEAD:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c 'alias.x=!sh' x -c 'git push --force origin HEAD:other'",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "P=push git --config-env=alias.p=P p --force origin HEAD:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "GIT_CONFIG_PARAMETERS=\"'alias.p'='push'\" git p --force origin HEAD:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c remote.origin.push=+HEAD:refs/heads/other push origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c remote.origin.mirror=true push origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease=other:origin/other origin HEAD:other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease=sand:abc origin sand",
+            "sand",
+            false,
+            None,
+        ),
+        (
+            "git push --force-with-lease origin $(echo HEAD:other)",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --mirror origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        ("git -c user.name=x status", "sand", false, None),
+        (
+            "git push --force-with-lease --al origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-w origin other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --forc origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        ("git push --force-w origin sand", "sand", false, None),
+        (
+            "git -c push.default=matching push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c remote.origin.mirror=true push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c user.name=x push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --branches origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --mirror origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --tags origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease --prune origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-with-lease origin HEAD",
+            "other",
+            false,
+            None,
+        ),
     ];
     for (command, branch, background, expected) in table {
         let call = ToolCall::Bash {
@@ -1420,4 +1742,105 @@ fn a_reviewer_lead_with_work_left_may_not_stop_unless_it_asks() {
         None,
         "nothing left, it may wait"
     );
+}
+
+type Row<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    &'a [&'a str],
+    &'a str,
+    Option<RuleId>,
+);
+
+fn lease_scope(branch: Option<&str>, task_branch: Option<&str>, allowed_repos: &[&str]) -> Scope {
+    Scope {
+        branch: branch.map(str::to_owned),
+        task_branch: task_branch.map(str::to_owned),
+        allowed_repos: allowed_repos
+            .iter()
+            .map(|repo| (*repo).to_owned())
+            .collect(),
+        ..worker("sand")
+    }
+}
+
+#[test]
+fn worker_force_push_uses_the_recorded_task_branch() {
+    let call = |command| ToolCall::Bash {
+        command,
+        background: false,
+    };
+    let table: &[Row<'_>] = &[
+        (
+            None,
+            None,
+            &[],
+            "git push --force-with-lease origin sand",
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            None,
+            None,
+            &[],
+            "git push --force-with-lease",
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            Some("sand"),
+            Some("sand"),
+            &[],
+            "git push --force-with-lease",
+            None,
+        ),
+        (
+            Some("other"),
+            Some("sand"),
+            &[],
+            "git push --force-with-lease",
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            Some("other"),
+            Some("sand"),
+            &[],
+            "git push --force-with-lease origin other",
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            Some("other"),
+            Some("sand"),
+            &[],
+            "git push --force-with-lease origin HEAD",
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            Some("other"),
+            Some("sand"),
+            &[],
+            "git push --force-with-lease origin sand",
+            None,
+        ),
+        (
+            Some("sand"),
+            None,
+            &["Ivan091/me-sim"],
+            "git push --force-with-lease origin sand",
+            None,
+        ),
+        (
+            Some("sand"),
+            None,
+            &["Ivan091/me-sim"],
+            "git push --force-with-lease fork sand",
+            Some(RuleId::WorkerPushRepo),
+        ),
+    ];
+    for (branch, task_branch, repos, command, expected) in table {
+        let scope = lease_scope(*branch, *task_branch, repos);
+        assert_eq!(
+            rule(&check_tool(&scope, &call(command))),
+            *expected,
+            "{command} on {branch:?} for {task_branch:?}"
+        );
+    }
 }

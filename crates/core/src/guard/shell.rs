@@ -116,10 +116,27 @@ pub fn commands(line: &str) -> Vec<SimpleCommand> {
 }
 
 fn collect(line: &str, out: &mut Vec<SimpleCommand>, depth: u8) {
-    for words in split(line) {
-        let words = unwrap(&words);
+    for written in split(line) {
+        let mut words = unwrap(&written);
         if words.is_empty() {
             continue;
+        }
+        let stripped = written
+            .get(..written.len() - words.len())
+            .unwrap_or_default();
+        if stripped
+            .iter()
+            .any(|word| is_assignment(word) && word.starts_with("GIT_CONFIG"))
+            && (SimpleCommand {
+                words: words.clone(),
+            })
+            .program_name()
+                == "git"
+        {
+            words.splice(
+                1..1,
+                [String::from("-c"), format!("{GIT_CONFIG_FROM_ENV}=env")],
+            );
         }
         let name = SimpleCommand {
             words: words.clone(),
@@ -148,6 +165,12 @@ fn collect(line: &str, out: &mut Vec<SimpleCommand>, depth: u8) {
         out.push(SimpleCommand { words });
     }
 }
+
+/// The `-c` key a command gets when a `GIT_CONFIG*` assignment in front of it was stripped.
+///
+/// Such variables set git configuration the command line does not show, so the guard counts the command as configured
+/// the way an explicit `-c` is.
+pub const GIT_CONFIG_FROM_ENV: &str = "push.from-environment";
 
 fn unwrap(words: &[String]) -> Vec<String> {
     let mut rest = words;

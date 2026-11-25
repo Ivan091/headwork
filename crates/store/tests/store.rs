@@ -2199,3 +2199,93 @@ fn migration_22_makes_kind_silent_tasks_silent() {
     assert_eq!((quiet.close, quiet.review_plan), (CloseMode::Silent, None));
     assert_eq!((loud.close, loud.review_plan), (CloseMode::Confirm, None));
 }
+
+#[test]
+fn failed_worktree_removals_are_counted_and_forgotten() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap(),
+        headwork_store::RemovalAttempts::default(),
+        "no worktree, no attempts"
+    );
+    store
+        .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
+        .unwrap();
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        0,
+        "none yet"
+    );
+    store
+        .record_removal_failure(task.id, "locked", Actor::User)
+        .unwrap();
+    store
+        .record_removal_failure(task.id, "Permission denied", Actor::User)
+        .unwrap();
+    let attempts = store.removal_attempts(task.id).unwrap();
+    assert_eq!(attempts.failures, 2, "counted");
+    assert_eq!(
+        attempts.last_error.as_deref(),
+        Some("Permission denied"),
+        "last error"
+    );
+    assert!(
+        attempts.since_last_s.is_some_and(|s| s < 5),
+        "just now: {attempts:?}"
+    );
+    store.clear_removal_attempts(task.id).unwrap();
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        0,
+        "cleared"
+    );
+    store
+        .record_removal_failure(task.id, "again", Actor::User)
+        .unwrap();
+    store
+        .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
+        .unwrap();
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        0,
+        "a fresh record starts over"
+    );
+}
+
+#[test]
+fn a_refusal_is_logged_and_counted_on_the_newest_worktree_only() {
+    let (mut store, config) = store();
+    let task = create(&mut store, &config, "me-sim", "sand");
+    store
+        .record_worktree(task.id, "S:/w/old", "sand", Actor::User)
+        .unwrap();
+    store
+        .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
+        .unwrap();
+    store
+        .record_removal_failure(task.id, "locked", Actor::User)
+        .unwrap();
+    let logged = store
+        .events(EventFilter {
+            task: Some(task.id),
+            limit: 20,
+        })
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "worktree-refused");
+    assert!(logged, "the refusal is an event of the same call");
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        1,
+        "counted"
+    );
+    store
+        .set_worktree_state(task.id, "kept", Actor::User)
+        .unwrap();
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        0,
+        "a kept worktree forgets its failures"
+    );
+}

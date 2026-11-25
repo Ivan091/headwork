@@ -19,8 +19,11 @@ pub struct Place<'a> {
 
 use crate::park::{identity, identity_columns};
 use crate::queries::insert_event;
-use crate::records::{SessionRow, TaskId, WorktreeRow};
+use crate::records::{RemovalAttempts, SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
+
+const NEWEST_WORKTREE: &str =
+    "(SELECT id FROM worktrees WHERE task_id = ?1 AND helper = 0 ORDER BY id DESC LIMIT 1)";
 
 const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code, \
                                host_pane, host_place, permission_mode, launcher_image, launcher_started, claude_image, \
@@ -681,7 +684,7 @@ impl Store {
         tx.execute(
             "INSERT INTO worktrees (task_id, path, branch, state) VALUES (?1, ?2, ?3, 'present')
              ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present',
-               helper = 0",
+               helper = 0, removal_failures = 0, removal_last_at = NULL, removal_last_error = NULL",
             params![task.0, path, branch],
         )?;
         let data = serde_json::json!({ "path": path, "branch": branch });
@@ -725,7 +728,11 @@ impl Store {
     ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE worktrees SET state = ?1 WHERE task_id = ?2 AND helper = 0",
+            "UPDATE worktrees SET state = ?1,
+               removal_failures = CASE WHEN ?1 IN ('removed', 'kept') THEN 0 ELSE removal_failures END,
+               removal_last_at = CASE WHEN ?1 IN ('removed', 'kept') THEN NULL ELSE removal_last_at END,
+               removal_last_error = CASE WHEN ?1 IN ('removed', 'kept') THEN NULL ELSE removal_last_error END
+             WHERE task_id = ?2 AND helper = 0",
             params![state, task.0],
         )?;
         insert_event(
@@ -737,6 +744,89 @@ impl Store {
             &serde_json::json!({ "state": state }),
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// How often removing a task's worktree failed, how long ago the last attempt was and what it said.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn removal_attempts(&self, task: TaskId) -> Result<RemovalAttempts, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT removal_failures, removal_last_error,
+                        CAST(strftime('%s', 'now') AS INTEGER) - removal_last_at
+                 FROM worktrees WHERE id = {NEWEST_WORKTREE}"
+                ),
+                params![task.0],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((failures, last_error, since)) = row else {
+            return Ok(RemovalAttempts::default());
+        };
+        Ok(RemovalAttempts {
+            failures: u32::try_from(failures).map_err(|_| StoreError::OutOfRange(failures))?,
+            since_last_s: since.map(|n| u64::try_from(n).unwrap_or(0)),
+            last_error,
+        })
+    }
+
+    /// Records a refused removal of a task's worktree in one transaction: the `worktree-refused` event, and one more
+    /// failure, now, with the error, on the row `worktree_of` returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_removal_failure(
+        &mut self,
+        task: TaskId,
+        error: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            "worktree-refused",
+            &serde_json::json!({ "error": error }),
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE worktrees SET removal_failures = removal_failures + 1,
+                   removal_last_at = CAST(strftime('%s', 'now') AS INTEGER), removal_last_error = ?2
+                 WHERE id = {NEWEST_WORKTREE}"
+            ),
+            params![task.0, error],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets the failed removals of a task's worktree, so the next attempt runs at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn clear_removal_attempts(&mut self, task: TaskId) -> Result<(), StoreError> {
+        self.conn.execute(
+            &format!(
+                "UPDATE worktrees SET removal_failures = 0, removal_last_at = NULL, removal_last_error = NULL
+                 WHERE id = {NEWEST_WORKTREE}"
+            ),
+            params![task.0],
+        )?;
         Ok(())
     }
 

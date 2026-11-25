@@ -25,6 +25,7 @@ jobs:
             asset: headwork-aarch64-apple-darwin
             binary: target/release/headwork
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       HEADWORK_VERSION: 0.1.${{ github.run_number }}
       HEADWORK_COMMIT: ${{ github.sha }}
@@ -56,6 +57,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -73,12 +75,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v0.1.${{ github.run_number }}
-        run: >-
-          gh release create "$TAG" dist/*
-          --repo "${{ github.repository }}"
-          --target "${{ github.sha }}"
-          --title "headwork $TAG"
-          --generate-notes
+        run: |
+          expected=$(ls dist | wc -l)
+          repo="${{ github.repository }}"
+          for attempt in 1 2 3; do
+            if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+              gh release upload "$TAG" dist/* --repo "$repo" --clobber || true
+            else
+              gh release create "$TAG" dist/* \
+                --repo "$repo" \
+                --target "${{ github.sha }}" \
+                --title "headwork $TAG" \
+                --generate-notes || true
+            fi
+            have=$(gh release view "$TAG" --repo "$repo" --json assets --jq '.assets | length' 2>/dev/null \
+              || echo 0)
+            if [ "$have" -eq "$expected" ]; then
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          exit 1
       - name: migration notes
         continue-on-error: true
         env:
