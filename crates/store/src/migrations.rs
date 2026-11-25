@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use headwork_core::Actor;
 use headwork_core::migrate::Settled;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
 use crate::queries::insert_event;
@@ -100,41 +100,42 @@ impl Store {
         Ok(settled)
     }
 
-    /// Every recorded note, oldest first.
+    /// The record of one note, when the machine settled it.
     ///
     /// # Errors
     ///
     /// Returns the SQLite error.
-    pub fn migration_rows(&self) -> Result<Vec<MigrationRow>, StoreError> {
-        let mut statement = self.conn.prepare(
-            "SELECT repo, note_id, state, actor, at, output, reason FROM migrations_applied ORDER BY at, repo, note_id",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (repo, note_id, state, actor, at, output, reason) = row?;
-            if let Some(state) = Settled::parse(&state) {
-                out.push(MigrationRow {
-                    repo,
-                    note_id,
-                    state,
-                    actor,
-                    at,
-                    output,
-                    reason,
-                });
-            }
-        }
-        Ok(out)
+    pub fn migration_row(
+        &self,
+        repo: &str,
+        note_id: &str,
+    ) -> Result<Option<MigrationRow>, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT state, actor, at, output, reason FROM migrations_applied WHERE repo = ?1 AND note_id = ?2",
+                params![repo, note_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row.and_then(|(state, actor, at, output, reason)| {
+            Settled::parse(&state).map(|state| MigrationRow {
+                repo: repo.to_owned(),
+                note_id: note_id.to_owned(),
+                state,
+                actor,
+                at,
+                output,
+                reason,
+            })
+        }))
     }
 }

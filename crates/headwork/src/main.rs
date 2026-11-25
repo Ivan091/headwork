@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use headwork::home::Home;
 use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
@@ -490,6 +490,24 @@ enum FlowAction {
     },
 }
 
+/// How `migrate mark` records a note.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SettledArg {
+    /// Done by hand.
+    Applied,
+    /// Left out on purpose.
+    Skipped,
+}
+
+impl From<SettledArg> for headwork_core::migrate::Settled {
+    fn from(arg: SettledArg) -> Self {
+        match arg {
+            SettledArg::Applied => Self::Applied,
+            SettledArg::Skipped => Self::Skipped,
+        }
+    }
+}
+
 /// What `migrate` does.
 #[derive(Debug, Subcommand)]
 enum MigrateAction {
@@ -532,9 +550,9 @@ enum MigrateAction {
     Mark {
         /// `<repo>/<id>`, or the id when only one repository has it.
         note: String,
-        /// `applied` or `skipped`.
-        #[arg(value_parser = ["applied", "skipped"])]
-        state: String,
+        /// How to record it.
+        #[arg(value_enum)]
+        state: SettledArg,
         /// Why.
         #[arg(long)]
         reason: String,
@@ -2308,30 +2326,46 @@ fn orchestrator_command(home: &Home, start: &OrchestratorStart) -> Result<ExitCo
     Ok(ExitCode::from(code))
 }
 
+struct Notes {
+    home: Home,
+    config: Config,
+    store: Store,
+    actor: Actor,
+}
+
+impl Notes {
+    fn open() -> Result<Self> {
+        let home = Home::locate()?;
+        let config = home.load_config()?;
+        let store = home.open_store()?;
+        Ok(Self {
+            home,
+            config,
+            store,
+            actor: Identity::from_env().actor(),
+        })
+    }
+}
+
 fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCode> {
     use headwork::ops::migrate::{self as notes, ApplyOptions};
-    use headwork_core::migrate::Settled;
-    if let MigrateAction::Check { path, json } = action {
-        let dir = path.unwrap_or_else(|| PathBuf::from("."));
-        let checked = notes::check(&dir)?;
-        if json {
-            json_out(out, &checked)?;
-        } else {
-            write!(out, "{checked}")?;
-        }
-        return Ok(if checked.problems.is_empty() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        });
-    }
-    let home = Home::locate()?;
-    let config = home.load_config()?;
-    let mut store = home.open_store()?;
-    let actor = Identity::from_env().actor();
     match action {
+        MigrateAction::Check { path, json } => {
+            let checked = notes::check(&path.unwrap_or_else(|| PathBuf::from(".")))?;
+            if json {
+                json_out(out, &checked)?;
+            } else {
+                write!(out, "{checked}")?;
+            }
+            Ok(if checked.problems.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
         MigrateAction::List { json, no_fetch } => {
-            let report = notes::report(&store, &home, &config, !no_fetch)?;
+            let n = Notes::open()?;
+            let report = notes::report(&n.store, &n.home, &n.config, !no_fetch)?;
             if json {
                 json_out(out, &report)?;
             } else {
@@ -2340,12 +2374,17 @@ fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCo
             Ok(ExitCode::SUCCESS)
         }
         MigrateAction::Show { note, json } => {
-            let report = notes::report(&store, &home, &config, false)?;
+            let n = Notes::open()?;
+            let report = notes::report(&n.store, &n.home, &n.config, false)?;
             let entry = report.find(&note)?;
             if json {
                 json_out(out, entry)?;
             } else {
-                write!(out, "{}", notes::describe(entry, &home, &config))?;
+                write!(
+                    out,
+                    "{}",
+                    notes::describe(entry, &n.store, &n.home, &n.config)
+                )?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -2356,12 +2395,13 @@ fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCo
             machine,
             json,
         } => {
+            let mut n = Notes::open()?;
             let options = ApplyOptions {
                 machine,
                 from,
                 confirmed,
             };
-            let outcome = notes::apply(&mut store, &home, &config, &note, &options, actor)?;
+            let outcome = notes::apply(&mut n.store, &n.home, &n.config, &note, &options, n.actor)?;
             if json {
                 json_out(out, &outcome)?;
             } else {
@@ -2374,12 +2414,19 @@ fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCo
             state,
             reason,
         } => {
-            let state = Settled::parse(&state).context("state is `applied` or `skipped`")?;
-            let said = notes::mark(&mut store, &home, &config, &note, state, &reason, actor)?;
+            let mut n = Notes::open()?;
+            let said = notes::mark(
+                &mut n.store,
+                &n.home,
+                &n.config,
+                &note,
+                state.into(),
+                &reason,
+                n.actor,
+            )?;
             writeln!(out, "{said}")?;
             Ok(ExitCode::SUCCESS)
         }
-        MigrateAction::Check { .. } => Ok(ExitCode::SUCCESS),
     }
 }
 

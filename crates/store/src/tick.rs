@@ -485,6 +485,19 @@ impl Store {
         Ok(inserted > 0)
     }
 
+    /// The keys of the open findings of a rule, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn open_finding_keys(&self, rule: FindingId) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT key FROM findings WHERE rule = ?1 AND resolved_at IS NULL ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![rule.as_str()], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Resolves the open findings of a rule whose key is not in `still_open`, logging each. Returns the keys.
     ///
     /// # Errors

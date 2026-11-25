@@ -130,6 +130,17 @@ impl Note {
         Ok(toml::from_str(text)?)
     }
 
+    /// Whether any step's command, backup or message names the machine with [`MACHINE_PLACEHOLDER`].
+    #[must_use]
+    pub fn uses_machine(&self) -> bool {
+        self.step.iter().any(|step| {
+            [&step.run, &step.backup, &step.say]
+                .into_iter()
+                .flatten()
+                .any(|text| text.contains(MACHINE_PLACEHOLDER))
+        })
+    }
+
     /// The note's steps with `{machine}` replaced by `machine` in each command and message.
     #[must_use]
     pub fn steps_for(&self, machine: &str) -> Vec<Step> {
@@ -280,18 +291,71 @@ fn step_problems(number: usize, step: &Step, problems: &mut Vec<Problem>) {
     }
 }
 
-/// The ids used by more than one note of the set.
+/// One note file read from a repository: what it holds and what is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parsed {
+    /// The file name without its extension.
+    pub stem: String,
+    /// The note's title; empty when the file does not parse.
+    pub title: String,
+    /// The note, only when the file parses and validates.
+    pub note: Option<Note>,
+    /// What is wrong with the file.
+    pub problems: Vec<String>,
+}
+
+/// Parses and validates every note file of a folder.
+///
+/// Each file is given as its stem with its text, or the error that kept it from being read; a file that could not be
+/// read is invalid and the others are kept. Files whose stem repeats (such as `a.toml` and `a.TOML`) are all invalid.
 #[must_use]
-pub fn duplicate_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<Problem> {
+pub fn parse_files(files: &[(String, Result<String, String>)]) -> Vec<Parsed> {
+    let mut parsed: Vec<Parsed> = files
+        .iter()
+        .map(|(stem, text)| {
+            let (note, title, problems) = match text {
+                Err(error) => (
+                    None,
+                    String::new(),
+                    vec![format!("cannot be read: {error}")],
+                ),
+                Ok(text) => match Note::parse(text) {
+                    Ok(note) => {
+                        let problems = validate(&note, stem)
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect();
+                        (Some(note.clone()), note.title, problems)
+                    }
+                    Err(error) => (None, String::new(), vec![error.to_string()]),
+                },
+            };
+            Parsed {
+                stem: stem.clone(),
+                title,
+                note,
+                problems,
+            }
+        })
+        .collect();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for id in ids {
-        *counts.entry(id).or_default() += 1;
+    for (stem, _) in files {
+        *counts.entry(stem).or_default() += 1;
     }
-    counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
-        .map(|(id, _)| Problem::DuplicateId(id.to_owned()))
-        .collect()
+    for entry in &mut parsed {
+        if counts
+            .get(entry.stem.as_str())
+            .is_some_and(|count| *count > 1)
+        {
+            entry
+                .problems
+                .push(Problem::DuplicateId(entry.stem.clone()).to_string());
+        }
+        if !entry.problems.is_empty() {
+            entry.note = None;
+        }
+    }
+    parsed
 }
 
 /// What a note's filters are compared with.
@@ -362,6 +426,8 @@ impl Settled {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Standing {
+    /// The note's file is not valid; it is never applied.
+    Invalid,
     /// Applies here and is not settled.
     Pending,
     /// Settled as applied.
@@ -377,6 +443,7 @@ impl Standing {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Invalid => "invalid",
             Self::Pending => "pending",
             Self::Applied => "applied",
             Self::Skipped => "skipped",
@@ -577,14 +644,55 @@ say = "Run `headwork tick --install`."
         );
     }
 
+    fn file(stem: &str, text: &str) -> (String, Result<String, String>) {
+        (stem.to_owned(), Ok(text.to_owned()))
+    }
+
     #[test]
-    fn duplicate_ids_are_found() {
-        assert_eq!(
-            duplicate_ids(["a", "b", "a"]),
-            vec![Problem::DuplicateId("a".to_owned())],
-            "a twice"
+    fn files_are_parsed_together_and_a_bad_one_does_not_drop_the_rest() {
+        let good = SAMPLE.replace("2026-11-25-sample", "good");
+        let parsed = parse_files(&[
+            file("good", &good),
+            file("junk", "not toml ["),
+            ("gone".to_owned(), Err("git show failed".to_owned())),
+        ]);
+        let valid: Vec<bool> = parsed.iter().map(|p| p.note.is_some()).collect();
+        assert_eq!(valid, [true, false, false], "only the good one is valid");
+        assert!(
+            parsed
+                .get(2)
+                .is_some_and(|p| p.problems.iter().any(|m| m.contains("git show failed"))),
+            "{parsed:?}"
         );
-        assert_eq!(duplicate_ids(["a", "b"]), Vec::new(), "all different");
+    }
+
+    #[test]
+    fn a_repeated_stem_makes_every_file_of_it_invalid() {
+        let good = SAMPLE.replace("2026-11-25-sample", "a");
+        let parsed = parse_files(&[
+            file("a", &good),
+            file("a", &good),
+            file("b", &good.replace("\"a\"", "\"b\"")),
+        ]);
+        let valid: Vec<bool> = parsed.iter().map(|p| p.note.is_some()).collect();
+        assert_eq!(valid, [false, false, true], "duplicates");
+        assert!(
+            parsed
+                .first()
+                .is_some_and(|p| p.problems.iter().any(|m| m.contains("more than one"))),
+            "{parsed:?}"
+        );
+    }
+
+    #[test]
+    fn the_machine_placeholder_is_found_in_any_text_of_a_step() {
+        assert!(sample().uses_machine(), "run uses it");
+        assert!(!agent("echo hi").uses_machine(), "nothing uses it");
+        let say = Note {
+            step: vec![step(StepKind::User, None, Some("on {machine}"))],
+            ..sample()
+        };
+        assert!(say.uses_machine(), "say uses it");
     }
 
     fn machine(os: &str, name: Option<&str>, projects: &[&str]) -> Machine {

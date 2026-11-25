@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use headwork_adapters::notes::{NOTES_DIR, NoteRepo};
-use headwork_core::migrate::{
-    self, Machine, Note, Problem, Settled, Standing, StepKind, standings,
-};
+use headwork_core::migrate::{self, Machine, Note, Settled, Standing, StepKind, standings};
 use headwork_core::{Actor, Config};
 use headwork_store::Store;
 use serde::Serialize;
@@ -39,23 +37,38 @@ pub struct Source {
 }
 
 /// Every repository this machine reads notes from, without repeats.
+///
+/// Keys: a project's name; `claude-config` for the `sources.toml` repository; the lower-case folder name for each
+/// `orchestrator_repos` entry. A folder already listed is skipped. A key another repository took gets a suffix: `-config`
+/// for the config repository, `-notes` for an orchestrator repository, then `-2`, `-3`, so a key never names two
+/// repositories.
 #[must_use]
 pub fn sources(home: &Home, config: &Config) -> Vec<Source> {
     let mut found: Vec<Source> = Vec::new();
-    let mut add = |repo: String, dir: PathBuf| {
+    let mut add = |repo: String, suffix: &str, dir: PathBuf| {
         let same = slashed(&dir).to_lowercase();
-        if !found
+        if found
             .iter()
             .any(|have| slashed(&have.dir).to_lowercase() == same)
         {
-            found.push(Source { repo, dir });
+            return;
         }
+        let mut key = repo.clone();
+        if found.iter().any(|have| have.repo == key) {
+            key = format!("{repo}{suffix}");
+        }
+        let mut count = 1;
+        while found.iter().any(|have| have.repo == key) {
+            count += 1;
+            key = format!("{repo}{suffix}-{count}");
+        }
+        found.push(Source { repo: key, dir });
     };
     for (name, project) in &config.projects {
-        add(name.to_string(), home.expand(&project.main));
+        add(name.to_string(), "", home.expand(&project.main));
     }
     if let Ok(Some(layout)) = super::config_sync::Layout::load(home) {
-        add(CONFIG_REPO.to_owned(), layout.repo);
+        add(CONFIG_REPO.to_owned(), "-config", layout.repo);
     }
     for dir in &config.hooks.orchestrator_repos {
         let dir = home.expand(dir);
@@ -63,7 +76,7 @@ pub fn sources(home: &Home, config: &Config) -> Vec<Source> {
             || "notes".to_owned(),
             |n| n.to_string_lossy().to_lowercase(),
         );
-        add(repo, dir);
+        add(repo, "-notes", dir);
     }
     found
 }
@@ -90,8 +103,8 @@ pub struct Entry {
     pub id: String,
     /// Its title; empty when the file does not parse.
     pub title: String,
-    /// Where it stands on this machine; `None` for a file that does not validate.
-    pub standing: Option<Standing>,
+    /// Where it stands on this machine; [`Standing::Invalid`] for a file that does not validate.
+    pub standing: Standing,
     /// Its path in the repository.
     pub file: String,
     /// Whether the file is in the checkout's `HEAD` already.
@@ -114,7 +127,7 @@ impl Entry {
     /// Whether it applies here and is not settled.
     #[must_use]
     pub fn is_pending(&self) -> bool {
-        self.standing == Some(Standing::Pending)
+        self.standing == Standing::Pending
     }
 
     /// The parsed note, when the file is valid.
@@ -129,8 +142,26 @@ impl Entry {
 pub struct Report {
     /// Every note found.
     pub entries: Vec<Entry>,
-    /// Repositories that could not be read or fetched, as `<repo>: <why>`.
-    pub errors: Vec<String>,
+    /// Repositories that could not be fetched or read.
+    pub errors: Vec<SourceError>,
+}
+
+/// A repository that could not be fetched or read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceError {
+    /// The repository key.
+    pub repo: String,
+    /// What failed.
+    pub message: String,
+    /// Whether its notes could not be read at all, so the report holds none of them; a failed fetch alone leaves the
+    /// notes of the refs fetched before.
+    pub unread: bool,
+}
+
+impl fmt::Display for SourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.repo, self.message)
+    }
 }
 
 impl Report {
@@ -171,8 +202,7 @@ impl fmt::Display for Report {
             writeln!(f, "no migration notes")?;
         }
         for entry in &self.entries {
-            let standing = entry.standing.map_or("invalid", Standing::as_str);
-            write!(f, "{standing:<15} {}", entry.address())?;
+            write!(f, "{:<15} {}", entry.standing.as_str(), entry.address())?;
             if !entry.title.is_empty() {
                 write!(f, "  {}", entry.title)?;
             }
@@ -206,7 +236,11 @@ pub fn report(store: &Store, home: &Home, config: &Config, fetch: bool) -> Resul
             continue;
         }
         if fetch && let Err(error) = repo.fetch() {
-            errors.push(format!("{}: fetch failed: {error}", source.repo));
+            errors.push(SourceError {
+                repo: source.repo.clone(),
+                message: format!("fetch failed: {error}"),
+                unread: false,
+            });
         }
         match read_source(&source, &repo) {
             Ok(mut parsed) => {
@@ -214,14 +248,20 @@ pub fn report(store: &Store, home: &Home, config: &Config, fetch: bool) -> Resul
                 let recorded = store.settled_migrations(&source.repo)?;
                 let stands = standings(&notes, &recorded, &here);
                 for entry in &mut parsed {
-                    entry.standing = stands
-                        .iter()
-                        .find(|(id, _)| Some(id) == entry.note.as_ref().map(|n| &n.id))
-                        .map(|(_, standing)| *standing);
+                    if let Some(note) = entry.note() {
+                        entry.standing = stands
+                            .iter()
+                            .find(|(id, _)| *id == note.id)
+                            .map_or(Standing::Invalid, |(_, standing)| *standing);
+                    }
                 }
                 entries.extend(parsed);
             }
-            Err(error) => errors.push(format!("{}: {error:#}", source.repo)),
+            Err(error) => errors.push(SourceError {
+                repo: source.repo.clone(),
+                message: format!("{error:#}"),
+                unread: true,
+            }),
         }
     }
     Ok(Report { entries, errors })
@@ -229,56 +269,54 @@ pub fn report(store: &Store, home: &Home, config: &Config, fetch: bool) -> Resul
 
 fn read_source(source: &Source, repo: &NoteRepo) -> Result<Vec<Entry>> {
     let reference = repo.default_ref()?;
-    let mut entries = Vec::new();
-    for file in repo.list(&reference)? {
-        let stem = Path::new(&file)
-            .file_stem()
-            .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-        let text = repo.show(&reference, &file)?;
-        let (note, title, problems) = match Note::parse(&text) {
-            Ok(note) => {
-                let problems: Vec<String> = migrate::validate(&note, &stem)
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
-                (
-                    problems.is_empty().then(|| note.clone()),
-                    note.title,
-                    problems,
-                )
-            }
-            Err(error) => (None, String::new(), vec![error.to_string()]),
-        };
-        entries.push(Entry {
+    let files = repo.list(&reference)?;
+    let texts: Vec<(String, Result<String, String>)> = files
+        .iter()
+        .map(|file| {
+            let text = repo
+                .show(&reference, file)
+                .map_err(|error| error.to_string());
+            (stem_of(Path::new(file)), text)
+        })
+        .collect();
+    Ok(files
+        .into_iter()
+        .zip(migrate::parse_files(&texts))
+        .map(|(file, parsed)| Entry {
             repo: source.repo.clone(),
-            id: stem,
-            title,
-            standing: None,
+            id: parsed.stem,
+            title: parsed.title,
+            standing: Standing::Invalid,
             in_head: repo.in_head(&file),
             file,
-            problems,
-            note,
+            problems: parsed.problems,
+            note: parsed.note,
             dir: source.dir.clone(),
-        });
-    }
-    for problem in migrate::duplicate_ids(entries.iter().map(|e| e.id.as_str())) {
-        if let Problem::DuplicateId(id) = &problem {
-            for entry in entries.iter_mut().filter(|e| &e.id == id) {
-                entry.problems.push(problem.to_string());
-            }
-        }
-    }
-    Ok(entries)
+        })
+        .collect())
+}
+
+fn stem_of(path: &Path) -> String {
+    path.file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
 }
 
 /// One note in full, with its steps as they would run on this machine.
 #[must_use]
-pub fn describe(entry: &Entry, home: &Home, config: &Config) -> String {
-    let standing = entry.standing.map_or("invalid", Standing::as_str);
+pub fn describe(entry: &Entry, store: &Store, home: &Home, config: &Config) -> String {
     let mut lines = vec![
-        format!("{}  [{standing}]", entry.address()),
+        format!("{}  [{}]", entry.address(), entry.standing.as_str()),
         entry.title.clone(),
     ];
+    if let Ok(Some(row)) = store.migration_row(&entry.repo, &entry.id) {
+        lines.push(format!(
+            "settled: {} by {} at {}: {}",
+            row.state.as_str(),
+            row.actor,
+            row.at,
+            row.reason
+        ));
+    }
     lines.extend(
         entry
             .problems
@@ -286,7 +324,7 @@ pub fn describe(entry: &Entry, home: &Home, config: &Config) -> String {
             .map(|problem| format!("problem: {problem}")),
     );
     if let Some(note) = entry.note() {
-        let name = machine(home, config).name.unwrap_or_default();
+        let name = machine(home, config).name;
         let fields = [
             ("file", entry.file.clone()),
             ("since", note.since.clone().unwrap_or_default()),
@@ -307,7 +345,16 @@ pub fn describe(entry: &Entry, home: &Home, config: &Config) -> String {
                 "pull: not in this checkout yet; apply runs git pull --ff-only first".to_owned(),
             );
         }
-        for (index, step) in note.steps_for(&name).iter().enumerate() {
+        if note.uses_machine() && name.is_none() {
+            lines.push(format!(
+                "machine: unknown, {} stays in the steps; pass --machine <name> to apply",
+                migrate::MACHINE_PLACEHOLDER
+            ));
+        }
+        let steps = name
+            .as_deref()
+            .map_or_else(|| note.step.clone(), |name| note.steps_for(name));
+        for (index, step) in steps.iter().enumerate() {
             let what = step
                 .run
                 .clone()
@@ -415,6 +462,39 @@ pub struct ApplyOptions {
     pub confirmed: bool,
 }
 
+fn locate<'a>(found: &'a Report, address: &str) -> Result<&'a Entry> {
+    let entry = found.find(address).map_err(|error| {
+        let failed: Vec<String> = found.errors.iter().map(ToString::to_string).collect();
+        if failed.is_empty() {
+            error
+        } else {
+            error.context(format!(
+                "repositories with a problem: {}",
+                failed.join("; ")
+            ))
+        }
+    })?;
+    if let Some(error) = found.errors.iter().find(|e| e.repo == entry.repo) {
+        bail!(
+            "{error}; apply needs the newest notes, so fix the network or the ssh key and run it again"
+        );
+    }
+    Ok(entry)
+}
+
+const fn unsettled_outcome(standing: Standing) -> Option<Outcome> {
+    match standing {
+        Standing::Applied => Some(Outcome::AlreadySettled {
+            state: Settled::Applied,
+        }),
+        Standing::Skipped => Some(Outcome::AlreadySettled {
+            state: Settled::Skipped,
+        }),
+        Standing::NotApplicable | Standing::Invalid => Some(Outcome::NotApplicable),
+        Standing::Pending => None,
+    }
+}
+
 /// Applies a note: the check, then the steps in order, stopping at the first `confirm` or `user` step.
 ///
 /// # Errors
@@ -428,24 +508,21 @@ pub fn apply(
     options: &ApplyOptions,
     actor: Actor,
 ) -> Result<Outcome> {
-    let found = report(store, home, config, true)?;
-    let entry = found.find(address)?;
+    let found = report(store, home, config, options.from.is_none())?;
+    let entry = locate(&found, address)?;
     let Some(note) = entry.note() else {
-        return Ok(Outcome::NotApplicable);
+        bail!(
+            "`{}` is not a valid note, nothing was run:
+  {}",
+            entry.address(),
+            entry.problems.join(
+                "
+  "
+            )
+        );
     };
-    match entry.standing {
-        Some(Standing::Applied) => {
-            return Ok(Outcome::AlreadySettled {
-                state: Settled::Applied,
-            });
-        }
-        Some(Standing::Skipped) => {
-            return Ok(Outcome::AlreadySettled {
-                state: Settled::Skipped,
-            });
-        }
-        Some(Standing::NotApplicable) | None => return Ok(Outcome::NotApplicable),
-        Some(Standing::Pending) => {}
+    if let Some(done) = unsettled_outcome(entry.standing) {
+        return Ok(done);
     }
     let repo = NoteRepo::new(&entry.dir);
     let shell = headwork_adapters::shell::resolve(config.machine.shell.as_deref());
@@ -471,13 +548,7 @@ pub fn apply(
         .machine
         .clone()
         .or_else(|| machine(home, config).name);
-    let uses_name = note.step.iter().any(|s| {
-        [&s.run, &s.backup, &s.say]
-            .into_iter()
-            .flatten()
-            .any(|t| t.contains(migrate::MACHINE_PLACEHOLDER))
-    });
-    if uses_name && name.is_none() {
+    if note.uses_machine() && name.is_none() {
         bail!(
             "`{}` names the machine, and this one has no sources.toml to take it from: pass --machine <name>",
             entry.address()
@@ -491,6 +562,13 @@ pub fn apply(
         output: String::new(),
     };
     let start = options.from.unwrap_or(0);
+    if start > steps.len() {
+        bail!(
+            "`{}` has {} step(s); --from {start} is past the last one",
+            entry.address(),
+            steps.len()
+        );
+    }
     if start == 0
         && !entry.in_head
         && note.pull
@@ -504,7 +582,7 @@ pub fn apply(
             continue;
         }
         let accepted = options.confirmed && Some(number) == options.from;
-        if let Some(outcome) = run.step(number, step, accepted)? {
+        if let Some(outcome) = run.step(number, step, accepted) {
             return Ok(outcome);
         }
     }
@@ -527,13 +605,16 @@ struct Runner<'a> {
 }
 
 impl Runner<'_> {
-    fn exec(&mut self, number: usize, line: &str) -> Result<Option<Outcome>> {
-        let ran = self.repo.run_line(self.shell, line)?;
-        self.output = format!("{}$ {line}\n{}\n", self.output, ran.output);
-        Ok((!ran.success).then_some(Outcome::Failed {
+    fn exec(&mut self, number: usize, line: &str) -> Option<Outcome> {
+        let (success, printed) = match self.repo.run_line(self.shell, line) {
+            Ok(ran) => (ran.success, ran.output),
+            Err(error) => (false, error.to_string()),
+        };
+        self.output = format!("{}$ {line}\n{printed}\n", self.output);
+        (!success).then(|| Outcome::Failed {
             step: number,
-            output: ran.output,
-        }))
+            output: self.output.clone(),
+        })
     }
 
     fn resume(&self, number: usize) -> String {
@@ -545,57 +626,71 @@ impl Runner<'_> {
 
     fn pull(&mut self, entry: &Entry, options: &ApplyOptions) -> Result<Option<Outcome>> {
         let reference = self.repo.default_ref()?;
-        let on_default = self.repo.branch()? == reference.trim_start_matches("origin/");
+        let default = reference.trim_start_matches("origin/");
+        let branch = self.repo.branch()?;
+        let on_default = branch == default;
         let clean = !self.repo.dirty()?;
         let accepted = options.confirmed && options.from == Some(0);
-        if on_default && clean || accepted {
-            return self.exec(0, "git pull --ff-only");
+        if on_default && clean {
+            return Ok(self.exec(0, "git pull --ff-only"));
         }
-        Ok(Some(Outcome::Ask {
-            step: 0,
-            kind: StepKind::Confirm,
-            text: format!(
-                "git pull --ff-only in {}: the checkout has changes or is not on {}",
-                slashed(&entry.dir),
-                reference.trim_start_matches("origin/")
-            ),
-            backup: None,
-            resume: self.resume(0),
-        }))
+        if !accepted {
+            return Ok(Some(Outcome::Ask {
+                step: 0,
+                kind: StepKind::Confirm,
+                text: format!(
+                    "git pull --ff-only in {}: the checkout has changes or is not on {default}",
+                    slashed(&entry.dir)
+                ),
+                backup: None,
+                resume: self.resume(0),
+            }));
+        }
+        if !on_default {
+            if !clean {
+                self.output = format!(
+                    "{}the checkout is on `{branch}` with changes; commit or stash them and check out `{default}` first\n",
+                    self.output
+                );
+                return Ok(Some(Outcome::Failed {
+                    step: 0,
+                    output: self.output.clone(),
+                }));
+            }
+            if let Some(failed) = self.exec(0, &format!("git checkout {default}")) {
+                return Ok(Some(failed));
+            }
+        }
+        Ok(self.exec(0, "git pull --ff-only"))
     }
 
-    fn step(
-        &mut self,
-        number: usize,
-        step: &migrate::Step,
-        accepted: bool,
-    ) -> Result<Option<Outcome>> {
+    fn step(&mut self, number: usize, step: &migrate::Step, accepted: bool) -> Option<Outcome> {
         let line = step.run.clone().unwrap_or_default();
         match step.kind {
             StepKind::Agent => self.exec(number, &line),
             StepKind::Confirm if accepted => {
                 if let Some(backup) = &step.backup
-                    && let Some(failed) = self.exec(number, backup)?
+                    && let Some(failed) = self.exec(number, backup)
                 {
-                    return Ok(Some(failed));
+                    return Some(failed);
                 }
                 self.exec(number, &line)
             }
-            StepKind::Confirm => Ok(Some(Outcome::Ask {
+            StepKind::Confirm => Some(Outcome::Ask {
                 step: number,
                 kind: StepKind::Confirm,
                 text: line,
                 backup: step.backup.clone(),
                 resume: self.resume(number),
-            })),
-            StepKind::User if accepted => Ok(None),
-            StepKind::User => Ok(Some(Outcome::Ask {
+            }),
+            StepKind::User if accepted => None,
+            StepKind::User => Some(Outcome::Ask {
                 step: number,
                 kind: StepKind::User,
                 text: step.say.clone().unwrap_or_default(),
                 backup: None,
                 resume: self.resume(number),
-            })),
+            }),
         }
     }
 }
@@ -642,40 +737,29 @@ pub fn check(dir: &Path) -> Result<Checked> {
     let mut files: Vec<PathBuf> = match std::fs::read_dir(&notes) {
         Ok(read) => read
             .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+            })
             .collect(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error).with_context(|| format!("reading {}", notes.display())),
     };
     files.sort();
+    let texts: Vec<(String, Result<String, String>)> = files
+        .iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(path).map_err(|error| error.to_string());
+            (stem_of(path), text)
+        })
+        .collect();
     let mut problems = Vec::new();
-    let mut ids = Vec::new();
-    for path in &files {
+    for (path, parsed) in files.iter().zip(migrate::parse_files(&texts)) {
         let name = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let stem = path
-            .file_stem()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        match Note::parse(&text) {
-            Ok(note) => {
-                problems.extend(
-                    migrate::validate(&note, &stem)
-                        .iter()
-                        .map(|p| format!("{name}: {p}")),
-                );
-                ids.push(note.id);
-            }
-            Err(error) => problems.push(format!("{name}: {error}")),
-        }
+        problems.extend(parsed.problems.iter().map(|p| format!("{name}: {p}")));
     }
-    problems.extend(
-        migrate::duplicate_ids(ids.iter().map(String::as_str))
-            .iter()
-            .map(ToString::to_string),
-    );
     Ok(Checked {
         files: files.len(),
         problems,
@@ -694,7 +778,8 @@ impl fmt::Display for Checked {
     }
 }
 
-/// The addresses of the pending notes, with the fetch first when `fetch` is set.
+/// The addresses of the pending notes, with the fetch first when `fetch` is set; `doctor` passes `false` to read the
+/// refs fetched before.
 ///
 /// # Errors
 ///
@@ -705,15 +790,6 @@ pub fn pending(store: &Store, home: &Home, config: &Config, fetch: bool) -> Resu
         .iter()
         .map(|entry| entry.address())
         .collect())
-}
-
-/// The addresses of the pending notes, read from the refs fetched before; for `doctor`.
-///
-/// # Errors
-///
-/// Fails when the store cannot be read.
-pub fn pending_cached(store: &Store, home: &Home, config: &Config) -> Result<Vec<String>> {
-    pending(store, home, config, false)
 }
 
 /// Leaves a notice for the orchestrator about pending notes it was not told of, once each; used after `config sync`.
@@ -797,7 +873,7 @@ mod tests {
             repo: repo.to_owned(),
             id: id.to_owned(),
             title: String::new(),
-            standing: Some(Standing::Pending),
+            standing: Standing::Pending,
             file: format!("migrations/{id}.toml"),
             in_head: true,
             problems: Vec::new(),

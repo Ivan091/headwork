@@ -222,8 +222,6 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(trust_check(d, config, store.as_ref()));
         if let Some(store) = &store {
             checks.push(migrations_check(d, config, store));
-        }
-        if let Some(store) = &store {
             checks.push(usage_prices_check(config, store));
         }
     }
@@ -905,7 +903,7 @@ fn update_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check
 /// A warning when a migration note of a configured repository waits for this machine; reads the refs fetched before,
 /// so `doctor` stays fast.
 fn migrations_check(d: &Doctor<'_>, config: &Config, store: &Store) -> Check {
-    match super::migrate::pending_cached(store, d.home, config) {
+    match super::migrate::pending(store, d.home, config, false) {
         Ok(pending) if pending.is_empty() => {
             Check::ok("migrations-pending", "no migration note waits")
         }

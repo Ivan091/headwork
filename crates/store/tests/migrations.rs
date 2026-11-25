@@ -78,9 +78,11 @@ fn settling_again_replaces_the_record() {
     store
         .settle_migration("r", "a", Settled::Applied, "done", "second", Actor::Worker)
         .unwrap();
-    let rows = store.migration_rows().unwrap();
-    assert_eq!(rows.len(), 1, "one row per repository and note");
-    let row = rows.first().unwrap();
+    let row = store.migration_row("r", "a").unwrap().unwrap();
+    assert!(
+        store.migration_row("r", "b").unwrap().is_none(),
+        "no record"
+    );
     assert_eq!(row.state, Settled::Applied, "state");
     assert_eq!(row.output, "done", "output");
     assert_eq!(row.reason, "second", "reason");
