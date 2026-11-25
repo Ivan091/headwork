@@ -52,7 +52,7 @@ The order is shared → `machines/<name>/headwork.toml` → `config.local.toml`.
 | Projects | Shared holds a project's policy. A project **exists on a machine only when that machine's file gives it a `main`**, so a project the Mac does not have needs no `unset`. A shared project with no `main` is dropped, and the drop is listed in the sync output. |
 | Paths | There is no `{code}`-style variable in v1. Keys that hold paths simply live in the machine file. Validation refuses a shared file that sets a machine-only key (`machine.*`, `project.*.main`, `read_only_paths`, `extra_writable`, `hooks.orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `watch.roots`). That keeps the shared file portable. |
 
-The merge works on `toml::Value`, as a pure function in `core` (`core/src/config/layers.rs`) that returns the merged value and a per-key origin map. `Config::parse` (with `deny_unknown_fields`) then checks the result exactly as today.
+The merge works on `toml::Value`, as a pure function in `core` (`core/src/config_layers.rs`) that returns the merged value and a per-key origin map. `Config::parse` (with `deny_unknown_fields`) then checks the result exactly as today.
 
 ## 3. How a machine knows which it is
 
