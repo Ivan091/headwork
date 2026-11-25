@@ -1057,6 +1057,32 @@ fn render(table: &Table) -> Result<String> {
     Ok(toml::to_string(table)?)
 }
 
+fn write_adopted(files: &[(PathBuf, &str)], force: bool) -> Result<()> {
+    if !force && let Some((existing, _)) = files.iter().find(|(path, _)| path.exists()) {
+        bail!(
+            "{} exists; pass --force to overwrite it",
+            existing.display()
+        );
+    }
+    for (path, text) in files {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn kept_or_split(file: &Path, split: &Table, force: bool) -> Result<(String, bool)> {
+    if file.exists() && !force {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        return Ok((text, true));
+    }
+    Ok((render(split)?, false))
+}
+
 /// Splits the live `config.toml` into shared, machine and local files, checks that merging them reproduces it, and
 /// optionally writes them.
 ///
@@ -1078,20 +1104,9 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         .with_context(|| format!("{} is not TOML", live_path.display()))?;
     let mut parts = Split::default();
     split(&table, &mut Vec::new(), &mut parts);
-    let shared_kept = layout.shared_file.exists() && !options.force;
-    let shared = if shared_kept {
-        std::fs::read_to_string(&layout.shared_file)
-            .with_context(|| format!("reading {}", layout.shared_file.display()))?
-    } else {
-        render(&parts.shared)?
-    };
-    let machine_kept = layout.machine_file.exists() && !options.force;
-    let machine = if machine_kept {
-        std::fs::read_to_string(&layout.machine_file)
-            .with_context(|| format!("reading {}", layout.machine_file.display()))?
-    } else {
-        render(&parts.machine)?
-    };
+    let (shared, shared_kept) = kept_or_split(&layout.shared_file, &parts.shared, options.force)?;
+    let (machine, machine_kept) =
+        kept_or_split(&layout.machine_file, &parts.machine, options.force)?;
     let local = render(&parts.local)?;
     let shared_name = slashed(&layout.shared_file);
     let machine_name = slashed(&layout.machine_file);
@@ -1153,21 +1168,7 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         files.push((layout.local_file, &local));
     }
     if options.write {
-        if !options.force
-            && let Some((existing, _)) = files.iter().find(|(path, _)| path.exists())
-        {
-            bail!(
-                "{} exists; pass --force to overwrite it",
-                existing.display()
-            );
-        }
-        for (path, text) in &files {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
-            std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
-        }
+        write_adopted(&files, options.force)?;
     }
     Ok(AdoptReport {
         shared,

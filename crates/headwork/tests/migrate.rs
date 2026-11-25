@@ -6,6 +6,8 @@
 )]
 
 use std::path::Path;
+
+use headwork_core::migrate::MACHINE_PLACEHOLDER as PLACEHOLDER;
 use std::process::{Command, Output};
 
 const CHECKED: &str = "id = \"checked\"\ntitle = \"Already done\"\ncheck = \"true\"\n\n[[step]]\nkind = \"agent\"\nrun = \"false\"\n";
@@ -415,7 +417,7 @@ fn show_leaves_the_machine_placeholder_visible_when_the_name_is_unknown() {
     );
     machine.run(&["migrate", "list"]);
     let shown = text(&machine.run(&["migrate", "show", "named"]));
-    assert!(shown.contains("echo {machine}"), "{shown}");
+    assert!(shown.contains(&format!("echo {PLACEHOLDER}")), "{shown}");
     assert!(shown.contains("machine: unknown"), "{shown}");
 }
 
