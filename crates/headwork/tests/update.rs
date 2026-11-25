@@ -1218,6 +1218,33 @@ fn notices_wait_while_an_update_holds_the_lock_and_keep_the_newest() {
     assert!(kept[9].text.contains("0.1.17"), "{kept:?}");
 }
 
+#[test]
+fn notices_are_taken_when_the_lock_is_released_within_the_grace() {
+    let rig = Rig::new(&line("0.1.6", "bbb222"));
+    UpdateState {
+        notices: vec![Notice {
+            at: "2026-11-22T12:00:00Z".to_owned(),
+            text: "waited for".to_owned(),
+        }],
+        ..UpdateState::default()
+    }
+    .save(&rig.home)
+    .unwrap();
+    let held = UpdateLock::try_take(&rig.home).unwrap().unwrap();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(held);
+    });
+    let taken = take_notices(&rig.home).unwrap();
+    releaser.join().unwrap();
+    assert_eq!(
+        taken,
+        vec!["waited for".to_owned()],
+        "the wait outlasted the holder"
+    );
+    assert!(rig.state().notices.is_empty(), "emptied");
+}
+
 #[derive(Debug, Default)]
 struct FakeStarter {
     fail: bool,
