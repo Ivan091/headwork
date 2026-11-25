@@ -779,6 +779,8 @@ fn check_forced_push(scope: &Scope, form: &PushForm<'_>) -> Option<Decision> {
     let checked_out_is_own = own.is_some() && scope.branch.as_deref() == own;
     let refspecs = form.positional.get(1..).unwrap_or_default();
     let only_own = !form.wide
+        && form.plain_lease_options()
+        && refspecs.len() <= 1
         && if refspecs.is_empty() {
             checked_out_is_own
         } else {
@@ -794,7 +796,7 @@ fn check_forced_push(scope: &Scope, form: &PushForm<'_>) -> Option<Decision> {
     } else {
         Some(Decision::deny(
             RuleId::WorkerForcePush,
-            "`--force-with-lease` is for your own task branch only, one branch at a time",
+            "`--force-with-lease` is for your own task branch only, written as `git push --force-with-lease [origin] [HEAD|<branch>]`",
         ))
     }
 }
@@ -804,15 +806,23 @@ fn is_default(scope: &Scope, branch: &str) -> bool {
 }
 
 /// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
+///
+/// A push whose `-c` settings may widen it, and a `-c alias.<sub>` that runs a push, come back as `push` marked
+/// [`grants::CONFIG_WIDENED`].
 fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
     let mut args = command.args().iter();
     let mut widened = false;
+    let mut settings: Vec<&str> = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-c" | "--config-env" => {
-                widened |= args.next().is_some_and(|setting| widens_push(setting));
+                if let Some(setting) = args.next() {
+                    widened |= widens_push(setting);
+                    settings.push(setting.as_str());
+                }
             }
-            "-C" | "--git-dir" | "--work-tree" | "--namespace" => {
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--attr-source"
+            | "--super-prefix" => {
                 args.next();
             }
             flag if flag.starts_with("--config-env=") => {
@@ -821,9 +831,14 @@ fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
             flag if flag.starts_with('-') => {}
             sub => {
                 let mut rest: Vec<String> = args.cloned().collect();
-                if widened && sub == "push" {
+                let aliased = settings.iter().any(|setting| {
+                    let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
+                    key.eq_ignore_ascii_case(&format!("alias.{sub}")) && value.contains("push")
+                });
+                if aliased || (widened && sub == "push") {
                     rest.push(grants::CONFIG_WIDENED.to_owned());
                 }
+                let sub = if aliased { "push" } else { sub };
                 return Some((sub.to_owned(), rest));
             }
         }

@@ -9,3 +9,8 @@ The guard rule `worker-force-push` refuses a plain `--force`, `-f` or `+refspec`
 store records for the task's worktree (`Scope::task_branch`, else the branch checked out in its folder) and nothing
 wide is pushed (`--all`, `--branches`, `--mirror`, `--tags`, `--prune`, `--delete`); `grants.rs` and the guard share
 one classifier (`classify_push`), and granted notes-repository pushes refuse every force form.
+
+A lease is accepted only in the shape `git push --force-with-lease[=...] [-u|-q|-v] [<remote>] [HEAD|<task branch>]`:
+any other option, a `--`, a widening `-c` (`push.*`, `remote.*.mirror`, `remote.*.push`), a `-c alias.<sub>` running a
+push, or a `GIT_CONFIG*` assignment in front of git makes it refused. The guard reads command lines, so an alias or a
+setting already in the repository's config, or a `GIT_CONFIG*` variable exported earlier, stays out of its reach.

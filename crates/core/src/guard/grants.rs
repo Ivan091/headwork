@@ -129,8 +129,41 @@ pub(super) struct PushForm<'a> {
     pub force: ForceKind,
     /// It deletes or pushes more than one branch (`--all`, `--mirror`, `--tags`, `--prune`, `--delete`, `-d`).
     pub wide: bool,
-    /// The remote and then the refspecs, as written.
+    /// The remote and then the refspecs, as written; every word after `--`, and any word holding `:`, is one.
     pub positional: Vec<&'a str>,
+    /// Every option word before `--`, as written.
+    pub options: Vec<&'a str>,
+    /// The line has a `--`.
+    pub separator: bool,
+}
+
+/// Long options a lease push may carry besides the lease itself: nothing that changes what is pushed.
+const LEASE_COMPANIONS: &[&str] = &[
+    "--force-with-lease",
+    "--force-if-includes",
+    "--set-upstream",
+    "--quiet",
+    "--verbose",
+    "--progress",
+];
+
+/// Short options a lease push may carry.
+const LEASE_SHORT: &[&str] = &["-u", "-q", "-v"];
+
+impl PushForm<'_> {
+    /// Whether every option is one a lease push may carry and there is no `--`, so the refspecs alone say what it
+    /// pushes.
+    pub(super) fn plain_lease_options(&self) -> bool {
+        !self.separator
+            && self.options.iter().all(|word| {
+                let name = word.split('=').next().unwrap_or(word);
+                if LEASE_SHORT.contains(&name) {
+                    return true;
+                }
+                let names = long_options(name);
+                !names.is_empty() && names.iter().all(|option| LEASE_COMPANIONS.contains(option))
+            })
+    }
 }
 
 /// Reads a `git push` command line once for every rule that looks at it.
@@ -138,25 +171,31 @@ pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
     let mut plain = false;
     let mut lease = false;
     let mut wide = false;
+    let mut separator = false;
     let mut positional = Vec::new();
+    let mut options = Vec::new();
     for word in args {
         let name = word.split('=').next().unwrap_or(word);
-        if let Some(letters) = word
+        if separator || !word.starts_with('-') || word.contains(':') {
+            plain |= word.starts_with('+');
+            positional.push(word.as_str());
+        } else if word == "--" {
+            separator = true;
+        } else if let Some(letters) = word
             .strip_prefix('-')
             .filter(|letters| !letters.starts_with('-'))
         {
+            options.push(word.as_str());
             plain |= letters.contains('f');
             wide |= letters.contains('d');
-        } else if word.starts_with('-') {
-            let options = long_options(name);
-            plain |= options.contains(&"--force");
-            lease |= options
+        } else {
+            options.push(word.as_str());
+            let names = long_options(name);
+            plain |= names.contains(&"--force");
+            lease |= names
                 .iter()
                 .any(|option| matches!(*option, "--force-with-lease" | "--force-if-includes"));
-            wide |= options.iter().any(|option| PUSH_WIDE.contains(option));
-        } else {
-            plain |= word.starts_with('+');
-            positional.push(word.as_str());
+            wide |= names.iter().any(|option| PUSH_WIDE.contains(option));
         }
     }
     let force = if plain {
@@ -170,6 +209,8 @@ pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
         force,
         wide,
         positional,
+        options,
+        separator,
     }
 }
 
