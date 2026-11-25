@@ -254,12 +254,12 @@ pub fn head_commit(repo: &Path) -> Option<String> {
     ran.success().then(|| ran.stdout.trim().to_owned())
 }
 
-fn pull(repo: &Path) -> Result<String, String> {
-    let ran = timed::run(
+fn git_in(repo: &Path, args: &[&str]) -> Result<timed::Ran, String> {
+    timed::run(
         Command::new("git")
             .arg("-C")
             .arg(repo)
-            .args(["pull", "--ff-only"])
+            .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env(
                 "GIT_SSH_COMMAND",
@@ -269,19 +269,47 @@ fn pull(repo: &Path) -> Result<String, String> {
     )
     .map_err(|error| {
         format!(
-            "git pull --ff-only in {} did not run: {error}",
+            "git {} in {} did not run: {error}",
+            args.join(" "),
             slashed(repo)
         )
-    })?;
+    })
+}
+
+fn git_ok(repo: &Path, args: &[&str]) -> Result<String, String> {
+    let ran = git_in(repo, args)?;
     if ran.success() {
         Ok(ran.stdout.trim().to_owned())
     } else {
         Err(format!(
-            "git pull --ff-only in {} failed: {}",
+            "git {} in {} failed: {}",
+            args.join(" "),
             slashed(repo),
             ran.printed()
         ))
     }
+}
+
+/// Fetches and fast-forwards the checked-out branch, whatever the working tree holds.
+///
+/// A plain `git pull` refuses a tree with unstaged changes when `pull.rebase` is set, and a source repository that
+/// another tool edits (wmux rewrites its block in `CLAUDE.md`) is never clean. So this fetches, then merges
+/// `@{upstream}` with `--ff-only`, which leaves unrelated local changes alone; only when the merge would overwrite a
+/// local change does it retry with `--autostash`. A failure leaves `config.toml` untouched.
+fn pull(repo: &Path) -> Result<String, String> {
+    git_ok(repo, &["fetch", "--quiet"])?;
+    git_ok(repo, &["merge", "--ff-only", "--quiet", "@{upstream}"]).or_else(|_plain| {
+        git_ok(
+            repo,
+            &[
+                "merge",
+                "--ff-only",
+                "--autostash",
+                "--quiet",
+                "@{upstream}",
+            ],
+        )
+    })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

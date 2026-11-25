@@ -495,3 +495,55 @@ fn the_tick_raises_config_drift_and_clears_it_after_a_sync() {
         stdout(&healed)
     );
 }
+
+#[test]
+fn sync_pulls_into_a_dirty_repository() {
+    let synced = adopted();
+    let origin = tempfile::tempdir().unwrap();
+    git(origin.path(), &["init", "-q", "--bare"]);
+    let origin_arg = origin.path().to_str().unwrap().to_owned();
+    std::fs::write(
+        synced.repo.path().join("CLAUDE.md"),
+        "wmux block
+",
+    )
+    .unwrap();
+    synced.commit_repo("claude");
+    git(
+        synced.repo.path(),
+        &["remote", "add", "origin", &origin_arg],
+    );
+    git(synced.repo.path(), &["push", "-q", "-u", "origin", "HEAD"]);
+    git(synced.repo.path(), &["config", "pull.rebase", "true"]);
+    let other = tempfile::tempdir().unwrap();
+    git(
+        other.path(),
+        &["clone", "-q", &origin_arg, other.path().to_str().unwrap()],
+    );
+    let machine =
+        std::fs::read_to_string(other.path().join("machines/test/headwork.toml")).unwrap();
+    std::fs::write(
+        other.path().join("machines/test/headwork.toml"),
+        machine.replace("max_workers = 10", "max_workers = 7"),
+    )
+    .unwrap();
+    git(other.path(), &["commit", "-q", "-a", "-m", "raise workers"]);
+    git(other.path(), &["push", "-q"]);
+    std::fs::write(synced.repo.path().join("CLAUDE.md"), "wmux block edited\n").unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(synced.repo.path().join("CLAUDE.md")).unwrap(),
+        "wmux block edited\n"
+    );
+    assert!(
+        std::fs::read_to_string(synced.config())
+            .unwrap()
+            .contains("max_workers = 7")
+    );
+}
