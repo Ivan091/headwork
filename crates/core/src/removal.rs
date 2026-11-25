@@ -46,8 +46,8 @@ pub const fn backoff_s(failures: u32) -> u64 {
 
 const TRANSIENT_MARKERS: [&str; 15] = [
     "permission denied",
-    "odmowa dostępu",
-    "używany przez inny proces",
+    "odmowa dost",
+    "przez inny proces",
     "being used by another process",
     "resource busy",
     "access is denied",
@@ -64,8 +64,10 @@ const TRANSIENT_MARKERS: [&str; 15] = [
 
 const NOT_A_WORKTREE_MARKERS: [&str; 2] = ["is not a worktree", "is not a working tree"];
 
-/// Sorts a removal's error: a not-a-worktree text first, then the transient markers (English texts and OS error
-/// codes, which do not depend on the language), else lasting.
+/// Sorts a removal's error: a not-a-worktree text, then a transient marker, else lasting.
+///
+/// The markers are English and Polish texts and the OS error codes of Rust's own I/O errors; the Polish ones carry no
+/// diacritics because a command's output in a Windows code page reaches us lossily decoded.
 #[must_use]
 pub fn classify(error: &str) -> RemovalFailure {
     let error = error.to_lowercase();
@@ -166,6 +168,10 @@ mod tests {
             "rmdir failed: Directory not empty",
             "Access is denied. (os error 5)",
             "fatal: Unable to create 'S:/r/.git/worktrees/x/index.lock': File exists.",
+            "Odmowa dostępu.",
+            "Odmowa dost\u{fffd}pu.",
+            "Proces nie może uzyskać dostępu do pliku, ponieważ jest on używany przez inny proces.",
+            "Proces nie mo\u{fffd}e uzyska\u{fffd} dost\u{fffd}pu do pliku, poniewa\u{fffd} jest on u\u{fffd}ywany przez inny proces.",
         ] {
             assert_eq!(classify(error), RemovalFailure::Transient, "{error}");
         }

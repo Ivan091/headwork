@@ -507,6 +507,43 @@ fn worker_force_push_table() {
             Some(RuleId::WorkerForcePush),
         ),
         (
+            "git push --force-with-lease --al origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --force-w origin other",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git push --forc origin sand",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        ("git push --force-w origin sand", "sand", false, None),
+        (
+            "git -c push.default=matching push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c remote.origin.mirror=true push --force-with-lease origin",
+            "sand",
+            false,
+            Some(RuleId::WorkerForcePush),
+        ),
+        (
+            "git -c user.name=x push --force-with-lease origin",
+            "sand",
+            false,
+            None,
+        ),
+        (
             "git push --force-with-lease --branches origin",
             "sand",
             false,

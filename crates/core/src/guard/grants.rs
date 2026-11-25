@@ -46,7 +46,7 @@ const COMMIT_WIDE: &[&str] = &[
     "-p",
 ];
 
-/// `git push` options that delete or push more than the current branch.
+/// `git push` options that delete or push more than the current branch, and the mark [`CONFIG_WIDENED`].
 const PUSH_WIDE: &[&str] = &[
     "--delete",
     "--mirror",
@@ -54,7 +54,62 @@ const PUSH_WIDE: &[&str] = &[
     "--branches",
     "--prune",
     "--tags",
+    CONFIG_WIDENED,
 ];
+
+/// The word `git_subcommand` adds to a push whose `-c` or `--config-env` settings (`push.*`, `remote.*.mirror`,
+/// `remote.*.push`) may make it push more than the refspecs it names.
+pub(super) const CONFIG_WIDENED: &str = "--config-widened-push";
+
+/// Every long option of `git push`. Git takes any unique prefix of one, so a written option is matched against them.
+const PUSH_LONG: &[&str] = &[
+    "--all",
+    "--branches",
+    "--mirror",
+    "--tags",
+    "--follow-tags",
+    "--delete",
+    "--prune",
+    "--dry-run",
+    "--porcelain",
+    "--force",
+    "--force-with-lease",
+    "--force-if-includes",
+    "--recurse-submodules",
+    "--atomic",
+    "--signed",
+    "--push-option",
+    "--receive-pack",
+    "--exec",
+    "--repo",
+    "--set-upstream",
+    "--thin",
+    "--quiet",
+    "--verbose",
+    "--progress",
+    "--verify",
+    "--ipv4",
+    "--ipv6",
+];
+
+/// The long options a written one may stand for: itself when it is one, else every option it is a prefix of. A
+/// `--no-` form names no force and nothing wide.
+fn long_options(name: &str) -> Vec<&'static str> {
+    if name.starts_with("--no-") {
+        return Vec::new();
+    }
+    if let Some(exact) = PUSH_LONG.iter().find(|option| **option == name) {
+        return vec![exact];
+    }
+    if name == CONFIG_WIDENED {
+        return vec![CONFIG_WIDENED];
+    }
+    PUSH_LONG
+        .iter()
+        .copied()
+        .filter(|option| name.len() > 2 && option.starts_with(name))
+        .collect()
+}
 
 /// How a `git push` forces the remote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +148,12 @@ pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
             plain |= letters.contains('f');
             wide |= letters.contains('d');
         } else if word.starts_with('-') {
-            plain |= name == "--force";
-            lease |= matches!(name, "--force-with-lease" | "--force-if-includes");
-            wide |= PUSH_WIDE.contains(&name);
+            let options = long_options(name);
+            plain |= options.contains(&"--force");
+            lease |= options
+                .iter()
+                .any(|option| matches!(*option, "--force-with-lease" | "--force-if-includes"));
+            wide |= options.iter().any(|option| PUSH_WIDE.contains(option));
         } else {
             plain |= word.starts_with('+');
             positional.push(word.as_str());

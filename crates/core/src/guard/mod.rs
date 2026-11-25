@@ -806,16 +806,37 @@ fn is_default(scope: &Scope, branch: &str) -> bool {
 /// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
 fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
     let mut args = command.args().iter();
+    let mut widened = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" => {
+            "-c" | "--config-env" => {
+                widened |= args.next().is_some_and(|setting| widens_push(setting));
+            }
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" => {
                 args.next();
             }
+            flag if flag.starts_with("--config-env=") => {
+                widened |= widens_push(flag.trim_start_matches("--config-env="));
+            }
             flag if flag.starts_with('-') => {}
-            sub => return Some((sub.to_owned(), args.cloned().collect())),
+            sub => {
+                let mut rest: Vec<String> = args.cloned().collect();
+                if widened && sub == "push" {
+                    rest.push(grants::CONFIG_WIDENED.to_owned());
+                }
+                return Some((sub.to_owned(), rest));
+            }
         }
     }
     None
+}
+
+/// Whether a `-c` setting may make a push reach more than the refspecs it names: `push.*` (such as
+/// `push.default=matching`), `remote.<name>.mirror` or `remote.<name>.push`.
+fn widens_push(setting: &str) -> bool {
+    let key = setting.split('=').next().unwrap_or(setting).to_lowercase();
+    let last = key.rsplit('.').next().unwrap_or_default();
+    key.starts_with("push.") || (key.starts_with("remote.") && matches!(last, "mirror" | "push"))
 }
 
 fn check_skill(scope: &Scope, role: Role, name: &str) -> Decision {
