@@ -1,0 +1,31 @@
+id = "2026-11-25-config-sync-adopt"
+title = "Take headwork's config from claude_config"
+since = "v0.1.55"
+requires = ["headwork"]
+why = "headwork's config is generated from shared, machine and local layers (docs/config-sync.md); a machine that still runs a hand-written config.toml must adopt them. Pass --machine <name> to apply when this machine has no sources.toml yet."
+check = "headwork config check"
+
+[[step]]
+kind = "agent"
+run = "headwork config adopt --machine {machine} --repo ~/.claude"
+
+[[step]]
+kind = "user"
+say = "Commit machines/{machine}/headwork.toml (the machine part only) through a claude_config pull request; the shared file stays as it is on master. Never print or commit the local part."
+
+[[step]]
+kind = "confirm"
+run = "headwork config adopt --machine {machine} --repo ~/.claude --write"
+backup = "cp ~/.headwork/config.toml ~/.headwork/config.toml.pre-adopt"
+
+[[step]]
+kind = "agent"
+run = "headwork config sync"
+
+[[step]]
+kind = "agent"
+run = "headwork config check"
+
+[[step]]
+kind = "user"
+say = "Run headwork doctor: the config-* checks must be ok and [machine] host must be what this machine needs (cmux on the Mac). headwork config rollback puts the previous config back. Do not turn on [hooks] enforce or install the tick without an explicit go."
