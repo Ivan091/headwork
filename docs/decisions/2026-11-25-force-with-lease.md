@@ -10,7 +10,9 @@ store records for the task's worktree (`Scope::task_branch`, else the branch che
 wide is pushed (`--all`, `--branches`, `--mirror`, `--tags`, `--prune`, `--delete`); `grants.rs` and the guard share
 one classifier (`classify_push`), and granted notes-repository pushes refuse every force form.
 
-A lease is accepted only in the shape `git push --force-with-lease[=...] [-u|-q|-v] [<remote>] [HEAD|<task branch>]`:
-any other option, a `--`, a widening `-c` (`push.*`, `remote.*.mirror`, `remote.*.push`), a `-c alias.<sub>` running a
-push, or a `GIT_CONFIG*` assignment in front of git makes it refused. The guard reads command lines, so an alias or a
-setting already in the repository's config, or a `GIT_CONFIG*` variable exported earlier, stays out of its reach.
+A lease is accepted only in the shape `git push --force-with-lease[=...] [-u|-q|-v] [<remote>] [HEAD|<task branch>]`;
+any other option or a `--` refuses it, and an unforced `--mirror` or `--prune` counts as a plain force. Before any git
+rule, a push, a force word or an unknown subcommand (an alias) on a line that sets configuration (`-c`, `--config-env`,
+a `GIT_CONFIG*` assignment in front of git) is refused, and so is a forced push whose words come from `$(...)`,
+backticks or `${...}`. The guard reads command lines, so an alias or a setting already in the repository's config, or
+a `GIT_CONFIG*` variable exported earlier, stays out of its reach.

@@ -46,7 +46,7 @@ const COMMIT_WIDE: &[&str] = &[
     "-p",
 ];
 
-/// `git push` options that delete or push more than the current branch, and the mark [`CONFIG_WIDENED`].
+/// `git push` options that delete or push more than the current branch.
 const PUSH_WIDE: &[&str] = &[
     "--delete",
     "--mirror",
@@ -54,12 +54,7 @@ const PUSH_WIDE: &[&str] = &[
     "--branches",
     "--prune",
     "--tags",
-    CONFIG_WIDENED,
 ];
-
-/// The word `git_subcommand` adds to a push whose `-c` or `--config-env` settings (`push.*`, `remote.*.mirror`,
-/// `remote.*.push`) may make it push more than the refspecs it names.
-pub(super) const CONFIG_WIDENED: &str = "--config-widened-push";
 
 /// Every long option of `git push`. Git takes any unique prefix of one, so a written option is matched against them.
 const PUSH_LONG: &[&str] = &[
@@ -101,9 +96,6 @@ fn long_options(name: &str) -> Vec<&'static str> {
     if let Some(exact) = PUSH_LONG.iter().find(|option| **option == name) {
         return vec![exact];
     }
-    if name == CONFIG_WIDENED {
-        return vec![CONFIG_WIDENED];
-    }
     PUSH_LONG
         .iter()
         .copied()
@@ -118,7 +110,8 @@ pub(super) enum ForceKind {
     None,
     /// `--force-with-lease` or `--force-if-includes`, without a plain force.
     Lease,
-    /// `--force`, `-f` (also inside a group of short flags) or a `+refspec`.
+    /// `--force`, `-f` (also inside a group of short flags), a `+refspec`, or `--mirror` and `--prune`, which rewrite
+    /// and delete remote branches as a force does.
     Plain,
 }
 
@@ -129,7 +122,7 @@ pub(super) struct PushForm<'a> {
     pub force: ForceKind,
     /// It deletes or pushes more than one branch (`--all`, `--mirror`, `--tags`, `--prune`, `--delete`, `-d`).
     pub wide: bool,
-    /// The remote and then the refspecs, as written; every word after `--`, and any word holding `:`, is one.
+    /// The remote and then the refspecs, as written; every word after `--`, and a short-option word holding `:`, is one.
     pub positional: Vec<&'a str>,
     /// Every option word before `--`, as written.
     pub options: Vec<&'a str>,
@@ -176,7 +169,8 @@ pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
     let mut options = Vec::new();
     for word in args {
         let name = word.split('=').next().unwrap_or(word);
-        if separator || !word.starts_with('-') || word.contains(':') {
+        let short = word.starts_with('-') && !word.starts_with("--");
+        if separator || !word.starts_with('-') || (short && word.contains(':')) {
             plain |= word.starts_with('+');
             positional.push(word.as_str());
         } else if word == "--" {
@@ -191,7 +185,9 @@ pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
         } else {
             options.push(word.as_str());
             let names = long_options(name);
-            plain |= names.contains(&"--force");
+            plain |= names
+                .iter()
+                .any(|option| matches!(*option, "--force" | "--mirror" | "--prune"));
             lease |= names
                 .iter()
                 .any(|option| matches!(*option, "--force-with-lease" | "--force-if-includes"));

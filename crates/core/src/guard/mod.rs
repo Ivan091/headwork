@@ -345,6 +345,9 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
 /// in; `None` is a folder the guard cannot tell, such as after `cd -` or `popd`.
 fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decision {
     let mut cwd = Some(scope.cwd.clone());
+    let substituted = ["$(", "`", "${", "<("]
+        .iter()
+        .any(|mark| line.contains(mark));
     for command in commands(line) {
         match command.program_name().as_str() {
             "cd" | "pushd" => {
@@ -359,7 +362,9 @@ fn check_bash(scope: &Scope, role: Role, line: &str, background: bool) -> Decisi
         }
         let decision = match role {
             Role::Orchestrator => check_orchestrator_command(scope, &command, cwd.as_deref()),
-            Role::Worker => check_worker_command(scope, &command, cwd.as_deref(), background),
+            Role::Worker => {
+                check_worker_command(scope, &command, cwd.as_deref(), background, substituted)
+            }
         };
         if decision != Decision::Allow {
             return decision;
@@ -452,6 +457,7 @@ fn check_worker_command(
     command: &SimpleCommand,
     cwd: Option<&str>,
     background: bool,
+    substituted: bool,
 ) -> Decision {
     if let Some(decision) = user_only(scope, command) {
         return decision;
@@ -478,9 +484,13 @@ fn check_worker_command(
     if command.program_name() != "git" {
         return Decision::Allow;
     }
-    let Some((sub, args)) = git_subcommand(command) else {
+    let Some(line) = git_line(command) else {
         return Decision::Allow;
     };
+    if let Some(decision) = check_git_shape(&line, substituted) {
+        return decision;
+    }
+    let GitLine { sub, args, .. } = line;
     match check_git_outside(scope, command, cwd, &sub, &args) {
         GitPlace::Own => {}
         GitPlace::Granted => return Decision::Allow,
@@ -805,53 +815,128 @@ fn is_default(scope: &Scope, branch: &str) -> bool {
     scope.default_branches.iter().any(|name| name == branch)
 }
 
+/// A git command line read past its global options.
+#[derive(Debug)]
+struct GitLine {
+    /// The subcommand as written, which may be an alias.
+    sub: String,
+    /// The words after it.
+    args: Vec<String>,
+    /// It sets configuration: `-c`, `--config-env`, or a `GIT_CONFIG*` assignment the shell reader turned into `-c`.
+    configured: bool,
+}
+
 /// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
-///
-/// A push whose `-c` settings may widen it, and a `-c alias.<sub>` that runs a push, come back as `push` marked
-/// [`grants::CONFIG_WIDENED`].
-fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
+fn git_line(command: &SimpleCommand) -> Option<GitLine> {
     let mut args = command.args().iter();
-    let mut widened = false;
-    let mut settings: Vec<&str> = Vec::new();
+    let mut configured = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-c" | "--config-env" => {
-                if let Some(setting) = args.next() {
-                    widened |= widens_push(setting);
-                    settings.push(setting.as_str());
-                }
+                configured = true;
+                args.next();
             }
             "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--attr-source"
             | "--super-prefix" => {
                 args.next();
             }
-            flag if flag.starts_with("--config-env=") => {
-                widened |= widens_push(flag.trim_start_matches("--config-env="));
-            }
+            flag if flag.starts_with("--config-env=") => configured = true,
             flag if flag.starts_with('-') => {}
             sub => {
-                let mut rest: Vec<String> = args.cloned().collect();
-                let aliased = settings.iter().any(|setting| {
-                    let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
-                    key.eq_ignore_ascii_case(&format!("alias.{sub}")) && value.contains("push")
+                return Some(GitLine {
+                    sub: sub.to_owned(),
+                    args: args.cloned().collect(),
+                    configured,
                 });
-                if aliased || (widened && sub == "push") {
-                    rest.push(grants::CONFIG_WIDENED.to_owned());
-                }
-                let sub = if aliased { "push" } else { sub };
-                return Some((sub.to_owned(), rest));
             }
         }
     }
     None
 }
 
-/// Whether a `-c` setting may make a push reach more than the refspecs it names: `push.*` (such as
-/// `push.default=matching`), `remote.<name>.mirror` or `remote.<name>.push`.
-fn widens_push(setting: &str) -> bool {
-    let key = setting.split('=').next().unwrap_or(setting).to_lowercase();
-    let last = key.rsplit('.').next().unwrap_or_default();
-    key.starts_with("push.") || (key.starts_with("remote.") && matches!(last, "mirror" | "push"))
+/// The git subcommand and its arguments, past global options such as `-C <dir>` and `-c <key=value>`.
+fn git_subcommand(command: &SimpleCommand) -> Option<(String, Vec<String>)> {
+    git_line(command).map(|line| (line.sub, line.args))
+}
+
+/// Git's own commands a worker runs; a subcommand outside this list may be an alias, which can run a push.
+const GIT_BUILTINS: &[&str] = &[
+    "add",
+    "am",
+    "apply",
+    "bisect",
+    "blame",
+    "branch",
+    "cat-file",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "describe",
+    "diff",
+    "fetch",
+    "for-each-ref",
+    "format-patch",
+    "gc",
+    "grep",
+    "init",
+    "log",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "merge",
+    "merge-base",
+    "mv",
+    "notes",
+    "pull",
+    "push",
+    "rebase",
+    "reflog",
+    "remote",
+    "reset",
+    "restore",
+    "rev-list",
+    "rev-parse",
+    "revert",
+    "rm",
+    "shortlog",
+    "show",
+    "stash",
+    "status",
+    "submodule",
+    "switch",
+    "symbolic-ref",
+    "tag",
+    "update-ref",
+    "worktree",
+];
+
+/// Refuses, before any other git rule, the shapes in which a push cannot be read from the command line: a push, a
+/// force or an unknown subcommand (an alias) together with configuration set on the line, and a forced push whose words
+/// come from a substitution (`$(...)`, backticks, `${...}`) the reader cannot see into.
+fn check_git_shape(line: &GitLine, substituted: bool) -> Option<Decision> {
+    let forces = line
+        .args
+        .iter()
+        .any(|word| word.starts_with("--force") || word.starts_with('+'));
+    let pushes = line.sub == "push";
+    let alias = !GIT_BUILTINS.contains(&line.sub.as_str());
+    if line.configured && (pushes || forces || alias) {
+        return Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "a push, a force or an alias with `-c`, `--config-env` or `GIT_CONFIG*` settings is refused: settings can \
+             change what is pushed; run it without them",
+        ));
+    }
+    if substituted && (forces || (pushes && classify_push(&line.args).force != ForceKind::None)) {
+        return Some(Decision::deny(
+            RuleId::WorkerForcePush,
+            "a forced push built from `$(...)`, backticks or `${...}` is refused: write its refspec out",
+        ));
+    }
+    None
 }
 
 fn check_skill(scope: &Scope, role: Role, name: &str) -> Decision {

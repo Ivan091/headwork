@@ -168,8 +168,8 @@ fn collect(line: &str, out: &mut Vec<SimpleCommand>, depth: u8) {
 
 /// The `-c` key a command gets when a `GIT_CONFIG*` assignment in front of it was stripped.
 ///
-/// Such variables set git configuration the command line does not show, so a guard reads them as a `push.*` setting
-/// that may widen a push.
+/// Such variables set git configuration the command line does not show, so the guard counts the command as configured
+/// the way an explicit `-c` is.
 pub const GIT_CONFIG_FROM_ENV: &str = "push.from-environment";
 
 fn unwrap(words: &[String]) -> Vec<String> {
