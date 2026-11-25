@@ -2,7 +2,9 @@
 
 Evidence covers 2026-11-14 to 11-25: 14,452 headwork events and 265 tasks, the GitHub runs and pull requests (run history starts 11-19 to 11-22 depending on the repository), and the ship, worktree and check scripts. Nothing was changed.
 
-Status: the user approved all four follow-up tasks and chose force-with-lease for item 8 on 2026-11-25.
+Status (2026-11-25): the user approved all four follow-up tasks and chose force-with-lease for item 8. The analysis
+changed nothing; the headwork part (items 2 for this repository, 3, 7, 8 in the guard, and `heavy_slots` deprecated
+for item 4) landed in pull request #73; the me-sim, me-studio and claude-config tasks are the orchestrator's.
 
 ## What the numbers say
 

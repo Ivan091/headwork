@@ -1,3 +1,3 @@
-# heavy_slots and heavy_gate are deprecated
+# 2026-11-25: heavy_slots and heavy_gate are deprecated
 
 2026-11-25: `project.<name>.heavy_slots` and `heavy_gate` stay readable but are not enforced and no longer count under `unenforced-keys`; `headwork doctor` warns under `config-keys` with "not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots". The contention plan moves heavy slots to one machine-wide folder shared by the repositories' check scripts, so a headwork counter would only disagree with the real limiter (me-sim's `scripts/heavy.sh`, as decided on 2026-11-16 in `docs/decisions.md`); jobs still record their `heavy` flag. The keys are dropped from the test fixture, which must stay free of deprecated keys, and can be removed from `config.toml` at leisure.

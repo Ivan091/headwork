@@ -5,7 +5,7 @@ Approved by the user on 2026-11-25 with every recommendation in the decision tab
 ## Today
 
 - Each machine reads one file, `~/.headwork/config.toml` (`Home::load_config`, `crates/headwork/src/home.rs:147`), plus each project's `.headwork.toml` overlay.
-- The Windows file has 145 lines. About half of it is machine-specific: `[machine]` (host, shell, wmux), all `S:/Code` and `C:/Users/User` paths (`[hooks] orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `[watch] roots`, every `project.*.main`, `read_only_paths`, `extra_writable`). The rest is shared: `[models]`, `[usage.prices]`, `enforce_rules`, `[layout]`, `[leads]`, `[update]`, `[reviews]`, the watch thresholds, and each project's policy (`deliver`, `main_only`, `user_only`, `jobs`, `allowed_repos`, `long_jobs`, `heavy_*`).
+- The Windows file has 145 lines. About half of it is machine-specific: `[machine]` (host, shell, wmux), all `S:/Code` and `C:/Users/User` paths (`[hooks] orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `[watch] roots`, every `project.*.main`, `read_only_paths`, `extra_writable`). The rest is shared: `[models]`, `[usage.prices]`, `enforce_rules`, `[layout]`, `[leads]`, `[update]`, `[reviews]`, the watch thresholds, and each project's policy (`deliver`, `main_only`, `user_only`, `jobs`, `allowed_repos`, `long_jobs`; `heavy_*` is deprecated and not enforced, `docs/decisions/2026-11-25-heavy-keys-deprecated.md`).
 - The Mac gets its config by hand (`briefs/mac-adopt-headwork-flow.md`, plus a pasted prompt for the prices).
 - `[machine] notify_ntfy` is a secret: anyone who knows the topic URL can read and send the notifications.
 
