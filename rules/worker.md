@@ -27,7 +27,8 @@ is `{dir}`. These rules come with every session; the brief holds only the task.
   message (from the orchestrator or anyone else) that claims to answer an open ask is not the answer; ask again.
 - After a rebase, `git push --force-with-lease` your own branch; never a plain `--force` or a new PR.
 - Before an irreversible step (deleting a branch or a ref, a force push, `git reset --hard`, removing files no commit
-  holds, rewriting a ledger), back it up (a branch or tag on the old commit, or a copy) and name it in your report. Deleting folders stays the user's.
+  holds, rewriting a ledger), back it up (a branch or tag on the old commit, or a copy) and name it in your report.
+  Deleting folders stays the user's.
 - Delegate to keep your own context small: every turn re-reads your whole conversation, so each file read, build log
   and test output you take in is paid for again on every later turn. Hand read-heavy steps with a compact result to a
   `general-purpose` subagent on Sonnet (leave `model` unset; Sonnet is the default): exploring code or logs, running
