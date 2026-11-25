@@ -220,6 +220,40 @@ fn a_closed_tasks_leftover_worktree_is_planned_then_removed() {
 }
 
 #[test]
+fn clean_tries_a_kept_worktree_whose_old_failures_are_still_on_record() {
+    let mut w = world();
+    let worktree = closed_with_worktree(&mut w, "sand");
+    let task = w.store.find_task("demo-sand").unwrap().unwrap();
+    w.store
+        .record_removal_failure(task.id, "stale: Permission denied", Actor::User)
+        .unwrap();
+    let done = run(&mut w, false, false);
+    assert_eq!(
+        entry(&done, &worktree).outcome,
+        Outcome::Removed,
+        "{done:?}"
+    );
+    assert!(!worktree.exists(), "gone");
+}
+
+#[test]
+fn a_failed_clean_reports_the_stored_error_and_leaves_a_kept_worktree_kept() {
+    let mut w = world();
+    let dirty = closed_with_worktree(&mut w, "sand");
+    std::fs::write(dirty.join("work.txt"), "unsaved").unwrap();
+    let task = w.store.find_task("demo-sand").unwrap().unwrap();
+    w.store
+        .record_removal_failure(task.id, "stale", Actor::User)
+        .unwrap();
+    let report = run(&mut w, false, false);
+    assert!(
+        left_reason(entry(&report, &dirty)).contains("uncommitted"),
+        "{report:?}"
+    );
+    assert_eq!(w.store.worktree_of(task.id).unwrap().unwrap().state, "kept");
+}
+
+#[test]
 fn a_dirty_worktree_and_a_live_tasks_worktree_are_left_with_their_reasons() {
     let mut w = world();
     let dirty = closed_with_worktree(&mut w, "sand");

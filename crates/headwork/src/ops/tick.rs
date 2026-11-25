@@ -21,14 +21,14 @@ use headwork_core::{
 use headwork_store::{SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
-use super::close::{finish, remove_worktree, surface_present};
+use super::close::{RemovalMode, finish, removal_status, remove_worktree, surface_present};
 use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
 use super::session_procs;
 use super::spawn::{Pumped, pump};
 use super::update::{self as updates, Triggered, TriggeredBy, UpdateStarter};
 use super::{Env, slashed};
-use headwork_core::removal::{RemovalDecision, decide, is_transient};
+use headwork_core::removal::RemovalDecision;
 
 /// The topic of the ask about a worktree that cannot be removed.
 pub(super) const WORKTREE_TOPIC: &str = "worktree";
@@ -72,7 +72,8 @@ pub fn carry_out_worktree_answer(store: &mut Store, env: &Env<'_>, id: TaskId) -
     if answer.starts_with("Keep") {
         store.set_worktree_state(id, "kept", env.actor)?;
     } else if answer.starts_with("Delete") {
-        remove_worktree(store, env, id, true)?;
+        store.clear_removal_attempts(id)?;
+        remove_worktree(store, env, id, RemovalMode::Delete)?;
     }
     store.set_ask_topic(ask.id, WORKTREE_DONE)?;
     Ok(())
@@ -977,27 +978,21 @@ impl<'b> Run<'_, 'b> {
     }
 
     fn ask_about_worktree(&mut self, id: TaskId) -> Result<()> {
-        let present = self
-            .store
-            .worktree_of(id)?
-            .is_some_and(|w| w.state == "present" && Path::new(&w.path).exists());
-        let attempts = self.store.removal_attempts(id)?;
-        let asks = attempts.failures > 0
-            && decide(
-                attempts.failures,
-                attempts.since_last_s.unwrap_or(u64::MAX),
-                is_transient(attempts.last_error.as_deref().unwrap_or_default()),
-            ) == RemovalDecision::Ask;
-        if !present || !asks || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some() {
+        let Some(status) = removal_status(self.store, id)? else {
+            return Ok(());
+        };
+        if status.decision != RemovalDecision::Ask
+            || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some()
+        {
             return Ok(());
         }
-        let path = self
-            .store
-            .worktree_of(id)?
-            .map(|w| w.path)
-            .unwrap_or_default();
-        let error = attempts.last_error.unwrap_or_default();
-        let question = format!("worktree {path} could not be removed: {error}; keep or delete?");
+        let path = status.worktree.path;
+        let error = status.attempts.last_error.unwrap_or_default();
+        let question = if self.store.topic_ask(id, WORKTREE_DONE)?.is_some() {
+            format!("deleting worktree {path} was tried and failed: {error}; keep or delete?")
+        } else {
+            format!("worktree {path} could not be removed: {error}; keep or delete?")
+        };
         let options = [KEEP_WORKTREE.to_owned(), DELETE_WORKTREE.to_owned()];
         let actor = self.actor();
         self.store
