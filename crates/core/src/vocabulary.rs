@@ -564,6 +564,10 @@ text_enum!(
         /// `headwork update` failed in a way worth telling (deterministic, or transient from its third attempt); it
         /// stands until a later release installs. `update` raises and clears it, not the tick.
         UpdateFailed => "update-failed",
+        /// The config sources (the repository or the machine file) changed since the last `headwork config sync`.
+        ConfigStale => "config-stale",
+        /// `config.toml` was edited by hand after the last `headwork config sync` wrote it.
+        ConfigDrift => "config-drift",
     }
 );
 
