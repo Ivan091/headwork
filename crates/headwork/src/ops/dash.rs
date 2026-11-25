@@ -926,6 +926,12 @@ mod tests {
     }
 
     #[test]
+    fn done_items_are_hidden_on_first_load() {
+        let page = ASSETS[0].body;
+        assert!(page.contains(r#"id="hide-done" checked"#), "the hide done box starts checked");
+    }
+
+    #[test]
     fn vendored_files_match_their_checksums() {
         use sha2::{Digest, Sha256};
 
