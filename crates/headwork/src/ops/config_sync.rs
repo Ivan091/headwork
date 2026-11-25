@@ -954,8 +954,12 @@ pub struct AdoptOptions {
 /// What `config adopt` found or wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AdoptReport {
-    /// The shared file's text.
+    /// The shared file's text: the one in the repository when [`AdoptReport::shared_kept`], else the split's.
     pub shared: String,
+    /// Whether the repository already had its shared file, which is used as it is and never written.
+    pub shared_kept: bool,
+    /// Whether the repository already had this machine's file, which is used as it is and never written.
+    pub machine_kept: bool,
     /// The machine file's text.
     pub machine: String,
     /// The local file's text.
@@ -978,6 +982,14 @@ impl fmt::Display for AdoptReport {
         }
         if let Some(sources) = self.paths.get("sources") {
             writeln!(f, "# sources: {sources}")?;
+        }
+        for (kept, name) in [(self.shared_kept, "shared"), (self.machine_kept, "machine")] {
+            if kept {
+                writeln!(
+                    f,
+                    "the {name} file exists in the repository and is used as it is; it is never written"
+                )?;
+            }
         }
         if self.written {
             writeln!(
@@ -1066,11 +1078,21 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         .with_context(|| format!("{} is not TOML", live_path.display()))?;
     let mut parts = Split::default();
     split(&table, &mut Vec::new(), &mut parts);
-    let (shared, machine, local) = (
-        render(&parts.shared)?,
-        render(&parts.machine)?,
-        render(&parts.local)?,
-    );
+    let shared_kept = layout.shared_file.exists() && !options.force;
+    let shared = if shared_kept {
+        std::fs::read_to_string(&layout.shared_file)
+            .with_context(|| format!("reading {}", layout.shared_file.display()))?
+    } else {
+        render(&parts.shared)?
+    };
+    let machine_kept = layout.machine_file.exists() && !options.force;
+    let machine = if machine_kept {
+        std::fs::read_to_string(&layout.machine_file)
+            .with_context(|| format!("reading {}", layout.machine_file.display()))?
+    } else {
+        render(&parts.machine)?
+    };
+    let local = render(&parts.local)?;
     let shared_name = slashed(&layout.shared_file);
     let machine_name = slashed(&layout.machine_file);
     let local_name = slashed(&layout.local_file);
@@ -1095,6 +1117,12 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     let rebuilt = Config::parse(&merged.to_toml_string()?, "the merge of the split files")
         .context("the merge of the split files is not a valid config")?;
     if rebuilt != live {
+        if shared_kept || machine_kept {
+            bail!(
+                "the shared and machine files in the repository do not reproduce this machine's config.toml, nothing was \
+                 written; bring config.toml in line with {shared_name} and {machine_name}, or pass --force to replace them"
+            );
+        }
         bail!(
             "the merge of the split files does not reproduce the live config.toml; nothing was written"
         );
@@ -1114,11 +1142,13 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     paths.insert("machine".to_owned(), machine_name);
     paths.insert("local".to_owned(), local_name);
     paths.insert("sources".to_owned(), slashed(&home.sources_path()));
-    let mut files: Vec<(PathBuf, &str)> = vec![
-        (layout.shared_file.clone(), &shared),
-        (layout.machine_file.clone(), &machine),
-        (home.sources_path(), &sources),
-    ];
+    let mut files: Vec<(PathBuf, &str)> = vec![(home.sources_path(), &sources)];
+    if !shared_kept {
+        files.push((layout.shared_file.clone(), &shared));
+    }
+    if !machine_kept {
+        files.push((layout.machine_file.clone(), &machine));
+    }
     if !parts.local.is_empty() {
         files.push((layout.local_file, &local));
     }
@@ -1141,6 +1171,8 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     }
     Ok(AdoptReport {
         shared,
+        shared_kept,
+        machine_kept,
         machine,
         local,
         paths,

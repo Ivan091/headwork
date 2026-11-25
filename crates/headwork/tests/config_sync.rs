@@ -614,3 +614,105 @@ fn a_repository_without_an_upstream_fails_the_sync() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
 }
+
+fn adopt_args<'a>(machine: &'a str, repo: &'a str, write: bool) -> Vec<&'a str> {
+    let mut args = vec!["config", "adopt", "--machine", machine, "--repo", repo];
+    if write {
+        args.push("--write");
+    }
+    args
+}
+
+#[test]
+fn a_second_machine_adopts_against_the_shared_file_already_in_the_repository() {
+    let first = adopted();
+    let shared_path = first.repo.path().join("headwork/config.toml");
+    let shared = std::fs::read_to_string(&shared_path).unwrap();
+    let second_home = tempfile::tempdir().unwrap();
+    std::fs::write(second_home.path().join("config.toml"), fixture()).unwrap();
+    let repo = first.repo.path().to_str().unwrap();
+
+    let preview = headwork(second_home.path(), &adopt_args("second", repo, false));
+    assert!(preview.status.success(), "{}", stderr(&preview));
+    assert!(
+        stdout(&preview).contains("used as it is"),
+        "{}",
+        stdout(&preview)
+    );
+
+    let written = headwork(second_home.path(), &adopt_args("second", repo, true));
+    assert!(written.status.success(), "{}", stderr(&written));
+    assert_eq!(
+        std::fs::read_to_string(&shared_path).unwrap(),
+        shared,
+        "the shared file is never rewritten"
+    );
+    assert!(
+        first
+            .repo
+            .path()
+            .join("machines/second/headwork.toml")
+            .exists(),
+        "the machine file is new"
+    );
+    assert!(second_home.path().join("sources.toml").exists(), "sources");
+    let check = headwork(second_home.path(), &["config", "check"]);
+    assert!(
+        check.status.success(),
+        "{}{}",
+        stdout(&check),
+        stderr(&check)
+    );
+}
+
+#[test]
+fn a_shared_file_that_does_not_fit_the_machine_stops_the_adoption() {
+    let first = adopted();
+    let shared_path = first.repo.path().join("headwork/config.toml");
+    let shared = std::fs::read_to_string(&shared_path).unwrap();
+    std::fs::write(
+        &shared_path,
+        shared.replace("default = \"sonnet\"", "default = \"haiku\""),
+    )
+    .unwrap();
+    let second_home = tempfile::tempdir().unwrap();
+    std::fs::write(second_home.path().join("config.toml"), fixture()).unwrap();
+    let repo = first.repo.path().to_str().unwrap();
+    let refused = headwork(second_home.path(), &adopt_args("second", repo, true));
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("shared and machine files in the repository"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(
+        !first.repo.path().join("machines/second").exists(),
+        "nothing written"
+    );
+}
+
+#[test]
+fn a_machine_file_already_in_the_repository_is_kept_and_only_the_home_files_are_written() {
+    let synced = adopted();
+    let machine = std::fs::read_to_string(synced.machine_file()).unwrap();
+    std::fs::remove_file(synced.home.path().join("sources.toml")).unwrap();
+    std::fs::remove_file(synced.home.path().join("config.local.toml")).unwrap();
+    let repo = synced.repo.path().to_str().unwrap();
+    let written = synced.run(&adopt_args("test", repo, true));
+    assert!(written.status.success(), "{}", stderr(&written));
+    assert!(
+        stdout(&written).contains("machine file exists"),
+        "{}",
+        stdout(&written)
+    );
+    assert_eq!(
+        std::fs::read_to_string(synced.machine_file()).unwrap(),
+        machine,
+        "machine file untouched"
+    );
+    assert!(synced.home.path().join("sources.toml").exists(), "sources");
+    assert!(
+        synced.home.path().join("config.local.toml").exists(),
+        "local"
+    );
+}
