@@ -914,7 +914,7 @@ fn dirty_closing(w: &mut World, slug: &str) -> (Task, PathBuf) {
 }
 
 #[test]
-fn a_worktree_that_failed_once_backs_off_without_asking_or_refusing_again() {
+fn a_worktree_holding_work_asks_at_once_and_is_not_retried() {
     let mut w = world();
     let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
@@ -922,18 +922,40 @@ fn a_worktree_that_failed_once_backs_off_without_asking_or_refusing_again() {
     run_tick(&mut w);
     assert_eq!(count(&w, "worktree-refused"), 1, "one refusal");
     let refused = count(&w, "refused");
-    assert!(
-        w.store.topic_ask(task.id, "worktree").unwrap().is_none(),
-        "no ask yet"
-    );
     run_tick(&mut w);
+    assert!(
+        w.store.topic_ask(task.id, "worktree").unwrap().is_some(),
+        "a lasting refusal asks without backing off"
+    );
     run_tick(&mut w);
     assert_eq!(
         count(&w, "worktree-refused"),
         1,
-        "no second attempt while backing off"
+        "no second attempt while the ask waits"
     );
     assert_eq!(count(&w, "refused"), refused, "no transition refusal again");
+    assert!(dir.exists(), "nothing deleted");
+}
+
+#[test]
+fn a_transient_removal_failure_backs_off_without_asking() {
+    let mut w = world();
+    let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
+    let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
+    w.store
+        .record_removal_failure(task.id, "error: failed to delete 'sand': Permission denied")
+        .unwrap();
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(
+        count(&w, "worktree-refused"),
+        0,
+        "no attempt inside the first minute"
+    );
+    assert!(
+        w.store.topic_ask(task.id, "worktree").unwrap().is_none(),
+        "a transient failure does not ask yet"
+    );
     assert!(dir.exists(), "nothing deleted");
 }
 

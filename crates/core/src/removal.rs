@@ -1,5 +1,6 @@
 //! When a failed worktree removal may be tried again: pure backoff over the failure count and the time since the last
-//! attempt.
+//! attempt. Only a transient failure (a file held open, a lock) backs off; any other refusal, such as a tree that still
+//! holds work, asks the user at once, since trying again cannot change it.
 
 /// Failures after which headwork stops retrying and asks the user to keep or delete the worktree.
 pub const ASK_AFTER_FAILURES: u32 = 6;
@@ -39,10 +40,31 @@ pub const fn backoff_s(failures: u32) -> u64 {
     }
 }
 
-/// Decides whether a removal that failed `failures` times, the last `since_last_s` seconds ago, is tried now.
+/// Error texts of failures that may pass on their own: Windows file locks, busy devices, git lock files.
+const TRANSIENT_MARKERS: [&str; 7] = [
+    "permission denied",
+    "being used by another process",
+    "resource busy",
+    "access is denied",
+    "index.lock",
+    "unable to create",
+    "directory not empty",
+];
+
+/// Whether a removal's error may pass on its own, so the removal is worth trying again later.
 #[must_use]
-pub const fn decide(failures: u32, since_last_s: u64) -> RemovalDecision {
-    if failures >= ASK_AFTER_FAILURES {
+pub fn is_transient(error: &str) -> bool {
+    let error = error.to_lowercase();
+    TRANSIENT_MARKERS
+        .iter()
+        .any(|marker| error.contains(marker))
+}
+
+/// Decides whether a removal that failed `failures` times, the last `since_last_s` seconds ago, is tried now. A
+/// failure that is not `transient` asks at once.
+#[must_use]
+pub const fn decide(failures: u32, since_last_s: u64, transient: bool) -> RemovalDecision {
+    if failures >= ASK_AFTER_FAILURES || (failures > 0 && !transient) {
         return RemovalDecision::Ask;
     }
     let wait = backoff_s(failures);
@@ -84,10 +106,47 @@ mod tests {
         ];
         for (failures, since, expected) in table {
             assert_eq!(
-                decide(failures, since),
+                decide(failures, since, true),
                 expected,
                 "{failures} failures, {since}s ago"
             );
+        }
+    }
+
+    #[test]
+    fn a_lasting_refusal_asks_at_once() {
+        assert_eq!(
+            decide(1, 0, false),
+            RemovalDecision::Ask,
+            "a dirty tree asks on the first failure"
+        );
+        assert_eq!(
+            decide(0, 0, false),
+            RemovalDecision::Try,
+            "no failure yet, so try"
+        );
+    }
+
+    #[test]
+    fn errors_are_sorted_into_transient_and_lasting() {
+        let table = [
+            ("error: failed to delete 'x': Permission denied", true),
+            (
+                "The process cannot access the file because it is being used by another process.",
+                true,
+            ),
+            (
+                "fatal: Unable to create 'S:/r/.git/worktrees/x/index.lock': File exists.",
+                true,
+            ),
+            ("blocked: x has uncommitted changes", false),
+            (
+                "fatal: 'x' contains modified or untracked files, use --force to delete it",
+                false,
+            ),
+        ];
+        for (error, expected) in table {
+            assert_eq!(is_transient(error), expected, "{error}");
         }
     }
 }

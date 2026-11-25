@@ -25,7 +25,7 @@ use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, CloseGo, FinishFacts, MergeSource, PrEnd, Trigger,
     WorktreeEnd,
 };
-use headwork_core::removal::{RemovalDecision, decide};
+use headwork_core::removal::{RemovalDecision, decide, is_transient};
 use headwork_core::{Actor, Config, JobState, SessionState, TaskShape, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, UsageTotal, WorktreeRow};
 use serde::Serialize;
@@ -850,17 +850,19 @@ pub(super) fn removal_waiting(store: &Store, id: TaskId) -> Result<Option<String
     }
     let error = attempts.last_error.unwrap_or_default();
     let since = attempts.since_last_s.unwrap_or(u64::MAX);
-    Ok(match decide(attempts.failures, since) {
-        RemovalDecision::Try => None,
-        RemovalDecision::Wait { remaining_s } => Some(format!(
-            "removing the worktree failed {} times; next try in {remaining_s} s: {error}",
-            attempts.failures
-        )),
-        RemovalDecision::Ask => Some(format!(
-            "removing the worktree failed {} times; waiting for the keep-or-delete answer: {error}",
-            attempts.failures
-        )),
-    })
+    Ok(
+        match decide(attempts.failures, since, is_transient(&error)) {
+            RemovalDecision::Try => None,
+            RemovalDecision::Wait { remaining_s } => Some(format!(
+                "removing the worktree failed {} times; next try in {remaining_s} s: {error}",
+                attempts.failures
+            )),
+            RemovalDecision::Ask => Some(format!(
+                "removing the worktree failed {} times; waiting for the keep-or-delete answer: {error}",
+                attempts.failures
+            )),
+        },
+    )
 }
 
 /// Ends a task's folder that git no longer counts as a worktree: an empty one is deleted and recorded `removed`, one

@@ -28,7 +28,7 @@ use super::session_procs;
 use super::spawn::{Pumped, pump};
 use super::update::{self as updates, Triggered, TriggeredBy, UpdateStarter};
 use super::{Env, slashed};
-use headwork_core::removal::ASK_AFTER_FAILURES;
+use headwork_core::removal::{RemovalDecision, decide, is_transient};
 
 /// The topic of the ask about a worktree that cannot be removed.
 pub(super) const WORKTREE_TOPIC: &str = "worktree";
@@ -982,10 +982,13 @@ impl<'b> Run<'_, 'b> {
             .worktree_of(id)?
             .is_some_and(|w| w.state == "present" && Path::new(&w.path).exists());
         let attempts = self.store.removal_attempts(id)?;
-        if !present
-            || attempts.failures < ASK_AFTER_FAILURES
-            || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some()
-        {
+        let asks = attempts.failures > 0
+            && decide(
+                attempts.failures,
+                attempts.since_last_s.unwrap_or(u64::MAX),
+                is_transient(attempts.last_error.as_deref().unwrap_or_default()),
+            ) == RemovalDecision::Ask;
+        if !present || !asks || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some() {
             return Ok(());
         }
         let path = self
