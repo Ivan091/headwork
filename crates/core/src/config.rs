@@ -583,10 +583,10 @@ pub struct ProjectConfig {
     /// Repositories a worker may push to.
     #[serde(default)]
     pub allowed_repos: Vec<Repo>,
-    /// Heavy job slots.
+    /// Deprecated and not enforced: gates take machine-wide slots from `%LOCALAPPDATA%/heavy-slots`.
     #[serde(default)]
     pub heavy_slots: Option<u32>,
-    /// The project's own heavy slot owner.
+    /// Deprecated and not enforced: the project's check scripts own the heavy gate.
     #[serde(default)]
     pub heavy_gate: Option<String>,
     /// Paths a worker may read and never write.
@@ -943,6 +943,29 @@ impl Config {
             );
         }
         found
+    }
+
+    /// The project keys a configuration still sets that headwork reads and never enforces, as `project.<name>.<key>`
+    /// (`heavy_slots`, `heavy_gate`). Text that does not parse has none.
+    #[must_use]
+    pub fn retired_keys(text: &str) -> Vec<String> {
+        const RETIRED: &[&str] = &["heavy_slots", "heavy_gate"];
+        let Ok(table) = toml::from_str::<toml::Table>(text) else {
+            return Vec::new();
+        };
+        let Some(projects) = table.get("project").and_then(toml::Value::as_table) else {
+            return Vec::new();
+        };
+        projects
+            .iter()
+            .filter_map(|(name, project)| project.as_table().map(|keys| (name, keys)))
+            .flat_map(|(name, keys)| {
+                RETIRED
+                    .iter()
+                    .filter(|key| keys.contains_key(**key))
+                    .map(move |key| format!("project.{name}.{key}"))
+            })
+            .collect()
     }
 
     /// The project with this name.

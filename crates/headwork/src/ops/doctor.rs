@@ -370,13 +370,6 @@ fn unenforced_keys_check(config: &Config) -> Check {
     if !config.machine.notify_ntfy.is_empty() {
         keys.push("machine.notify_ntfy".to_owned());
     }
-    keys.extend(
-        config
-            .projects
-            .iter()
-            .filter(|(_, project)| project.heavy_slots.is_some())
-            .map(|(name, _)| format!("project.{}.heavy_slots", name.as_str())),
-    );
     if keys.is_empty() {
         return Check::ok("unenforced-keys", "no configured key is ignored");
     }
@@ -393,17 +386,23 @@ fn unenforced_keys_check(config: &Config) -> Check {
 fn deprecated_keys_check(d: &Doctor<'_>) -> Check {
     let text = std::fs::read_to_string(d.home.config_path()).unwrap_or_default();
     let renamed = Config::deprecated_keys(&text);
-    if renamed.is_empty() {
+    let retired = Config::retired_keys(&text);
+    if renamed.is_empty() && retired.is_empty() {
         return Check::ok("config-keys", "no deprecated keys");
     }
-    let list: Vec<String> = renamed
+    let mut list: Vec<String> = renamed
         .iter()
         .map(|(old, new)| format!("{old} (now {new})"))
         .collect();
+    list.extend(retired.iter().map(|key| {
+        format!(
+            "{key} (not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots)"
+        )
+    }));
     Check::warn(
         "config-keys",
         format!("deprecated keys, still read: {}", list.join(", ")),
-        "rename them in config.toml",
+        "rename or remove them in config.toml",
     )
 }
 

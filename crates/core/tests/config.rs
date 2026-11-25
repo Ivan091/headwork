@@ -148,6 +148,36 @@ fn deprecated_keys_load_and_are_named() {
 }
 
 #[test]
+fn heavy_keys_still_load_and_are_named_as_retired() {
+    let text = format!(
+        "{}\n[project.extra]\nmain = \"S:/x\"\nheavy_slots = 2\nheavy_gate = \"scripts/heavy.sh\"\n",
+        fixture("config.toml").replace("[project.me-sim]", "[project.me-sim]\nheavy_slots = 1")
+    );
+    let text = text.replace(
+        "[project.extra]\nmain = \"S:/x\"\n",
+        "[project.extra]\nmain = \"S:/x\"\n",
+    );
+    assert!(
+        Config::retired_keys(&fixture("config.toml")).is_empty(),
+        "the fixture is current"
+    );
+    let retired = Config::retired_keys(&text);
+    assert!(
+        retired.contains(&"project.me-sim.heavy_slots".to_owned()),
+        "{retired:?}"
+    );
+    assert!(
+        retired.contains(&"project.extra.heavy_slots".to_owned())
+            && retired.contains(&"project.extra.heavy_gate".to_owned()),
+        "{retired:?}"
+    );
+    assert!(
+        Config::retired_keys("not [toml").is_empty(),
+        "unparsable text"
+    );
+}
+
+#[test]
 fn unknown_keys_are_refused() {
     let error = Config::parse("[machine]\nhost = \"wmux\"\nmax_kids = 3\n", "typo").unwrap_err();
     assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
