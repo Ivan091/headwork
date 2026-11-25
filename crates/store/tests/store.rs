@@ -2217,7 +2217,9 @@ fn failed_worktree_removals_are_counted_and_forgotten() {
         0,
         "none yet"
     );
-    store.record_removal_failure(task.id, "locked", Actor::User).unwrap();
+    store
+        .record_removal_failure(task.id, "locked", Actor::User)
+        .unwrap();
     store
         .record_removal_failure(task.id, "Permission denied", Actor::User)
         .unwrap();
@@ -2238,7 +2240,9 @@ fn failed_worktree_removals_are_counted_and_forgotten() {
         0,
         "cleared"
     );
-    store.record_removal_failure(task.id, "again", Actor::User).unwrap();
+    store
+        .record_removal_failure(task.id, "again", Actor::User)
+        .unwrap();
     store
         .record_worktree(task.id, "S:/w/sand", "sand", Actor::User)
         .unwrap();
@@ -2271,8 +2275,14 @@ fn a_refusal_is_logged_and_counted_on_the_newest_worktree_only() {
         .iter()
         .any(|event| event.kind == "worktree-refused");
     assert!(logged, "the refusal is an event of the same call");
-    assert_eq!(store.removal_attempts(task.id).unwrap().failures, 1, "counted");
-    store.set_worktree_state(task.id, "kept", Actor::User).unwrap();
+    assert_eq!(
+        store.removal_attempts(task.id).unwrap().failures,
+        1,
+        "counted"
+    );
+    store
+        .set_worktree_state(task.id, "kept", Actor::User)
+        .unwrap();
     assert_eq!(
         store.removal_attempts(task.id).unwrap().failures,
         0,

@@ -652,7 +652,7 @@ fn closing_one_of_two_panes_keeps_the_workspace() {
 }
 
 #[test]
-fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
+fn a_dirty_worktree_keeps_the_task_closing_until_its_failures_are_cleared() {
     let mut w = world(10);
     let (task, _) = spawn_task(&mut w, "sand", false, false);
     let worktree = w.dir.path().join("demo-sand");
@@ -676,7 +676,7 @@ fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
     assert_eq!(
         waiting.first().unwrap().state,
         TaskState::Closing,
-        "the removal backs off after its failure: {waiting:?}"
+        "a lasting refusal waits for the answer: {waiting:?}"
     );
     assert_eq!(
         w.store
@@ -689,7 +689,7 @@ fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
             .filter(|e| e.kind == "worktree-refused")
             .count(),
         1,
-        "the backoff made no second attempt"
+        "no second attempt while it waits"
     );
     w.store.clear_removal_attempts(task.id).unwrap();
     let reaped = reap(&mut w.store, &env).unwrap();
@@ -698,6 +698,56 @@ fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
         TaskState::Closed,
         "{reaped:?}"
     );
+}
+
+#[test]
+fn a_transient_removal_failure_backs_off_through_close() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let worktree = w.dir.path().join("demo-sand");
+    w.store
+        .record_removal_failure(task.id, "error: Permission denied", Actor::User)
+        .unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "{report:?}");
+    assert!(
+        report.pending.as_deref().unwrap().contains("next try in"),
+        "{report:?}"
+    );
+    assert!(worktree.exists(), "no attempt while backing off");
+    assert_eq!(
+        event_kinds(&w.store, &task)
+            .iter()
+            .filter(|k| *k == "worktree-refused")
+            .count(),
+        1,
+        "only the seeded refusal"
+    );
+    w.store.clear_removal_attempts(task.id).unwrap();
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+}
+
+#[test]
+fn a_remove_command_that_says_not_a_working_tree_is_not_retried_as_a_refusal() {
+    let mut w = world_removing(10, "echo fatal: x is not a working tree >&2; exit 1");
+    let (task, _) = spawn_task(&mut w, "sand", false, false);
+    let worktree = w.dir.path().join("demo-sand");
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "{report:?}");
+    assert!(
+        worktree.exists(),
+        "a folder with files is left for the user"
+    );
+    let error = w
+        .store
+        .removal_attempts(task.id)
+        .unwrap()
+        .last_error
+        .unwrap();
+    assert!(error.contains("remove it by hand"), "{error}");
 }
 
 #[test]

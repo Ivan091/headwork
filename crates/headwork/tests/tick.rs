@@ -905,11 +905,6 @@ fn dirty_closing(w: &mut World, slug: &str) -> (Task, PathBuf) {
     let task = closing_with(w, slug, FAKE_PID_BASE);
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
     std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
-    for _ in 0..6 {
-        w.store
-            .record_removal_failure(task.id, "refused to lose changes")
-            .unwrap();
-    }
     (task, dir)
 }
 
@@ -943,14 +938,18 @@ fn a_transient_removal_failure_backs_off_without_asking() {
     let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
     w.store
-        .record_removal_failure(task.id, "error: failed to delete 'sand': Permission denied")
+        .record_removal_failure(
+            task.id,
+            "error: failed to delete 'sand': Permission denied",
+            Actor::Tick,
+        )
         .unwrap();
     run_tick(&mut w);
     run_tick(&mut w);
     assert_eq!(
         count(&w, "worktree-refused"),
-        0,
-        "no attempt inside the first minute"
+        1,
+        "no attempt inside the first minute, only the seeded refusal"
     );
     assert!(
         w.store.topic_ask(task.id, "worktree").unwrap().is_none(),
@@ -993,6 +992,40 @@ fn answering_delete_removes_the_dirty_worktree_and_closes() {
     run_tick(&mut w);
     assert!(!dir.exists(), "deleted");
     assert_eq!(state(&w, &task), TaskState::Closed, "closed");
+    assert_eq!(
+        w.store.removal_attempts(task.id).unwrap().failures,
+        0,
+        "the answer cleared the failures"
+    );
+}
+
+#[test]
+fn a_failed_delete_asks_once_more_and_says_delete_was_tried() {
+    let mut w = world();
+    let (task, _) = dirty_closing(&mut w, "sand");
+    run_tick(&mut w);
+    let ask = w.store.topic_ask(task.id, "worktree").unwrap().unwrap();
+    w.store
+        .answer_ask(ask.id, DELETE_WORKTREE, Actor::User)
+        .unwrap();
+    w.store.set_ask_topic(ask.id, "worktree-handled").unwrap();
+    w.store
+        .record_removal_failure(task.id, "boom", Actor::Tick)
+        .unwrap();
+    let opened = count(&w, "ask-opened");
+    run_tick(&mut w);
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(
+        count(&w, "ask-opened"),
+        opened + 1,
+        "one more ask, not one per tick"
+    );
+    assert!(
+        notified(&w, "was tried and failed: boom"),
+        "{:?}",
+        w.host.calls()
+    );
 }
 
 #[test]
@@ -1569,11 +1602,6 @@ fn dropped_dirty(w: &mut World, slug: &str) -> (Task, PathBuf) {
         .unwrap();
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
     std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
-    for _ in 0..6 {
-        w.store
-            .record_removal_failure(task.id, "refused to lose changes")
-            .unwrap();
-    }
     (task, dir)
 }
 
