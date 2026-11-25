@@ -13,7 +13,7 @@ pub mod stop;
 use serde::Serialize;
 
 use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
-use grants::{GrantedGit, granted_git};
+use grants::{ForceKind, GrantedGit, PushForm, classify_push, granted_git};
 pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
 
@@ -229,6 +229,8 @@ pub struct Scope {
     pub allowed_repos: Vec<String>,
     /// The branch checked out in the session's folder.
     pub branch: Option<String>,
+    /// The branch the store records for the task's worktree; `branch` stands in when none is recorded.
+    pub task_branch: Option<String>,
     /// The branches that count as default.
     pub default_branches: Vec<String>,
     /// Git remotes of the session's folder: name and `owner/name`.
@@ -712,13 +714,9 @@ fn is_git_write(sub: &str, args: &[String]) -> bool {
 }
 
 fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
-    let positional: Vec<&str> = args
-        .iter()
-        .map(String::as_str)
-        .filter(|arg| !arg.starts_with('-'))
-        .collect();
-    let remote = positional.first().copied().unwrap_or("origin");
-    let refspecs = positional.get(1..).unwrap_or_default();
+    let form = classify_push(args);
+    let remote = form.positional.first().copied().unwrap_or("origin");
+    let refspecs = form.positional.get(1..).unwrap_or_default();
     let targets_default = refspecs.iter().any(|spec| {
         let target = spec.rsplit(':').next().unwrap_or(spec);
         let target = target
@@ -732,7 +730,7 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
             "never push to the default branch: push your task branch and open a pull request",
         );
     }
-    if let Some(denied) = check_forced_push(scope, args, refspecs) {
+    if let Some(denied) = check_forced_push(scope, &form) {
         return denied;
     }
     if scope.allowed_repos.is_empty() {
@@ -765,44 +763,38 @@ fn check_push(scope: &Scope, args: &[String], on_default: bool) -> Decision {
 }
 
 /// A push that rewrites a remote branch: a plain force or a `+refspec` is refused; `--force-with-lease` and
-/// `--force-if-includes` are allowed only to the task's own branch.
-fn check_forced_push(scope: &Scope, args: &[String], refspecs: &[&str]) -> Option<Decision> {
-    let plain = args.iter().any(|arg| {
-        arg == "--force"
-            || (!arg.starts_with("--")
-                && arg.starts_with('-')
-                && arg.get(1..).is_some_and(|letters| letters.contains('f')))
-    }) || refspecs.iter().any(|spec| spec.starts_with('+'));
-    if plain {
-        return Some(Decision::deny(
-            RuleId::WorkerForcePush,
-            "a plain force push is refused: after a rebase use `git push --force-with-lease` to your own task branch",
-        ));
+/// `--force-if-includes` are allowed only to the task's own branch, never with `--all`, `--mirror`, `--tags` or `--prune`.
+fn check_forced_push(scope: &Scope, form: &PushForm<'_>) -> Option<Decision> {
+    match form.force {
+        ForceKind::None => return None,
+        ForceKind::Plain => {
+            return Some(Decision::deny(
+                RuleId::WorkerForcePush,
+                "a plain force push is refused: after a rebase use `git push --force-with-lease` to your own task branch",
+            ));
+        }
+        ForceKind::Lease => {}
     }
-    let lease = args.iter().any(|arg| {
-        arg == "--force-if-includes"
-            || arg == "--force-with-lease"
-            || arg.starts_with("--force-with-lease=")
-    });
-    if !lease {
-        return None;
-    }
-    let own = scope.branch.as_deref();
-    let only_own = if refspecs.is_empty() {
-        own.is_some()
-    } else {
-        refspecs.iter().all(|spec| {
-            let target = spec.rsplit(':').next().unwrap_or(spec);
-            let target = target.trim_start_matches("refs/heads/");
-            Some(target) == own || (target == "HEAD" && own.is_some())
-        })
-    };
+    let own = scope.task_branch.as_deref().or(scope.branch.as_deref());
+    let checked_out_is_own = own.is_some() && scope.branch.as_deref() == own;
+    let refspecs = form.positional.get(1..).unwrap_or_default();
+    let only_own = !form.wide
+        && if refspecs.is_empty() {
+            checked_out_is_own
+        } else {
+            refspecs.iter().all(|spec| {
+                let target = spec.rsplit(':').next().unwrap_or(spec);
+                let target = target.trim_start_matches("refs/heads/");
+                (target == "HEAD" && checked_out_is_own)
+                    || (target != "HEAD" && Some(target) == own)
+            })
+        };
     if only_own {
         None
     } else {
         Some(Decision::deny(
             RuleId::WorkerForcePush,
-            "`--force-with-lease` is for your own task branch only",
+            "`--force-with-lease` is for your own task branch only, one branch at a time",
         ))
     }
 }

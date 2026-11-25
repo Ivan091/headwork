@@ -46,16 +46,67 @@ const COMMIT_WIDE: &[&str] = &[
     "-p",
 ];
 
-/// `git push` options that force, delete or push more than the branch.
-const PUSH_WIDE: &[&str] = &[
-    "--force",
-    "--force-with-lease",
-    "--force-if-includes",
-    "--delete",
-    "--mirror",
-    "--all",
-    "--prune",
-];
+/// `git push` options that delete or push more than the current branch.
+const PUSH_WIDE: &[&str] = &["--delete", "--mirror", "--all", "--prune", "--tags"];
+
+/// How a `git push` forces the remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ForceKind {
+    /// No force.
+    None,
+    /// `--force-with-lease` or `--force-if-includes`, without a plain force.
+    Lease,
+    /// `--force`, `-f` (also inside a group of short flags) or a `+refspec`.
+    Plain,
+}
+
+/// What a `git push` command line asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PushForm<'a> {
+    /// How it forces.
+    pub force: ForceKind,
+    /// It deletes or pushes more than one branch (`--all`, `--mirror`, `--tags`, `--prune`, `--delete`, `-d`).
+    pub wide: bool,
+    /// The remote and then the refspecs, as written.
+    pub positional: Vec<&'a str>,
+}
+
+/// Reads a `git push` command line once for every rule that looks at it.
+pub(super) fn classify_push(args: &[String]) -> PushForm<'_> {
+    let mut plain = false;
+    let mut lease = false;
+    let mut wide = false;
+    let mut positional = Vec::new();
+    for word in args {
+        let name = word.split('=').next().unwrap_or(word);
+        if let Some(letters) = word
+            .strip_prefix('-')
+            .filter(|letters| !letters.starts_with('-'))
+        {
+            plain |= letters.contains('f');
+            wide |= letters.contains('d');
+        } else if word.starts_with('-') {
+            plain |= name == "--force";
+            lease |= matches!(name, "--force-with-lease" | "--force-if-includes");
+            wide |= PUSH_WIDE.contains(&name);
+        } else {
+            plain |= word.starts_with('+');
+            positional.push(word.as_str());
+        }
+    }
+    let force = if plain {
+        ForceKind::Plain
+    } else if lease {
+        ForceKind::Lease
+    } else {
+        ForceKind::None
+    };
+    PushForm {
+        force,
+        wide,
+        positional,
+    }
+}
 
 /// The paths a brief lists on its `Writes:` lines, as written: each word after the mark, without backticks, quotes and
 /// trailing punctuation. A line may start with a list marker.
@@ -237,19 +288,13 @@ fn within_grants(
 
 /// A push without force, deletion or a mirror.
 fn check_push(args: &[String]) -> Result<(), String> {
-    for word in args {
-        let name = word.split('=').next().unwrap_or(word);
-        let short_force = word
-            .strip_prefix('-')
-            .filter(|letters| !letters.starts_with('-'))
-            .is_some_and(|letters| letters.contains(['f', 'd']));
-        let forced_refspec =
-            !word.starts_with('-') && (word.starts_with('+') || word.starts_with(':'));
-        if PUSH_WIDE.contains(&name) || short_force || forced_refspec {
-            return Err(format!(
-                "`git push {word}` forces, deletes or pushes more than the branch"
-            ));
-        }
+    let form = classify_push(args);
+    let deletes = form.positional.iter().any(|word| word.starts_with(':'));
+    if form.force != ForceKind::None || form.wide || deletes {
+        return Err(format!(
+            "`git push {}` forces, deletes or pushes more than the branch",
+            args.join(" ")
+        ));
     }
     Ok(())
 }

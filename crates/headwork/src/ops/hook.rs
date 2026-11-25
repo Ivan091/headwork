@@ -657,6 +657,12 @@ pub fn scope_for(
                 && command.contains("git")
             {
                 scope.branch = env.git.branch(cwd);
+                scope.task_branch = task
+                    .map(|task| store.worktree_of(task.id))
+                    .transpose()?
+                    .flatten()
+                    .map(|worktree| worktree.branch)
+                    .filter(|branch| !branch.is_empty());
                 if command.contains("push") {
                     scope.remotes = env.git.remotes(cwd);
                 }

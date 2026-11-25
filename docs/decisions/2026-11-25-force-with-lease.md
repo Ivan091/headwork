@@ -7,3 +7,8 @@ The guard had no rule against force pushes except to the default branch (`ask-pu
 rule), so the new rule `worker-force-push` makes the policy explicit: a plain `--force`, `-f` or `+refspec` is refused,
 and a lease (`--force-with-lease`, `--force-with-lease=<ref>`, `--force-if-includes`) is allowed only when every target
 is the branch checked out in the task's folder. Granted notes-repository pushes keep refusing every force form.
+
+A lease is compared with the branch the store records for the task's worktree (`Scope::task_branch`), and the branch
+checked out in the folder must be that branch for a lease with no refspec or `HEAD`; where nothing is recorded the
+checked-out branch stands in. A lease with `--all`, `--mirror`, `--tags`, `--prune` or `--delete` is refused, since it
+rewrites more than one branch. `grants.rs` and the guard share one push classifier (`classify_push`).
