@@ -19,6 +19,7 @@ pub mod launch;
 pub mod launchd;
 pub mod lost;
 pub mod mcp;
+pub mod migrate;
 pub mod park;
 pub mod place;
 pub mod prs;

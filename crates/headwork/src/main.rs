@@ -301,6 +301,12 @@ enum Command {
         #[command(subcommand)]
         action: FlowAction,
     },
+    /// Migration notes: what a change asks of this machine, read from each repository's default branch on GitHub
+    /// (`docs/migrations.md`).
+    Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
     /// The effective config generated from the shared, machine and local layers (`docs/config-sync.md`).
     Config {
         #[command(subcommand)]
@@ -478,6 +484,62 @@ enum FlowAction {
     Check {
         /// One flow's name; every flow when absent.
         name: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// What `migrate` does.
+#[derive(Debug, Subcommand)]
+enum MigrateAction {
+    /// The notes of every configured repository: pending, applied, skipped, not applicable.
+    List {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Read the refs fetched before; touch no network.
+        #[arg(long)]
+        no_fetch: bool,
+    },
+    /// One note in full.
+    Show {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a note: its check, then its steps in order. Stops at the first confirm step (exit 3) or user step (exit 4)
+    /// and prints what to ask; exit 1 when a step fails.
+    Apply {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// Go on from this step (0 is the pull before the steps), skipping the check.
+        #[arg(long)]
+        from: Option<usize>,
+        /// The user agreed to the step `--from` names, or did it.
+        #[arg(long, requires = "from")]
+        confirmed: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record a note as applied or skipped without running it.
+    Mark {
+        /// `<repo>/<id>`, or the id when only one repository has it.
+        note: String,
+        /// `applied` or `skipped`.
+        #[arg(value_parser = ["applied", "skipped"])]
+        state: String,
+        /// Why.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Validate the notes in `<path>/migrations/` (the working tree), for gates. Exits 1 on a problem.
+    Check {
+        /// The repository folder; the current folder when absent.
+        path: Option<PathBuf>,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -739,6 +801,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         Command::Flow {
             action: FlowAction::Check { name, json },
         } => return flow_check_command(name.as_deref(), json, out),
+        Command::Migrate { action } => return migrate_command(action, out),
         Command::Config { action } => return config_command(action, out),
         Command::Orchestrator {
             name,
@@ -904,6 +967,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Dash { .. }
         | Command::Flow { .. }
         | Command::Config { .. }
+        | Command::Migrate { .. }
         | Command::Orchestrator { .. }
         | Command::Hook { .. }
         | Command::Mcp { .. }
@@ -2233,6 +2297,76 @@ fn orchestrator_command(home: &Home, start: &OrchestratorStart) -> Result<ExitCo
     let code = launch_orchestrator(home, start)?;
     let code = code.and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+fn migrate_command(action: MigrateAction, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::migrate::{self as notes, ApplyOptions};
+    use headwork_core::migrate::Settled;
+    if let MigrateAction::Check { path, json } = action {
+        let dir = path.unwrap_or_else(|| PathBuf::from("."));
+        let checked = notes::check(&dir)?;
+        if json {
+            json_out(out, &checked)?;
+        } else {
+            write!(out, "{checked}")?;
+        }
+        return Ok(if checked.problems.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+    let home = Home::locate()?;
+    let config = home.load_config()?;
+    let mut store = home.open_store()?;
+    let actor = Identity::from_env().actor();
+    match action {
+        MigrateAction::List { json, no_fetch } => {
+            let report = notes::report(&store, &home, &config, !no_fetch)?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                write!(out, "{report}")?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        MigrateAction::Show { note, json } => {
+            let report = notes::report(&store, &home, &config, false)?;
+            let entry = report.find(&note)?;
+            if json {
+                json_out(out, entry)?;
+            } else {
+                write!(out, "{}", notes::describe(entry, &home, &config))?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        MigrateAction::Apply {
+            note,
+            from,
+            confirmed,
+            json,
+        } => {
+            let options = ApplyOptions { from, confirmed };
+            let outcome = notes::apply(&mut store, &home, &config, &note, options, actor)?;
+            if json {
+                json_out(out, &outcome)?;
+            } else {
+                write!(out, "{outcome}")?;
+            }
+            Ok(ExitCode::from(outcome.exit_code()))
+        }
+        MigrateAction::Mark {
+            note,
+            state,
+            reason,
+        } => {
+            let state = Settled::parse(&state).context("state is `applied` or `skipped`")?;
+            let said = notes::mark(&mut store, &home, &config, &note, state, &reason, actor)?;
+            writeln!(out, "{said}")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        MigrateAction::Check { .. } => Ok(ExitCode::SUCCESS),
+    }
 }
 
 #[cfg(test)]
