@@ -8,6 +8,7 @@ mod error;
 mod graph;
 mod hooks;
 mod migrate;
+mod migrations;
 mod park;
 mod queries;
 mod queue;
@@ -32,6 +33,7 @@ pub use hooks::{
     EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
 };
 pub use migrate::{MIGRATIONS, migrate};
+pub use migrations::{EVENT_MIGRATION_APPLIED, EVENT_MIGRATION_SKIPPED, MigrationRow};
 pub use park::{JobRow, NewJob, NewRecap, ParkRow, RecapRow};
 pub use queries::{EVENT_FLAGS_SET, EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
 pub use queue::AdoptTask;
