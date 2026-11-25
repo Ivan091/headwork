@@ -592,6 +592,59 @@ fn a_local_edit_the_pull_would_overwrite_fails_the_sync_and_keeps_both() {
 }
 
 #[test]
+fn a_source_that_differs_only_in_line_endings_does_not_stop_the_pull() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    let shared = other.path().join("headwork").join("config.toml");
+    let original = std::fs::read_to_string(&shared)
+        .unwrap()
+        .replace("\r\n", "\n");
+    push_from(
+        other.path(),
+        "headwork/config.toml",
+        &format!("{original}\n"),
+    );
+    let local = synced.repo.path().join("headwork").join("config.toml");
+    std::fs::write(&local, original.replace('\n', "\r\n")).unwrap();
+    std::fs::write(synced.repo.path().join("CLAUDE.md"), "wmux block edited\n").unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(synced.repo.path().join("CLAUDE.md")).unwrap(),
+        "wmux block edited\n"
+    );
+}
+
+#[test]
+fn a_real_edit_of_a_shared_file_still_fails_the_sync_and_keeps_the_config() {
+    let synced = adopted();
+    let (_origin, other) = with_origin(&synced);
+    let shared = other.path().join("headwork").join("config.toml");
+    let original = std::fs::read_to_string(&shared)
+        .unwrap()
+        .replace("\r\n", "\n");
+    push_from(
+        other.path(),
+        "headwork/config.toml",
+        &format!("{original}\n"),
+    );
+    let local = synced.repo.path().join("headwork").join("config.toml");
+    let edited = format!("{}\r\nextra = 1\r\n", original.replace('\n', "\r\n"));
+    std::fs::write(&local, &edited).unwrap();
+    let before = std::fs::read_to_string(synced.config()).unwrap();
+    let output = synced.run(&["config", "sync"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), edited);
+}
+
+#[test]
 fn a_diverged_branch_fails_the_sync_with_the_merge_error() {
     let synced = adopted();
     let (_origin, other) = with_origin(&synced);

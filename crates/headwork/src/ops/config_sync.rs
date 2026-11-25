@@ -149,18 +149,24 @@ pub struct Candidate {
     pub config: Config,
 }
 
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 fn read_source(path: &Path) -> Result<String, Problem> {
-    std::fs::read_to_string(path).map_err(|error| {
-        Problem::new(
-            ProblemKind::Source,
-            format!("{}: cannot be read: {error}", slashed(path)),
-        )
-    })
+    std::fs::read_to_string(path)
+        .map(|text| lf(&text))
+        .map_err(|error| {
+            Problem::new(
+                ProblemKind::Source,
+                format!("{}: cannot be read: {error}", slashed(path)),
+            )
+        })
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>, Problem> {
     match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
+        Ok(text) => Ok(Some(lf(&text))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(Problem::new(
             ProblemKind::Source,
@@ -297,9 +303,34 @@ fn git_ok(repo: &Path, args: &[&str]) -> Result<String, String> {
 /// `@{upstream}` with `--ff-only`, which leaves unrelated local changes alone and refuses, with git's own message,
 /// a merge that would overwrite one. It never stashes, so no local edit leaves the working tree. A failure leaves
 /// `config.toml` untouched.
-fn pull(repo: &Path) -> Result<String, String> {
+fn pull(layout: &Layout) -> Result<String, String> {
+    let repo = layout.repo.as_path();
     git_ok(repo, &["fetch", "--quiet"])?;
+    for file in [&layout.shared_file, &layout.machine_file] {
+        restore_if_only_eol_differs(repo, file)?;
+    }
     git_ok(repo, &["merge", "--ff-only", "--quiet", "@{upstream}"])
+}
+
+/// Checks out `HEAD`'s version of one source file when the working copy differs from it only in line endings, so a
+/// merge never refuses over a CRLF checkout. A file with any other difference is left alone.
+fn restore_if_only_eol_differs(repo: &Path, file: &Path) -> Result<(), String> {
+    let Ok(relative) = file.strip_prefix(repo) else {
+        return Ok(());
+    };
+    let name = relative
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let Ok(local) = std::fs::read_to_string(file) else {
+        return Ok(());
+    };
+    let Ok(head) = git_ok(repo, &["show", &format!("HEAD:{name}")]) else {
+        return Ok(());
+    };
+    if lf(&local).trim_end() == lf(&head).trim_end() && local.trim_end() != head.trim_end() {
+        git_ok(repo, &["checkout", "HEAD", "--", &name])?;
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -704,7 +735,7 @@ fn run_sync(
         diff: Vec::new(),
     };
     if options.pull {
-        match pull(&layout.repo) {
+        match pull(layout) {
             Ok(printed) => report.pulled = Some(printed),
             Err(message) => {
                 return Ok(SyncReport::failure(
@@ -1078,9 +1109,9 @@ fn kept_or_split(file: &Path, split: &Table, force: bool) -> Result<(String, boo
     if file.exists() && !force {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        return Ok((text, true));
+        return Ok((lf(&text), true));
     }
-    Ok((render(split)?, false))
+    Ok((lf(&render(split)?), false))
 }
 
 /// Splits the live `config.toml` into shared, machine and local files, checks that merging them reproduces it, and
@@ -1107,7 +1138,7 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     let (shared, shared_kept) = kept_or_split(&layout.shared_file, &parts.shared, options.force)?;
     let (machine, machine_kept) =
         kept_or_split(&layout.machine_file, &parts.machine, options.force)?;
-    let local = render(&parts.local)?;
+    let local = lf(&render(&parts.local)?);
     let shared_name = slashed(&layout.shared_file);
     let machine_name = slashed(&layout.machine_file);
     let local_name = slashed(&layout.local_file);
