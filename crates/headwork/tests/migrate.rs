@@ -228,7 +228,10 @@ fn a_step_that_names_the_machine_needs_a_name_when_there_is_no_sources_file() {
     let machine = Machine::new();
     std::fs::write(
         machine.origin.join("migrations/named.toml"),
-        "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"test {machine} = pc\"\n",
+        format!(
+            "id = \"named\"\ntitle = \"Named\"\ncheck = \"false\"\n\n[[step]]\nkind = \"agent\"\nrun = \"test {} = pc\"\n",
+            headwork_core::migrate::MACHINE_PLACEHOLDER
+        ),
     )
     .unwrap();
     git(&machine.origin, &["add", "."]);

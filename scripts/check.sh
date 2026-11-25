@@ -32,6 +32,20 @@ fi
 step "untangle tests"
 node dash/untangle.test.js
 
+step "migration notes"
+bash scripts/test-migration-line.sh
+cargo run -q --locked -p headwork -- migrate check .
+if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+  body_file=$(mktemp)
+  changed_file=$(mktemp)
+  node scripts/pr-body.js > "$body_file"
+  git diff --name-only "origin/${GITHUB_BASE_REF:-master}...HEAD" > "$changed_file"
+  bash scripts/migration-line.sh "$body_file" "$changed_file"
+  rm -f "$body_file" "$changed_file"
+else
+  printf 'not a pull request run: the Migration: line of the body is checked in the pull request gate\n'
+fi
+
 step "line length"
 long=$(git ls-files -- ':!docs/' '*.rs' '*.sh' '*.toml' '*.sql' '*.yml' | xargs awk 'length > 140 { print FILENAME ":" FNR }')
 if [[ -n "$long" ]]; then
