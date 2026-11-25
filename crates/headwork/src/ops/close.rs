@@ -25,6 +25,7 @@ use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, CloseGo, FinishFacts, MergeSource, PrEnd, Trigger,
     WorktreeEnd,
 };
+use headwork_core::removal::{RemovalDecision, decide};
 use headwork_core::{Actor, Config, JobState, SessionState, TaskShape, TaskState};
 use headwork_store::{SessionRow, Store, StoreError, Task, TaskId, UsageTotal, WorktreeRow};
 use serde::Serialize;
@@ -571,6 +572,9 @@ fn finish_claimed(
         store.end_task_sessions(id, env.actor)?;
         super::reap::end_task_leftovers(store, env, id, &task.name.to_string())?;
         super::helpers::remove_all(store, env, id)?;
+        if let Some(waiting) = removal_waiting(store, id)?.filter(|_| !force) {
+            return report(store, id, Some(waiting));
+        }
         let end = remove_worktree(store, env, id, false)?;
         if force && end == WorktreeEnd::Present {
             keep_worktree(store, env, id)?
@@ -748,6 +752,9 @@ pub(super) fn remove_worktree(
         delete_empty_branch(store, env, &task, &worktree.branch)?;
         return Ok(WorktreeEnd::Removed);
     }
+    if !force && removal_waiting(store, id)?.is_some() {
+        return Ok(WorktreeEnd::Present);
+    }
     let branches = task_branches(&worktree);
     let main = slashed(&env.main_path(&task)?);
     let vars = TaskVars {
@@ -784,6 +791,13 @@ pub(super) fn remove_worktree(
         delete_empty_branches(store, env, &task, &branches)?;
         return Ok(WorktreeEnd::Removed);
     };
+    if is_not_a_worktree(&error) {
+        let end = remove_stray_folder(store, env, id, &worktree.path)?;
+        if matches!(end, WorktreeEnd::Removed) {
+            delete_empty_branches(store, env, &task, &branches)?;
+        }
+        return Ok(end);
+    }
     let script = matches!(command, WorktreeCommand::Command(_));
     if script && worktrees.remove_if_pristine(&vars)? && !Path::new(&worktree.path).exists() {
         store.append_event(
@@ -797,6 +811,18 @@ pub(super) fn remove_worktree(
         delete_empty_branches(store, env, &task, &branches)?;
         return Ok(WorktreeEnd::Removed);
     }
+    refuse_removal(store, env, id, &error)?;
+    Ok(WorktreeEnd::Present)
+}
+
+/// Whether a remove command's error says git does not know the folder as a worktree.
+fn is_not_a_worktree(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("is not a worktree") || error.contains("is not a working tree")
+}
+
+/// Logs a refused removal and counts it, so the next attempt backs off.
+fn refuse_removal(store: &mut Store, env: &Env<'_>, id: TaskId, error: &str) -> Result<()> {
     store.append_event(
         env.actor,
         Some(id),
@@ -804,7 +830,37 @@ pub(super) fn remove_worktree(
         "worktree-refused",
         &serde_json::json!({ "error": error }),
     )?;
-    Ok(WorktreeEnd::Present)
+    store.record_removal_failure(id, error)?;
+    Ok(())
+}
+
+/// Why the task's worktree is not tried again yet: an earlier removal failed and is backing off, or failed so often
+/// that only the user's keep-or-delete answer moves it on. `None` when a removal may run now, and for a worktree that
+/// is not present or whose folder is gone, which need no removal.
+pub(super) fn removal_waiting(store: &Store, id: TaskId) -> Result<Option<String>> {
+    let Some(worktree) = store.worktree_of(id)? else {
+        return Ok(None);
+    };
+    if worktree.state != "present" || !Path::new(&worktree.path).exists() {
+        return Ok(None);
+    }
+    let attempts = store.removal_attempts(id)?;
+    if attempts.failures == 0 {
+        return Ok(None);
+    }
+    let error = attempts.last_error.unwrap_or_default();
+    let since = attempts.since_last_s.unwrap_or(u64::MAX);
+    Ok(match decide(attempts.failures, since) {
+        RemovalDecision::Try => None,
+        RemovalDecision::Wait { remaining_s } => Some(format!(
+            "removing the worktree failed {} times; next try in {remaining_s} s: {error}",
+            attempts.failures
+        )),
+        RemovalDecision::Ask => Some(format!(
+            "removing the worktree failed {} times; waiting for the keep-or-delete answer: {error}",
+            attempts.failures
+        )),
+    })
 }
 
 /// Ends a task's folder that git no longer counts as a worktree: an empty one is deleted and recorded `removed`, one
@@ -825,13 +881,7 @@ fn remove_stray_folder(
     let error = format!(
         "{path} is not a worktree of the repository and still holds files; remove it by hand"
     );
-    store.append_event(
-        env.actor,
-        Some(id),
-        None,
-        "worktree-refused",
-        &serde_json::json!({ "error": error }),
-    )?;
+    refuse_removal(store, env, id, &error)?;
     Ok(WorktreeEnd::Present)
 }
 

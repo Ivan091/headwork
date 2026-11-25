@@ -19,7 +19,7 @@ pub struct Place<'a> {
 
 use crate::park::{identity, identity_columns};
 use crate::queries::insert_event;
-use crate::records::{SessionRow, TaskId, WorktreeRow};
+use crate::records::{RemovalAttempts, SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
 
 const SESSION_COLUMNS: &str = "id, state, rc_name, host_workspace, host_surface, launcher_pid, claude_pid, last_event_at, exit_code, \
@@ -681,7 +681,7 @@ impl Store {
         tx.execute(
             "INSERT INTO worktrees (task_id, path, branch, state) VALUES (?1, ?2, ?3, 'present')
              ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present',
-               helper = 0",
+               helper = 0, removal_failures = 0, removal_last_at = NULL, removal_last_error = NULL",
             params![task.0, path, branch],
         )?;
         let data = serde_json::json!({ "path": path, "branch": branch });
@@ -737,6 +737,67 @@ impl Store {
             &serde_json::json!({ "state": state }),
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// How often removing a task's worktree failed, how long ago the last attempt was and what it said.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn removal_attempts(&self, task: TaskId) -> Result<RemovalAttempts, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT removal_failures, removal_last_error,
+                        CAST(strftime('%s', 'now') AS INTEGER) - removal_last_at
+                 FROM worktrees WHERE task_id = ?1 AND helper = 0 ORDER BY id DESC LIMIT 1",
+                params![task.0],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((failures, last_error, since)) = row else {
+            return Ok(RemovalAttempts::default());
+        };
+        Ok(RemovalAttempts {
+            failures: u32::try_from(failures).map_err(|_| StoreError::OutOfRange(failures))?,
+            since_last_s: since.map(|n| u64::try_from(n).unwrap_or(0)),
+            last_error,
+        })
+    }
+
+    /// Records a failed removal of a task's worktree: one more failure, now, with the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_removal_failure(&mut self, task: TaskId, error: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE worktrees SET removal_failures = removal_failures + 1,
+               removal_last_at = CAST(strftime('%s', 'now') AS INTEGER), removal_last_error = ?2
+             WHERE task_id = ?1 AND helper = 0",
+            params![task.0, error],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the failed removals of a task's worktree, so the next attempt runs at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn clear_removal_attempts(&mut self, task: TaskId) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE worktrees SET removal_failures = 0, removal_last_at = NULL, removal_last_error = NULL
+             WHERE task_id = ?1 AND helper = 0",
+            params![task.0],
+        )?;
         Ok(())
     }
 

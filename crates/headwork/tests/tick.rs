@@ -905,7 +905,36 @@ fn dirty_closing(w: &mut World, slug: &str) -> (Task, PathBuf) {
     let task = closing_with(w, slug, FAKE_PID_BASE);
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
     std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
+    for _ in 0..6 {
+        w.store
+            .record_removal_failure(task.id, "refused to lose changes")
+            .unwrap();
+    }
     (task, dir)
+}
+
+#[test]
+fn a_worktree_that_failed_once_backs_off_without_asking_or_refusing_again() {
+    let mut w = world();
+    let task = closing_with(&mut w, "sand", FAKE_PID_BASE);
+    let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
+    std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
+    run_tick(&mut w);
+    assert_eq!(count(&w, "worktree-refused"), 1, "one refusal");
+    let refused = count(&w, "refused");
+    assert!(
+        w.store.topic_ask(task.id, "worktree").unwrap().is_none(),
+        "no ask yet"
+    );
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(
+        count(&w, "worktree-refused"),
+        1,
+        "no second attempt while backing off"
+    );
+    assert_eq!(count(&w, "refused"), refused, "no transition refusal again");
+    assert!(dir.exists(), "nothing deleted");
 }
 
 #[test]
@@ -1518,6 +1547,11 @@ fn dropped_dirty(w: &mut World, slug: &str) -> (Task, PathBuf) {
         .unwrap();
     let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
     std::fs::write(dir.join("scratch.txt"), "unsaved").unwrap();
+    for _ in 0..6 {
+        w.store
+            .record_removal_failure(task.id, "refused to lose changes")
+            .unwrap();
+    }
     (task, dir)
 }
 

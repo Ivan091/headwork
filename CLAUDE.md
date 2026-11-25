@@ -60,6 +60,9 @@ them excluded); `orchestrator_writable` gives it the edits there. A worker may w
 when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ path, kinds }]` for its task kind, and
 under `[hooks] brief_writable` the files its brief lists on a `Writes:` line; in their repository it may then `add`,
 `rm`, `commit`, `push` (no force) and `pull` those paths only, whatever the branch.
+A failed worktree removal (close, tick and clean alike) backs off 1, 2, 4 ... up to 60 minutes (`core/src/removal.rs`, counts
+in `worktrees`, migration 0023); after 6 failures the tick asks keep or delete and retries nothing until it is answered, and
+a close still backing off skips its transition (`docs/decisions/2026-11-25-worktree-removal-backoff.md`).
 `headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with

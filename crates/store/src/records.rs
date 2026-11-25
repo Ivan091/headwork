@@ -272,6 +272,17 @@ pub struct EventRecord {
     pub data: serde_json::Value,
 }
 
+/// The failed attempts to remove a task's worktree.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemovalAttempts {
+    /// Failed attempts so far.
+    pub failures: u32,
+    /// Seconds since the last failed attempt, if there was one.
+    pub since_last_s: Option<u64>,
+    /// What the last failed attempt said.
+    pub last_error: Option<String>,
+}
+
 /// A task's worktree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorktreeRow {

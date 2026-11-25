@@ -17,6 +17,7 @@ pub mod names;
 pub mod platform;
 pub mod process;
 pub mod reap;
+pub mod removal;
 pub mod review;
 pub mod slots;
 pub mod update;

@@ -672,6 +672,26 @@ fn a_dirty_worktree_keeps_the_task_closing_until_it_can_go() {
         "logged"
     );
     std::fs::remove_file(worktree.join("work.txt")).unwrap();
+    let waiting = reap(&mut w.store, &env).unwrap();
+    assert_eq!(
+        waiting.first().unwrap().state,
+        TaskState::Closing,
+        "the removal backs off after its failure: {waiting:?}"
+    );
+    assert_eq!(
+        w.store
+            .events(EventFilter {
+                task: Some(task.id),
+                limit: 200
+            })
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "worktree-refused")
+            .count(),
+        1,
+        "the backoff made no second attempt"
+    );
+    w.store.clear_removal_attempts(task.id).unwrap();
     let reaped = reap(&mut w.store, &env).unwrap();
     assert_eq!(
         reaped.first().unwrap().state,

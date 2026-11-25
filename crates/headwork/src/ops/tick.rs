@@ -28,6 +28,7 @@ use super::session_procs;
 use super::spawn::{Pumped, pump};
 use super::update::{self as updates, Triggered, TriggeredBy, UpdateStarter};
 use super::{Env, slashed};
+use headwork_core::removal::ASK_AFTER_FAILURES;
 
 /// The topic of the ask about a worktree that cannot be removed.
 pub(super) const WORKTREE_TOPIC: &str = "worktree";
@@ -980,13 +981,20 @@ impl<'b> Run<'_, 'b> {
             .store
             .worktree_of(id)?
             .is_some_and(|w| w.state == "present" && Path::new(&w.path).exists());
-        if !present || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some() {
+        let attempts = self.store.removal_attempts(id)?;
+        if !present
+            || attempts.failures < ASK_AFTER_FAILURES
+            || self.store.topic_ask(id, WORKTREE_TOPIC)?.is_some()
+        {
             return Ok(());
         }
-        let name = self.name(id)?;
-        let question = format!(
-            "Keep or delete the worktree of {name}? It has changes the remove command refused to lose."
-        );
+        let path = self
+            .store
+            .worktree_of(id)?
+            .map(|w| w.path)
+            .unwrap_or_default();
+        let error = attempts.last_error.unwrap_or_default();
+        let question = format!("worktree {path} could not be removed: {error}; keep or delete?");
         let options = [KEEP_WORKTREE.to_owned(), DELETE_WORKTREE.to_owned()];
         let actor = self.actor();
         self.store

@@ -38,8 +38,8 @@ pub use park::{JobRow, NewJob, NewRecap, ParkRow, RecapRow};
 pub use queries::{EVENT_FLAGS_SET, EventFilter, FABLE_ALLOW, NewAsk, NewSession, NewTask};
 pub use queue::AdoptTask;
 pub use records::{
-    AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, SessionRow, Task, TaskId,
-    WorktreeRow,
+    AskId, AskRow, Board, BoardTask, EventRecord, PrRow, ProjectRow, RemovalAttempts, SessionRow,
+    Task, TaskId, WorktreeRow,
 };
 pub use reports::{AddedRule, EVENT_REPORT, NewPr, RecordedPr};
 pub use reviews::{
