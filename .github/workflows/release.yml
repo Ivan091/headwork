@@ -82,9 +82,14 @@ jobs:
             if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
               gh release upload "$TAG" dist/* --repo "$repo" --clobber || true
             else
-              gh release create "$TAG" dist/*                 --repo "$repo"                 --target "${{ github.sha }}"                 --title "headwork $TAG"                 --generate-notes || true
+              gh release create "$TAG" dist/* \
+                --repo "$repo" \
+                --target "${{ github.sha }}" \
+                --title "headwork $TAG" \
+                --generate-notes || true
             fi
-            have=$(gh release view "$TAG" --repo "$repo" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+            have=$(gh release view "$TAG" --repo "$repo" --json assets --jq '.assets | length' 2>/dev/null \
+              || echo 0)
             if [ "$have" -eq "$expected" ]; then
               exit 0
             fi
