@@ -430,12 +430,19 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "recap",
-        description: "Write down what you were doing, your next step and what is running. A park asks for it before a \
-                      restart; also write one when you stop for the day. It is handed back to you when you resume.",
+        description: "Write down everything a new session needs to carry on without this conversation: what was done \
+                      and what is left, the decisions you took and why, open questions and what waits on the user, the \
+                      exact next step, files, branches and pull requests, what runs and how to start it again, and the \
+                      user's standing constraints. A park asks for it before a restart; also write one when you stop \
+                      for the day. After a restart a resume opens a new session with an empty context that starts from \
+                      this recap.",
         roles: BOTH,
         schema: || {
             object(
-                json!({ "text": { "type": "string", "description": "What you were doing, the next step, what runs." } }),
+                json!({ "text": {
+                    "type": "string",
+                    "description": "Done, decisions and why, open questions, next step, files, what runs, standing wishes."
+                } }),
                 &["text"],
             )
         },

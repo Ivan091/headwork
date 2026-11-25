@@ -26,8 +26,7 @@
   the task finishes or fails, send `{orchestrator}` one short `SendMessage` line, such as "finished: <pull request
   URLs>" or "failed: <why>".
 - You close only after every part has closed: `done` is refused while one is not closed.
-- Your subagents live in your process tree: a park ends them and they do not resume. Your parts are sessions and do
-  resume. Your `recap` names where each part stands.
+- Your subagents live in your process tree: a park ends them and they do not resume. Your parts come back as new sessions. Your `recap` names where each part stands.
 
 ## Silent or confirm, and review
 

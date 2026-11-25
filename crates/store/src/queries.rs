@@ -1104,6 +1104,19 @@ impl Store {
     ///
     /// Returns a read error.
     pub fn events(&self, filter: EventFilter) -> Result<Vec<EventRecord>, StoreError> {
+        self.events_without(filter, &[])
+    }
+
+    /// The newest events whose type is not in `skip`, oldest first; the limit counts only the events returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn events_without(
+        &self,
+        filter: EventFilter,
+        skip: &[&str],
+    ) -> Result<Vec<EventRecord>, StoreError> {
         type RawEvent = (
             i64,
             String,
@@ -1120,11 +1133,12 @@ impl Store {
                 "SELECT * FROM (
                      SELECT e.id, e.at, e.actor, e.task_id, t.project || '-' || t.slug, e.session_id, e.type, e.data
                      FROM events e LEFT JOIN tasks t ON t.id = e.task_id
-                     WHERE ?1 IS NULL OR e.task_id = ?1
+                     WHERE (?1 IS NULL OR e.task_id = ?1)
+                       AND e.type NOT IN (SELECT value FROM json_each(?3))
                      ORDER BY e.id DESC LIMIT ?2
                  ) ORDER BY id",
             )?
-            .query_map(params![filter.task.map(|id| id.0), filter.limit], |row| {
+            .query_map(params![filter.task.map(|id| id.0), filter.limit, serde_json::to_string(skip)?], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,

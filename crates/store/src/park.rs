@@ -538,6 +538,29 @@ impl Store {
             .transpose()
     }
 
+    /// The newest recap of a task that has this kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn latest_recap_of_kind(
+        &self,
+        task: TaskId,
+        kind: RecapKind,
+    ) -> Result<Option<RecapRow>, StoreError> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {RECAP_COLUMNS} FROM recaps WHERE task_id = ?1 AND kind = ?2 ORDER BY id DESC LIMIT 1"
+                ),
+                params![task.0, kind.as_str()],
+                read_recap,
+            )
+            .optional()?
+            .map(into_recap)
+            .transpose()
+    }
+
     /// The recap a session wrote during a park, if it did.
     ///
     /// # Errors

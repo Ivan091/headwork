@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::jobs::{Registration, register};
-use headwork::ops::launch::{StartMode, claude_command};
+use headwork::ops::launch::{
+    OrchestratorOrigin, OrchestratorStart, StartMode, claude_command, first_prompt,
+    orchestrator_prompt,
+};
 use headwork::ops::park::{ParkOptions, RecapSource, park};
+use headwork::ops::recap::{mechanical, orchestrator_mechanical};
 use headwork::ops::resume::{ResumeOptions, TaskOutcome, last_mode, resume, would_close};
 use headwork::ops::spawn::{SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::FakeHost;
@@ -26,7 +30,9 @@ use headwork_core::{
     Actor, AskKind, Config, JobState, MachineMode, Model, PermissionMode, ProjectName, RecapKind,
     Role, SessionState, Slug, TaskRequest, TaskShape, TaskState, Trigger,
 };
-use headwork_store::{EventFilter, NewAsk, NewRecap, NewSession, NewTask, Store, Task};
+use headwork_store::{
+    EVENT_TOOL, EventFilter, NewAsk, NewRecap, NewSession, NewTask, PrSeen, Store, Task,
+};
 
 const EXE: &str = "S:/bin/headwork.exe";
 const SLEEPER_ROLE: &str = "HEADWORK_PARK_ROLE";
@@ -518,11 +524,11 @@ fn spawn_park_resume_round_trip() {
     assert_eq!(w.state(&sand), TaskState::Spawning, "sand relaunching");
     let outcome = |name: &str| resumed.tasks.iter().find(|t| t.name == name).unwrap();
     assert!(
-        matches!(outcome("demo-sand").outcome, TaskOutcome::Resumed { .. }),
+        matches!(outcome("demo-sand").outcome, TaskOutcome::Fresh { .. }),
         "{resumed:?}"
     );
     assert!(
-        matches!(&outcome("demo-mist").outcome, TaskOutcome::Fresh { reason, .. } if reason.contains("transcript")),
+        matches!(&outcome("demo-mist").outcome, TaskOutcome::Fresh { surface, .. } if !surface.is_empty()),
         "{resumed:?}"
     );
     assert!(
@@ -543,7 +549,7 @@ fn spawn_park_resume_round_trip() {
     assert!(
         panes
             .iter()
-            .any(|c| c.contains("--resume") && c.contains(&format!("--task {}", sand.id))),
+            .any(|c| c.contains("--fresh") && c.contains(&format!("--task {}", sand.id))),
         "{panes:?}"
     );
     assert!(
@@ -574,7 +580,7 @@ fn spawn_park_resume_round_trip() {
     );
 
     let session = w.store.session_of(sand.id).unwrap().unwrap();
-    assert_eq!(session.id, sand_session, "same conversation");
+    assert_ne!(session.id, sand_session, "a new conversation");
     let task = w.store.task(sand.id).unwrap();
     let command = claude_command(
         &w.home,
@@ -583,7 +589,7 @@ fn spawn_park_resume_round_trip() {
         &session,
         &w.dir.path().join("demo-sand"),
         Path::new(EXE),
-        StartMode::Resumed { crash: false },
+        StartMode::Fresh { crash: false },
     )
     .unwrap();
     let args: Vec<String> = command
@@ -592,10 +598,11 @@ fn spawn_park_resume_round_trip() {
         .collect();
     assert_eq!(
         args.first().map(String::as_str),
-        Some("--resume"),
+        Some("--session-id"),
         "{args:?}"
     );
-    assert_eq!(args.get(1), Some(&sand_session), "{args:?}");
+    assert_eq!(args.get(1), Some(&session.id), "{args:?}");
+    assert!(args.last().unwrap().contains("new session"), "{args:?}");
     assert!(args.last().unwrap().contains("handoffs"), "{args:?}");
     assert_ne!(
         mist_session,
@@ -698,7 +705,7 @@ fn a_crash_resumes_by_hand_but_waits_for_the_root_at_logon() {
     let env = env!(w);
     let report = resume(&mut w.store, &env, &by_hand).unwrap();
     assert!(
-        matches!(report.tasks[0].outcome, TaskOutcome::Resumed { .. }),
+        matches!(report.tasks[0].outcome, TaskOutcome::Fresh { .. }),
         "{report:?}"
     );
     assert!(
@@ -710,10 +717,31 @@ fn a_crash_resumes_by_hand_but_waits_for_the_root_at_logon() {
     assert!(
         panes_of(&w)
             .iter()
-            .any(|c| c.contains("--resume") && c.contains("--crash")),
+            .any(|c| c.contains("--fresh") && c.contains("--crash")),
         "{:?}",
         panes_of(&w)
     );
+    let handoff =
+        std::fs::read_to_string(w.home.handoff_path(&w.store.task(sand.id).unwrap().name)).unwrap();
+    assert!(
+        handoff.contains("resumed after a crash") && handoff.contains("mechanical recap"),
+        "a crash leaves no handoff, so resume writes one: {handoff}"
+    );
+}
+
+fn fresh_orchestrator(line: &str, old: &str) -> String {
+    assert!(
+        !line.contains("--resume"),
+        "never continues the old conversation: {line}"
+    );
+    let id = line
+        .split("--session ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    assert_ne!(id, old, "a new session: {line}");
+    id
 }
 
 fn panes_of(w: &World) -> Vec<String> {
@@ -839,17 +867,14 @@ fn park_asks_the_root_for_a_recap_and_leaves_it_running_and_resume_brings_it_bac
     };
     let report = resume(&mut w.store, &env, &opts).unwrap();
     assert!(
-        matches!(report.orchestrator, Some(TaskOutcome::Resumed { .. })),
+        matches!(report.orchestrator, Some(TaskOutcome::Fresh { .. })),
         "{report:?}"
     );
     let line = panes_of(&w)
         .into_iter()
         .find(|c| c.contains(" orchestrator "))
         .unwrap();
-    assert!(
-        line.contains(&format!("--session {orchestrator} --resume --summary")),
-        "{line}"
-    );
+    let fresh = fresh_orchestrator(&line, &orchestrator);
     assert!(
         w.host
             .calls()
@@ -857,10 +882,10 @@ fn park_asks_the_root_for_a_recap_and_leaves_it_running_and_resume_brings_it_bac
         "the pane the host restored for the orchestrator is closed: {:?}",
         w.host.calls()
     );
-    let placed = w.store.session(&orchestrator).unwrap().unwrap().0;
+    let placed = w.store.session(&fresh).unwrap().unwrap().0;
     assert!(placed.host_surface.is_some(), "the new pane is recorded");
     assert_eq!(
-        w.store.session_dir(&orchestrator).unwrap().unwrap(),
+        w.store.session_dir(&fresh).unwrap().unwrap(),
         root_dir.display().to_string().replace('\\', "/"),
         "same folder"
     );
@@ -1097,24 +1122,31 @@ fn park_records_an_orchestrator_running_outside_headwork_and_resume_brings_it_ba
     );
     let report = resume(&mut w.store, &env, &opts).unwrap();
     assert!(
-        matches!(report.orchestrator, Some(TaskOutcome::Resumed { .. })),
+        matches!(report.orchestrator, Some(TaskOutcome::Fresh { .. })),
         "{report:?}"
     );
     let line = panes_of(&w)
         .into_iter()
         .find(|c| c.contains(" orchestrator "))
         .unwrap();
-    assert!(
-        line.contains(&format!("--session {orchestrator} --resume --summary")),
-        "{line}"
-    );
+    let fresh = fresh_orchestrator(&line, &orchestrator);
     assert!(
         w.host.calls().contains(&format!("close-surface {surface}")),
         "the copy outside headwork is closed: {:?}",
         w.host.calls()
     );
+    assert!(
+        w.store.session(&fresh).unwrap().is_some(),
+        "the new session is recorded"
+    );
     let summary = std::fs::read_to_string(&report.summary).unwrap();
     assert!(summary.contains("ran outside headwork"), "{summary}");
+    assert!(
+        summary.contains("## Tasks")
+            && summary.contains("demo-sand")
+            && summary.contains("## Recent log"),
+        "a mechanical orchestrator recap built from the store: {summary}"
+    );
 }
 
 #[test]
@@ -1139,7 +1171,7 @@ fn a_resume_without_a_park_brings_an_orchestrator_the_host_restored_back_under_h
     };
     let report = resume(&mut w.store, &env, &opts).unwrap();
     assert!(
-        matches!(report.orchestrator, Some(TaskOutcome::Resumed { .. })),
+        matches!(report.orchestrator, Some(TaskOutcome::Fresh { .. })),
         "{report:?}"
     );
     assert!(
@@ -1148,7 +1180,12 @@ fn a_resume_without_a_park_brings_an_orchestrator_the_host_restored_back_under_h
         w.host.calls()
     );
     assert_eq!(w.events_of("orchestrator-unmanaged"), 1, "logged");
-    let placed = w.store.session(&orchestrator).unwrap().unwrap().0;
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" orchestrator "))
+        .unwrap();
+    let fresh = fresh_orchestrator(&line, &orchestrator);
+    let placed = w.store.session(&fresh).unwrap().unwrap().0;
     assert_eq!(
         placed.state,
         SessionState::Starting,
@@ -1202,7 +1239,7 @@ fn resume_brings_each_lead_back_before_its_parts_and_the_parts_become_tabs_again
         report
             .tasks
             .iter()
-            .all(|t| matches!(t.outcome, TaskOutcome::Resumed { .. })),
+            .all(|t| matches!(t.outcome, TaskOutcome::Fresh { .. })),
         "{report:?}"
     );
     let workspace = workspace_of(&w, &lead);
@@ -1367,14 +1404,14 @@ fn a_resumed_worker_starts_in_the_mode_its_transcript_last_records() {
     };
     let report = resume(&mut w.store, &env, &opts).unwrap();
     assert!(
-        matches!(report.tasks[0].outcome, TaskOutcome::Resumed { .. }),
+        matches!(report.tasks[0].outcome, TaskOutcome::Fresh { .. }),
         "{report:?}"
     );
     let row = w.store.session_of(sand.id).unwrap().unwrap();
-    assert_eq!(row.id, session, "same conversation");
+    assert_ne!(row.id, session, "a new conversation");
     assert_eq!(row.permission_mode, Some(PermissionMode::Plan), "recorded");
     assert_eq!(
-        mode_flag(&launch_args(&w, &sand, StartMode::Resumed { crash: true })),
+        mode_flag(&launch_args(&w, &sand, StartMode::Fresh { crash: true })),
         Some("plan"),
         "back in the mode it was left in"
     );
@@ -1437,12 +1474,8 @@ fn an_orchestrator_comes_back_in_the_mode_its_transcript_last_records() {
         .into_iter()
         .find(|c| c.contains(" orchestrator "))
         .unwrap();
-    assert!(
-        line.contains(&format!(
-            "--session {orchestrator} --resume --mode auto --summary"
-        )),
-        "{line}"
-    );
+    fresh_orchestrator(&line, &orchestrator);
+    assert!(line.contains("--mode auto --summary"), "{line}");
 }
 
 #[test]
@@ -1517,4 +1550,344 @@ fn park_leaves_a_program_that_took_a_sessions_pid_over_alone() {
         .filter(|e| e.kind == "pid-reused")
         .count();
     assert!(reused >= 1, "logged");
+}
+
+fn plain_task(w: &mut World, slug: &str) -> Task {
+    let new = NewTask {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new(slug).unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+            close: headwork_core::CloseMode::Confirm,
+            review: None,
+            decision: None,
+        },
+        brief_path: w.brief.display().to_string(),
+        depends_on: None,
+        permission_mode: PermissionMode::Auto,
+        shape: TaskShape::Plain,
+    };
+    w.store.create_task(&w.config, &new, Actor::User).unwrap()
+}
+
+fn add_recap(w: &mut World, task: &Task, kind: RecapKind, body: &str) {
+    w.store
+        .add_recap(
+            &NewRecap {
+                task_id: Some(task.id),
+                session_id: None,
+                kind,
+                body,
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+}
+
+fn resume_by_hand(w: &mut World, sessions: &[&str]) {
+    let opts = ResumeOptions {
+        logon: false,
+        wait_for_host: Duration::ZERO,
+        claude_dir: claude_dir_with(w, sessions),
+    };
+    let env = env!(w);
+    resume(&mut w.store, &env, &opts).unwrap();
+}
+
+#[test]
+fn a_resume_keeps_a_handoff_a_park_wrote() {
+    let mut w = world("ask");
+    let (sand, session, _) = w.working("sand");
+    let env = env!(w);
+    park(&mut w.store, &env, quick(200)).unwrap();
+    let path = w.home.handoff_path(&sand.name);
+    std::fs::write(&path, "KEPT AS WRITTEN\n").unwrap();
+    resume_by_hand(&mut w, &[&session]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "KEPT AS WRITTEN\n");
+}
+
+#[test]
+fn a_resume_builds_a_missing_handoff_from_the_sessions_own_recap_and_the_facts() {
+    let mut w = world("ask");
+    let (sand, session, _) = w.working("sand");
+    let env = env!(w);
+    park(&mut w.store, &env, quick(200)).unwrap();
+    let path = w.home.handoff_path(&sand.name);
+    std::fs::remove_file(&path).unwrap();
+    add_recap(
+        &mut w,
+        &sand,
+        RecapKind::Session,
+        "Rendering stage 3; next: compare.",
+    );
+    resume_by_hand(&mut w, &[&session]);
+    let handoff = std::fs::read_to_string(&path).unwrap();
+    let own = handoff.find("# Your own recap").unwrap();
+    let body = handoff.find("Rendering stage 3; next: compare.").unwrap();
+    let facts = handoff.find("resumed with no recap on file").unwrap();
+    assert!(own < body && body < facts, "{handoff}");
+    assert!(
+        handoff.contains("- branch: ") && handoff.contains("- last report: "),
+        "{handoff}"
+    );
+}
+
+#[test]
+fn after_a_crash_the_handoff_holds_the_session_recap_even_when_an_interrupted_one_is_newer() {
+    let mut w = world("ask");
+    let (sand, session, pid) = w.working("sand");
+    add_recap(
+        &mut w,
+        &sand,
+        RecapKind::Session,
+        "SESSION BODY: next is the render.",
+    );
+    add_recap(
+        &mut w,
+        &sand,
+        RecapKind::Interrupted,
+        "INTERRUPTED BODY mechanical",
+    );
+    w.crash(&sand, pid);
+    resume_by_hand(&mut w, &[&session]);
+    let handoff = std::fs::read_to_string(w.home.handoff_path(&sand.name)).unwrap();
+    assert!(handoff.contains("# Your own recap"), "{handoff}");
+    assert!(
+        handoff.contains("SESSION BODY: next is the render."),
+        "{handoff}"
+    );
+    assert!(handoff.contains("resumed after a crash"), "{handoff}");
+}
+
+#[test]
+fn the_mechanical_recap_lists_prs_parts_and_jobs_and_leaves_tool_events_out_of_the_log() {
+    let mut w = world_with("ask", LEADS);
+    let (lead, session, _) = w.working("lead");
+    let (part, _, _) = w.part(&lead, "p");
+    w.store
+        .record_pr(
+            lead.id,
+            &PrSeen {
+                repo: "o/r",
+                number: 7,
+                url: "https://github.com/o/r/pull/7",
+                state: "open",
+            },
+            Actor::Tick,
+        )
+        .unwrap();
+    let checkpoint = w.dir.path().join("cp.json");
+    std::fs::write(&checkpoint, "{}").unwrap();
+    let pid = w.sleeper();
+    let mut registration = job("train", ParkPolicy::Checkpoint, pid, Some(&checkpoint));
+    registration.restart = Some(false);
+    registration.cwd = Some("S:/work/dir".to_owned());
+    let env = env!(w);
+    register(&mut w.store, &env, &lead, &session, &registration).unwrap();
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(lead.id),
+            None,
+            "marker-event",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(lead.id),
+            None,
+            "long-event",
+            &serde_json::json!({ "note": "y".repeat(400) }),
+        )
+        .unwrap();
+    for _ in 0..60 {
+        w.store
+            .append_event(
+                Actor::Hook,
+                Some(lead.id),
+                None,
+                EVENT_TOOL,
+                &serde_json::json!({ "tool": "Bash" }),
+            )
+            .unwrap();
+    }
+    let lead = w.store.task(lead.id).unwrap();
+    let text = mechanical(&w.store, &env, &lead, "testing").unwrap();
+    assert!(text.starts_with("# Recap of demo-lead (testing)"), "{text}");
+    assert!(
+        text.contains("- pull request https://github.com/o/r/pull/7 (open)"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("- part {} (", part.name)), "{text}");
+    assert!(text.contains("- job `train` (checkpoint, "), "{text}");
+    assert!(text.contains("restart no)"), "{text}");
+    assert!(text.contains("--exact helper_sleeper --ignored`"), "{text}");
+    assert!(text.contains("long-event"), "{text}");
+    assert!(text.contains(&format!("{}...", "y".repeat(100))), "{text}");
+    assert!(!text.contains(&"y".repeat(200)), "{text}");
+    assert!(
+        text.contains(&format!(", checkpoint {}", checkpoint.display())),
+        "{text}"
+    );
+    assert!(text.contains(" in S:/work/dir"), "{text}");
+    assert!(
+        text.contains("marker-event"),
+        "the limit counts events returned, not tool events: {text}"
+    );
+    assert!(!text.contains(EVENT_TOOL), "{text}");
+}
+
+#[test]
+fn the_orchestrators_mechanical_recap_says_none_for_an_empty_board_and_lists_each_section() {
+    let mut w = world("ask");
+    let empty = orchestrator_mechanical(&w.store, "r").unwrap();
+    assert!(empty.contains("## Tasks\n\nnone\n"), "{empty}");
+    assert!(
+        !empty.contains("## Queue") && !empty.contains("## Asks without a task"),
+        "{empty}"
+    );
+    assert!(
+        !empty.contains("## Rules") && !empty.contains("## Registered jobs"),
+        "{empty}"
+    );
+
+    let (sand, session, _) = w.working("sand");
+    let queued = plain_task(&mut w, "later");
+    assert_eq!(queued.state, TaskState::Queued);
+    w.store
+        .open_ask(
+            &NewAsk {
+                task_id: None,
+                session_id: None,
+                kind: AskKind::Question,
+                question: "Which video next?".to_owned(),
+                options: vec!["A".to_owned(), "B".to_owned()],
+            },
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    w.store
+        .add_rule("worker", "never touch the render queue", Actor::User)
+        .unwrap();
+    let pid = w.sleeper();
+    let env = env!(w);
+    register(
+        &mut w.store,
+        &env,
+        &sand,
+        &session,
+        &job("train", ParkPolicy::Rerun, pid, None),
+    )
+    .unwrap();
+    let text = orchestrator_mechanical(&w.store, "r").unwrap();
+    assert!(
+        text.starts_with("# Recap of the orchestrator (r)"),
+        "{text}"
+    );
+    assert!(text.contains("- demo-sand (task, "), "{text}");
+    assert!(
+        text.contains("## Queue, in start order\n\n- demo-later\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("## Asks without a task\n\n- Which video next? (options: A | B)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("(still active)\n\n- [worker] never touch the render queue"),
+        "{text}"
+    );
+    assert!(
+        text.contains("## Registered jobs not over\n\n- `train` (rerun, "),
+        "{text}"
+    );
+    assert!(text.contains("## Recent log, oldest first"), "{text}");
+}
+
+#[test]
+fn fresh_prompts_tell_the_session_to_ask_its_open_question_again() {
+    let mut w = world("ask");
+    let task = plain_task(&mut w, "sand");
+    for crash in [false, true] {
+        let prompt = first_prompt(&w.home, &task, StartMode::Fresh { crash });
+        assert!(
+            prompt.contains("ask it again with AskUserQuestion"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("as a new session so your context is fresh"),
+            "{prompt}"
+        );
+        let cause = if crash { "crash" } else { "restart" };
+        assert!(prompt.contains(&format!("after a {cause}")), "{prompt}");
+        assert!(prompt.contains("handoffs"), "{prompt}");
+    }
+    let start = |resume: bool| OrchestratorStart {
+        name: "orchestrator".to_owned(),
+        agent: None,
+        prompt: "NEW PROMPT".to_owned(),
+        model: None,
+        effort: None,
+        mode: PermissionMode::Auto,
+        origin: OrchestratorOrigin::Back {
+            session: "s".to_owned(),
+            resume,
+            summary: Some("S:/summary.md".to_owned()),
+        },
+    };
+    let fresh = orchestrator_prompt(&start(false));
+    assert!(
+        fresh.contains("started again after a restart as a new session so your context is fresh"),
+        "{fresh}"
+    );
+    assert!(
+        fresh.contains("Read HANDOFF.md beside CLAUDE.md."),
+        "{fresh}"
+    );
+    assert!(fresh.contains("S:/summary.md"), "{fresh}");
+    assert!(
+        fresh.contains("ask it again with AskUserQuestion"),
+        "{fresh}"
+    );
+    let resumed = orchestrator_prompt(&start(true));
+    assert!(resumed.starts_with("Resumed after a restart."), "{resumed}");
+    assert!(
+        resumed.contains("ask it again with AskUserQuestion"),
+        "{resumed}"
+    );
+}
+
+#[test]
+fn an_orchestrator_resume_ends_the_old_session_and_the_new_one_starts_in_its_mode() {
+    let mut w = world("never");
+    let (old, _) = w.unmanaged_orchestrator();
+    w.store
+        .set_session_mode(&old, PermissionMode::Plan, Actor::Hook)
+        .unwrap();
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir: claude_dir_with(&w, &[&old]),
+    };
+    resume(&mut w.store, &env, &opts).unwrap();
+    assert_eq!(
+        w.store.session(&old).unwrap().unwrap().0.state,
+        SessionState::Ended
+    );
+    let line = panes_of(&w)
+        .into_iter()
+        .find(|c| c.contains(" orchestrator "))
+        .unwrap();
+    let new = fresh_orchestrator(&line, &old);
+    let (row, task) = w.store.session(&new).unwrap().unwrap();
+    assert_eq!(task, None);
+    assert_eq!(row.rc_name, "orchestrator");
+    assert!(line.contains("--mode plan --summary"), "{line}");
 }

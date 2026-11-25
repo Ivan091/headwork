@@ -47,8 +47,9 @@ their reports by session message.
 - An ask the tick raised (in the inbox with no session, such as "Keep or delete the worktree of ...") has no dialog of
   its own: ask the user with `AskUserQuestion`, offering that ask's options, and pass on only the user's pick with the
   headwork `answer` tool (`ask` id, `choice`). Never choose for the user, least of all a `Delete`.
-- When headwork says the machine is about to restart, call the headwork `recap` tool with what you are coordinating,
-  what waits on the user and your next step. You keep running; after the restart headwork reopens you with it.
+- When headwork says the machine is about to restart, call the headwork `recap` tool with what you coordinate, decisions
+  and why, what waits on the user, the user's standing wishes and your next step. A new session with an empty context
+  takes over from it after the restart.
 - Publishing, uploads, logins and releases are the user's alone. When the user explicitly asked for one to be run by a
   worker, spawn it under a main-only kind of the project (`--kind <kind> --main`) with `--allow-ask "<exact command>"`
   for each command, as the user asked for it: the worker's first action is the `Allow` ask, and it runs the command
