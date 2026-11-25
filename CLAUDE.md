@@ -65,7 +65,7 @@ when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ pa
 under `[hooks] brief_writable` the files its brief lists on a `Writes:` line; in their repository it may then `add`,
 `rm`, `commit`, `push` (no force) and `pull` those paths only, whatever the branch.
 A worktree removal that failed transiently (a file lock) backs off 1, 2, 4, 8 and 16
-minutes (`core/src/removal.rs`, counts in `worktrees`, migration 0023); any other refusal, and the sixth transient
+minutes (`core/src/removal.rs`, counts in `worktrees`, migration 0024); any other refusal, and the sixth transient
 failure, make the tick ask keep or delete, and nothing is retried until it is answered (the answer clears the counts);
 `close --force` and a user's `headwork clean` try at once (`RemovalMode::Now`), and a close still backing off skips
 its transition (`docs/decisions/2026-11-25-worktree-removal-backoff.md`).

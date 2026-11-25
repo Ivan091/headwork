@@ -2,7 +2,8 @@
 
 After a rebase a worker updates its own pull request branch with `git push --force-with-lease` instead of opening a
 replacement pull request (the user's choice in headwork-contention-plan, replacing the rule of 2026-11-22), since 11 of
-12 pull requests closed unmerged in headwork were replacements made that way.
+12 pull requests closed unmerged in headwork were replacements made that way. The rule is stated once, in the user's
+`AGENTS.md`; `rules/worker.md` does not repeat it, because the worker and lead rules sit at the hook's size limit.
 
 The guard rule `worker-force-push` refuses a plain `--force`, `-f` or `+refspec`, and allows a lease
 (`--force-with-lease`, `--force-with-lease=<ref>`, `--force-if-includes`) only when every target is the branch the
