@@ -1,0 +1,136 @@
+# Config sync: one config shared through GitHub, overridden per machine
+
+Approved by the user on 2026-11-25 with every recommendation in the decision table (section 8).
+
+## Today
+
+- Each machine reads one file, `~/.headwork/config.toml` (`Home::load_config`, `crates/headwork/src/home.rs:147`), plus each project's `.headwork.toml` overlay.
+- The Windows file has 145 lines. About half of it is machine-specific: `[machine]` (host, shell, wmux), all `S:/Code` and `C:/Users/User` paths (`[hooks] orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `[watch] roots`, every `project.*.main`, `read_only_paths`, `extra_writable`). The rest is shared: `[models]`, `[usage.prices]`, `enforce_rules`, `[layout]`, `[leads]`, `[update]`, `[reviews]`, the watch thresholds, and each project's policy (`deliver`, `main_only`, `user_only`, `jobs`, `allowed_repos`, `long_jobs`, `heavy_*`).
+- The Mac gets its config by hand (`briefs/mac-adopt-headwork-flow.md`, plus a pasted prompt for the prices).
+- `[machine] notify_ntfy` is a secret: anyone who knows the topic URL can read and send the notifications.
+
+## The design in one paragraph
+
+The shared and per-machine sources live in the private `claude_config` repository, next to the machine profiles it already has (`machines/windows/settings.json`, `machine.md`). headwork keeps reading only `~/.headwork/config.toml`, but that file is now **generated**. A new command, `headwork config sync`, pulls the repository, merges shared + machine + local, validates the result and replaces the file atomically. A broken or conflicting source makes the sync fail; the file the machine runs on stays as it was. Hooks, the tick and the MCP server never read the sources, so a bad pull cannot break a running machine.
+
+## 1. Where it lives
+
+| Option | For | Against |
+|---|---|---|
+| **claude_config** (`Ivan091/claude_config`, private) | Already cloned on every machine that runs Claude. Already has `machines/<machine>/` profiles and the "versioned copy → install → live file" flow (`settings.json`, `machine.md`). It is a headwork project, with `sync-config` for delivery. | Mixes the headwork config into the Claude config repository. |
+| code-home (`Ivan091/code-home`, private) | Holds the briefs, notes and to-do list for these projects. | Its `.gitignore` allowlist and its layout are built around `S:/Code` on Windows. Only the orchestrator writes there. The Mac may not clone it. |
+| A new `headwork-config` repository | Clean separation. | One more clone, SSH key setup and delivery flow on each machine, for about 150 lines of TOML. |
+
+**Recommendation: claude_config.** Layout:
+
+```
+~/.claude/                          (claude_config)
+  headwork/config.toml              shared: models, prices, rules, reviews, layout, leads, update, project policy
+  machines/windows/headwork.toml    PC: [machine], paths, project mains, writable lists, watch roots
+  machines/mac/headwork.toml        Mac: the same, with cmux and Mac paths
+~/.headwork/                        (never committed)
+  sources.toml                      which repository and which machine this is (written once)
+  config.local.toml                 secrets and one-off local tweaks (notify_ntfy), never synced
+  config.toml                       GENERATED effective config; what every headwork command reads
+  config.toml.prev                  the previous effective config (one-step rollback)
+  config.origin.json                where each effective key came from
+```
+
+**Never committed:** `notify_ntfy` and any other token or topic URL, `state.db`, briefs, recaps, jobs, `config.local.toml`, `sources.toml`. Validation **refuses** a shared or machine file that sets `machine.notify_ntfy`, or any key on a short `secret_keys` list in `core`, so a secret cannot reach the repository by accident.
+
+## 2. Merge rule
+
+The order is shared → `machines/<name>/headwork.toml` → `config.local.toml`. A later layer wins.
+
+| Case | Rule |
+|---|---|
+| Table (`[hooks]`, `[project.me-sim]`, `[usage.prices."x"]`) | Merged key by key, recursively. A machine file sets only what differs. |
+| Scalar | Replaced. |
+| Array (`main_only`, `enforce_rules`, `orchestrator_writable`) | **Replaced as a whole.** No implicit append: what you read in one file is the whole value. |
+| Appending to a shared array | Explicit: `extend.hooks.enforce_rules = ["x"]` in the machine file. It is rarely needed, so this is optional for v1. |
+| Removing a key or table | `unset = ["project.me-sim-site", "hooks.enforce_rules"]` at the top of the machine or local file. Unsetting a key that no lower layer sets is an error, which catches typos. |
+| Projects | Shared holds a project's policy. A project **exists on a machine only when that machine's file gives it a `main`**, so a project the Mac does not have needs no `unset`. A shared project with no `main` is dropped, and the drop is listed in the sync output. |
+| Paths | There is no `{code}`-style variable in v1. Keys that hold paths simply live in the machine file. Validation refuses a shared file that sets a machine-only key (`machine.*`, `project.*.main`, `read_only_paths`, `extra_writable`, `hooks.orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `watch.roots`). That keeps the shared file portable. |
+
+The merge works on `toml::Value`, as a pure function in `core` (`core/src/config_layers.rs`) that returns the merged value and a per-key origin map. `Config::parse` (with `deny_unknown_fields`) then checks the result exactly as today.
+
+## 3. How a machine knows which it is
+
+`~/.headwork/sources.toml`, written once during adoption:
+
+```toml
+repo = "~/.claude"
+machine = "windows"
+```
+
+Hostnames are not used: they change, macOS rewrites them, and they say nothing about intent. This is a cross-check, not a guess: the merged `machine.host` must suit the OS (wmux on Windows, cmux on macOS). Otherwise the sync fails, so `windows.toml` can never be applied on the Mac. Without `sources.toml`, headwork behaves exactly as today: a hand-written `config.toml`, no sync.
+
+## 4. How it syncs
+
+| Command | Does |
+|---|---|
+| `headwork config sync [--no-pull] [--dry-run]` | `git pull --ff-only` in the repository (SSH, batch mode, as `clean` does), merge, validate, then write `config.toml` atomically (temp file + rename) and keep `config.toml.prev` and `config.origin.json`. Prints a diff against the old effective file. Logs `config-synced` with the repository commit. |
+| `headwork config show [--origin] [--json]` | The effective config, each key tagged `shared` / `windows` / `local` / `default`. |
+| `headwork config check` | Merge and validate without writing. Its exit code means pass or fail, so CI or a session can run it before a PR. |
+| `headwork config rollback` | Puts `config.toml.prev` back. |
+| `headwork config adopt --machine <name>` | One-time migration: splits today's live `config.toml` into shared / machine / local by the machine-only and secret key lists, writes the three files for review, and writes `sources.toml`. |
+
+Triggers:
+
+- **By hand or by the orchestrator** (a new MCP tool, `config_sync`): the main path.
+- **`update` and `install`** run `config sync --no-pull` after installing, because a new build may know new keys or new rules. On a failure they keep the old file and report it.
+- **The tick does not pull or write.** It only compares the sources' last commit and the merge result with the effective file, and raises a standing finding `config-stale` (the sources changed since the last sync) or `config-drift` (`config.toml` was hand-edited). Each finding leaves one line in the orchestrator's next prompt. No network, no surprise rewrites.
+- `sync-config` (the claude_config delivery skill) ends with `headwork config sync` when it shipped a change under `headwork/` or `machines/*/headwork.toml`.
+
+## 5. Failure handling
+
+- The runtime reads only the generated file. A source that fails to parse, an `unset` typo, a machine-only key in the shared file, a secret in a tracked file, a host that does not suit the OS, a duplicate key, a failed pull or a merge conflict in the repository: each fails the sync with the file and key named. `config.toml` is left untouched and the event `config-sync-failed` is logged.
+- The candidate is validated the way `update` smoke-tests a build: `Config::parse`, the project-overlay load, and `doctor --json` run on a scratch home holding the candidate. The new file is written only when doctor finds no new failure.
+- A pull that is not a fast-forward (local edits in the repository) stops the sync. It never resets or merges.
+- `config rollback` gets back to the previous file in one step.
+
+## 6. doctor checks
+
+| Check | Fails / warns when |
+|---|---|
+| `config-sources` | `sources.toml` names a missing repository or machine file, or a machine name with no `machines/<name>/headwork.toml` (warn: "not synced; hand-written config"). |
+| `config-stale` | The repository HEAD or the merge result differs from what the last sync recorded (warn: run `headwork config sync`). |
+| `config-drift` | `config.toml` differs from the recorded sync output: a hand edit that the next sync would overwrite (warn, naming the keys). |
+| `config-secret` | A tracked source holds a secret key (fail). |
+| `config-host` | The effective `machine.host` does not suit the OS (fail). |
+
+## 7. What changes elsewhere
+
+- **The Mac adoption brief** (`briefs/mac-adopt-headwork-flow.md`) shrinks to: pull claude_config, `headwork config adopt --machine mac` (or write `machines/mac/headwork.toml` from a template), review, ship it through `sync-config`, then `headwork config sync`. The pasted prices prompt goes away, because the prices are shared.
+- **The orchestrator's rules** (`rules/orchestrator.md`): a config change is a claude-config task that edits `headwork/config.toml` or `machines/<m>/headwork.toml` in a PR. After the merge, `headwork config sync` runs on each machine (the orchestrator's tool here, a line for the user on the other machine). Never edit `~/.headwork/config.toml` by hand. `orchestrator_writable` may drop `~/.headwork/config.toml` if it is there.
+- **The workers' rules**: one line saying that config changes go through claude-config, not `~/.headwork`.
+- **`headwork import`** writes its additions into the machine file when `sources.toml` exists, else into `config.toml` as today.
+- **claude_config**: add `headwork/`, add `machines/mac/` (so far only `machines/windows/` exists), and `.gitignore` allowlist entries. `install.sh` needs no change: headwork's own sync does the copy, so the merge logic lives in one place.
+- **Docs**: a new `docs/config-sync.md`, one line per choice in `docs/decisions.md`, and the CLAUDE.md summary.
+
+## 8. Decision table
+
+| # | Choice | Options | Recommendation |
+|---|---|---|---|
+| 1 | Repository | claude_config / code-home / new repository | **claude_config**: already on both machines, already has `machines/<m>/` profiles |
+| 2 | Layout | one file with `[machine.windows]` sections / shared + `machines/<m>/headwork.toml` | **Separate files**, beside the existing machine profiles |
+| 3 | Runtime | headwork reads the layers on every call / a generated `config.toml` | **Generated file**: a bad pull never breaks hooks or the tick |
+| 4 | Arrays | replace / append / replace with explicit `extend` | **Replace**, with `extend.*` optional later |
+| 5 | Removal | `unset = [...]` / magic value / none | **`unset` list**, an error when it matches nothing |
+| 6 | Projects per machine | everything shared, `unset` the rest / a project exists where its `main` is given | **Exists where `main` is given** |
+| 7 | Path variables (`{code}`) | yes / no | **No in v1**: path keys stay machine-only, enforced by validation |
+| 8 | Machine identity | `[machine]` name / hostname / `sources.toml` | **`sources.toml`**, cross-checked against the OS through `machine.host` |
+| 9 | Secrets | in the repository / `config.local.toml` | **`config.local.toml`**, never synced; validation refuses secrets in tracked files |
+| 10 | Sync trigger | manual / install+update / tick auto-apply | **Manual `config sync` + `--no-pull` after `update`/`install`**; the tick only reports `config-stale` / `config-drift` |
+| 11 | Validation | parse only / parse + doctor on a scratch home | **Parse + doctor on a scratch home**, as the update smoke test does |
+| 12 | Migration | write the files by hand / `config adopt` | **`config adopt`** on each machine, output reviewed in a PR |
+
+## 9. The pieces in the code
+
+- `core/src/config_layers.rs` (pure): `merge(shared, machine, local)` over `toml::Table`s with `unset` and `extend`,
+  the machine-only and secret key lists, the per-key origins, the dropped projects. `Config::parse` then checks the
+  merged text as before.
+- `headwork/src/ops/config_sync.rs`: `sources.toml`, the pull, the scratch-home doctor run, the atomic write with
+  `config.toml.prev` and `config.origin.json`, rollback, adopt, show and check.
+- `doctor` checks `config-sources`, `config-stale`, `config-drift`, `config-secret`, `config-host`; tick findings
+  `config-stale` and `config-drift`; `update` and `install` run the sync with `--no-pull`.
