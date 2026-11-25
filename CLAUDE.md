@@ -8,7 +8,9 @@ by step (`docs/design.md`, section 7.3).
 - `docs/design.md` is the approved design. It still says `agentctl`; read it as `headwork`. Section 8 lists the
   milestones.
 - `docs/research.md` and `docs/trials/` hold the research and trial results the design builds on.
-- `docs/decisions.md` records choices the design left open. Add a line there whenever you take one.
+- `docs/decisions/` records choices the design left open, one file per entry (`<date>-<slug>.md`); add one whenever you
+  take a choice. `docs/decisions.md` holds the entries up to 2026-11-25 and takes no new lines.
+- `docs/contention.md` is the analysis of concurrent tasks contending in one project and the plan that follows from it.
 
 ## Layout
 

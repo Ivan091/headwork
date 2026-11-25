@@ -1,7 +1,7 @@
 # Decisions
 
 Choices the design leaves open, taken without the user and open to revision. Newest last. Each line names the choice
-and the reason.
+and the reason. This log is closed: new decisions go into `docs/decisions/`, one file each (`docs/decisions/README.md`).
 
 - 2026-11-13 Licence: the repository stays private with no open-source licence ("All rights reserved"); the user can
   pick one later.
