@@ -142,7 +142,9 @@ messages pulse and nodes appear in the order they happened.
 - **Canvas:** the graph, force layout (the user node and the orchestrator start pinned top and in the middle, but the crossing reducer below may move them); each task one node, its parts joined
   to it by lines. Toggle a hierarchical layout (orchestrator → tasks → parts → subagents).
 - **Colour by state:** working green (a working task or live orchestrator also has a ring moving outward, still under `prefers-reduced-motion`), needs_user red, in_review amber, queued grey, closed faded (hidden by default
-  in live view). Node size by tokens (log scale) when "size by cost" is on.
+  in live view). The header checkbox "hide done" hides every faded node (closed or merged tasks, done jobs and subagents,
+  merged or closed pull requests, finished reviews, answered asks); it is on at first load, and a choice stored in
+  localStorage wins. Node size by tokens (log scale) when "size by cost" is on.
 - **Side panel on click:** the node's details from `/api/node/<id>`; a "focus" button keeps only its neighbourhood (two
   hops), like Neo4j Browser's expand.
 - **Filters:** project, task state, kinds (hide subagents, jobs, prs), time window, "only live".
