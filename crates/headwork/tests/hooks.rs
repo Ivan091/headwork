@@ -22,7 +22,7 @@ use headwork::ops::update::{Notice, UpdateState};
 use headwork::ops::waiting::FakeSlots;
 use headwork_adapters::git::{FakeGit, PrInfo, PrState};
 use headwork_adapters::host::fake::FakeHost;
-use headwork_core::review::Level;
+use headwork_core::review::{Level, ReviewTrigger};
 use headwork_core::usage::{Tokens, UsageLine};
 use headwork_core::{
     Actor, CloseMode, Config, Model, PermissionMode, Platform, ProjectName, ReviewState, Role,
@@ -3896,7 +3896,7 @@ fn board_and_status_show_a_running_review_under_its_lead() {
     let summary = w.store.review_summary(w.task.id).unwrap().unwrap();
     assert_eq!(
         summary.to_string(),
-        "review 1 code, level 1, round 1: running, 0 node(s) done, 0 running, 0 finding(s)",
+        "review 1 code, level 1, round 1: running, 0 node(s) over, 0 running, 0 finding(s)",
         "the board line"
     );
     let board = w.store.board(false).unwrap();
@@ -3917,9 +3917,127 @@ fn board_and_status_show_a_running_review_under_its_lead() {
         .unwrap();
     assert!(part.review.is_none(), "not repeated on the part");
     let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
+    let line = lines.iter().find(|line| line.task == "demo-sand").unwrap();
+    assert_eq!(
+        line.line, "demo-sand: working, in review (level 1)",
+        "the lead's own line"
+    );
+    assert_eq!(
+        line.review.as_ref().map(|review| review.state.as_str()),
+        Some("running"),
+        "the JSON review comes from the same review"
+    );
+}
+
+#[test]
+fn status_says_review_requested_until_the_review_starts() {
+    let mut w = world(REVIEWS, false);
+    w.start();
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "review 2" }),
+    );
+    let board = w.store.board(false).unwrap();
+    let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
+    let line = lines.iter().find(|line| line.task == "demo-sand").unwrap();
+    assert_eq!(line.line, "demo-sand: working, review requested (level 2)");
+}
+
+#[test]
+fn a_reviews_summary_counts_nodes_and_findings_over_its_rounds_and_ends_with_the_review() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let summary = |w: &World| w.store.review_summary(w.task.id).unwrap().unwrap();
+    let mut over = 0;
+    let mut running = 0;
+    let mut seen_running = false;
+    loop {
+        let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+        assert!(!is_error, "{text}");
+        let batch: Vec<Value> = json_of(&text)["nodes"].as_array().unwrap().clone();
+        if batch.is_empty() {
+            break;
+        }
+        running += batch.len();
+        if !seen_running {
+            seen_running = true;
+            let now = summary(&w);
+            assert_eq!(
+                (now.nodes_over, now.nodes_running, now.findings),
+                (0, u32::try_from(running).unwrap(), 0),
+                "nodes taken and running"
+            );
+        }
+        for node in batch {
+            let name = node["node"].as_str().unwrap();
+            let args = match name {
+                "correctness" => json!({ "node": name, "findings": [finding("off by one")] }),
+                "security" => json!({ "node": name, "failed": "the subagent timed out" }),
+                "verify" => json!({ "node": name, "item": node["item"], "verdict": "confirmed" }),
+                _ => json!({ "node": name, "findings": [] }),
+            };
+            let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
+            assert!(!is_error, "{text}");
+            running -= 1;
+            over += 1;
+        }
+    }
+    let now = summary(&w);
+    assert_eq!(
+        (now.round, now.nodes_over, now.nodes_running, now.findings),
+        (1, u32::try_from(over).unwrap(), 0, 1),
+        "round 1: done and failed nodes both over, one finding"
+    );
     assert!(
-        lines[0].line.ends_with(", in review (level 1)"),
-        "{}",
-        lines[0].line
+        now.to_string()
+            .contains(&format!("{over} node(s) over, 0 running, 1 finding(s)")),
+        "{now}"
+    );
+    let (is_error, text) = w.tool(me.clone(), "review_deliver", &json!({}));
+    assert!(!is_error, "{text}");
+    let id = json_of(&text)["findings"][0]["id"].as_i64().unwrap();
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), "fixed").unwrap();
+    git(&tree, &["commit", "-q", "-am", "fix"]);
+    let fix = json!({ "items": [{ "id": id, "action": "fixed", "note": "fixed" }] });
+    let (is_error, text) = w.tool(worker_identity(&w), "review_resolve", &fix);
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_verdict",
+        &json!({ "items": [{ "id": id, "fix": "accepted" }] }),
+    );
+    assert!(!is_error, "{text}");
+    let now = summary(&w);
+    assert_eq!(
+        (now.round, now.nodes_over, now.nodes_running, now.findings),
+        (2, 0, 0, 1),
+        "round 2 starts with no nodes and keeps round 1's finding"
+    );
+    let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
+    let batch = json_of(&text)["nodes"].as_array().unwrap().len();
+    let args = json!({ "node": "correctness", "findings": [finding("again")] });
+    let (is_error, text) = w.tool(me, "review_node_done", &args);
+    assert!(!is_error, "{text}");
+    let now = summary(&w);
+    assert_eq!(
+        (now.round, now.nodes_over, now.nodes_running, now.findings),
+        (2, 1, u32::try_from(batch).unwrap() - 1, 2),
+        "round 2: one node over, the rest running, findings over both rounds"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    w.store
+        .move_review(
+            review.id,
+            ReviewTrigger::Cancel,
+            false,
+            false,
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    assert!(
+        w.store.review_summary(w.task.id).unwrap().is_none(),
+        "a cancelled review has no summary"
     );
 }
