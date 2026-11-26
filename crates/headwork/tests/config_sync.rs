@@ -9,6 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use toml::Table;
+
 fn fixture() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
     let host = if cfg!(target_os = "macos") {
@@ -817,7 +819,19 @@ fn a_shared_file_that_differs_from_the_machine_is_overridden_in_the_machine_file
     assert!(written.status.success(), "{}", stderr(&written));
     let machine = std::fs::read_to_string(second_home.path().join("config.machine.toml")).unwrap();
     assert!(machine.contains("default = \"sonnet\""), "{machine}");
-    assert!(machine.contains("unset"), "{machine}");
+    let unset: Table = toml::from_str(&machine).unwrap();
+    let unset: Vec<&str> = unset["unset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(unset, ["leads", "project.elsewhere"], "{machine}");
+    let shown = headwork(second_home.path(), &["config", "show"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+    let rebuilt: Table = toml::from_str(&stdout(&shown)).unwrap();
+    let live: Table = toml::from_str(&fixture()).unwrap();
+    assert_eq!(rebuilt, live, "the merge reproduces the live config");
     let check = headwork(second_home.path(), &["config", "check"]);
     assert!(
         check.status.success(),
@@ -1044,4 +1058,28 @@ fn doctor_accepts_a_local_machine_file_alone_and_names_both_paths_when_neither_e
     let out = stdout(&none);
     assert!(out.contains("config.machine.toml (nor"), "{out}");
     assert!(out.contains("machines/test/headwork.toml"), "{out}");
+}
+
+#[test]
+fn a_kept_machine_file_that_does_not_reproduce_the_live_config_stops_the_adoption() {
+    let synced = adopted();
+    let machine = std::fs::read_to_string(synced.machine_file()).unwrap();
+    std::fs::write(
+        synced.machine_file(),
+        machine.replace("push = \"claude\"", "push = \"none\""),
+    )
+    .unwrap();
+    std::fs::remove_file(synced.home.path().join("sources.toml")).unwrap();
+    let repo = synced.repo.path().to_str().unwrap();
+    let refused = synced.run(&adopt_args("test", repo, true));
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("already there do not reproduce"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(
+        !synced.home.path().join("sources.toml").exists(),
+        "nothing written"
+    );
 }

@@ -1116,10 +1116,10 @@ fn uncovered_leaves(
     for (key, value) in wanted {
         prefix.push(key.clone());
         match (value, kept.get(key)) {
-            (Value::Table(inner), Some(Value::Table(kept_inner))) => {
+            (Value::Table(inner), Some(Value::Table(kept_inner))) if !inner.is_empty() => {
                 uncovered_leaves(inner, kept_inner, prefix, out);
             }
-            (Value::Table(inner), _) => {
+            (Value::Table(inner), _) if !inner.is_empty() => {
                 uncovered_leaves(inner, &Table::new(), prefix, out);
             }
             (leaf, Some(existing)) if existing == leaf => {}
@@ -1328,4 +1328,55 @@ pub fn after_install(home: &Home, exe: &Path, actor: Actor) -> Option<String> {
         Ok(report) => report.summary(),
         Err(error) => format!("config sync failed, the old config.toml stays: {error:#}"),
     })
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code")]
+mod overlay_tests {
+    use super::*;
+
+    fn table(text: &str) -> Table {
+        toml::from_str(text).unwrap()
+    }
+
+    fn uncovered(wanted: &str, kept: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        uncovered_leaves(&table(wanted), &table(kept), &mut Vec::new(), &mut out);
+        out.into_iter().map(|(path, _)| path.join(".")).collect()
+    }
+
+    fn extra(kept: &str, live: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        extra_paths(&table(kept), &table(live), &mut Vec::new(), &mut out);
+        out
+    }
+
+    #[test]
+    fn a_missing_empty_table_is_carried_as_a_leaf() {
+        assert_eq!(uncovered("[p.x.env]\n", "[p.x]\nk = 1\n"), ["p.x.env"]);
+    }
+
+    #[test]
+    fn equal_leaves_and_arrays_are_not_carried_and_different_ones_are() {
+        assert_eq!(
+            uncovered("a = [1, 2]\n[t]\nb = 1\n", "a = [1, 2]\n[t]\nb = 1\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(uncovered("a = [1, 3]\n", "a = [1, 2]\n"), ["a"]);
+    }
+
+    #[test]
+    fn a_live_leaf_over_a_shared_table_and_the_reverse_are_carried() {
+        assert_eq!(uncovered("a = 5\n", "[a]\nx = 1\n"), ["a"]);
+        assert_eq!(uncovered("[a]\nx = 1\n", "a = 5\n"), ["a.x"]);
+    }
+
+    #[test]
+    fn only_keys_missing_from_live_are_unset_and_nested_ones_are_found() {
+        assert_eq!(
+            extra("[a]\nx = 1\ny = 2\n[b]\nz = 1\n", "[a]\nx = 1\n"),
+            ["a.y", "b"]
+        );
+        assert_eq!(extra("a = 1\n", "[a]\nx = 1\n"), Vec::<String>::new());
+    }
 }
