@@ -72,7 +72,11 @@ impl StatusReview {
         if spent == 0 {
             format!("{words} (level {})", self.level)
         } else {
-            format!("{words} (level {}, {} review tokens)", self.level, short_count(spent))
+            format!(
+                "{words} (level {}, {} review tokens)",
+                self.level,
+                short_count(spent)
+            )
         }
     }
 }

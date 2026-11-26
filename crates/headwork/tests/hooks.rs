@@ -3926,7 +3926,7 @@ fn record_spend(w: &mut World, session: &str, id: &str, tokens: Tokens) {
 #[test]
 fn board_and_status_show_a_running_review_under_its_lead() {
     let mut w = world(REVIEWS, false);
-    let part = started_review(&mut w, 1);
+    let _part = started_review(&mut w, 1);
     let summary = w.store.review_summary(w.task.id).unwrap().unwrap();
     assert_eq!(
         summary.to_string(),
@@ -4051,7 +4051,7 @@ fn a_reviews_summary_counts_nodes_and_findings_over_its_rounds_and_ends_with_the
     );
     let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
     let batch = json_of(&text)["nodes"].as_array().unwrap().len();
-    let args = json!({ "node": "correctness", "findings": [finding("again")] });
+    let args = json!({ "node": "correctness", "findings": [finding_of("important", "again", 2)] });
     let (is_error, text) = w.tool(me, "review_node_done", &args);
     assert!(!is_error, "{text}");
     let now = summary(&w);
@@ -4074,7 +4074,12 @@ fn a_reviews_summary_counts_nodes_and_findings_over_its_rounds_and_ends_with_the
         w.store.review_summary(w.task.id).unwrap().is_none(),
         "a cancelled review has no summary"
     );
+}
 
+#[test]
+fn a_review_s_fresh_tokens_show_on_board_and_status_and_stay_after_it() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 1);
     let session = w.store.session_of(part.id).unwrap().unwrap().id;
     record_spend(
         &mut w,
