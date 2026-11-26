@@ -1,7 +1,7 @@
 # The to-do list in the store
 
-Status: Part A is built (the store, `headwork todo`, the orchestrator's tools, import, export, the spawn link). The
-"Needs you" digest that reads the list is a separate part, not built yet.
+Status: built (the store, `headwork todo`, the orchestrator's tools, import, export, the spawn link, and the "Needs you"
+digest of section 8).
 
 The user's to-do list of deferred work used to be one Markdown file, `S:/Code/todo.md`, edited by hand by the
 orchestrator. A session that read it had to re-parse prose; two sessions could overwrite each other; nothing tied an item
@@ -144,3 +144,46 @@ the item lines and the export outcome. Workers have none of them.
 The store is local to each machine. Two machines that both import the same `todo.md` and then change items would
 diverge; the export is what git carries, and only one machine (today the PC that runs the orchestrator) writes it. The
 other machine, if it ever needs the list, reads the file or imports it once; it does not export.
+
+## 8. "Needs you": what waits on the user
+
+`headwork digest [--json]` lists what waits on the user, at most ten lines with the header (`core/src/digest.rs`, pure;
+`ops/digest.rs` gathers the facts; the reads are in `store/src/digest.rs` and touch no network and no process). Empty
+when nothing waits. In order:
+
+1. `ask <id> <task>: <first words> (waiting 3h)`: asks pending or open, oldest first; an ask of the orchestrator says
+   `orchestrator`.
+2. `todo #<id>: <text, 80 characters> (due D)` or `(from D)`: open items whose due date is today or past, or whose
+   `not_before` is today or past, by date.
+3. `migration note <source>/<id>: <title>`: the notes the tick last found pending (its standing `migration-pending`
+   findings; nothing is fetched, so a machine whose tick never ran lists none).
+4. `pr <task>: <urls>`: open pull requests waiting for the user (definition below).
+5. `finding <kind> <task> (open 5h)`: standing tick findings older than `[digest] finding_hours` (default 3), except
+   pending notes.
+6. `todo #<id>: <text>`: the other open items of owner `user`.
+
+Items linked to a task, done or dropped, and items with a future `not_before` are left out. When more than nine items
+wait, eight show and the last line is `... and N more: headwork digest`.
+
+A pull request waits for the user when it is open in the `prs` rows, its task is `in_review`, and the task's newest
+session has ended or is marked as waiting on the user (`sessions.waiting_since`), or there is no session. The user is
+the one who can review or merge it; a session that still works on it is not waiting for anyone.
+
+Where it shows:
+
+- At the orchestrator's session start, after its rules. The rules fill most of the hook's 10,000 characters, so a digest
+  that does not fit whole is cut (fewer lines, then a one-line count), logged as `digest-deferred`, and handed over
+  complete with the session's first prompt (`digest-delivered`).
+- On top of `board` and `status` (the commands, not `--json`, and the orchestrator's tools of the same names), above
+  `headwork recap <name>`, in the orchestrator's mechanical recap a park stores, and at the top of the summary
+  `resume` writes (`recaps/park-<id>.md`).
+- Once a day, as a host notification: the tick's `digest` stage, when `[digest] push` is on (default), the local hour
+  is `[digest] push_hour` (default 9) or later, the digest is not empty and no `digest-pushed` event carries today's
+  local date. A host that is down sends nothing and logs nothing, so the next tick tries again.
+
+```toml
+[digest]
+finding_hours = 3
+push = true
+push_hour = 9
+```

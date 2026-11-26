@@ -161,6 +161,7 @@ the orchestrator's `todo_*` tools. `[todo] file` (machine-only) names the genera
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/todo-backups`
 first. `spawn --todo <id>` links an item to a task; `apply_in` finishes it when the task closes and frees it when the task
 is dropped or fails.
+The "Needs you" digest (`docs/todo.md`, section 8; `core/src/digest.rs` builds it, `store/src/digest.rs` reads, `ops/digest.rs` gathers) lists what waits on the user in at most ten lines: asks, to-do items due, migration notes the tick found, pull requests whose session ended, old findings, the user's open items. It leads the orchestrator's session start (deferred to its first prompt when the rules leave no room), `board`, `status`, the park recap and resume summary, and goes out once a day through the tick's `digest` stage (`[digest]`).
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -196,6 +197,7 @@ cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions
 cargo run -p headwork -- todo [list] [--project P] [--owner user|agent] [--state open|done|dropped|all] [--json]   # the to-do list kept in the store (docs/todo.md)
 cargo run -p headwork -- todo add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | done <id> [--note N] [--drop] | reopen <id> | edit <id> [...]
 cargo run -p headwork -- todo import [--file P] [--dry-run] | export [--file P]   # todo.md into the store (never deletes) and back out (backs up a hand-edited file)
+cargo run -p headwork -- digest [--json]   # "Needs you": asks, to-do items due, migration notes, waiting pull requests, old findings (docs/todo.md, section 8)
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- jobs              # the registered long-running jobs
