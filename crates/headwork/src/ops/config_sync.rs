@@ -1358,7 +1358,10 @@ mod overlay_tests {
 
     #[test]
     fn equal_leaves_and_arrays_are_not_carried_and_different_ones_are() {
-        assert!(uncovered("a = [1, 2]\n[t]\nb = 1\n", "a = [1, 2]\n[t]\nb = 1\n").is_empty());
+        assert_eq!(
+            uncovered("a = [1, 2]\n[t]\nb = 1\n", "a = [1, 2]\n[t]\nb = 1\n"),
+            Vec::<String>::new()
+        );
         assert_eq!(uncovered("a = [1, 3]\n", "a = [1, 2]\n"), ["a"]);
     }
 
@@ -1374,6 +1377,6 @@ mod overlay_tests {
             extra("[a]\nx = 1\ny = 2\n[b]\nz = 1\n", "[a]\nx = 1\n"),
             ["a.y", "b"]
         );
-        assert!(extra("a = 1\n", "[a]\nx = 1\n").is_empty());
+        assert_eq!(extra("a = 1\n", "[a]\nx = 1\n"), Vec::<String>::new());
     }
 }
