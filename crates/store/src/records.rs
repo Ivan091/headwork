@@ -252,6 +252,8 @@ pub struct Board {
     pub tasks: Vec<BoardTask>,
     /// Asks without a task, such as the orchestrator's.
     pub other_asks: Vec<AskRow>,
+    /// The tick findings that stand, oldest first.
+    pub findings: Vec<crate::OpenFinding>,
 }
 
 /// An event from the log.

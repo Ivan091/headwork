@@ -1094,6 +1094,7 @@ impl Store {
                 .into_iter()
                 .filter(|ask| ask.task_id.is_none())
                 .collect(),
+            findings: self.open_findings()?,
         })
     }
 

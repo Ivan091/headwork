@@ -268,8 +268,13 @@ impl<'b> Run<'_, 'b> {
         self.seen.entry(rule).or_default().push(key.to_owned());
         let actor = self.actor();
         let is_new = self.store.raise_finding(key, rule, task, detail, actor)?;
-        if is_new && let Some(text) = notice {
-            self.notify(text);
+        if let Some(text) = notice {
+            if is_new {
+                self.notify(text);
+            } else if self.retell_due(key, rule)? {
+                self.notify(&format!("Still open: {text}"));
+                self.store.note_finding_told(key, rule, task, actor)?;
+            }
         }
         self.report.lines.push(Line {
             rule,
@@ -278,6 +283,29 @@ impl<'b> Run<'_, 'b> {
             detail: detail.to_string(),
         });
         Ok(is_new)
+    }
+
+    fn tell_orchestrator(&mut self, text: String) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(0));
+        if !super::update::leave_tick_notice(self.env().home, now, text)? {
+            self.error(
+                "tick-notice",
+                None,
+                "the update lock stayed taken: the notice was not left",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn retell_due(&self, key: &str, rule: FindingId) -> Result<bool> {
+        let after = watch::retell_after(&self.env().config.watch, rule);
+        if after.is_none() {
+            return Ok(false);
+        }
+        let quiet = self.store.finding_quiet_s(key)?;
+        Ok(quiet.is_some_and(|quiet| watch::retell_due(quiet, after)))
     }
 
     fn sweep(&mut self, rule: FindingId) -> Result<()> {
@@ -498,6 +526,10 @@ impl<'b> Run<'_, 'b> {
                 Some(id),
                 serde_json::json!({ "after_s": age }),
             )?;
+            let name = self.name(id)?;
+            self.tell_orchestrator(format!(
+                "the tick failed {name}: its session did not start within {age} s."
+            ))?;
         }
         Ok(())
     }
@@ -666,6 +698,11 @@ impl<'b> Run<'_, 'b> {
                     Some(id),
                     serde_json::json!({ "from": state, "lost": cause.as_str() }),
                 )?;
+                let name = self.name(id)?;
+                self.tell_orchestrator(format!(
+                    "the tick marked {name} interrupted: its session was lost ({}) while it was {state}.",
+                    cause.as_str()
+                ))?;
             }
         }
         Ok(())
@@ -878,6 +915,10 @@ impl<'b> Run<'_, 'b> {
                 Some(id),
                 serde_json::json!({ "age_s": age }),
             )?;
+            self.tell_orchestrator(format!(
+                "the tick began closing {} after its pull request merged and the grace ran out.",
+                task.name
+            ))?;
         }
         self.sweep(FindingId::MergedGrace)
     }

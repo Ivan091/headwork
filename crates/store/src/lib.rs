@@ -50,7 +50,9 @@ pub use reviews::{
     ReviewSummary,
 };
 pub use sessions::{EndedSession, Launched, LivePids, Place};
-pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
+pub use tick::{
+    EVENT_FINDING_TOLD, OpenFinding, PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk,
+};
 pub use todos::{
     EVENT_TODO_ADDED, EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED, EVENT_TODO_EXPORTED,
     EVENT_TODO_IMPORTED, ImportCounts, TodoEdit, TodoFile, TodoFilter,

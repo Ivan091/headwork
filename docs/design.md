@@ -405,6 +405,7 @@ file_limit_gb = 20
 stuck_after_min = 30
 idle_free_merged_min = 30
 idle_free_review_min = 60
+retell_after_h = 6
 roots = ["~/.claude/projects", "{temp}", "S:/Code"]
 
 [models]

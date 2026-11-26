@@ -24,6 +24,22 @@ fn seconds(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
 
+/// The event that records the user was told again of a finding that still stands, with its `rule` and `key`.
+pub const EVENT_FINDING_TOLD: &str = "finding-told";
+
+/// A tick finding that stands, as `board` and `status` show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OpenFinding {
+    /// The rule, such as `stuck`.
+    pub rule: String,
+    /// The task, if the finding is about one.
+    pub task_id: Option<TaskId>,
+    /// The task's name, if the finding is about one.
+    pub task: Option<String>,
+    /// Seconds since it was first seen.
+    pub open_s: u64,
+}
+
 /// How old a session is and how long it has been quiet, as SQLite's clock sees them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SessionClock {
@@ -516,6 +532,82 @@ impl Store {
         }
         tx.commit()?;
         Ok(inserted > 0)
+    }
+
+    /// Seconds since the user was last told of the open finding with this key: its first sighting or the newest
+    /// `finding-told` event, whichever is later. None when no such finding is open.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn finding_quiet_s(&self, key: &str) -> Result<Option<u64>, StoreError> {
+        let first: Option<i64> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM findings WHERE key = ?1 AND resolved_at IS NULL",
+                    age_of("first_at")
+                ),
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(first) = first else {
+            return Ok(None);
+        };
+        let told: Option<i64> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM events WHERE type = ?1 AND json_extract(data, '$.key') = ?2
+                     ORDER BY id DESC LIMIT 1",
+                    age_of("at")
+                ),
+                params![EVENT_FINDING_TOLD, key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(Some(seconds(told.map_or(first, |told| told.min(first)))))
+    }
+
+    /// Records that the user was told again of an open finding.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn note_finding_told(
+        &self,
+        key: &str,
+        rule: FindingId,
+        task: Option<TaskId>,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let data = serde_json::json!({ "rule": rule, "key": key });
+        insert_event(&self.conn, actor, task, None, EVENT_FINDING_TOLD, &data)?;
+        Ok(())
+    }
+
+    /// The open findings, oldest first, with their task's name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn open_findings(&self) -> Result<Vec<OpenFinding>, StoreError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT f.rule, f.task_id, t.project || '-' || t.slug, {}
+             FROM findings f LEFT JOIN tasks t ON t.id = f.task_id
+             WHERE f.resolved_at IS NULL ORDER BY f.id",
+            age_of("f.first_at")
+        ))?;
+        let rows = statement.query_map([], |row| {
+            Ok(OpenFinding {
+                rule: row.get(0)?,
+                task_id: row.get::<_, Option<i64>>(1)?.map(TaskId),
+                task: row.get(2)?,
+                open_s: seconds(row.get(3)?),
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// The keys of the open findings of a rule, oldest first.

@@ -560,9 +560,11 @@ fn waiting_parts(store: &Store, task: Option<&Task>) -> Result<String> {
 /// read now waits for the next prompt.
 fn update_notices(home: &Home) -> String {
     let mut text = String::new();
-    for notice in super::update::take_notices(home).unwrap_or_default() {
-        text.push_str("\nheadwork update: ");
-        text.push_str(&notice);
+    for notice in super::update::take_notice_entries(home).unwrap_or_default() {
+        text.push_str("\nheadwork ");
+        text.push_str(notice.source.as_deref().unwrap_or("update"));
+        text.push_str(": ");
+        text.push_str(&notice.text);
         text.push_str(" Tell the user with a push notification.");
     }
     text

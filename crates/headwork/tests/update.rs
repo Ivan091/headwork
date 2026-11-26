@@ -1181,6 +1181,7 @@ fn notices_wait_while_an_update_holds_the_lock_and_keep_the_newest() {
         .map(|n| Notice {
             at: "2026-11-22T12:00:00Z".to_owned(),
             text: format!("notice {n}"),
+            source: None,
         })
         .collect();
     UpdateState {
@@ -1225,6 +1226,7 @@ fn notices_are_taken_when_the_lock_is_released_within_the_grace() {
         notices: vec![Notice {
             at: "2026-11-22T12:00:00Z".to_owned(),
             text: "waited for".to_owned(),
+            source: None,
         }],
         ..UpdateState::default()
     }
