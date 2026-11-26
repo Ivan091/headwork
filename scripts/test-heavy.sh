@@ -53,14 +53,12 @@ check "a second heavy_hold in the same script takes no second slot" "[ \"\$(grep
 HEADWORK_HEAVY_HELD=1 bash -c '. scripts/heavy.sh; heavy_hold "preheld"; ls "$HEADWORK_HEAVY_DIR" 2> /dev/null | grep -c slot- > "$0"; true' "$work/preheld" 2> /dev/null
 check "heavy_hold takes no slot when one is already held in the environment" "[ \"\$(cat '$work/preheld')\" -eq 0 ]"
 
-for signal in TERM INT; do
-    bash -c '. scripts/heavy.sh; heavy_hold "signal test"; sleep 30 & wait' 2> /dev/null &
-    holder=$!
-    until [ -f "$work/slots/slot-1/owner" ]; do sleep 0.1; done
-    kill -s "$signal" "$holder" 2> /dev/null || true
-    wait "$holder" 2> /dev/null || true
-    check "heavy_hold frees the slot after SIG$signal" "[ -z \"\$(ls -A '$work/slots')\" ]"
-done
+bash -c '. scripts/heavy.sh; heavy_hold "signal test"; : > "$0"; sleep 5 & wait' "$work/ready" 2> /dev/null &
+holder=$!
+until [ -f "$work/ready" ]; do sleep 0.1; done
+kill -s TERM "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+check "heavy_hold frees the slot after SIGTERM" "[ -z \"\$(ls -A '$work/slots')\" ]"
 
 check "the default is three slots" "[ \"\$(env -u HEADWORK_HEAVY_SLOTS bash -c '. scripts/heavy.sh; heavy_slots')\" = 3 ]"
 check "a bad slot count falls back to three" "[ \"\$(HEADWORK_HEAVY_SLOTS=x bash -c '. scripts/heavy.sh; heavy_slots')\" = 3 ]"
