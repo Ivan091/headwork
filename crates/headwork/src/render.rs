@@ -1306,7 +1306,7 @@ mod tests {
         let (store, _) = store();
         let text = super::board_with(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
             Some("Gates: cpu 0/3 \u{b7} gpu 0/2\n"),
         );

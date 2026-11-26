@@ -557,7 +557,11 @@ const TOOLS: &[ToolDef] = &[
                     "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
                     "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
                     "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
-                    "gate": { "type": "string", "enum": ["cpu", "gpu"], "description": "The machine-wide gate the job holds a slot of while it runs: cpu for builds, renders and scans, gpu for training. job_start waits for a free slot; job_register takes a free one for the pid, else warns." },
+                    "gate": {
+                        "type": "string",
+                        "enum": ["cpu", "gpu"],
+                        "description": "The machine-wide gate the job holds a slot of: cpu (builds, renders, scans) or gpu (training)."
+                    },
                     "heavy": { "type": "boolean", "description": "Older spelling of gate cpu; gate wins when both are given." },
                 }),
                 &["label", "argv"],
@@ -580,7 +584,11 @@ const TOOLS: &[ToolDef] = &[
                     "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
                     "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
                     "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
-                    "gate": { "type": "string", "enum": ["cpu", "gpu"], "description": "The machine-wide gate the job holds a slot of while it runs: cpu for builds, renders and scans, gpu for training. job_start waits for a free slot; job_register takes a free one for the pid, else warns." },
+                    "gate": {
+                        "type": "string",
+                        "enum": ["cpu", "gpu"],
+                        "description": "The machine-wide gate the job holds a slot of: cpu (builds, renders, scans) or gpu (training)."
+                    },
                     "heavy": { "type": "boolean", "description": "Older spelling of gate cpu; gate wins when both are given." },
                 }),
                 &["label", "argv"],
