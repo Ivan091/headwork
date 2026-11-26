@@ -440,7 +440,23 @@ fn flows_check(d: &Doctor<'_>, config: &Config) -> Check {
         );
     }
     let detail = format!("broken flows: {}", broken.join(", "));
-    let fix = "fix or remove the file under <home>/flows; `headwork flow check` shows each problem";
+    let from_home = reports
+        .iter()
+        .any(|report| !report.ok() && matches!(report.origin, super::flows::Origin::Home(_)));
+    let from_builtin = reports
+        .iter()
+        .any(|report| !report.ok() && report.origin == super::flows::Origin::Builtin);
+    let fix = match (from_home, from_builtin) {
+        (true, true) => {
+            "fix or remove the files under <home>/flows and update headwork; `headwork flow check` shows each problem"
+        }
+        (true, false) => {
+            "fix or remove the file under <home>/flows; `headwork flow check` shows each problem"
+        }
+        (false, _) => {
+            "a built-in flow is broken: run `headwork update`; `headwork flow check` shows each problem"
+        }
+    };
     if config.reviews.enabled {
         Check::fail("flows", detail, fix)
     } else {

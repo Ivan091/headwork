@@ -173,8 +173,14 @@ fn sources(home: &Path) -> BTreeMap<String, (Origin, Result<String, String>)> {
         }
     }
     let dir = home_flows_dir(home);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return found;
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return found,
+        Err(error) => {
+            let problem = format!("reading {}: {error}", dir.display());
+            found.insert("flows/".to_owned(), (Origin::Home(dir), Err(problem)));
+            return found;
+        }
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(Result::ok)
