@@ -10,6 +10,16 @@ use super::{Decision, RuleId};
 /// The cargo subcommands that keep the machine busy.
 const HEAVY_CARGO: &[&str] = &["build", "test", "clippy", "bench"];
 
+/// Cargo options before the subcommand whose value is the next word.
+const CARGO_VALUE_OPTIONS: &[&str] = &[
+    "--manifest-path",
+    "--config",
+    "--color",
+    "--explain",
+    "-C",
+    "-Z",
+];
+
 /// The refusal's text.
 const HINT: &str = "heavy work outside a gate: run it as `headwork gate run cpu -- <the command>`; a gated check may wait \
                     for a free slot, so run long ones in the background (`job_start` with `gate: \"cpu\"`)";
@@ -31,26 +41,31 @@ fn is_gate_command(command: &SimpleCommand) -> bool {
         && args.iter().skip(2).any(|word| word == "--")
 }
 
-/// `scripts/heavy.sh <command>`, the older wrapper.
+/// `scripts/heavy.sh <command>`, the older wrapper, by its file name.
 fn is_heavy_wrapper(command: &SimpleCommand) -> bool {
-    ends_with_script(command, "heavy.sh")
+    command.program_name() == "heavy.sh"
 }
 
+/// `check.sh` by its file name (`precheck.sh` is not it), or a heavy cargo subcommand.
 fn is_heavy(command: &SimpleCommand) -> bool {
-    ends_with_script(command, "check.sh") || is_heavy_cargo(command)
-}
-
-fn ends_with_script(command: &SimpleCommand, script: &str) -> bool {
-    command.program().replace('\\', "/").ends_with(script)
+    command.program_name() == "check.sh" || is_heavy_cargo(command)
 }
 
 fn is_heavy_cargo(command: &SimpleCommand) -> bool {
-    if command.program_name() != "cargo" {
-        return false;
+    command.program_name() == "cargo"
+        && cargo_subcommand(command.args()).is_some_and(|sub| HEAVY_CARGO.contains(&sub))
+}
+
+/// The first word after cargo's `+toolchain` and its global options, the value of an option in
+/// [`CARGO_VALUE_OPTIONS`] skipped with it.
+fn cargo_subcommand(args: &[String]) -> Option<&str> {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if CARGO_VALUE_OPTIONS.contains(&word.as_str()) {
+            words.next();
+        } else if !word.starts_with('+') && !word.starts_with('-') {
+            return Some(word);
+        }
     }
-    command
-        .args()
-        .iter()
-        .find(|word| !word.starts_with('+') && !word.starts_with('-'))
-        .is_some_and(|sub| HEAVY_CARGO.contains(&sub.as_str()))
+    None
 }
