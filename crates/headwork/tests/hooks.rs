@@ -1296,10 +1296,10 @@ fn mcp_tools_follow_the_role() {
             "config_sync",
             "migrate_list",
             "migrate_mark",
-            "todo_list",
-            "todo_add",
-            "todo_done",
-            "todo_edit",
+            "backlog_list",
+            "backlog_add",
+            "backlog_done",
+            "backlog_edit",
             "rules",
             "rule_add",
             "rule_retire",
@@ -3918,8 +3918,8 @@ fn the_user_s_review_command_clears_the_plan() {
 fn the_orchestrators_session_start_ends_with_the_digest_within_the_hook_limit() {
     let mut w = world("", false);
     w.store
-        .add_todo(
-            &digest_todo("Review the invented draft"),
+        .add_backlog_item(
+            &digest_backlog_item("Review the invented draft"),
             Actor::Orchestrator,
         )
         .unwrap();
@@ -3952,11 +3952,11 @@ fn the_orchestrators_session_start_ends_with_the_digest_within_the_hook_limit() 
     );
 }
 
-fn digest_todo(text: &str) -> headwork_core::todo::TodoDraft {
-    let mut draft = headwork_core::todo::parse(&format!("## demo\n\n- [ ] For you: {text}\n"))
+fn digest_backlog_item(text: &str) -> headwork_core::backlog::BacklogDraft {
+    let mut draft = headwork_core::backlog::parse(&format!("## demo\n\n- [ ] For you: {text}\n"))
         .items
         .remove(0);
-    draft.state = headwork_core::todo::TodoState::Open;
+    draft.state = headwork_core::backlog::BacklogState::Open;
     draft
 }
 
@@ -3964,13 +3964,16 @@ fn digest_todo(text: &str) -> headwork_core::todo::TodoDraft {
 fn the_orchestrators_board_and_status_tools_start_with_the_digest_and_a_workers_board_does_not() {
     let mut w = world("", false);
     w.store
-        .add_todo(&digest_todo("Sign the invented form"), Actor::Orchestrator)
+        .add_backlog_item(
+            &digest_backlog_item("Sign the invented form"),
+            Actor::Orchestrator,
+        )
         .unwrap();
     for tool in ["board", "status"] {
         let (is_error, text) = w.tool(orchestrator_identity(), tool, &json!({}));
         assert!(!is_error, "{text}");
         assert!(
-            text.starts_with("Needs you\n- todo #1: Sign the invented form\n"),
+            text.starts_with("Needs you\n- backlog #1: Sign the invented form\n"),
             "{tool}: {text}"
         );
     }

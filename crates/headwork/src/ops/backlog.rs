@@ -1,4 +1,4 @@
-//! The to-do list in the store and its `todo.md` (`docs/todo.md`): the changes the CLI and the orchestrator's tools make,
+//! The backlog list in the store and its `backlog.md` (`docs/backlog.md`): the changes the CLI and the orchestrator's tools make,
 //! the import of the file, and the export that writes it back.
 //!
 //! The store is the source; the file is a copy git carries. An export never writes a file that was not imported first
@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use headwork_core::todo::{
-    self, ExportFacts, ExportPlan, Todo, TodoDate, TodoDraft, TodoOwner, TodoState, Unparsed,
-    clean_note,
+use headwork_core::backlog::{
+    self, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogState, ExportFacts,
+    ExportPlan, Unparsed, clean_note,
 };
 use headwork_core::{Actor, Config};
-use headwork_store::{ImportCounts, Store, Task, TaskId, TodoEdit, TodoFilter};
+use headwork_store::{BacklogEdit, BacklogFilter, ImportCounts, Store, Task, TaskId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -23,22 +23,27 @@ use super::{Env, slashed, stage_file};
 use crate::home::Home;
 
 /// The event an export logs when it replaced a file edited by hand since the last export; it names the copy.
-pub const EVENT_EXPORT_OVERWROTE: &str = "todo-export-overwrote";
+pub const EVENT_EXPORT_OVERWROTE: &str = "backlog-export-overwrote";
+
+/// The event an export logs when it wrote a file used for the first time while another file was used before; it names
+/// both and whether the old one got the pointer line.
+pub const EVENT_BACKLOG_MOVED: &str = "backlog-moved";
 
 /// The event a close logs when the export that followed it failed; the close itself stands.
-pub const EVENT_EXPORT_FAILED: &str = "todo-export-failed";
+pub const EVENT_EXPORT_FAILED: &str = "backlog-export-failed";
 
-/// The folder in the home folder that holds the copies of overwritten files.
-pub const TODO_BACKUP_DIR: &str = "todo-backups";
+/// The folder in the home folder that holds the copies of overwritten files. The folder `todo-backups` of earlier builds is
+/// left where it is: never listed, pruned, moved or deleted.
+pub const BACKLOG_BACKUP_DIR: &str = "backlog-backups";
 
 /// How many copies of overwritten files are kept.
-pub const TODO_BACKUPS_KEPT: usize = 10;
+pub const BACKLOG_BACKUPS_KEPT: usize = 10;
 
 /// What an export did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "export", rename_all = "snake_case")]
 pub enum Export {
-    /// No file is set: neither `[todo] file` nor `--file`.
+    /// No file is set: neither `[backlog] file` nor `--file`.
     Unconfigured,
     /// The content equals the last export; nothing was written.
     Unchanged,
@@ -48,6 +53,8 @@ pub enum Export {
         path: String,
         /// The copy of the file as it was, when someone had edited it since the last export.
         backup: Option<String>,
+        /// The file used before, when this export was the first to this file.
+        moved: Option<Moved>,
     },
     /// The file exists and was never imported, so nothing was written.
     NotImported {
@@ -68,22 +75,58 @@ impl Export {
     #[must_use]
     pub fn summary(&self) -> String {
         match self {
-            Self::Unconfigured => "no to-do file is set ([todo] file), nothing exported".to_owned(),
-            Self::Unchanged => "the to-do file is up to date".to_owned(),
-            Self::Written { path, backup: None } => format!("exported to {path}"),
+            Self::Unconfigured => {
+                "no backlog file is set ([backlog] file), nothing exported".to_owned()
+            }
+            Self::Unchanged => "the backlog file is up to date".to_owned(),
             Self::Written {
                 path,
-                backup: Some(backup),
-            } => format!(
-                "exported to {path}; the file differed from the last export (edited by hand, or never exported), a copy is in {backup}"
-            ),
+                backup,
+                moved,
+            } => {
+                let mut line = format!("exported to {path}");
+                if let Some(backup) = backup {
+                    line.push_str(
+                        "; the file differed from the last export (edited by hand, or never exported), a copy is in ",
+                    );
+                    line.push_str(backup);
+                }
+                if let Some(moved) = moved {
+                    line.push_str(&moved.summary());
+                }
+                line
+            }
             Self::NotImported { path } => {
                 format!(
-                    "{path} exists and was never imported: run `headwork todo import` first; nothing exported"
+                    "{path} exists and was never imported: run `headwork backlog import` first; nothing exported"
                 )
             }
             Self::Busy => "another export is running; nothing exported".to_owned(),
             Self::Failed { error } => format!("export failed: {error}"),
+        }
+    }
+}
+
+/// The file an export moved away from: the one used before, left in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Moved {
+    /// The file used before.
+    pub from: String,
+    /// Whether it now holds the pointer line (`[backlog] leave_pointer`).
+    pub pointer: bool,
+    /// The copy of its text taken before the pointer replaced it.
+    pub backup: Option<String>,
+}
+
+impl Moved {
+    fn summary(&self) -> String {
+        match (&self.backup, self.pointer) {
+            (Some(backup), true) => format!(
+                "; moved from {}, which now points here (its text is in {backup})",
+                self.from
+            ),
+            (None, true) => format!("; moved from {}, which now points here", self.from),
+            (_, false) => format!("; moved from {}, left as it was", self.from),
         }
     }
 }
@@ -139,11 +182,11 @@ pub struct AddRequest {
     /// A `###` subheading.
     pub section: Option<String>,
     /// Who acts; the user when the text starts with `For you:`, an agent otherwise, when absent.
-    pub owner: Option<TodoOwner>,
+    pub owner: Option<BacklogOwner>,
     /// The first day it may start.
-    pub not_before: Option<TodoDate>,
+    pub not_before: Option<BacklogDate>,
     /// The day it is due.
-    pub due: Option<TodoDate>,
+    pub due: Option<BacklogDate>,
     /// Sub-bullets.
     pub notes: Vec<String>,
 }
@@ -208,14 +251,14 @@ fn absolute(path: &Path) -> PathBuf {
     }
 }
 
-/// The file the to-do list is exported to and imported from: `file` when given, else `[todo] file`.
+/// The file the backlog list is exported to and imported from: `file` when given, else `[backlog] file`.
 ///
 /// The path is made absolute, and resolved when it exists, so that every way of naming one file is the same record in the
 /// store.
 #[must_use]
 pub fn target(home: &Home, config: &Config, file: Option<&Path>) -> Option<PathBuf> {
     file.map(Path::to_path_buf)
-        .or_else(|| config.todo.file.as_deref().map(|path| home.expand(path)))
+        .or_else(|| config.backlog.file.as_deref().map(|path| home.expand(path)))
         .map(|path| absolute(&path))
 }
 
@@ -229,7 +272,7 @@ fn backup_copies(dir: &Path) -> Result<Vec<PathBuf>> {
             && path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("todo-"));
+                .is_some_and(|name| name.starts_with("backlog-"));
         if is_copy {
             copies.push(path);
         }
@@ -247,7 +290,7 @@ struct Aside {
 /// Copies `path` to the backup folder unless a kept copy already holds the same content (`content_hash`), so a write that
 /// keeps failing makes one copy of a hand edit, not one per attempt.
 fn copy_aside(home: &Home, path: &Path, content_hash: &str) -> Result<Aside> {
-    let dir = home.root().join(TODO_BACKUP_DIR);
+    let dir = home.root().join(BACKLOG_BACKUP_DIR);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut copies = backup_copies(&dir)?;
     for kept in copies.iter().rev() {
@@ -261,12 +304,12 @@ fn copy_aside(home: &Home, path: &Path, content_hash: &str) -> Result<Aside> {
             });
         }
     }
-    let copy = dir.join(format!("todo-{:015}.md", millis()));
+    let copy = dir.join(format!("backlog-{:015}.md", millis()));
     std::fs::copy(path, &copy)
         .with_context(|| format!("copying {} to {}", path.display(), copy.display()))?;
     copies.push(copy.clone());
     copies.sort();
-    let surplus = copies.len().saturating_sub(TODO_BACKUPS_KEPT);
+    let surplus = copies.len().saturating_sub(BACKLOG_BACKUPS_KEPT);
     for old in copies.into_iter().take(surplus) {
         std::fs::remove_file(&old).with_context(|| format!("removing {}", old.display()))?;
     }
@@ -274,7 +317,7 @@ fn copy_aside(home: &Home, path: &Path, content_hash: &str) -> Result<Aside> {
 }
 
 /// The export lock file in the home folder.
-pub const EXPORT_LOCK_FILE: &str = "todo-export.lock";
+pub const EXPORT_LOCK_FILE: &str = "backlog-export.lock";
 
 /// How long an export waits for the lock another export holds.
 pub const EXPORT_LOCK_WAIT: Duration = Duration::from_secs(5);
@@ -330,11 +373,11 @@ fn take_export_lock(home: &Home, wait: Duration, stale: Duration) -> Result<Opti
     }
 }
 
-/// Writes the to-do list to its file when the content changed since the last export.
+/// Writes the backlog list to its file when the content changed since the last export.
 ///
 /// A file that exists but was never imported (and was never exported by headwork) is left alone. A file whose content is
-/// not what the last export wrote was edited by hand: it is copied to `<home>/todo-backups` once the new content is
-/// written to a temp file, and `todo-export-overwrote` is logged; a failed write makes no copy and no event.
+/// not what the last export wrote was edited by hand: it is copied to `<home>/backlog-backups` once the new content is
+/// written to a temp file, and `backlog-export-overwrote` is logged; a failed write makes no copy and no event.
 ///
 /// # Errors
 ///
@@ -366,9 +409,10 @@ fn export_locked(
         return Ok(Export::Busy);
     };
     let key = slashed(&path);
-    let text = todo::render(&store.todos(&TodoFilter::default())?);
+    let text = backlog::render(&store.backlog_items(&BacklogFilter::default())?);
     let new_hash = hash(&text);
-    let record = store.todo_file(&key)?;
+    let record = store.backlog_file(&key)?;
+    let first_use = record.is_none();
     let file_exists = path.exists();
     let on_disk_hash = if file_exists {
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -387,7 +431,7 @@ fn export_locked(
         on_disk_hash: on_disk_hash.as_deref(),
         new_hash: &new_hash,
     };
-    match todo::plan_export(&facts) {
+    match backlog::plan_export(&facts) {
         ExportPlan::Unchanged => Ok(Export::Unchanged),
         ExportPlan::NotImported => Ok(Export::NotImported { path: key }),
         ExportPlan::Write { back_up } => {
@@ -416,10 +460,63 @@ fn export_locked(
                 None
             };
             staged.commit()?;
-            store.record_todo_export(&key, &new_hash, actor)?;
-            Ok(Export::Written { path: key, backup })
+            store.record_backlog_export(&key, &new_hash, actor)?;
+            let moved = if first_use {
+                move_away(store, home, config, &key, actor)?
+            } else {
+                None
+            };
+            Ok(Export::Written {
+                path: key,
+                backup,
+                moved,
+            })
         }
     }
+}
+
+/// After the first export to `key`: the file used before it (exported, else imported), left in place, and given the
+/// pointer line when `[backlog] leave_pointer` is on and it exists, after a copy of its text goes to the backup folder.
+/// Logs `backlog-moved`; nothing when no other file was used.
+fn move_away(
+    store: &Store,
+    home: &Home,
+    config: &Config,
+    key: &str,
+    actor: Actor,
+) -> Result<Option<Moved>> {
+    let Some(old) = store.backlog_files()?.into_iter().find(|file| {
+        file.path != key && (file.imported_at.is_some() || file.export_hash.is_some())
+    }) else {
+        return Ok(None);
+    };
+    let old_path = PathBuf::from(&old.path);
+    let line = backlog::pointer_line(key);
+    let mut moved = Moved {
+        from: old.path,
+        pointer: false,
+        backup: None,
+    };
+    if config.backlog.leave_pointer && old_path.is_file() {
+        let bytes =
+            std::fs::read(&old_path).with_context(|| format!("reading {}", old_path.display()))?;
+        let text = String::from_utf8_lossy(&bytes);
+        if text != line {
+            let staged = stage_file(&old_path, &line)?;
+            let aside = copy_aside(home, &old_path, &hash(&text))?;
+            staged.commit()?;
+            moved.backup = Some(slashed(&aside.copy));
+        }
+        moved.pointer = true;
+    }
+    store.append_event(
+        actor,
+        None,
+        None,
+        EVENT_BACKLOG_MOVED,
+        &serde_json::json!({ "from": moved.from, "to": key, "pointer": moved.pointer, "backup": moved.backup }),
+    )?;
+    Ok(Some(moved))
 }
 
 /// The export that follows a change: a failure comes back as [`Export::Failed`], never as an error, because the change
@@ -431,7 +528,7 @@ pub fn export_after(store: &mut Store, env: &Env<'_>) -> Export {
 }
 
 /// Called after every close: exports (a no-op when nothing changed, so a close that finished no item writes nothing). A
-/// failed export logs `todo-export-failed` with the error and never fails the close.
+/// failed export logs `backlog-export-failed` with the error and never fails the close.
 pub fn after_close(store: &mut Store, env: &Env<'_>) {
     if let Export::Failed { error } = export_after(store, env) {
         drop(store.append_event(
@@ -444,9 +541,9 @@ pub fn after_close(store: &mut Store, env: &Env<'_>) {
     }
 }
 
-fn changed(store: &mut Store, env: &Env<'_>, items: &[Todo]) -> Change {
+fn changed(store: &mut Store, env: &Env<'_>, items: &[BacklogItem]) -> Change {
     Change {
-        items: items.iter().map(Todo::line).collect(),
+        items: items.iter().map(BacklogItem::line).collect(),
         export: export_after(store, env),
     }
 }
@@ -466,17 +563,17 @@ pub fn import(
     actor: Actor,
 ) -> Result<ImportReport> {
     let Some(path) = target(home, config, file) else {
-        bail!("no to-do file: set [todo] file in the config or pass --file");
+        bail!("no backlog file: set [backlog] file in the config or pass --file");
     };
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     let text = String::from_utf8(bytes)
         .with_context(|| format!("{} is not valid UTF-8", path.display()))?;
-    let parsed = todo::parse(&text);
+    let parsed = backlog::parse(&text);
     let key = slashed(&path);
     let counts = if dry_run {
-        store.todo_import_plan(&parsed.items)?
+        store.backlog_import_plan(&parsed.items)?
     } else {
-        store.import_todos(&key, &parsed.items, actor)?
+        store.import_backlog_items(&key, &parsed.items, actor)?
     };
     Ok(ImportReport {
         path: key,
@@ -494,9 +591,9 @@ pub fn import(
 /// Fails when a field cannot be written to the file (empty, several lines, a project that starts with `#`, Done or
 /// Dropped) or the store fails.
 pub fn add(store: &mut Store, env: &Env<'_>, request: &AddRequest) -> Result<Change> {
-    let found = todo::normalize(request.text.trim());
-    let today = store.todo_today()?;
-    let draft = TodoDraft {
+    let found = backlog::normalize(request.text.trim());
+    let today = store.backlog_today()?;
+    let draft = BacklogDraft {
         project: request.project.trim().to_owned(),
         section: request
             .section
@@ -504,15 +601,15 @@ pub fn add(store: &mut Store, env: &Env<'_>, request: &AddRequest) -> Result<Cha
             .map(|section| section.trim().to_owned()),
         text: found.text,
         notes: request.notes.iter().map(|note| clean_note(note)).collect(),
-        state: TodoState::Open,
-        owner: request.owner.or(found.owner).unwrap_or(TodoOwner::Agent),
+        state: BacklogState::Open,
+        owner: request.owner.or(found.owner).unwrap_or(BacklogOwner::Agent),
         added: found.added.or(Some(today)),
         not_before: request.not_before.clone().or(found.not_before),
         due: request.due.clone().or(found.due),
         done_on: None,
         done_note: None,
     };
-    let item = store.add_todo(&draft, env.actor)?;
+    let item = store.add_backlog_item(&draft, env.actor)?;
     Ok(changed(store, env, &[item]))
 }
 
@@ -528,7 +625,7 @@ pub fn finish(
     note: Option<&str>,
     drop: bool,
 ) -> Result<Change> {
-    let item = store.finish_todo(id, note, drop, env.actor)?;
+    let item = store.finish_backlog_item(id, note, drop, env.actor)?;
     Ok(changed(store, env, &[item]))
 }
 
@@ -538,7 +635,7 @@ pub fn finish(
 ///
 /// Fails when the item is unknown or already open, or the store fails.
 pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
-    let item = store.reopen_todo(id, env.actor)?;
+    let item = store.reopen_backlog_item(id, env.actor)?;
     Ok(changed(store, env, &[item]))
 }
 
@@ -550,10 +647,10 @@ pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
 /// # Errors
 ///
 /// Fails when the item is unknown, a field cannot be written to the file, or the store fails.
-pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &TodoEdit) -> Result<Change> {
+pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &BacklogEdit) -> Result<Change> {
     let mut edit = edit.clone();
     if let Some(text) = &edit.text {
-        let found = todo::normalize(text.trim());
+        let found = backlog::normalize(text.trim());
         edit.text = Some(found.text);
         edit.owner = edit.owner.or(found.owner);
         edit.added = found.added;
@@ -565,11 +662,11 @@ pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &TodoEdit) -> Resul
         .section
         .map(|section| section.map(|section| section.trim().to_owned()));
     edit.append = edit.append.map(|note| clean_note(&note));
-    let item = store.edit_todo(id, &edit, env.actor)?;
+    let item = store.edit_backlog_item(id, &edit, env.actor)?;
     Ok(changed(store, env, &[item]))
 }
 
-/// What spawning a task for a to-do item did.
+/// What spawning a task for a backlog item did.
 #[derive(Debug)]
 pub struct LinkedSpawn {
     /// The task.
@@ -580,7 +677,7 @@ pub struct LinkedSpawn {
     pub unlinked: Option<String>,
 }
 
-/// `spawn` for a task that comes from a to-do item.
+/// `spawn` for a task that comes from a backlog item.
 ///
 /// The check that the item is open and that no live task holds it runs before the spawn; the link runs after it. A link
 /// refused after the task started leaves the task running unlinked and says so in [`LinkedSpawn::unlinked`], so the
@@ -596,16 +693,16 @@ pub fn spawn_linked(
     item: Option<i64>,
 ) -> Result<LinkedSpawn> {
     if let Some(id) = item {
-        store.check_todo_linkable(id)?;
+        store.check_backlog_linkable(id)?;
     }
     let (task, pumped) = spawn(store, env, request)?;
     let mut unlinked = None;
     if let Some(id) = item {
-        match store.link_todo(id, TaskId(task.id.0), env.actor) {
+        match store.link_backlog_item(id, TaskId(task.id.0), env.actor) {
             Ok(_) => drop(export_after(store, env)),
             Err(error) => {
                 unlinked = Some(format!(
-                    "task {} runs without a link to to-do item {id}: {error}",
+                    "task {} runs without a link to backlog item {id}: {error}",
                     task.name
                 ));
             }
@@ -626,15 +723,15 @@ pub fn spawn_linked(
 pub fn list(
     store: &Store,
     project: Option<&str>,
-    owner: Option<TodoOwner>,
+    owner: Option<BacklogOwner>,
     state: Option<&str>,
-) -> Result<Vec<Todo>> {
+) -> Result<Vec<BacklogItem>> {
     let state = match state {
-        None | Some("open") => Some(TodoState::Open),
+        None | Some("open") => Some(BacklogState::Open),
         Some("all") => None,
         Some(other) => Some(other.parse()?),
     };
-    Ok(store.todos(&TodoFilter {
+    Ok(store.backlog_items(&BacklogFilter {
         project: project.map(str::to_owned),
         owner,
         state,
@@ -655,16 +752,16 @@ mod tests {
     #[test]
     fn a_verbatim_prefix_is_removed_but_a_network_path_is_kept() {
         assert_eq!(
-            without_verbatim_prefix(PathBuf::from(r"\\?\C:\x\todo.md")),
-            PathBuf::from(r"C:\x\todo.md")
+            without_verbatim_prefix(PathBuf::from(r"\\?\C:\x\backlog.md")),
+            PathBuf::from(r"C:\x\backlog.md")
         );
         assert_eq!(
-            without_verbatim_prefix(PathBuf::from(r"\\?\UNC\host\share\todo.md")),
-            PathBuf::from(r"\\?\UNC\host\share\todo.md")
+            without_verbatim_prefix(PathBuf::from(r"\\?\UNC\host\share\backlog.md")),
+            PathBuf::from(r"\\?\UNC\host\share\backlog.md")
         );
         assert_eq!(
-            without_verbatim_prefix(PathBuf::from("/x/todo.md")),
-            PathBuf::from("/x/todo.md")
+            without_verbatim_prefix(PathBuf::from("/x/backlog.md")),
+            PathBuf::from("/x/backlog.md")
         );
     }
 
@@ -677,7 +774,7 @@ mod tests {
     fn a_hand_edit_is_copied_once_however_often_the_copy_is_asked_for() {
         let dir = tempfile::tempdir().unwrap();
         let home = home_at(dir.path());
-        let file = dir.path().join("todo.md");
+        let file = dir.path().join("backlog.md");
         std::fs::write(&file, "edited by hand\n").unwrap();
         let content = hash("edited by hand\n");
         let first = copy_aside(&home, &file, &content).unwrap();

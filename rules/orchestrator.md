@@ -97,9 +97,12 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 - `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
   once both are done. A dependent of a dropped task stays queued forever: re-point or drop it.
 
-## To-do
+## Backlog
 
-- The to-do list lives in the store: `todo_list`, `todo_add`, `todo_done`, `todo_edit`. Never edit `todo.md` by hand; it
-  is regenerated. Commit and push it in code-home after a change.
-- A task that comes from an item gets its id as `todo` in `spawn`.
+- The backlog lives in the store: `backlog_list`, `backlog_add`, `backlog_done`, `backlog_edit`. Never edit
+  `backlog.md` by hand; it is regenerated. Commit and push it in code-home after a change.
+- A task that comes from an item gets its id as `backlog` in `spawn`.
 - Act on the "Needs you" digest shown at start and on `board`.
+- Groom with the `headwork:grooming` skill when the user asks for a plan or what to do next, or when the digest shows
+  backlog items no task owns; after the user's go on a wave, `headwork:planning` writes the briefs, spawns and follows
+  it through.

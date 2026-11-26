@@ -3,6 +3,7 @@
 //! Nothing here performs I/O; the store and the binary feed it data and act on its decisions.
 
 pub mod admission;
+pub mod backlog;
 pub mod clean;
 pub mod config;
 pub mod config_layers;
@@ -21,7 +22,6 @@ pub mod reap;
 pub mod removal;
 pub mod review;
 pub mod slots;
-pub mod todo;
 pub mod update;
 pub mod usage;
 pub mod user_go;
@@ -30,8 +30,8 @@ pub mod watch;
 
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{
-    Config, ConfigError, DigestConfig, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig,
-    ProjectOverlay, REVIEW_KIND, ReviewsConfig, SILENT_KIND, TodoConfig, UpdateConfig,
+    BacklogConfig, Config, ConfigError, DigestConfig, LayoutConfig, LayoutMode, LeadsConfig,
+    ProjectConfig, ProjectOverlay, REVIEW_KIND, ReviewsConfig, SILENT_KIND, UpdateConfig,
 };
 pub use flags::{DecidedBy, DecisionError, FlagDecision, FlagPrompt, PlanMoment, PlannedReview};
 pub use guard::{Decision, Verdict};

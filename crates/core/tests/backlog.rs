@@ -1,22 +1,24 @@
-//! The to-do reader and renderer against `tests/fixtures/todo.md`, and a round trip over random items.
+//! The backlog reader and renderer against `tests/fixtures/backlog.md`, and a round trip over random items.
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly on a bad fixture")]
 
 use std::path::Path;
 
-use headwork_core::todo::{Parsed, Todo, TodoDate, TodoDraft, TodoOwner, TodoState, parse, render};
+use headwork_core::backlog::{
+    BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogState, Parsed, parse, render,
+};
 use proptest::prelude::*;
 
 fn fixture() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/todo.md");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/backlog.md");
     std::fs::read_to_string(path).unwrap()
 }
 
-fn rows(drafts: &[TodoDraft]) -> Vec<Todo> {
+fn rows(drafts: &[BacklogDraft]) -> Vec<BacklogItem> {
     drafts
         .iter()
         .zip(1..)
-        .map(|(draft, id)| Todo {
+        .map(|(draft, id)| BacklogItem {
             id,
             position: id,
             task: None,
@@ -25,7 +27,7 @@ fn rows(drafts: &[TodoDraft]) -> Vec<Todo> {
         .collect()
 }
 
-fn count(parsed: &Parsed, state: TodoState) -> usize {
+fn count(parsed: &Parsed, state: BacklogState) -> usize {
     parsed
         .items
         .iter()
@@ -36,14 +38,14 @@ fn count(parsed: &Parsed, state: TodoState) -> usize {
 #[test]
 fn the_fixture_has_exact_counts() {
     let parsed = parse(&fixture());
-    assert_eq!(count(&parsed, TodoState::Open), 9, "open");
-    assert_eq!(count(&parsed, TodoState::Done), 6, "done");
-    assert_eq!(count(&parsed, TodoState::Dropped), 4, "dropped");
+    assert_eq!(count(&parsed, BacklogState::Open), 9, "open");
+    assert_eq!(count(&parsed, BacklogState::Done), 6, "done");
+    assert_eq!(count(&parsed, BacklogState::Dropped), 4, "dropped");
     assert_eq!(parsed.items.len(), 19, "all");
     let owners = parsed
         .items
         .iter()
-        .filter(|item| item.owner == TodoOwner::User)
+        .filter(|item| item.owner == BacklogOwner::User)
         .count();
     assert_eq!(owners, 2, "For you items");
 }
@@ -79,16 +81,19 @@ fn the_fixture_fields_come_out_as_written() {
     let reels = by_text("Uploads: retry");
     assert_eq!(
         reels.not_before,
-        Some(TodoDate::parse("2026-12-15").unwrap())
+        Some(BacklogDate::parse("2026-12-15").unwrap())
     );
-    assert_eq!(reels.due, Some(TodoDate::parse("2026-12-31").unwrap()));
-    assert_eq!(reels.added, Some(TodoDate::parse("2026-11-11").unwrap()));
+    assert_eq!(reels.due, Some(BacklogDate::parse("2026-12-31").unwrap()));
+    assert_eq!(reels.added, Some(BacklogDate::parse("2026-11-11").unwrap()));
     assert!(!reels.text.contains('('), "{}", reels.text);
     let platform = by_text("Platform:");
-    assert_eq!(platform.due, Some(TodoDate::parse("2026-12-01").unwrap()));
+    assert_eq!(
+        platform.due,
+        Some(BacklogDate::parse("2026-12-01").unwrap())
+    );
     assert_eq!(platform.notes.len(), 2, "notes");
     let restore = by_text("me-sim: add the restore");
-    assert_eq!(restore.state, TodoState::Done);
+    assert_eq!(restore.state, BacklogState::Done);
     assert_eq!(
         restore.done_note.as_deref(),
         Some("me-sim PR #403; not yet run for real")
@@ -101,9 +106,9 @@ fn the_fixture_fields_come_out_as_written() {
         "{}",
         audit.text
     );
-    assert_eq!(audit.added, Some(TodoDate::parse("2026-11-17").unwrap()));
+    assert_eq!(audit.added, Some(BacklogDate::parse("2026-11-17").unwrap()));
     let open_with_done = by_text("Still open");
-    assert_eq!(open_with_done.state, TodoState::Open);
+    assert_eq!(open_with_done.state, BacklogState::Open);
     assert!(
         open_with_done.text.contains("(done 2026-11-16"),
         "kept in an open item"
@@ -116,18 +121,18 @@ fn the_fixture_fields_come_out_as_written() {
     let superseded = by_text("decide the training goal");
     assert_eq!(
         superseded.state,
-        TodoState::Done,
+        BacklogState::Done,
         "a group that starts with done is done"
     );
     assert_eq!(
         superseded.done_note.as_deref(),
         Some("superseded, user chose another line")
     );
-    assert_eq!(superseded.owner, TodoOwner::User);
+    assert_eq!(superseded.owner, BacklogOwner::User);
     let attribution = by_text("Check attribution");
     assert_eq!(
         attribution.done_on,
-        Some(TodoDate::parse("2026-11-22").unwrap())
+        Some(BacklogDate::parse("2026-11-22").unwrap())
     );
 }
 
@@ -140,7 +145,7 @@ fn the_fixture_round_trips_through_the_renderer() {
     let wanted: Vec<_> = parsed
         .items
         .iter()
-        .filter(|item| item.state != TodoState::Dropped)
+        .filter(|item| item.state != BacklogState::Dropped)
         .collect();
     assert_eq!(again.items.len(), wanted.len(), "{written}");
     for want in wanted {
@@ -164,15 +169,15 @@ fn word() -> impl Strategy<Value = String> {
     "[A-Za-z][A-Za-z0-9:#,.-]{0,8}"
 }
 
-fn day() -> impl Strategy<Value = Option<TodoDate>> {
+fn day() -> impl Strategy<Value = Option<BacklogDate>> {
     proptest::option::of(
         (2020..2030_u32, 1..13_u32, 1..29_u32).prop_map(|(year, month, day)| {
-            TodoDate::parse(&format!("{year}-{month:02}-{day:02}")).unwrap()
+            BacklogDate::parse(&format!("{year}-{month:02}-{day:02}")).unwrap()
         }),
     )
 }
 
-fn draft() -> impl Strategy<Value = TodoDraft> {
+fn draft() -> impl Strategy<Value = BacklogDraft> {
     (
         proptest::collection::vec(word(), 1..6),
         proptest::bool::ANY,
@@ -186,21 +191,21 @@ fn draft() -> impl Strategy<Value = TodoDraft> {
             |(words, user, open, (added, not_before, due), note, notes, section)| {
                 let text = words.join(" ");
                 let state = if open {
-                    TodoState::Open
+                    BacklogState::Open
                 } else {
-                    TodoState::Done
+                    BacklogState::Done
                 };
                 let done_on = (!open).then(|| added.clone()).flatten();
-                TodoDraft {
+                BacklogDraft {
                     project: "proj".to_owned(),
                     section: open.then_some(section).flatten(),
                     text,
                     notes,
                     state,
                     owner: if user {
-                        TodoOwner::User
+                        BacklogOwner::User
                     } else {
-                        TodoOwner::Agent
+                        BacklogOwner::Agent
                     },
                     added,
                     not_before: open.then_some(not_before).flatten(),
@@ -218,7 +223,7 @@ fn draft() -> impl Strategy<Value = TodoDraft> {
 proptest! {
     #[test]
     fn render_then_parse_keeps_text_state_owner_and_dates(drafts in proptest::collection::vec(draft(), 1..8)) {
-        let drafts: Vec<TodoDraft> = drafts
+        let drafts: Vec<BacklogDraft> = drafts
             .into_iter()
             .enumerate()
             .map(|(index, mut draft)| {
@@ -229,9 +234,9 @@ proptest! {
         let written = render(&rows(&drafts));
         let again = parse(&written);
         prop_assert!(again.unparsed.is_empty(), "{:?}\n{}", again.unparsed, written);
-        let open: Vec<&TodoDraft> = drafts.iter().filter(|d| d.state == TodoState::Open).collect();
-        let done: Vec<&TodoDraft> = drafts.iter().filter(|d| d.state == TodoState::Done).collect();
-        let mut expected: Vec<&TodoDraft> = open;
+        let open: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.state == BacklogState::Open).collect();
+        let done: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.state == BacklogState::Done).collect();
+        let mut expected: Vec<&BacklogDraft> = open;
         expected.extend(done);
         prop_assert_eq!(again.items.len(), expected.len(), "{}", written);
         for want in expected {
@@ -248,7 +253,7 @@ proptest! {
 #[test]
 fn a_line_split_off_an_item_is_joined_back_and_reported() {
     let parsed = parse(
-        "# To-do\n\n## me-sim\n\n- [x] repoint the task at C:/x\r\nelease-hourly.vbs (done 2026-11-16: moved)\n",
+        "# Backlog\n\n## me-sim\n\n- [x] repoint the task at C:/x\r\nelease-hourly.vbs (done 2026-11-16: moved)\n",
     );
     assert_eq!(parsed.items.len(), 1, "{:?}", parsed.items);
     let item = &parsed.items[0];

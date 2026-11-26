@@ -20,6 +20,8 @@ pub const MACHINE_ONLY: &[&str] = &[
     "hooks.brief_writable",
     "hooks.plugin_dir",
     "watch.roots",
+    "backlog.file",
+    "backlog.leave_pointer",
     "todo.file",
 ];
 
@@ -837,7 +839,24 @@ mod tests {
             ("[hooks]\nbrief_writable = []\n", "hooks.brief_writable"),
             ("[hooks]\nplugin_dir = \"x\"\n", "hooks.plugin_dir"),
             ("[watch]\nroots = []\n", "watch.roots"),
-            ("[todo]\nfile = \"S:/x/todo.md\"\n", "todo.file"),
+            (
+                "[backlog]
+file = \"S:/x/backlog.md\"
+",
+                "backlog.file",
+            ),
+            (
+                "[backlog]
+leave_pointer = true
+",
+                "backlog.leave_pointer",
+            ),
+            (
+                "[todo]
+file = \"S:/x/backlog.md\"
+",
+                "todo.file",
+            ),
         ];
         for (text, key) in cases {
             let error = run(text, "", None).unwrap_err();

@@ -3,6 +3,7 @@
 //! Every state change goes through [`Store`], which asks [`headwork_core`] for the decision and writes the result and
 //! its event in one transaction. Refusals are logged as events too, so a wrong deny can be debugged from the log.
 
+mod backlog;
 mod backup;
 mod digest;
 mod error;
@@ -18,7 +19,6 @@ mod reports;
 mod reviews;
 mod sessions;
 mod tick;
-mod todos;
 mod usage;
 mod waiting;
 
@@ -27,6 +27,11 @@ use std::path::Path;
 use headwork_core::{Actor, MachineMode};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
+pub use backlog::{
+    BacklogEdit, BacklogFile, BacklogFilter, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE,
+    EVENT_BACKLOG_DROPPED, EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED,
+    ImportCounts,
+};
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use digest::EVENT_DIGEST_PUSHED;
 pub use error::StoreError;
@@ -52,10 +57,6 @@ pub use reviews::{
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{
     EVENT_FINDING_TOLD, OpenFinding, PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk,
-};
-pub use todos::{
-    EVENT_TODO_ADDED, EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED, EVENT_TODO_EXPORTED,
-    EVENT_TODO_IMPORTED, ImportCounts, TodoEdit, TodoFile, TodoFilter,
 };
 pub use usage::{
     ByModel, EVENT_HELPER_SESSION, EVENT_USAGE_ROLLED_UP, FileMark, RoleDelegation, RolledUp,

@@ -318,10 +318,10 @@ pub struct Config {
     /// Reviews on the user's word (`docs/review-flows.md`).
     #[serde(default)]
     pub reviews: ReviewsConfig,
-    /// The to-do list (`docs/todo.md`).
-    #[serde(default)]
-    pub todo: TodoConfig,
-    /// The "Needs you" digest (`docs/todo.md`).
+    /// The backlog list (`docs/backlog.md`).
+    #[serde(default, alias = "todo")]
+    pub backlog: BacklogConfig,
+    /// The "Needs you" digest (`docs/backlog.md`).
     #[serde(default)]
     pub digest: DigestConfig,
     /// Projects by name.
@@ -868,15 +868,17 @@ impl Default for UpdateConfig {
     }
 }
 
-/// `[todo]`: the file the to-do list is exported to (`docs/todo.md`).
+/// `[backlog]`: the file the backlog list is exported to (`docs/backlog.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-pub struct TodoConfig {
-    /// The `todo.md` to export to after every change; no export while this is unset. `~` is expanded.
+pub struct BacklogConfig {
+    /// The `backlog.md` to export to after every change; no export while this is unset. `~` is expanded.
     pub file: Option<String>,
+    /// Write a one-line pointer into the previously imported file when the export moves to a new file.
+    pub leave_pointer: bool,
 }
 
-/// `[digest]`: the "Needs you" digest (`docs/todo.md`).
+/// `[digest]`: the "Needs you" digest (`docs/backlog.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DigestConfig {
@@ -1008,6 +1010,12 @@ impl Config {
             })
             .map(|(section, old, new)| (format!("{section}.{old}"), format!("{section}.{new}")))
             .collect();
+        if let Some(keys) = table.get("todo").and_then(toml::Value::as_table) {
+            found.extend(
+                keys.keys()
+                    .map(|key| (format!("todo.{key}"), format!("backlog.{key}"))),
+            );
+        }
         if let Some(projects) = table.get("project").and_then(toml::Value::as_table) {
             found.extend(
                 projects

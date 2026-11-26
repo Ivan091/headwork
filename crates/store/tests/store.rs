@@ -2533,3 +2533,64 @@ fn two_leads_share_the_project_slots_without_a_part_limit() {
         "the other lead's part waits for the project's slots: {error}"
     );
 }
+
+#[test]
+fn the_backlog_migration_renames_the_tables_and_the_event_types_and_keeps_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 26);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO todos (id, project, text, state, owner, position, created_at, updated_at)
+             VALUES (1, 'demo', 'Keep me', 'open', 'user', 1, 't', 't');
+         INSERT INTO todo_files (path, imported_at) VALUES ('S:/x/todo.md', 't');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'todo-added', '{}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'todo-export-failed', '{}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'tick-error', '{}')",
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.schema_version().unwrap(),
+        i64::try_from(MIGRATIONS.len()).unwrap()
+    );
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let text: String = conn
+        .query_row("SELECT text FROM backlog_items WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(text, "Keep me");
+    let file: String = conn
+        .query_row("SELECT path FROM backlog_files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(file, "S:/x/todo.md");
+    let mut statement = conn.prepare("SELECT type FROM events ORDER BY id").unwrap();
+    let kinds: Vec<String> = statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        kinds,
+        ["backlog-added", "backlog-export-failed", "tick-error"]
+    );
+    let old_tables: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('todos', 'todo_files', 'todos_by_task')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_tables, 0);
+    let index: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'backlog_items_by_task'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}

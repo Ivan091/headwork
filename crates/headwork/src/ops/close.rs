@@ -604,7 +604,7 @@ fn finish_claimed(
             store.supersede_asks(id, env.actor)?;
             record_usage_total(store, env, id);
             update_after_close(store, env, &task);
-            super::todo::after_close(store, env);
+            super::backlog::after_close(store, env);
             report(store, id, None)
         }
         Err(StoreError::Refused { refusal, .. }) => report(store, id, Some(refusal.to_string())),

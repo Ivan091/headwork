@@ -1,6 +1,6 @@
 # 2026-11-26: the "Needs you" digest reads only what the store already holds
 
-The digest (`docs/todo.md`, section 8) is built from store reads alone, so the hook, `board`, `status` and the recaps
+The digest (`docs/backlog.md`, section 8) is built from store reads alone, so the hook, `board`, `status` and the recaps
 stay fast. Pull requests that wait for the user are the open `prs` rows of a task in `in_review` whose newest session
 ended, never existed or is marked waiting on the user: only then is nobody else going to act on them. Pending migration
 notes are the tick's standing `migration-pending` findings; `doctor` and `migrate list` fetch, the digest does not, and

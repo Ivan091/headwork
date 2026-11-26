@@ -1,14 +1,14 @@
-//! The "Needs you" digest (`docs/todo.md`): gathers the facts from the store, builds the digest with
+//! The "Needs you" digest (`docs/backlog.md`): gathers the facts from the store, builds the digest with
 //! `headwork_core::digest`, and decides when the tick pushes it.
 //!
 //! Nothing here fetches from the network or starts a process, so the hook, `board`, `status` and the recaps can show it
 //! at no cost. Pending migration notes are the ones the tick last stored as findings.
 
 use anyhow::Result;
+use headwork_core::backlog::BacklogState;
 use headwork_core::digest::{Digest, Facts, build};
-use headwork_core::todo::TodoState;
 use headwork_core::{Actor, Config};
-use headwork_store::{EVENT_DIGEST_PUSHED, Store, TodoFilter};
+use headwork_store::{BacklogFilter, EVENT_DIGEST_PUSHED, Store};
 
 use super::rules::CONTEXT_LIMIT;
 
@@ -18,14 +18,14 @@ use super::rules::CONTEXT_LIMIT;
 ///
 /// Returns the store's failure.
 pub fn digest(store: &Store, config: &Config) -> Result<Digest> {
-    let todos = store.todos(&TodoFilter {
-        state: Some(TodoState::Open),
-        ..TodoFilter::default()
+    let backlog_items = store.backlog_items(&BacklogFilter {
+        state: Some(BacklogState::Open),
+        ..BacklogFilter::default()
     })?;
     Ok(build(&Facts {
-        today: store.todo_today()?,
+        today: store.backlog_today()?,
         asks: store.digest_asks()?,
-        todos,
+        backlog_items,
         notes: store.digest_notes()?,
         prs: store.digest_prs()?,
         findings: store.digest_findings()?,

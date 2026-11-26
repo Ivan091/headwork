@@ -196,7 +196,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("update", Run::update)?;
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
-    run.stage("todo", Run::todo)?;
+    run.stage("backlog", Run::backlog)?;
     run.stage("digest", Run::digest)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
@@ -366,26 +366,26 @@ impl<'b> Run<'_, 'b> {
         self.sweep(FindingId::ConfigDrift)
     }
 
-    /// Writes the to-do list to its file when the store changed since the last export (a safety net for changes made while
+    /// Writes the backlog list to its file when the store changed since the last export (a safety net for changes made while
     /// no export was possible). A failed export is the stage's error, so it becomes a `tick-error` finding and the later
-    /// stages still run. A file that exists and was never imported stays quiet here on purpose: setting `[todo] file` is
-    /// followed by the import step of the migration note, `headwork todo export` and every todo command report it loudly,
+    /// stages still run. A file that exists and was never imported stays quiet here on purpose: setting `[backlog] file` is
+    /// followed by the import step of the migration note, `headwork backlog export` and every backlog command report it loudly,
     /// and a tick finding would nag a machine that set the key on purpose before importing. An export that finds the lock
     /// held by another one is quiet too: the next tick tries again.
-    fn todo(&mut self) -> Result<()> {
+    fn backlog(&mut self) -> Result<()> {
         let env = self.env();
         let (home, config, actor) = (env.home, env.config, self.actor());
-        match super::todo::export(self.store, home, config, None, actor)? {
-            super::todo::Export::Failed { error } => bail!("{error}"),
-            super::todo::Export::Unconfigured
-            | super::todo::Export::Unchanged
-            | super::todo::Export::Written { .. }
-            | super::todo::Export::Busy
-            | super::todo::Export::NotImported { .. } => Ok(()),
+        match super::backlog::export(self.store, home, config, None, actor)? {
+            super::backlog::Export::Failed { error } => bail!("{error}"),
+            super::backlog::Export::Unconfigured
+            | super::backlog::Export::Unchanged
+            | super::backlog::Export::Written { .. }
+            | super::backlog::Export::Busy
+            | super::backlog::Export::NotImported { .. } => Ok(()),
         }
     }
 
-    /// Pushes the "Needs you" digest once a day (`docs/todo.md`) through the host notification the findings use. A host
+    /// Pushes the "Needs you" digest once a day (`docs/backlog.md`) through the host notification the findings use. A host
     /// that is down sends nothing and logs nothing, so the next tick tries again.
     fn digest(&mut self) -> Result<()> {
         if !self.report.host_up {

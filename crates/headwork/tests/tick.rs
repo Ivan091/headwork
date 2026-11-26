@@ -2700,24 +2700,24 @@ fn a_queued_task_on_a_gone_dependency_is_told_once_and_logged_once() {
     assert_eq!(state(&w, &dependent), TaskState::Queued, "still queued");
 }
 
-fn todo_world(file: &str) -> World {
-    let text = format!("\n[todo]\nfile = \"{file}\"\n");
+fn backlog_world(file: &str) -> World {
+    let text = format!("\n[backlog]\nfile = \"{file}\"\n");
     world_extra(false, 10, &text)
 }
 
 #[test]
 fn the_tick_exports_what_the_store_gained_while_no_export_ran() {
     let folder = tempfile::tempdir().unwrap();
-    let file = folder.path().join("todo.md");
-    std::fs::write(&file, "# To-do\n").unwrap();
+    let file = folder.path().join("backlog.md");
+    std::fs::write(&file, "# Backlog\n").unwrap();
     let slashed = file.display().to_string().replace('\\', "/");
-    let mut w = todo_world(&slashed);
-    headwork::ops::todo::import(&mut w.store, &w.home, &w.config, None, false, Actor::User)
+    let mut w = backlog_world(&slashed);
+    headwork::ops::backlog::import(&mut w.store, &w.home, &w.config, None, false, Actor::User)
         .unwrap();
-    let pending = headwork_core::todo::parse("## demo\n\n- [ ] Pending item\n")
+    let pending = headwork_core::backlog::parse("## demo\n\n- [ ] Pending item\n")
         .items
         .remove(0);
-    w.store.add_todo(&pending, Actor::User).unwrap();
+    w.store.add_backlog_item(&pending, Actor::User).unwrap();
     let report = run_tick(&mut w);
     assert!(
         !rules(&report)
@@ -2728,10 +2728,10 @@ fn the_tick_exports_what_the_store_gained_while_no_export_ran() {
     );
     let written = std::fs::read_to_string(&file).unwrap();
     assert!(written.contains("- [ ] Pending item"), "{written}");
-    assert_eq!(count(&w, "todo-exported"), 1);
+    assert_eq!(count(&w, "backlog-exported"), 1);
     run_tick(&mut w);
     assert_eq!(
-        count(&w, "todo-exported"),
+        count(&w, "backlog-exported"),
         1,
         "a second tick writes nothing"
     );
@@ -2741,9 +2741,9 @@ fn the_tick_exports_what_the_store_gained_while_no_export_ran() {
 fn a_failing_export_is_a_tick_error_and_the_later_stages_still_run() {
     let folder = tempfile::tempdir().unwrap();
     std::fs::write(folder.path().join("blocker"), "a file, not a folder").unwrap();
-    let file = folder.path().join("blocker").join("todo.md");
+    let file = folder.path().join("blocker").join("backlog.md");
     let slashed = file.display().to_string().replace('\\', "/");
-    let mut w = todo_world(&slashed);
+    let mut w = backlog_world(&slashed);
     let report = run_tick(&mut w);
     assert!(
         rules(&report).contains(&(FindingId::TickError, Status::Standing)),
@@ -2754,7 +2754,7 @@ fn a_failing_export_is_a_tick_error_and_the_later_stages_still_run() {
         w.store
             .open_finding_keys(FindingId::TickError)
             .unwrap()
-            .contains(&"tick-error:stage:todo".to_owned()),
+            .contains(&"tick-error:stage:backlog".to_owned()),
         "the finding names the stage"
     );
     assert!(report.usage.is_some(), "the stage after it ran");
@@ -2766,11 +2766,13 @@ fn the_tick_pushes_the_digest_once_a_day_when_something_waits_on_the_user() {
     run_tick(&mut w);
     assert!(!notified(&w, "Needs you"), "nothing waits");
     let mut draft =
-        headwork_core::todo::parse("## demo\n\n- [ ] For you: Read the invented note\n")
+        headwork_core::backlog::parse("## demo\n\n- [ ] For you: Read the invented note\n")
             .items
             .remove(0);
-    draft.state = headwork_core::todo::TodoState::Open;
-    w.store.add_todo(&draft, Actor::Orchestrator).unwrap();
+    draft.state = headwork_core::backlog::BacklogState::Open;
+    w.store
+        .add_backlog_item(&draft, Actor::Orchestrator)
+        .unwrap();
     run_tick(&mut w);
     assert!(notified(&w, "Needs you"), "{:?}", w.host.calls());
     assert_eq!(count(&w, "digest-pushed"), 1, "logged");
