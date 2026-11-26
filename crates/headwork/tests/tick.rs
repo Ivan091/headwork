@@ -2171,3 +2171,78 @@ fn a_repository_that_cannot_be_read_keeps_its_findings_and_raises_a_tick_error()
         "the error names the repository"
     );
 }
+
+#[test]
+fn a_queued_task_on_a_gone_dependency_is_told_once_and_logged_once() {
+    let mut w = world();
+    let gone = spawn_task(&mut w, "engine");
+    let request = SpawnRequest {
+        request: TaskRequest {
+            project: ProjectName::new("demo").unwrap(),
+            slug: Slug::new("scene").unwrap(),
+            kind: "task".to_owned(),
+            model: Some(Model::Haiku),
+            effort: None,
+            in_main: false,
+            keep: false,
+            close: headwork_core::CloseMode::Confirm,
+            review: None,
+            decision: None,
+        },
+        brief: &w.brief,
+        depends_on: Some(gone.id),
+        permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
+    };
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new("S:/bin/headwork.exe"),
+        actor: Actor::User,
+    };
+    let dependent = spawn(&mut w.store, &env, &request).unwrap().0;
+    w.store.drop_task(gone.id, Actor::Orchestrator).unwrap();
+
+    let first = run_tick(&mut w);
+    assert!(
+        rules(&first).contains(&(FindingId::DeadDependency, Status::Standing)),
+        "{:?}",
+        first.lines
+    );
+    assert!(notified(&w, "never merge"), "{:?}", w.host.calls());
+    let board = w.store.board(false).unwrap();
+    let entry = board
+        .tasks
+        .iter()
+        .find(|entry| entry.task.id == dependent.id)
+        .unwrap();
+    assert_eq!(
+        entry.dead_dependency.as_deref(),
+        Some("demo-engine (dropped)"),
+        "board"
+    );
+
+    let notices = |w: &World| {
+        w.host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("notify") && c.contains("never merge"))
+            .count()
+    };
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(notices(&w), 1, "told once");
+    let gone_refusals = w
+        .store
+        .events(EventFilter {
+            task: None,
+            limit: 10_000,
+        })
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == "refused" && e.data.to_string().contains("is gone"))
+        .count();
+    assert_eq!(gone_refusals, 1, "one refusal logged, not one per tick");
+    assert_eq!(state(&w, &dependent), TaskState::Queued, "still queued");
+}

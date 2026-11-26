@@ -230,6 +230,18 @@ fn waiting_sessions_free_slots_up_to_the_overflow() {
 }
 
 #[test]
+fn a_gone_dependency_has_its_own_refusal() {
+    assert_eq!(
+        refused_start(StartFacts {
+            dependency: Dependency::Gone,
+            ..FREE
+        }),
+        Refusal::DependencyGone,
+        "gone dependency"
+    );
+}
+
+#[test]
 fn start_guards() {
     assert_eq!(
         refused_start(StartFacts {
@@ -724,7 +736,8 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
     let dependency = prop_oneof![
         Just(Dependency::None),
         Just(Dependency::Merged),
-        Just(Dependency::Waiting)
+        Just(Dependency::Waiting),
+        Just(Dependency::Gone)
     ];
     let fable = prop_oneof![
         Just(FableGate::NotNeeded),
@@ -882,7 +895,7 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
                 && !f.main_only_kind_busy
                 && f.part_slots
                     .is_none_or(|slots| slots.live < slots.max_parts)
-                && f.dependency != Dependency::Waiting
+                && !matches!(f.dependency, Dependency::Waiting | Dependency::Gone)
                 && f.fable != FableGate::Waiting
         }
         Trigger::SessionStarted(f) => f.session_matches && f.launcher_alive,
