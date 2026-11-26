@@ -9,24 +9,30 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use headwork_core::todo::{self, Todo, TodoDate, TodoDraft, TodoOwner, TodoState, Unparsed};
+use headwork_core::todo::{
+    self, ExportFacts, ExportPlan, Todo, TodoDate, TodoDraft, TodoOwner, TodoState, Unparsed,
+    clean_note,
+};
 use headwork_core::{Actor, Config};
-use headwork_store::{ImportCounts, Store, TaskId, TodoEdit, TodoFilter};
+use headwork_store::{ImportCounts, Store, Task, TaskId, TodoEdit, TodoFilter};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::spawn::{Pumped, SpawnRequest, spawn};
-use super::{Env, slashed};
+use super::{Env, slashed, stage_file};
 use crate::home::Home;
 
 /// The event an export logs when it replaced a file edited by hand since the last export; it names the copy.
 pub const EVENT_EXPORT_OVERWROTE: &str = "todo-export-overwrote";
 
+/// The event a close logs when the export that followed it failed; the close itself stands.
+pub const EVENT_EXPORT_FAILED: &str = "todo-export-failed";
+
 /// The folder in the home folder that holds the copies of overwritten files.
-pub const BACKUP_DIR: &str = "todo-backups";
+pub const TODO_BACKUP_DIR: &str = "todo-backups";
 
 /// How many copies of overwritten files are kept.
-pub const BACKUPS_KEPT: usize = 10;
+pub const TODO_BACKUPS_KEPT: usize = 10;
 
 /// What an export did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,11 +131,11 @@ impl ImportReport {
 pub struct AddRequest {
     /// The area heading.
     pub project: String,
-    /// The item text.
+    /// The item text; date groups in it become the fields and a `For you:` prefix the owner, as in an import.
     pub text: String,
     /// A `###` subheading.
     pub section: Option<String>,
-    /// Who acts; the user when the text starts with `For you`, an agent otherwise, when absent.
+    /// Who acts; the user when the text starts with `For you:`, an agent otherwise, when absent.
     pub owner: Option<TodoOwner>,
     /// The first day it may start.
     pub not_before: Option<TodoDate>,
@@ -177,52 +183,72 @@ fn millis() -> u128 {
         .map_or(0, |since| since.as_millis())
 }
 
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with(r"UNC\") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(real) = std::fs::canonicalize(&full) {
+        return without_verbatim_prefix(real);
+    }
+    let parent = full
+        .parent()
+        .and_then(|dir| std::fs::canonicalize(dir).ok());
+    match (parent, full.file_name()) {
+        (Some(dir), Some(name)) => without_verbatim_prefix(dir).join(name),
+        _ => full,
+    }
+}
+
 /// The file the to-do list is exported to and imported from: `file` when given, else `[todo] file`.
+///
+/// The path is made absolute, and resolved when it exists, so that every way of naming one file is the same record in the
+/// store.
 #[must_use]
 pub fn target(home: &Home, config: &Config, file: Option<&Path>) -> Option<PathBuf> {
     file.map(Path::to_path_buf)
         .or_else(|| config.todo.file.as_deref().map(|path| home.expand(path)))
+        .map(|path| absolute(&path))
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let name = path.file_name().map_or_else(
-        || "todo.md".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let temp = path.with_file_name(format!(".{name}.headwork-new"));
-    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
-    std::fs::rename(&temp, path)
-        .with_context(|| format!("replacing {} with {}", path.display(), temp.display()))
-}
-
-fn back_up(home: &Home, path: &Path) -> Result<PathBuf> {
-    let dir = home.root().join(BACKUP_DIR);
+fn copy_aside(home: &Home, path: &Path) -> Result<PathBuf> {
+    let dir = home.root().join(TODO_BACKUP_DIR);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let copy = dir.join(format!("todo-{:015}.md", millis()));
     std::fs::copy(path, &copy)
         .with_context(|| format!("copying {} to {}", path.display(), copy.display()))?;
-    let mut copies: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.extension().is_some_and(|extension| extension == "md")
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("todo-"))
-        })
-        .collect();
+    let mut copies: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry
+            .with_context(|| format!("reading {}", dir.display()))?
+            .path();
+        let is_copy = path.extension().is_some_and(|extension| extension == "md")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("todo-"));
+        if is_copy {
+            copies.push(path);
+        }
+    }
     copies.sort();
-    let surplus = copies.len().saturating_sub(BACKUPS_KEPT);
+    let surplus = copies.len().saturating_sub(TODO_BACKUPS_KEPT);
     for old in copies.into_iter().take(surplus) {
-        std::fs::remove_file(old).ok();
+        std::fs::remove_file(&old).with_context(|| format!("removing {}", old.display()))?;
     }
     Ok(copy)
 }
 
 /// Writes the to-do list to its file when the content changed since the last export.
 ///
-/// A file that exists but was never imported is left alone. A file whose content is not what the last export wrote was
-/// edited by hand: it is copied to `<home>/todo-backups` first and `todo-export-overwrote` is logged.
+/// A file that exists but was never imported (and was never exported by headwork) is left alone. A file whose content is
+/// not what the last export wrote was edited by hand: it is copied to `<home>/todo-backups` once the new content is
+/// written to a temp file, and `todo-export-overwrote` is logged; a failed write makes no copy and no event.
 ///
 /// # Errors
 ///
@@ -241,49 +267,54 @@ pub fn export(
     let text = todo::render(&store.todos(&TodoFilter::default())?);
     let new_hash = hash(&text);
     let record = store.todo_file(&key)?;
-    let exists = path.exists();
-    if exists
-        && record
+    let file_exists = path.exists();
+    let on_disk_hash = if file_exists {
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        Some(hash(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
+    let facts = ExportFacts {
+        imported: record
             .as_ref()
-            .and_then(|record| record.export_hash.as_deref())
-            == Some(new_hash.as_str())
-    {
-        return Ok(Export::Unchanged);
-    }
-    if exists
-        && record
+            .is_some_and(|record| record.imported_at.is_some() || record.export_hash.is_some()),
+        exported_hash: record
             .as_ref()
-            .is_none_or(|record| record.imported_at.is_none())
-    {
-        return Ok(Export::NotImported { path: key });
-    }
-    let mut backup = None;
-    if exists {
-        let on_disk = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let last = record.and_then(|record| record.export_hash);
-        if last.as_deref() != Some(hash(&on_disk).as_str()) {
-            let copy = back_up(home, &path)?;
-            store.append_event(
-                actor,
-                None,
-                None,
-                EVENT_EXPORT_OVERWROTE,
-                &serde_json::json!({ "path": key, "backup": slashed(&copy) }),
-            )?;
-            backup = Some(slashed(&copy));
+            .and_then(|record| record.export_hash.as_deref()),
+        file_exists,
+        on_disk_hash: on_disk_hash.as_deref(),
+        new_hash: &new_hash,
+    };
+    match todo::plan_export(&facts) {
+        ExportPlan::Unchanged => Ok(Export::Unchanged),
+        ExportPlan::NotImported => Ok(Export::NotImported { path: key }),
+        ExportPlan::Write { back_up } => {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            let staged = stage_file(&path, &text)?;
+            let backup = if back_up {
+                let copy = slashed(&copy_aside(home, &path)?);
+                store.append_event(
+                    actor,
+                    None,
+                    None,
+                    EVENT_EXPORT_OVERWROTE,
+                    &serde_json::json!({ "path": key, "backup": copy }),
+                )?;
+                Some(copy)
+            } else {
+                None
+            };
+            staged.commit()?;
+            store.record_todo_export(&key, &new_hash, actor)?;
+            Ok(Export::Written { path: key, backup })
         }
     }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    write_atomic(&path, &text)?;
-    store.record_todo_export(&key, &new_hash, actor)?;
-    Ok(Export::Written { path: key, backup })
 }
 
 /// The export that follows a change: a failure comes back as [`Export::Failed`], never as an error, because the change
@@ -294,9 +325,18 @@ pub fn export_after(store: &mut Store, env: &Env<'_>) -> Export {
     })
 }
 
-/// Called after a task closed: exports when a to-do item was finished by it. Never fails the close.
+/// Called after every close: exports (a no-op when nothing changed, so a close that finished no item writes nothing). A
+/// failed export logs `todo-export-failed` with the error and never fails the close.
 pub fn after_close(store: &mut Store, env: &Env<'_>) {
-    drop(export_after(store, env));
+    if let Export::Failed { error } = export_after(store, env) {
+        drop(store.append_event(
+            env.actor,
+            None,
+            None,
+            EVENT_EXPORT_FAILED,
+            &serde_json::json!({ "error": error }),
+        ));
+    }
 }
 
 fn changed(store: &mut Store, env: &Env<'_>, items: &[Todo]) -> Change {
@@ -311,7 +351,7 @@ fn changed(store: &mut Store, env: &Env<'_>, items: &[Todo]) -> Change {
 ///
 /// # Errors
 ///
-/// Fails when no file is given or set, it cannot be read, or the store fails.
+/// Fails when no file is given or set, it cannot be read or is not valid UTF-8, or the store fails.
 pub fn import(
     store: &mut Store,
     home: &Home,
@@ -324,7 +364,9 @@ pub fn import(
         bail!("no to-do file: set [todo] file in the config or pass --file");
     };
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let parsed = todo::parse(&String::from_utf8_lossy(&bytes));
+    let text = String::from_utf8(bytes)
+        .with_context(|| format!("{} is not valid UTF-8", path.display()))?;
+    let parsed = todo::parse(&text);
     let key = slashed(&path);
     let counts = if dry_run {
         store.todo_import_plan(&parsed.items)?
@@ -339,25 +381,29 @@ pub fn import(
     })
 }
 
-/// Adds an item and exports.
+/// Adds an item and exports. The text is read as an import reads a line: date groups in it become the fields (an
+/// explicit date wins) and a leading `For you:` becomes the owner (an explicit owner wins).
 ///
 /// # Errors
 ///
-/// Fails when the store fails.
+/// Fails when a field cannot be written to the file (empty, several lines, a project that starts with `#`, Done or
+/// Dropped) or the store fails.
 pub fn add(store: &mut Store, env: &Env<'_>, request: &AddRequest) -> Result<Change> {
-    let owner = request
-        .owner
-        .unwrap_or_else(|| todo::owner_of(&request.text));
+    let found = todo::normalize(request.text.trim());
+    let today = store.todo_today()?;
     let draft = TodoDraft {
-        project: request.project.clone(),
-        section: request.section.clone(),
-        text: request.text.trim().to_owned(),
-        notes: request.notes.clone(),
+        project: request.project.trim().to_owned(),
+        section: request
+            .section
+            .as_deref()
+            .map(|section| section.trim().to_owned()),
+        text: found.text,
+        notes: request.notes.iter().map(|note| clean_note(note)).collect(),
         state: TodoState::Open,
-        owner,
-        added: Some(store.todo_today()?),
-        not_before: request.not_before.clone(),
-        due: request.due.clone(),
+        owner: request.owner.or(found.owner).unwrap_or(TodoOwner::Agent),
+        added: found.added.or(Some(today)),
+        not_before: request.not_before.clone().or(found.not_before),
+        due: request.due.clone().or(found.due),
         done_on: None,
         done_note: None,
     };
@@ -393,44 +439,101 @@ pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
 
 /// Changes an item and exports.
 ///
+/// A new text is read as in [`add`]: date groups in it become the fields (an explicit date wins) and a leading `For you:`
+/// becomes the owner (an explicit owner wins); the other fields are trimmed.
+///
 /// # Errors
 ///
-/// Fails when the item is unknown or the store fails.
+/// Fails when the item is unknown, a field cannot be written to the file, or the store fails.
 pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &TodoEdit) -> Result<Change> {
-    let item = store.edit_todo(id, edit, env.actor)?;
+    let mut edit = edit.clone();
+    if let Some(text) = &edit.text {
+        let found = todo::normalize(text.trim());
+        edit.text = Some(found.text);
+        edit.owner = edit.owner.or(found.owner);
+        edit.added = found.added;
+        edit.not_before = edit.not_before.or_else(|| found.not_before.map(Some));
+        edit.due = edit.due.or_else(|| found.due.map(Some));
+    }
+    edit.project = edit.project.map(|project| project.trim().to_owned());
+    edit.section = edit
+        .section
+        .map(|section| section.map(|section| section.trim().to_owned()));
+    edit.append = edit.append.map(|note| clean_note(&note));
+    let item = store.edit_todo(id, &edit, env.actor)?;
     Ok(changed(store, env, &[item]))
 }
 
-/// `spawn` for a task that comes from a to-do item: refuses an item that is not open or that a live task holds before
-/// the task exists, links the item to the task, and exports.
+/// What spawning a task for a to-do item did.
+#[derive(Debug)]
+pub struct LinkedSpawn {
+    /// The task.
+    pub task: Task,
+    /// The queued tasks the spawn started.
+    pub pumped: Vec<Pumped>,
+    /// Why the item was not linked, when the link was refused after the task started: the task then runs unlinked.
+    pub unlinked: Option<String>,
+}
+
+/// `spawn` for a task that comes from a to-do item.
+///
+/// The check that the item is open and that no live task holds it runs before the spawn; the link runs after it. A link
+/// refused after the task started leaves the task running unlinked and says so in [`LinkedSpawn::unlinked`], so the
+/// caller can tell the user.
 ///
 /// # Errors
 ///
-/// As [`spawn`], and the refusal of the link.
+/// As [`spawn`], and the refusal of the check before it.
 pub fn spawn_linked(
     store: &mut Store,
     env: &Env<'_>,
     request: &SpawnRequest<'_>,
     item: Option<i64>,
-) -> Result<(headwork_store::Task, Vec<Pumped>)> {
+) -> Result<LinkedSpawn> {
     if let Some(id) = item {
         store.check_todo_linkable(id)?;
     }
     let (task, pumped) = spawn(store, env, request)?;
+    let mut unlinked = None;
     if let Some(id) = item {
-        store.link_todo(id, TaskId(task.id.0), env.actor)?;
-        drop(export_after(store, env));
+        match store.link_todo(id, TaskId(task.id.0), env.actor) {
+            Ok(_) => drop(export_after(store, env)),
+            Err(error) => {
+                unlinked = Some(format!(
+                    "task {} runs without a link to to-do item {id}: {error}",
+                    task.name
+                ));
+            }
+        }
     }
-    Ok((task, pumped))
+    Ok(LinkedSpawn {
+        task,
+        pumped,
+        unlinked,
+    })
 }
 
-/// The items that match, one line each.
+/// The items that match, in export order. `state` is `open` (the default when absent), `done`, `dropped` or `all`.
 ///
 /// # Errors
 ///
-/// Fails when the store fails.
-pub fn list(store: &Store, filter: &TodoFilter) -> Result<Vec<Todo>> {
-    Ok(store.todos(filter)?)
+/// Fails when `state` is none of those or the store fails.
+pub fn list(
+    store: &Store,
+    project: Option<&str>,
+    owner: Option<TodoOwner>,
+    state: Option<&str>,
+) -> Result<Vec<Todo>> {
+    let state = match state {
+        None | Some("open") => Some(TodoState::Open),
+        Some("all") => None,
+        Some(other) => Some(other.parse()?),
+    };
+    Ok(store.todos(&TodoFilter {
+        project: project.map(str::to_owned),
+        owner,
+        state,
+    })?)
 }
 
 #[cfg(test)]
@@ -441,5 +544,21 @@ mod tests {
     fn the_hash_ignores_line_ending_style() {
         assert_eq!(hash("a\nb\n"), hash("a\r\nb\r\n"));
         assert_ne!(hash("a\nb\n"), hash("a\nc\n"));
+    }
+
+    #[test]
+    fn a_verbatim_prefix_is_removed_but_a_network_path_is_kept() {
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\C:\x\todo.md")),
+            PathBuf::from(r"C:\x\todo.md")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\UNC\host\share\todo.md")),
+            PathBuf::from(r"\\?\UNC\host\share\todo.md")
+        );
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from("/x/todo.md")),
+            PathBuf::from("/x/todo.md")
+        );
     }
 }

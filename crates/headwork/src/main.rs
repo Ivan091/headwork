@@ -1493,17 +1493,27 @@ fn spawn_command(
         permission_mode: args.mode,
         allow_ask: &args.allow_ask,
     };
-    let (task, pumped) = ctx.with_env(|env| {
+    let spawned = ctx.with_env(|env| {
         reap(store, env)?;
         headwork::ops::todo::spawn_linked(store, env, &request, args.todo)
     })?;
     if args.json {
-        json_out(out, &serde_json::json!({ "task": task, "queue": pumped }))?;
+        json_out(
+            out,
+            &serde_json::json!({
+                "task": spawned.task,
+                "queue": spawned.pumped,
+                "todo_unlinked": spawned.unlinked,
+            }),
+        )?;
     } else {
-        writeln!(out, "{} {}", task.name, task.state)?;
-        out.write_all(render::pumped(&pumped).as_bytes())?;
+        writeln!(out, "{} {}", spawned.task.name, spawned.task.state)?;
+        if let Some(why) = &spawned.unlinked {
+            writeln!(out, "the task runs unlinked: {why}")?;
+        }
+        out.write_all(render::pumped(&spawned.pumped).as_bytes())?;
     }
-    Ok(exit_for(&pumped))
+    Ok(exit_for(&spawned.pumped))
 }
 
 fn todo_command(
@@ -1514,7 +1524,7 @@ fn todo_command(
 ) -> Result<ExitCode> {
     use headwork::ops::todo as list;
     match args.action.unwrap_or(TodoAction::List(args.list)) {
-        TodoAction::List(filter) => todo_list_command(store, filter, out)?,
+        TodoAction::List(filter) => todo_list_command(store, &filter, out)?,
         TodoAction::Import {
             file,
             dry_run,
@@ -1553,16 +1563,13 @@ fn todo_command(
     Ok(ExitCode::SUCCESS)
 }
 
-fn todo_list_command(store: &Store, filter: TodoListArgs, out: &mut impl Write) -> Result<()> {
-    let state = match filter.state.as_str() {
-        "all" => None,
-        word => Some(word.parse()?),
-    };
-    let items = store.todos(&headwork_store::TodoFilter {
-        project: filter.project,
-        owner: filter.owner,
-        state,
-    })?;
+fn todo_list_command(store: &Store, filter: &TodoListArgs, out: &mut impl Write) -> Result<()> {
+    let items = headwork::ops::todo::list(
+        store,
+        filter.project.as_deref(),
+        filter.owner,
+        Some(&filter.state),
+    )?;
     if filter.json {
         json_out(out, &items)?;
     } else if items.is_empty() {
@@ -1635,6 +1642,7 @@ fn todo_change_command(
                 not_before: not_before.as_deref().map(date_or_none).transpose()?,
                 due: due.as_deref().map(date_or_none).transpose()?,
                 append,
+                added: None,
             };
             (ctx.with_env(|env| list::edit(store, env, id, &edit))?, json)
         }

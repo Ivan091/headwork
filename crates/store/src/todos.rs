@@ -7,7 +7,9 @@
 
 use std::collections::HashSet;
 
-use headwork_core::todo::{LinkedTask, Todo, TodoDate, TodoDraft, TodoOwner, TodoState, identity};
+use headwork_core::todo::{
+    LinkedTask, Todo, TodoDate, TodoDraft, TodoEffect, TodoOwner, TodoState, identity, on_task_end,
+};
 use headwork_core::{Actor, TaskState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
@@ -66,6 +68,8 @@ pub struct TodoEdit {
     pub due: Option<Option<TodoDate>>,
     /// A note line to add.
     pub append: Option<String>,
+    /// The day it was added, when the new text says so in an `(added D)` group.
+    pub added: Option<TodoDate>,
 }
 
 /// What an import did, or would do.
@@ -131,28 +135,36 @@ impl RawTodo {
     fn into_todo(self) -> Result<Todo, StoreError> {
         let [added, not_before, due, done_on] = self.dates;
         let date = |text: Option<String>| text.map(|text| TodoDate::parse(&text)).transpose();
+        let task = self
+            .task
+            .map(|(id, project, slug, state)| {
+                Ok::<_, StoreError>(LinkedTask {
+                    id,
+                    name: format!("{project}-{slug}"),
+                    state: state.parse()?,
+                })
+            })
+            .transpose()?;
         Ok(Todo {
             id: self.id,
-            project: self.project,
-            section: self.section,
-            text: self.text,
-            notes: self
-                .notes
-                .map(|notes| notes.lines().map(str::to_owned).collect())
-                .unwrap_or_default(),
-            state: self.state.parse()?,
-            owner: self.owner.parse()?,
-            added: date(added)?,
-            not_before: date(not_before)?,
-            due: date(due)?,
-            done_on: date(done_on)?,
-            done_note: self.done_note,
-            task: self.task.map(|(id, project, slug, state)| LinkedTask {
-                id,
-                name: format!("{project}-{slug}"),
-                state,
-            }),
             position: self.position,
+            task,
+            draft: TodoDraft {
+                project: self.project,
+                section: self.section,
+                text: self.text,
+                notes: self
+                    .notes
+                    .map(|notes| notes.lines().map(str::to_owned).collect())
+                    .unwrap_or_default(),
+                state: self.state.parse()?,
+                owner: self.owner.parse()?,
+                added: date(added)?,
+                not_before: date(not_before)?,
+                due: date(due)?,
+                done_on: date(done_on)?,
+                done_note: self.done_note,
+            },
         })
     }
 }
@@ -176,6 +188,7 @@ fn today(conn: &Connection) -> Result<TodoDate, StoreError> {
 }
 
 fn insert(tx: &Transaction<'_>, draft: &TodoDraft) -> Result<i64, StoreError> {
+    draft.validate().map_err(StoreError::InvalidTodo)?;
     let position: i64 = tx.query_row(
         "SELECT COALESCE(MAX(position), 0) + 1 FROM todos",
         [],
@@ -213,7 +226,12 @@ fn event(
     kind: &str,
     todo: &Todo,
 ) -> Result<(), StoreError> {
-    let data = serde_json::json!({ "id": todo.id, "project": todo.project, "text": todo.text, "state": todo.state });
+    let data = serde_json::json!({
+        "id": todo.id,
+        "project": todo.draft.project,
+        "text": todo.draft.text,
+        "state": todo.draft.state,
+    });
     insert_event(tx, actor, task, None, kind, &data)
 }
 
@@ -264,44 +282,32 @@ pub(crate) fn task_ended(
     else {
         return Ok(());
     };
-    match to {
-        TaskState::Closed => {
-            let merged: Vec<String> = tx
-                .prepare(
-                    "SELECT url FROM prs WHERE task_id = ?1 AND state = 'merged' ORDER BY number",
-                )?
-                .query_map(params![task.id.0], |row| row.get(0))?
-                .collect::<Result<_, _>>()?;
-            let note = if merged.is_empty() {
-                format!("task {}", task.name)
-            } else {
-                format!("task {} merged {}", task.name, merged.join(", "))
-            };
+    let merged: Vec<String> = if to == TaskState::Closed {
+        tx.prepare("SELECT url FROM prs WHERE task_id = ?1 AND state = 'merged' ORDER BY number")?
+            .query_map(params![task.id.0], |row| row.get(0))?
+            .collect::<Result<_, _>>()?
+    } else {
+        Vec::new()
+    };
+    match on_task_end(to, &merged, &task.name.to_string()) {
+        Some(TodoEffect::Finish { note }) => {
             tx.execute(
                 &format!(
-                    "UPDATE todos SET state = 'done', done_on = {TODAY}, done_note = ?2, updated_at = {NOW} WHERE id = ?1"
+                    "UPDATE todos SET state = 'done', done_on = {TODAY}, done_note = ?2, task_id = NULL, updated_at = {NOW}
+                     WHERE id = ?1"
                 ),
                 params![id, note],
             )?;
             event(tx, actor, Some(task.id), EVENT_TODO_DONE, &load(tx, id)?)
         }
-        TaskState::Dropped | TaskState::Failed => {
+        Some(TodoEffect::Unlink) => {
             tx.execute(
                 &format!("UPDATE todos SET task_id = NULL, updated_at = {NOW} WHERE id = ?1"),
                 params![id],
             )?;
             event(tx, actor, Some(task.id), EVENT_TODO_EDITED, &load(tx, id)?)
         }
-        TaskState::Queued
-        | TaskState::Spawning
-        | TaskState::Working
-        | TaskState::NeedsUser
-        | TaskState::InReview
-        | TaskState::Merged
-        | TaskState::Closing
-        | TaskState::Interrupted
-        | TaskState::Parking
-        | TaskState::Parked => Ok(()),
+        None => Ok(()),
     }
 }
 
@@ -374,10 +380,10 @@ impl Store {
     ) -> Result<Todo, StoreError> {
         let tx = self.conn.transaction()?;
         let before = load(&tx, id)?;
-        if before.state != TodoState::Open {
+        if before.draft.state != TodoState::Open {
             return Err(StoreError::TodoRefused {
                 id,
-                reason: format!("it is already {}", before.state),
+                reason: format!("it is already {}", before.draft.state),
             });
         }
         let state = if drop {
@@ -417,7 +423,7 @@ impl Store {
     pub fn reopen_todo(&mut self, id: i64, actor: Actor) -> Result<Todo, StoreError> {
         let tx = self.conn.transaction()?;
         let before = load(&tx, id)?;
-        if before.state == TodoState::Open {
+        if before.draft.state == TodoState::Open {
             return Err(StoreError::TodoRefused {
                 id,
                 reason: "it is already open".to_owned(),
@@ -447,7 +453,7 @@ impl Store {
         actor: Actor,
     ) -> Result<Todo, StoreError> {
         let tx = self.conn.transaction()?;
-        let mut todo = load(&tx, id)?;
+        let mut todo = load(&tx, id)?.draft;
         if let Some(text) = &edit.text {
             text.clone_into(&mut todo.text);
         }
@@ -466,14 +472,18 @@ impl Store {
         if let Some(date) = &edit.due {
             todo.due.clone_from(date);
         }
+        if let Some(date) = &edit.added {
+            todo.added = Some(date.clone());
+        }
         if let Some(line) = &edit.append {
             todo.notes.push(line.clone());
         }
+        todo.validate().map_err(StoreError::InvalidTodo)?;
         let notes = (!todo.notes.is_empty()).then(|| todo.notes.join("\n"));
         tx.execute(
             &format!(
                 "UPDATE todos SET text = ?2, project = ?3, section = ?4, owner = ?5, not_before = ?6, due = ?7, notes = ?8,
-                                  updated_at = {NOW}
+                                  added = ?9, updated_at = {NOW}
                  WHERE id = ?1"
             ),
             params![
@@ -485,6 +495,7 @@ impl Store {
                 todo.not_before.as_ref().map(TodoDate::as_str),
                 todo.due.as_ref().map(TodoDate::as_str),
                 notes,
+                todo.added.as_ref().map(TodoDate::as_str),
             ],
         )?;
         let todo = load(&tx, id)?;
@@ -500,10 +511,10 @@ impl Store {
     /// Returns [`StoreError::TodoRefused`] when it may not, or a read error.
     pub fn check_todo_linkable(&self, id: i64) -> Result<(), StoreError> {
         let todo = load(&self.conn, id)?;
-        if todo.state != TodoState::Open {
+        if todo.draft.state != TodoState::Open {
             return Err(StoreError::TodoRefused {
                 id,
-                reason: format!("it is {}, not open", todo.state),
+                reason: format!("it is {}, not open", todo.draft.state),
             });
         }
         if let Some(task) = todo.task {

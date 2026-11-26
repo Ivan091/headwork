@@ -173,7 +173,7 @@ fn a_change_exports_and_a_hand_edit_is_backed_up_before_it_is_overwritten() {
         "first note",
     ]);
     assert!(
-        added.contains("[headwork] For you: look at the digest (user"),
+        added.contains("[headwork] look at the digest (user"),
         "{added}"
     );
     assert!(added.contains("exported to"), "{added}");
@@ -342,14 +342,15 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
     );
     let id = w.store.todos(&TodoFilter::default()).unwrap()[0].id;
     let refused = {
-        let (task, _) =
-            todo::spawn_linked(&mut w.store, &env, &request(&w.brief, "sand"), Some(id)).unwrap();
+        let task = todo::spawn_linked(&mut w.store, &env, &request(&w.brief, "sand"), Some(id))
+            .unwrap()
+            .task;
         assert_eq!(
             w.store.todo(id).unwrap().task.map(|task| task.name),
             Some("demo-sand".to_owned())
         );
         let in_file = std::fs::read_to_string(w.dir.path().join("todo.md")).unwrap();
-        assert!(in_file.contains("(task demo-sand, "), "{in_file}");
+        assert!(in_file.contains("(task demo-sand)"), "{in_file}");
         let second = todo::spawn_linked(&mut w.store, &env, &request(&w.brief, "other"), Some(id));
         assert!(second.is_err(), "a live task holds the item");
         assert!(
@@ -361,8 +362,8 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
     let report = close(&mut w.store, &env, refused.id, None).unwrap();
     assert_eq!(report.state, TaskState::Closed, "{report:?}");
     let item = w.store.todo(id).unwrap();
-    assert_eq!(item.state, TodoState::Done);
-    assert_eq!(item.done_note.as_deref(), Some("task demo-sand"));
+    assert_eq!(item.draft.state, TodoState::Done);
+    assert_eq!(item.draft.done_note.as_deref(), Some("task demo-sand"));
     let in_file = std::fs::read_to_string(w.dir.path().join("todo.md")).unwrap();
     assert!(
         in_file.contains("## Done (last 20)") && in_file.contains("- [x] Build the thing"),

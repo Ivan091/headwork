@@ -95,6 +95,9 @@ pub enum StoreError {
         /// Why.
         reason: String,
     },
+    /// A to-do item cannot be written as it is.
+    #[error("to-do item: {0}")]
+    InvalidTodo(#[source] headwork_core::todo::TodoError),
     /// A stored to-do date is not a date.
     #[error("stored to-do date: {0}")]
     BadTodoDate(#[from] headwork_core::todo::TodoError),

@@ -18,19 +18,9 @@ fn rows(drafts: &[TodoDraft]) -> Vec<Todo> {
         .zip(1..)
         .map(|(draft, id)| Todo {
             id,
-            project: draft.project.clone(),
-            section: draft.section.clone(),
-            text: draft.text.clone(),
-            notes: draft.notes.clone(),
-            state: draft.state,
-            owner: draft.owner,
-            added: draft.added.clone(),
-            not_before: draft.not_before.clone(),
-            due: draft.due.clone(),
-            done_on: draft.done_on.clone(),
-            done_note: draft.done_note.clone(),
-            task: None,
             position: id,
+            task: None,
+            draft: draft.clone(),
         })
         .collect()
 }
@@ -123,7 +113,7 @@ fn the_fixture_fields_come_out_as_written() {
     assert_eq!(cr.section.as_deref(), Some("From the audit of 2026-11-15"));
     let first = parsed.items.first().unwrap();
     assert_eq!(first.project, "general", "before any heading");
-    let superseded = by_text("For you: decide the training goal");
+    let superseded = by_text("decide the training goal");
     assert_eq!(
         superseded.state,
         TodoState::Done,
@@ -194,10 +184,7 @@ fn draft() -> impl Strategy<Value = TodoDraft> {
     )
         .prop_map(
             |(words, user, open, (added, not_before, due), note, notes, section)| {
-                let mut text = words.join(" ");
-                if user {
-                    text = format!("For you: {text}");
-                }
+                let text = words.join(" ");
                 let state = if open {
                     TodoState::Open
                 } else {

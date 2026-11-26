@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use toml::{Table, Value};
 
-use super::slashed;
 use super::update::{Builds, SystemBuilds, sha256_file};
+use super::{slashed, write_atomic};
 use crate::home::Home;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -822,17 +822,6 @@ fn write_candidate(
     }
     let origin = origin_file(layout, commit, candidate);
     write_atomic(&home.origin_path(), &serde_json::to_string_pretty(&origin)?)
-}
-
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let name = path.file_name().map_or_else(
-        || "file".to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let temp = path.with_file_name(format!("{name}.new"));
-    std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
-    std::fs::rename(&temp, path)
-        .with_context(|| format!("replacing {} with {}", path.display(), temp.display()))
 }
 
 fn scratch_failures(

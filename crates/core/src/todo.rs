@@ -32,6 +32,18 @@ pub enum TodoError {
     /// The text is not a calendar date written `YYYY-MM-DD`.
     #[error("`{0}` is not a date written YYYY-MM-DD")]
     BadDate(String),
+    /// A field of an item cannot be written to `todo.md` as it is.
+    #[error("the {field} {problem}")]
+    Invalid {
+        /// The field: `text`, `project`, `section` or `note`.
+        field: &'static str,
+        /// What is wrong with it.
+        problem: &'static str,
+    },
+}
+
+const fn invalid(field: &'static str, problem: &'static str) -> TodoError {
+    TodoError::Invalid { field, problem }
 }
 
 /// A calendar date, `YYYY-MM-DD`.
@@ -159,6 +171,74 @@ pub struct TodoDraft {
     pub done_note: Option<String>,
 }
 
+impl TodoDraft {
+    /// Checks that every field can be written to `todo.md` and read back as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TodoError::Invalid`] naming the field: a text that is empty, runs over several lines or starts with
+    /// `For you:` (the owner says that); a project that is empty, runs over several lines, starts with `#` or whose first
+    /// word is Done or Dropped (those headings hold finished items); a section that is empty, runs over several lines or
+    /// starts with `#`; a note that is empty or runs over several lines.
+    pub fn validate(&self) -> Result<(), TodoError> {
+        if self.text.trim().is_empty() {
+            return Err(invalid("text", "is empty"));
+        }
+        if self.text.contains('\n') {
+            return Err(invalid("text", "must be one line"));
+        }
+        if for_you_rest(&self.text).is_some() {
+            return Err(invalid(
+                "text",
+                "must not start with `For you:`; set the owner instead",
+            ));
+        }
+        check_heading("project", &self.project)?;
+        let first = self
+            .project
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        if matches!(first.as_str(), "done" | "dropped") {
+            return Err(invalid(
+                "project",
+                "must not start with Done or Dropped: those headings hold finished items",
+            ));
+        }
+        if let Some(section) = &self.section {
+            check_heading("section", section)?;
+        }
+        for note in &self.notes {
+            if note.trim().is_empty() {
+                return Err(invalid("note", "is empty"));
+            }
+            if note.contains('\n') {
+                return Err(invalid("note", "must be one line"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn check_heading(field: &'static str, name: &str) -> Result<(), TodoError> {
+    if name.trim().is_empty() {
+        Err(invalid(field, "is empty"))
+    } else if name.contains('\n') {
+        Err(invalid(field, "must be one line"))
+    } else if name.trim_start().starts_with('#') {
+        Err(invalid(field, "must not start with `#`"))
+    } else {
+        Ok(())
+    }
+}
+
+/// A note as it is kept: trimmed, without a leading `- `.
+#[must_use]
+pub fn clean_note(note: &str) -> String {
+    note.trim().trim_start_matches("- ").trim().to_owned()
+}
+
 /// The task spawned for an item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LinkedTask {
@@ -166,8 +246,8 @@ pub struct LinkedTask {
     pub id: i64,
     /// `<project>-<slug>`.
     pub name: String,
-    /// The task's state word.
-    pub state: String,
+    /// The task's state.
+    pub state: TaskState,
 }
 
 /// An item as the store holds it.
@@ -175,51 +255,33 @@ pub struct LinkedTask {
 pub struct Todo {
     /// The row id.
     pub id: i64,
-    /// The area heading.
-    pub project: String,
-    /// A `###` subheading under the project.
-    pub section: Option<String>,
-    /// The item text.
-    pub text: String,
-    /// The sub-bullets, one per line.
-    pub notes: Vec<String>,
-    /// Where it stands.
-    pub state: TodoState,
-    /// Who has to act.
-    pub owner: TodoOwner,
-    /// The day it was added.
-    pub added: Option<TodoDate>,
-    /// The first day it may start.
-    pub not_before: Option<TodoDate>,
-    /// The day it is due.
-    pub due: Option<TodoDate>,
-    /// The day it was done or dropped.
-    pub done_on: Option<TodoDate>,
-    /// What was said when it was done or dropped.
-    pub done_note: Option<String>,
-    /// The task spawned for it.
-    pub task: Option<LinkedTask>,
     /// The export order.
     pub position: i64,
+    /// The task spawned for it.
+    pub task: Option<LinkedTask>,
+    /// What the row holds besides those.
+    #[serde(flatten)]
+    pub draft: TodoDraft,
 }
 
 impl Todo {
     /// One line for a list: `#<id> [<project>/<section>] <text> (owner, dates, task)`.
     #[must_use]
     pub fn line(&self) -> String {
-        let place = self.section.as_ref().map_or_else(
-            || self.project.clone(),
-            |section| format!("{}/{section}", self.project),
+        let draft = &self.draft;
+        let place = draft.section.as_ref().map_or_else(
+            || draft.project.clone(),
+            |section| format!("{}/{section}", draft.project),
         );
-        let mut facts = vec![self.owner.to_string()];
-        if self.state != TodoState::Open {
-            facts.push(self.state.to_string());
+        let mut facts = vec![draft.owner.to_string()];
+        if draft.state != TodoState::Open {
+            facts.push(draft.state.to_string());
         }
         for (label, date) in [
-            ("added", &self.added),
-            ("not before", &self.not_before),
-            ("due", &self.due),
-            ("done", &self.done_on),
+            ("added", &draft.added),
+            ("not before", &draft.not_before),
+            ("due", &draft.due),
+            ("done", &draft.done_on),
         ] {
             if let Some(date) = date {
                 facts.push(format!("{label} {date}"));
@@ -231,15 +293,9 @@ impl Todo {
         format!(
             "#{} [{place}] {} ({})",
             self.id,
-            self.text,
+            draft.text,
             facts.join(", ")
         )
-    }
-
-    /// Whether the item starts with the words that mark it as the user's.
-    #[must_use]
-    pub fn says_for_you(&self) -> bool {
-        starts_for_you(&self.text)
     }
 }
 
@@ -263,33 +319,75 @@ pub struct Parsed {
     pub unparsed: Vec<Unparsed>,
 }
 
-fn starts_for_you(text: &str) -> bool {
-    let head: String = text.chars().take(FOR_YOU.len()).collect();
-    head.eq_ignore_ascii_case(FOR_YOU)
-}
-
-/// Who an item with this text is for: the user when it starts with `For you`, an agent otherwise.
-#[must_use]
-pub fn owner_of(text: &str) -> TodoOwner {
-    if starts_for_you(text.trim_start()) {
-        TodoOwner::User
-    } else {
-        TodoOwner::Agent
+/// The text after a leading `For you:` or `For you (...):` when it has one; an item written so is the user's.
+fn for_you_rest(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    let head = text.get(..FOR_YOU.len())?;
+    if !head.eq_ignore_ascii_case(FOR_YOU) {
+        return None;
     }
+    let mut rest = text.get(FOR_YOU.len()..)?.trim_start();
+    if rest.starts_with('(') {
+        let mut depth = 0_usize;
+        let mut end = None;
+        for (at, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(at);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = rest.get(end? + 1..)?.trim_start();
+    }
+    let rest = rest.strip_prefix(':')?.trim();
+    (!rest.is_empty()).then_some(rest)
 }
 
-/// The text an item is known by: whitespace collapsed to single spaces and a leading `For you:` removed, so the same
-/// item written by hand or by the export has one identity.
+/// The text an item is known by: whitespace collapsed to single spaces and a leading `For you:` or `For you (...):`
+/// removed, so the same item written by hand or by the export has one identity.
 #[must_use]
 pub fn identity(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if starts_for_you(&collapsed) {
-        let rest: String = collapsed.chars().skip(FOR_YOU.len()).collect();
-        if let Some(rest) = rest.strip_prefix(':') {
-            return rest.trim_start().to_owned();
-        }
+    for_you_rest(&collapsed).map_or_else(|| collapsed.clone(), str::to_owned)
+}
+
+/// A text as the reader of `todo.md` takes it, so an item added by hand and one imported from the file are the same item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Normalized {
+    /// The text without the groups the fields below came from and without a leading `For you:`.
+    pub text: String,
+    /// The user, when the text started with `For you:` or `For you (...):`.
+    pub owner: Option<TodoOwner>,
+    /// The `(added D)` group.
+    pub added: Option<TodoDate>,
+    /// The `(not before D)` group.
+    pub not_before: Option<TodoDate>,
+    /// The `(due D)` or `(by D)` group.
+    pub due: Option<TodoDate>,
+}
+
+/// Reads `text` the way an import reads an item line: the date groups become fields and a `For you:` prefix becomes the
+/// owner.
+#[must_use]
+pub fn normalize(text: &str) -> Normalized {
+    let read = read_body(text, false);
+    let (owner, text) = match for_you_rest(&read.text) {
+        Some(rest) => (Some(TodoOwner::User), rest.to_owned()),
+        None => (None, read.text),
+    };
+    Normalized {
+        text,
+        owner,
+        added: read.added,
+        not_before: read.not_before,
+        due: read.due,
     }
-    collapsed
 }
 
 fn is_word(c: char) -> bool {
@@ -425,11 +523,11 @@ fn linked_task_group(inside: &[char]) -> bool {
     let Some(rest) = text.trim().strip_prefix("task ") else {
         return false;
     };
-    rest.split_once(", ").is_some_and(|(name, state)| {
-        !name.is_empty()
-            && !name.contains(char::is_whitespace)
-            && state.trim().parse::<TaskState>().is_ok()
-    })
+    let name = |name: &str| !name.is_empty() && !name.contains(char::is_whitespace);
+    match rest.split_once(", ") {
+        Some((task, state)) => name(task) && state.trim().parse::<TaskState>().is_ok(),
+        None => name(rest) && rest.contains('-'),
+    }
 }
 
 struct Closing {
@@ -555,6 +653,11 @@ fn heading_area(name: &str) -> Area {
     }
 }
 
+fn usable_heading(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && !name.starts_with('#')
+}
+
 fn mark_of(rest: &str) -> (Mark, &str) {
     let checked = rest
         .strip_prefix("[x]")
@@ -624,14 +727,17 @@ impl Reader {
         {
             state = TodoState::Dropped;
         }
-        let owner = owner_of(&read.text);
+        let (owner, text) = match for_you_rest(&read.text) {
+            Some(rest) => (TodoOwner::User, rest.to_owned()),
+            None => (TodoOwner::Agent, read.text),
+        };
         let (done_on, done_note) = read
             .closing
             .map_or((None, None), |closing| (closing.on, closing.note));
         self.items.push(TodoDraft {
             project: self.project.clone(),
             section: self.section.clone(),
-            text: read.text,
+            text,
             notes: Vec::new(),
             state,
             owner,
@@ -649,9 +755,9 @@ impl Reader {
             self.skip(line_no, line, "a note with no item right above it");
             return;
         };
-        let note = line.trim().trim_start_matches("- ").trim();
+        let note = clean_note(line);
         if !note.is_empty() {
-            item.notes.push(note.to_owned());
+            item.notes.push(note);
         }
     }
 
@@ -662,11 +768,19 @@ impl Reader {
         } else if let Some(name) = line.strip_prefix("### ") {
             self.intro = false;
             self.last_item = false;
-            self.section = Some(name.trim().to_owned());
+            if usable_heading(name) {
+                self.section = Some(name.trim().to_owned());
+            } else {
+                self.skip(line_no, line, "a heading with no usable name");
+            }
         } else if let Some(name) = line.strip_prefix("## ") {
             self.intro = false;
             self.last_item = false;
-            self.area_heading(name);
+            if usable_heading(name) {
+                self.area_heading(name);
+            } else {
+                self.skip(line_no, line, "a heading with no usable name");
+            }
         } else if line.starts_with("# ") || line == "#" {
             if self.titled {
                 self.skip(line_no, line, "a second title heading");
@@ -767,21 +881,22 @@ fn append(out: &mut String, args: fmt::Arguments<'_>) {
 }
 
 fn item_line(todo: &Todo, done: bool) -> String {
-    let mut text = todo.text.clone();
-    if todo.owner == TodoOwner::User && !starts_for_you(&text) {
+    let draft = &todo.draft;
+    let mut text = draft.text.clone();
+    if draft.owner == TodoOwner::User {
         text = format!("{FOR_YOU}: {text}");
     }
     let mut line = format!("- [{}] {text}", if done { 'x' } else { ' ' });
     let mentions = |keyword: &str, date: &TodoDate| text.contains(&format!("{keyword} {date}"));
     if !done {
-        if let Some(date) = todo
+        if let Some(date) = draft
             .not_before
             .as_ref()
             .filter(|date| !mentions("not before", date))
         {
             append(&mut line, format_args!(" (not before {date})"));
         }
-        if let Some(date) = todo
+        if let Some(date) = draft
             .due
             .as_ref()
             .filter(|date| !mentions("due", date) && !mentions("by", date))
@@ -789,11 +904,11 @@ fn item_line(todo: &Todo, done: bool) -> String {
             append(&mut line, format_args!(" (due {date})"));
         }
     }
-    if let Some(date) = todo.added.as_ref().filter(|date| !mentions("added", date)) {
+    if let Some(date) = draft.added.as_ref().filter(|date| !mentions("added", date)) {
         append(&mut line, format_args!(" (added {date})"));
     }
     if done {
-        let closing = match (&todo.done_on, &todo.done_note) {
+        let closing = match (&draft.done_on, &draft.done_note) {
             (Some(date), Some(note)) => format!("done {date}: {note}"),
             (Some(date), None) => format!("done {date}"),
             (None, Some(note)) => format!("done: {note}"),
@@ -801,12 +916,9 @@ fn item_line(todo: &Todo, done: bool) -> String {
         };
         append(&mut line, format_args!(" ({closing})"));
     } else if let Some(task) = &todo.task {
-        append(
-            &mut line,
-            format_args!(" (task {}, {})", task.name, task.state),
-        );
+        append(&mut line, format_args!(" (task {})", task.name));
     }
-    for note in &todo.notes {
+    for note in &draft.notes {
         append(&mut line, format_args!("\n  - {note}"));
     }
     line
@@ -818,30 +930,36 @@ fn item_line(todo: &Todo, done: bool) -> String {
 pub fn render(todos: &[Todo]) -> String {
     let mut open: Vec<&Todo> = todos
         .iter()
-        .filter(|todo| todo.state == TodoState::Open)
+        .filter(|todo| todo.draft.state == TodoState::Open)
         .collect();
     open.sort_by_key(|todo| todo.position);
     let mut order: Vec<&str> = Vec::new();
     for todo in &open {
-        if todo.project != GENERAL && !order.contains(&todo.project.as_str()) {
-            order.push(&todo.project);
+        if todo.draft.project != GENERAL && !order.contains(&todo.draft.project.as_str()) {
+            order.push(&todo.draft.project);
         }
     }
-    if open.iter().any(|todo| todo.project == GENERAL) {
+    if open.iter().any(|todo| todo.draft.project == GENERAL) {
         order.push(GENERAL);
     }
     let mut out = format!("# To-do\n\n{EXPORT_INTRO}\n");
     for project in order {
         append(&mut out, format_args!("\n## {project}\n\n"));
-        let of_project: Vec<&&Todo> = open.iter().filter(|todo| todo.project == project).collect();
-        for todo in of_project.iter().filter(|todo| todo.section.is_none()) {
+        let of_project: Vec<&&Todo> = open
+            .iter()
+            .filter(|todo| todo.draft.project == project)
+            .collect();
+        for todo in of_project
+            .iter()
+            .filter(|todo| todo.draft.section.is_none())
+        {
             out.push_str(&item_line(todo, false));
             out.push('\n');
         }
         let mut sections: BTreeMap<i64, &str> = BTreeMap::new();
         let mut seen: Vec<&str> = Vec::new();
         for todo in &of_project {
-            if let Some(section) = todo.section.as_deref()
+            if let Some(section) = todo.draft.section.as_deref()
                 && !seen.contains(&section)
             {
                 seen.push(section);
@@ -852,7 +970,7 @@ pub fn render(todos: &[Todo]) -> String {
             append(&mut out, format_args!("\n### {section}\n\n"));
             for todo in of_project
                 .iter()
-                .filter(|todo| todo.section.as_deref() == Some(section))
+                .filter(|todo| todo.draft.section.as_deref() == Some(section))
             {
                 out.push_str(&item_line(todo, false));
                 out.push('\n');
@@ -861,10 +979,16 @@ pub fn render(todos: &[Todo]) -> String {
     }
     let mut done: Vec<&Todo> = todos
         .iter()
-        .filter(|todo| todo.state == TodoState::Done)
+        .filter(|todo| todo.draft.state == TodoState::Done)
         .collect();
     done.sort_by(|a, b| {
-        let key = |todo: &Todo| (todo.done_on.is_some(), todo.done_on.clone(), todo.position);
+        let key = |todo: &Todo| {
+            (
+                todo.draft.done_on.is_some(),
+                todo.draft.done_on.clone(),
+                todo.position,
+            )
+        };
         key(b).cmp(&key(a))
     });
     done.truncate(DONE_KEPT);
@@ -876,6 +1000,100 @@ pub fn render(todos: &[Todo]) -> String {
         }
     }
     out
+}
+
+/// What the end of a task does to the open item linked to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoEffect {
+    /// The item is done today with this note, and the link ends.
+    Finish {
+        /// `task <name>`, and `merged <url>, <url>` after it when the task had merged pull requests.
+        note: String,
+    },
+    /// The link ends and the item stays open.
+    Unlink,
+}
+
+/// What a task that moves to `state` does to its linked open item.
+///
+/// A closed task finishes it, a dropped or failed one frees it, any other state leaves it alone. `merged_urls` are the
+/// task's merged pull requests, oldest first.
+#[must_use]
+pub fn on_task_end(
+    state: TaskState,
+    merged_urls: &[String],
+    task_name: &str,
+) -> Option<TodoEffect> {
+    match state {
+        TaskState::Closed => Some(TodoEffect::Finish {
+            note: if merged_urls.is_empty() {
+                format!("task {task_name}")
+            } else {
+                format!("task {task_name} merged {}", merged_urls.join(", "))
+            },
+        }),
+        TaskState::Dropped | TaskState::Failed => Some(TodoEffect::Unlink),
+        TaskState::Queued
+        | TaskState::Spawning
+        | TaskState::Working
+        | TaskState::NeedsUser
+        | TaskState::InReview
+        | TaskState::Merged
+        | TaskState::Closing
+        | TaskState::Interrupted
+        | TaskState::Parking
+        | TaskState::Parked => None,
+    }
+}
+
+/// What the export knows when it decides whether to write the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportFacts<'a> {
+    /// Whether the file was imported, or is one headwork exported itself.
+    pub imported: bool,
+    /// The hash of the last export's content.
+    pub exported_hash: Option<&'a str>,
+    /// Whether the file exists.
+    pub file_exists: bool,
+    /// The hash of the file as it is, when it exists.
+    pub on_disk_hash: Option<&'a str>,
+    /// The hash of the content to write.
+    pub new_hash: &'a str,
+}
+
+/// What the export does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportPlan {
+    /// The content equals the last export; nothing to write.
+    Unchanged,
+    /// The file exists and was never imported; it is left alone.
+    NotImported,
+    /// Write the file, after copying it when it is not what the last export wrote.
+    Write {
+        /// Whether the file on disk is to be copied first.
+        back_up: bool,
+    },
+}
+
+/// Decides an export.
+///
+/// Nothing is written when the content equals the last export and the file exists (a file edited by hand stays until the
+/// store changes), nor to an existing file that was never imported; otherwise the file is written, after a copy of it when
+/// it differs from what the last export wrote.
+#[must_use]
+pub fn plan_export(facts: &ExportFacts<'_>) -> ExportPlan {
+    if !facts.file_exists {
+        return ExportPlan::Write { back_up: false };
+    }
+    if facts.exported_hash == Some(facts.new_hash) {
+        return ExportPlan::Unchanged;
+    }
+    if !facts.imported {
+        return ExportPlan::NotImported;
+    }
+    ExportPlan::Write {
+        back_up: facts.on_disk_hash != facts.exported_hash,
+    }
 }
 
 #[cfg(test)]
@@ -922,10 +1140,10 @@ mod tests {
         assert_eq!(identity("  a   b\r\n c "), "a b c");
         assert_eq!(identity("For you: run it"), "run it");
         assert_eq!(identity("for you:   run it"), "run it");
-        assert_eq!(
-            identity("For you (audit): run it"),
-            "For you (audit): run it"
-        );
+        assert_eq!(identity("For you (audit): run it"), "run it");
+        assert_eq!(identity("For you (a (b)): run it"), "run it");
+        assert_eq!(identity("For you run it"), "For you run it");
+        assert_eq!(identity("For you:"), "For you:");
         assert_eq!(identity("Forum: x"), "Forum: x");
     }
 
@@ -975,12 +1193,14 @@ mod tests {
     }
 
     #[test]
-    fn for_you_makes_the_user_the_owner_and_the_words_stay() {
+    fn for_you_makes_the_user_the_owner_and_leaves_the_text() {
         let item = one("- [ ] For you: pay the bill");
         assert_eq!(item.owner, TodoOwner::User);
-        assert_eq!(item.text, "For you: pay the bill");
-        assert_eq!(one("- [ ] for you (audit): x").owner, TodoOwner::User);
+        assert_eq!(item.text, "pay the bill");
+        let item = one("- [ ] for you (audit): x");
+        assert_eq!((item.owner, item.text.as_str()), (TodoOwner::User, "x"));
         assert_eq!(one("- [ ] Fix it").owner, TodoOwner::Agent);
+        assert_eq!(one("- [ ] For your eyes").owner, TodoOwner::Agent);
     }
 
     #[test]
@@ -1059,19 +1279,9 @@ mod tests {
     fn row(id: i64, draft: &TodoDraft) -> Todo {
         Todo {
             id,
-            project: draft.project.clone(),
-            section: draft.section.clone(),
-            text: draft.text.clone(),
-            notes: draft.notes.clone(),
-            state: draft.state,
-            owner: draft.owner,
-            added: draft.added.clone(),
-            not_before: draft.not_before.clone(),
-            due: draft.due.clone(),
-            done_on: draft.done_on.clone(),
-            done_note: draft.done_note.clone(),
-            task: None,
             position: id,
+            task: None,
+            draft: draft.clone(),
         }
     }
 
@@ -1132,15 +1342,15 @@ mod tests {
             first.task = Some(LinkedTask {
                 id: 4,
                 name: "headwork-linked".to_owned(),
-                state: "working".to_owned(),
+                state: TaskState::Working,
             });
         }
         if let Some(second) = rows.get_mut(1) {
-            second.state = TodoState::Dropped;
+            second.draft.state = TodoState::Dropped;
         }
         let written = render(&rows);
         assert!(
-            written.contains("- [ ] Linked item (task headwork-linked, working)"),
+            written.contains("- [ ] Linked item (task headwork-linked)\n"),
             "{written}"
         );
         assert!(!written.contains("Gone"), "{written}");
@@ -1149,6 +1359,158 @@ mod tests {
             back.items.first().map(|item| item.text.as_str()),
             Some("Linked item")
         );
+        let old = parse("## p\n\n- [ ] Linked item (task headwork-linked, working)\n");
+        assert_eq!(
+            old.items.first().map(|item| item.text.as_str()),
+            Some("Linked item"),
+            "the earlier spelling with the state is still read"
+        );
+        let plain = parse("## p\n\n- [ ] Look at the (task force)\n");
+        assert_eq!(
+            plain.items.first().map(|item| item.text.as_str()),
+            Some("Look at the (task force)")
+        );
+    }
+
+    #[test]
+    fn an_owner_user_item_gets_the_prefix_and_an_agent_item_never_does() {
+        let mut rows = vec![
+            row(1, &one("- [ ] For you: pay")),
+            row(2, &one("- [ ] Fix")),
+        ];
+        assert!(render(&rows).contains("- [ ] For you: pay\n"));
+        rows[0].draft.owner = TodoOwner::Agent;
+        let written = render(&rows);
+        assert!(written.contains("- [ ] pay\n"), "{written}");
+        assert!(!written.contains("For you"), "{written}");
+    }
+
+    #[test]
+    fn a_draft_is_checked_before_it_is_written() {
+        let good = one("- [ ] Fine");
+        assert!(good.validate().is_ok());
+        let bad = |change: fn(&mut TodoDraft)| {
+            let mut draft = good.clone();
+            change(&mut draft);
+            draft.validate().unwrap_err().to_string()
+        };
+        assert_eq!(bad(|d| d.text = "  ".to_owned()), "the text is empty");
+        assert_eq!(
+            bad(|d| d.text = "a\nb".to_owned()),
+            "the text must be one line"
+        );
+        assert!(bad(|d| d.text = "For you: x".to_owned()).contains("set the owner"));
+        assert_eq!(bad(|d| d.project = String::new()), "the project is empty");
+        assert_eq!(
+            bad(|d| d.project = "a\nb".to_owned()),
+            "the project must be one line"
+        );
+        assert_eq!(
+            bad(|d| d.project = "# x".to_owned()),
+            "the project must not start with `#`"
+        );
+        assert!(bad(|d| d.project = "Done soon".to_owned()).contains("Done or Dropped"));
+        assert!(bad(|d| d.project = "dropped".to_owned()).contains("Done or Dropped"));
+        assert_eq!(
+            bad(|d| d.section = Some("#x".to_owned())),
+            "the section must not start with `#`"
+        );
+        assert_eq!(
+            bad(|d| d.section = Some("a\nb".to_owned())),
+            "the section must be one line"
+        );
+        assert_eq!(
+            bad(|d| d.notes = vec!["a\nb".to_owned()]),
+            "the note must be one line"
+        );
+        assert_eq!(bad(|d| d.notes = vec![" ".to_owned()]), "the note is empty");
+        assert_eq!(clean_note("  - a note "), "a note");
+    }
+
+    #[test]
+    fn a_text_is_normalised_like_an_imported_line() {
+        let found = normalize("For you (audit): Ship it (due 2026-12-01) (added 2026-11-02)");
+        assert_eq!(found.text, "Ship it");
+        assert_eq!(found.owner, Some(TodoOwner::User));
+        assert_eq!(found.due, Some(date("2026-12-01")));
+        assert_eq!(found.added, Some(date("2026-11-02")));
+        let plain = normalize("  Ship it  ");
+        assert_eq!((plain.text.as_str(), plain.owner), ("Ship it", None));
+    }
+
+    #[test]
+    fn headings_that_cannot_be_used_are_reported_not_taken() {
+        let parsed = parse("## \n## # x\n### \n- [ ] kept\n");
+        let lines: Vec<usize> = parsed.unparsed.iter().map(|u| u.line_no).collect();
+        assert_eq!(lines, [1, 2, 3]);
+        assert_eq!(parsed.items.len(), 1);
+    }
+
+    #[test]
+    fn a_task_end_finishes_or_frees_the_item_by_table() {
+        let urls = ["u/1".to_owned(), "u/2".to_owned()];
+        let finish = |note: &str| {
+            Some(TodoEffect::Finish {
+                note: note.to_owned(),
+            })
+        };
+        let cases = [
+            (TaskState::Closed, &[][..], finish("task t")),
+            (
+                TaskState::Closed,
+                &urls[..],
+                finish("task t merged u/1, u/2"),
+            ),
+            (TaskState::Dropped, &[][..], Some(TodoEffect::Unlink)),
+            (TaskState::Failed, &urls[..], Some(TodoEffect::Unlink)),
+            (TaskState::Working, &[][..], None),
+            (TaskState::Merged, &urls[..], None),
+            (TaskState::Closing, &[][..], None),
+            (TaskState::Interrupted, &[][..], None),
+        ];
+        for (state, merged, want) in cases {
+            assert_eq!(on_task_end(state, merged, "t"), want, "{state}");
+        }
+    }
+
+    #[test]
+    fn the_export_decision_follows_the_table() {
+        let facts = |imported, exported, exists, disk| ExportFacts {
+            imported,
+            exported_hash: exported,
+            file_exists: exists,
+            on_disk_hash: disk,
+            new_hash: "new",
+        };
+        let write = |back_up| ExportPlan::Write { back_up };
+        let cases = [
+            (facts(false, None, false, None), write(false)),
+            (facts(true, Some("old"), false, None), write(false)),
+            (facts(true, Some("new"), false, None), write(false)),
+            (
+                facts(true, Some("new"), true, Some("new")),
+                ExportPlan::Unchanged,
+            ),
+            (
+                facts(true, Some("new"), true, Some("hand")),
+                ExportPlan::Unchanged,
+            ),
+            (
+                facts(false, Some("new"), true, Some("new")),
+                ExportPlan::Unchanged,
+            ),
+            (facts(false, None, true, Some("x")), ExportPlan::NotImported),
+            (
+                facts(false, Some("old"), true, Some("old")),
+                ExportPlan::NotImported,
+            ),
+            (facts(true, Some("old"), true, Some("old")), write(false)),
+            (facts(true, Some("old"), true, Some("hand")), write(true)),
+            (facts(true, None, true, Some("x")), write(true)),
+        ];
+        for (given, want) in cases {
+            assert_eq!(plan_export(&given), want, "{given:?}");
+        }
     }
 
     #[test]

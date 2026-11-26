@@ -134,18 +134,21 @@ fn finishing_dropping_and_reopening_follow_the_state() {
     let done = store
         .finish_todo(one.id, Some("by hand"), false, Actor::User)
         .unwrap();
-    assert_eq!(done.state, TodoState::Done);
-    assert_eq!(done.done_note.as_deref(), Some("by hand"));
-    assert_eq!(done.done_on, Some(store.todo_today().unwrap()));
+    assert_eq!(done.draft.state, TodoState::Done);
+    assert_eq!(done.draft.done_note.as_deref(), Some("by hand"));
+    assert_eq!(done.draft.done_on, Some(store.todo_today().unwrap()));
     let again = store.finish_todo(one.id, None, false, Actor::User);
     assert!(
         matches!(again, Err(StoreError::TodoRefused { .. })),
         "{again:?}"
     );
     let reopened = store.reopen_todo(one.id, Actor::User).unwrap();
-    assert_eq!((reopened.state, reopened.done_on), (TodoState::Open, None));
+    assert_eq!(
+        (reopened.draft.state, reopened.draft.done_on),
+        (TodoState::Open, None)
+    );
     let dropped = store.finish_todo(one.id, None, true, Actor::User).unwrap();
-    assert_eq!(dropped.state, TodoState::Dropped);
+    assert_eq!(dropped.draft.state, TodoState::Dropped);
     let kinds = kinds(&store);
     for kind in [EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED] {
         assert!(kinds.contains(&kind.to_owned()), "{kind} in {kinds:?}");
@@ -170,14 +173,14 @@ fn an_edit_changes_only_what_it_names_and_appends_notes() {
             Actor::User,
         )
         .unwrap();
-    assert_eq!(edited.text, "uno");
-    assert_eq!(edited.project, "me-sim", "project untouched");
-    assert_eq!(edited.section.as_deref(), Some("Audit"));
+    assert_eq!(edited.draft.text, "uno");
+    assert_eq!(edited.draft.project, "me-sim", "project untouched");
+    assert_eq!(edited.draft.section.as_deref(), Some("Audit"));
     assert_eq!(
-        edited.due.map(|d| d.to_string()).as_deref(),
+        edited.draft.due.map(|d| d.to_string()).as_deref(),
         Some("2026-12-24")
     );
-    assert_eq!(edited.notes, ["a note"]);
+    assert_eq!(edited.draft.notes, ["a note"]);
     let cleared = store
         .edit_todo(
             one.id,
@@ -189,7 +192,7 @@ fn an_edit_changes_only_what_it_names_and_appends_notes() {
             Actor::User,
         )
         .unwrap();
-    assert_eq!((cleared.due, cleared.section), (None, None));
+    assert_eq!((cleared.draft.due, cleared.draft.section), (None, None));
 }
 
 #[test]
@@ -216,12 +219,14 @@ fn import_counts_new_known_and_repeated_items_and_changes_nothing_else() {
     assert_eq!(counts, plan);
     let rows = store.todos(&TodoFilter::default()).unwrap();
     assert_eq!(
-        rows.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|t| t.draft.text.as_str())
+            .collect::<Vec<_>>(),
         ["Already here", "Brand new", "Another"],
         "file order after the old rows"
     );
     assert_eq!(
-        rows.first().map(|t| t.state),
+        rows.first().map(|t| t.draft.state),
         Some(TodoState::Done),
         "an old row is not changed"
     );
@@ -288,7 +293,7 @@ fn a_linked_item_is_refused_to_a_second_live_task_and_freed_when_the_first_drops
     store.drop_task(first.id, Actor::Orchestrator).unwrap();
     let freed = store.todo(item.id).unwrap();
     assert_eq!(
-        (freed.state, freed.task),
+        (freed.draft.state, freed.task),
         (TodoState::Open, None),
         "a dropped task frees the item"
     );
@@ -298,7 +303,7 @@ fn a_linked_item_is_refused_to_a_second_live_task_and_freed_when_the_first_drops
     close(&mut store, &first, &[Trigger::BeginClosing]);
     let still = store.todo(item.id).unwrap();
     assert_eq!(
-        still.state,
+        still.draft.state,
         TodoState::Open,
         "the first task closing changes nothing"
     );
@@ -332,10 +337,10 @@ fn a_closed_task_finishes_its_item_with_its_name_and_merged_pull_requests() {
     close(&mut store, &worker, &[Trigger::ForceClose]);
     assert_eq!(store.task(worker.id).unwrap().state, TaskState::Closed);
     let done = store.todo(item.id).unwrap();
-    assert_eq!(done.state, TodoState::Done);
-    assert_eq!(done.done_on, Some(store.todo_today().unwrap()));
+    assert_eq!(done.draft.state, TodoState::Done);
+    assert_eq!(done.draft.done_on, Some(store.todo_today().unwrap()));
     assert_eq!(
-        done.done_note.as_deref(),
+        done.draft.done_note.as_deref(),
         Some("task me-sim-worker merged https://github.com/Ivan091/me-sim/pull/7")
     );
     assert!(kinds(&store).contains(&EVENT_TODO_DONE.to_owned()));
@@ -354,4 +359,132 @@ fn an_item_that_is_not_open_cannot_be_linked() {
         matches!(refused, Err(StoreError::TodoRefused { .. })),
         "{refused:?}"
     );
+}
+
+fn linked(store: &mut Store, config: &Config, slug: &str, text: &str) -> (Task, i64) {
+    let item = store.add_todo(&draft(text), Actor::Orchestrator).unwrap();
+    let worker = task(store, config, slug);
+    store
+        .link_todo(item.id, worker.id, Actor::Orchestrator)
+        .unwrap();
+    (worker, item.id)
+}
+
+#[test]
+fn a_failed_task_frees_its_item_and_leaves_it_open() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "broken", "Do it");
+    store.start_task(&config, worker.id, Actor::Tick).unwrap();
+    store
+        .transition(worker.id, &Trigger::LaunchFailed, Actor::Tick)
+        .unwrap();
+    assert_eq!(store.task(worker.id).unwrap().state, TaskState::Failed);
+    let freed = store.todo(id).unwrap();
+    assert_eq!((freed.draft.state, freed.task), (TodoState::Open, None));
+    assert!(kinds(&store).contains(&EVENT_TODO_EDITED.to_owned()));
+}
+
+#[test]
+fn a_closing_task_leaves_an_item_that_is_already_done_or_dropped_as_it_was() {
+    let (mut store, config) = store();
+    let (done_worker, done_id) = linked(&mut store, &config, "first", "Finished by hand");
+    store
+        .finish_todo(done_id, Some("by hand"), false, Actor::User)
+        .unwrap();
+    let (dropped_worker, dropped_id) = linked(&mut store, &config, "second", "Dropped by hand");
+    store
+        .finish_todo(dropped_id, Some("not needed"), true, Actor::User)
+        .unwrap();
+    close(&mut store, &done_worker, &[Trigger::ForceClose]);
+    close(&mut store, &dropped_worker, &[Trigger::ForceClose]);
+    let done = store.todo(done_id).unwrap();
+    assert_eq!(
+        (done.draft.state, done.draft.done_note.as_deref()),
+        (TodoState::Done, Some("by hand"))
+    );
+    let dropped = store.todo(dropped_id).unwrap();
+    assert_eq!(
+        (dropped.draft.state, dropped.draft.done_note.as_deref()),
+        (TodoState::Dropped, Some("not needed"))
+    );
+}
+
+#[test]
+fn the_done_note_lists_every_merged_pull_request_in_order() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "two", "Do both");
+    for number in [9, 4] {
+        store
+            .record_pr(
+                worker.id,
+                &PrSeen {
+                    repo: "Ivan091/me-sim",
+                    number,
+                    url: &format!("https://github.com/Ivan091/me-sim/pull/{number}"),
+                    state: "merged",
+                },
+                Actor::Tick,
+            )
+            .unwrap();
+    }
+    close(&mut store, &worker, &[Trigger::ForceClose]);
+    let done = store.todo(id).unwrap();
+    assert_eq!(
+        done.draft.done_note.as_deref(),
+        Some(
+            "task me-sim-two merged https://github.com/Ivan091/me-sim/pull/4, https://github.com/Ivan091/me-sim/pull/9"
+        )
+    );
+    assert_eq!(done.task, None, "a closed task ends the link");
+}
+
+#[test]
+fn an_item_that_cannot_be_written_to_the_file_is_refused() {
+    type Change = fn(&mut TodoDraft);
+    let (mut store, _) = store();
+    let cases: [(Change, &str); 6] = [
+        (|d| d.text = "  ".to_owned(), "the text is empty"),
+        (|d| d.text = "a\nb".to_owned(), "the text must be one line"),
+        (
+            |d| d.project = "# x".to_owned(),
+            "the project must not start with `#`",
+        ),
+        (|d| d.project = "Done".to_owned(), "Done or Dropped"),
+        (
+            |d| d.section = Some("#s".to_owned()),
+            "the section must not start",
+        ),
+        (
+            |d| d.notes = vec!["a\nb".to_owned()],
+            "the note must be one line",
+        ),
+    ];
+    for (change, message) in cases {
+        let mut bad = draft("fine");
+        change(&mut bad);
+        let refused = store.add_todo(&bad, Actor::User);
+        assert!(
+            matches!(&refused, Err(StoreError::InvalidTodo(_))),
+            "{refused:?}"
+        );
+        assert!(
+            refused.unwrap_err().to_string().contains(message),
+            "{message}"
+        );
+    }
+    assert_eq!(store.todos(&TodoFilter::default()).unwrap().len(), 0);
+    let one = store.add_todo(&draft("one"), Actor::User).unwrap();
+    let refused = store.edit_todo(
+        one.id,
+        &TodoEdit {
+            project: Some("Dropped items".to_owned()),
+            ..TodoEdit::default()
+        },
+        Actor::User,
+    );
+    assert!(
+        matches!(refused, Err(StoreError::InvalidTodo(_))),
+        "{refused:?}"
+    );
+    assert_eq!(store.todo(one.id).unwrap().draft.project, "me-sim");
 }

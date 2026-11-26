@@ -190,7 +190,9 @@ const TOOLS: &[ToolDef] = &[
                         "type": "integer",
                         "description": concat!(
                             "The id of the open to-do item this task comes from (`todo_list`): it is linked to the task and ",
-                            "finished when the task closes. Refused when the item is not open or a live task holds it.",
+                            "finished when the task closes. Refused before the task starts when the item is not open or a live task holds ",
+                            "it; a link refused after the task started leaves it running unlinked and the result says why ",
+                            "(`todo_unlinked`).",
                         ),
                     },
                     "allow_ask": {
@@ -1312,16 +1314,12 @@ impl<'a> Server<'a> {
 
     fn todo_list(&self, args: &Value) -> Result<String> {
         let word = |key| args.get(key).and_then(Value::as_str);
-        let state = match word("state") {
-            None | Some("open") => Some(headwork_core::todo::TodoState::Open),
-            Some("all") => None,
-            Some(other) => Some(other.parse()?),
-        };
-        let items = self.store.todos(&headwork_store::TodoFilter {
-            project: word("project").map(str::to_owned),
-            owner: word("owner").map(str::parse).transpose()?,
-            state,
-        })?;
+        let items = super::todo::list(
+            self.store,
+            word("project"),
+            word("owner").map(str::parse).transpose()?,
+            word("state"),
+        )?;
         to_text(
             &items
                 .iter()
@@ -1388,6 +1386,7 @@ impl<'a> Server<'a> {
             not_before: date("not_before")?,
             due: date("due")?,
             append: optional("append").map(str::to_owned),
+            added: None,
         };
         to_text(&super::todo::edit(
             self.store,
@@ -1681,8 +1680,12 @@ impl<'a> Server<'a> {
         reap(self.store, &self.env)?;
         let result = super::todo::spawn_linked(self.store, &self.env, &request, todo);
         std::fs::remove_file(&file).ok();
-        let (task, pumped) = result?;
-        to_text(&json!({ "task": task, "queue": pumped }))
+        let spawned = result?;
+        to_text(&json!({
+            "task": spawned.task,
+            "queue": spawned.pumped,
+            "todo_unlinked": spawned.unlinked,
+        }))
     }
 
     fn part_spawn(&mut self, lead: &Task, args: &Value) -> Result<String> {
