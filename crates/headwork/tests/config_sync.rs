@@ -981,3 +981,63 @@ fn adopt_into_the_repository_refuses_while_a_local_machine_file_would_hide_it() 
         "the local file is untouched"
     );
 }
+
+#[test]
+fn a_pull_with_a_local_machine_file_skips_the_eol_restore_and_applies_shared_changes() {
+    let synced = adopted_locally();
+    let (origin, _) = with_origin(&synced);
+    let local = std::fs::read_to_string(synced.local_machine_file()).unwrap();
+    std::fs::write(synced.local_machine_file(), local.replace('\n', "\r\n")).unwrap();
+    let other = tempfile::tempdir().unwrap();
+    git(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            origin.path().to_str().unwrap(),
+            other.path().to_str().unwrap(),
+        ],
+    );
+    let shared_path = other.path().join("headwork/config.toml");
+    let shared = std::fs::read_to_string(&shared_path).unwrap();
+    std::fs::write(
+        &shared_path,
+        shared.replace("default = \"sonnet\"", "default = \"haiku\""),
+    )
+    .unwrap();
+    git(other.path(), &["commit", "-q", "-a", "-m", "haiku"]);
+    git(other.path(), &["push", "-q"]);
+    let output = synced.run(&["config", "sync"]);
+    assert!(
+        output.status.success(),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        std::fs::read_to_string(synced.config())
+            .unwrap()
+            .contains("haiku")
+    );
+}
+
+#[test]
+fn doctor_accepts_a_local_machine_file_alone_and_names_both_paths_when_neither_exists() {
+    let synced = adopted_locally();
+    let alone = synced.run(&["doctor", "--json"]);
+    assert!(
+        !stdout(&alone).contains("config-machine-shadow"),
+        "{}",
+        stdout(&alone)
+    );
+    assert!(
+        !stdout(&alone).contains("config.machine.toml (nor"),
+        "{}",
+        stdout(&alone)
+    );
+    std::fs::remove_file(synced.local_machine_file()).unwrap();
+    let none = synced.run(&["doctor", "--json"]);
+    let out = stdout(&none);
+    assert!(out.contains("config.machine.toml (nor"), "{out}");
+    assert!(out.contains("machines/test/headwork.toml"), "{out}");
+}

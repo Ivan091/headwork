@@ -241,7 +241,6 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
     DoctorReport { checks }
 }
 
-/// The checks of a synced config: `config-sources` always, the rest when `sources.toml` exists.
 fn missing_source(layout: &crate::ops::config_sync::Layout) -> Option<String> {
     if !layout.repo.is_dir() {
         return Some(slashed(&layout.repo));
@@ -272,6 +271,7 @@ fn machine_shadow(layout: &crate::ops::config_sync::Layout) -> Option<Check> {
     })
 }
 
+/// The checks of a synced config: `config-sources` always, the rest when `sources.toml` exists.
 fn config_sync_checks(d: &Doctor<'_>) -> Vec<Check> {
     use super::config_sync::{self, ProblemKind};
     let inspection = match config_sync::inspect(d.home, d.platform) {
