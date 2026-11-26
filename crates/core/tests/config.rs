@@ -8,6 +8,7 @@ use headwork_core::config::{
     ConfigError, Delivery, HostKind, ParkPolicy, PushMode, RETIRED_PROJECT_KEYS, TaskVars,
     TemplateProblem, WorktreeCommand, check_template, expand_home,
 };
+use headwork_core::gate::GateClass;
 use headwork_core::lifecycle::MergePolicy;
 use headwork_core::{Config, LayoutMode, Model, ProjectName, ProjectOverlay, Severity};
 
@@ -231,6 +232,56 @@ fn default_model_must_be_allowed() {
         matches!(error, ConfigError::DefaultModelNotAllowed(Model::Fable)),
         "{error}"
     );
+}
+
+#[test]
+fn gates_default_and_take_their_keys() {
+    let config = Config::parse(
+        "[machine]
+host = \"wmux\"
+",
+        "minimal",
+    )
+    .unwrap();
+    assert_eq!(config.gates.count(GateClass::Cpu).get(), 3, "cpu default");
+    assert_eq!(config.gates.count(GateClass::Gpu).get(), 2, "gpu default");
+    assert_eq!(config.gates.dir, None, "dir default");
+    assert_eq!(config.gates.held_long_min, 45, "held long default");
+    assert_eq!(config.gates.starved_min, 30, "starved default");
+    let text = "[machine]
+host = \"wmux\"
+[gates]
+cpu = 4
+gpu = 1
+dir = \"~/slots\"
+held_long_min = 60
+starved_min = 10
+";
+    let config = Config::parse(text, "gates").unwrap();
+    assert_eq!(config.gates.cpu.get(), 4, "cpu");
+    assert_eq!(config.gates.gpu.get(), 1, "gpu");
+    assert_eq!(config.gates.dir.as_deref(), Some("~/slots"), "dir");
+    assert_eq!(config.gates.held_long_min, 60, "held long");
+    assert_eq!(config.gates.starved_min, 10, "starved");
+}
+
+#[test]
+fn gates_refuse_a_zero_count_and_unknown_keys() {
+    for text in [
+        "[gates]
+cpu = 0
+",
+        "[gates]
+slots = 3
+",
+    ] {
+        let full = format!(
+            "[machine]
+host = \"wmux\"
+{text}"
+        );
+        assert!(Config::parse(&full, "gates").is_err(), "{text}");
+    }
 }
 
 #[test]

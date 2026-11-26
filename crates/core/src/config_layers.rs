@@ -12,6 +12,7 @@ use toml::{Table, Value};
 /// Key patterns only a machine's own file may set; `*` stands for one segment, and a pattern covers everything beneath it.
 pub const MACHINE_ONLY: &[&str] = &[
     "machine",
+    "gates",
     "project.*.main",
     "project.*.read_only_paths",
     "project.*.extra_writable",
