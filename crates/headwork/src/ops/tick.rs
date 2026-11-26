@@ -340,7 +340,9 @@ impl<'b> Run<'_, 'b> {
     /// Writes the to-do list to its file when the store changed since the last export (a safety net for changes made while
     /// no export was possible). A failed export is the stage's error, so it becomes a `tick-error` finding and the later
     /// stages still run. A file that exists and was never imported stays quiet here on purpose: setting `[todo] file` is
-    /// followed by the import step of the migration note, and the CLI export reports it.
+    /// followed by the import step of the migration note, `headwork todo export` and every todo command report it loudly,
+    /// and a tick finding would nag a machine that set the key on purpose before importing. An export that finds the lock
+    /// held by another one is quiet too: the next tick tries again.
     fn todo(&mut self) -> Result<()> {
         let env = self.env();
         let (home, config, actor) = (env.home, env.config, self.actor());
