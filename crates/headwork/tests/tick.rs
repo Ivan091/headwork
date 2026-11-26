@@ -2581,3 +2581,63 @@ fn a_queued_task_on_a_gone_dependency_is_told_once_and_logged_once() {
     assert_eq!(gone_refusals, 1, "one refusal logged, not one per tick");
     assert_eq!(state(&w, &dependent), TaskState::Queued, "still queued");
 }
+
+fn todo_world(file: &str) -> World {
+    let text = format!("\n[todo]\nfile = \"{file}\"\n");
+    world_extra(false, 10, &text)
+}
+
+#[test]
+fn the_tick_exports_what_the_store_gained_while_no_export_ran() {
+    let folder = tempfile::tempdir().unwrap();
+    let file = folder.path().join("todo.md");
+    std::fs::write(&file, "# To-do\n").unwrap();
+    let slashed = file.display().to_string().replace('\\', "/");
+    let mut w = todo_world(&slashed);
+    headwork::ops::todo::import(&mut w.store, &w.home, &w.config, None, false, Actor::User)
+        .unwrap();
+    let pending = headwork_core::todo::parse("## demo\n\n- [ ] Pending item\n")
+        .items
+        .remove(0);
+    w.store.add_todo(&pending, Actor::User).unwrap();
+    let report = run_tick(&mut w);
+    assert!(
+        !rules(&report)
+            .iter()
+            .any(|(rule, _)| *rule == FindingId::TickError),
+        "{:?}",
+        rules(&report)
+    );
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.contains("- [ ] Pending item"), "{written}");
+    assert_eq!(count(&w, "todo-exported"), 1);
+    run_tick(&mut w);
+    assert_eq!(
+        count(&w, "todo-exported"),
+        1,
+        "a second tick writes nothing"
+    );
+}
+
+#[test]
+fn a_failing_export_is_a_tick_error_and_the_later_stages_still_run() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("blocker"), "a file, not a folder").unwrap();
+    let file = folder.path().join("blocker").join("todo.md");
+    let slashed = file.display().to_string().replace('\\', "/");
+    let mut w = todo_world(&slashed);
+    let report = run_tick(&mut w);
+    assert!(
+        rules(&report).contains(&(FindingId::TickError, Status::Standing)),
+        "{:?}",
+        rules(&report)
+    );
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::TickError)
+            .unwrap()
+            .contains(&"tick-error:stage:todo".to_owned()),
+        "the finding names the stage"
+    );
+    assert!(report.usage.is_some(), "the stage after it ran");
+}

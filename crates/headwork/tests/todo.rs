@@ -62,7 +62,12 @@ impl Machine {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_in(self.dir.path(), args)
+    }
+
+    fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_headwork"))
+            .current_dir(cwd)
             .args(args)
             .env("HEADWORK_HOME", self.home())
             .env("HEADWORK_CLAUDE_JSON", self.dir.path().join(".claude.json"))
@@ -223,6 +228,142 @@ fn without_a_file_every_change_works_and_says_nothing_is_exported() {
     assert!(!failed.status.success(), "import needs a file");
 }
 
+fn id_of(line: &str) -> String {
+    line.split_whitespace()
+        .next()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_owned()
+}
+
+#[test]
+fn a_deleted_file_is_written_again_and_a_hand_edit_stays_while_the_store_is_unchanged() {
+    let m = Machine::new(true);
+    std::fs::write(m.file(), fixture()).unwrap();
+    m.ok(&["todo", "import"]);
+    m.ok(&["todo", "export"]);
+    std::fs::remove_file(m.file()).unwrap();
+    let again = m.ok(&["todo", "export"]);
+    assert!(again.contains("exported to"), "{again}");
+    assert!(!again.contains("a copy is in"), "{again}");
+    assert!(m.file().exists());
+    let edited = format!(
+        "{}\n- [ ] by hand\n",
+        std::fs::read_to_string(m.file()).unwrap()
+    );
+    std::fs::write(m.file(), &edited).unwrap();
+    let same = m.ok(&["todo", "export"]);
+    assert!(same.contains("up to date"), "{same}");
+    assert_eq!(std::fs::read_to_string(m.file()).unwrap(), edited);
+}
+
+#[test]
+fn a_file_headwork_created_itself_counts_as_imported_so_every_add_exports() {
+    let m = Machine::new(true);
+    assert!(!m.file().exists());
+    for text in ["One", "Two"] {
+        let added = m.ok(&["todo", "add", "me-sim", text]);
+        assert!(added.contains("exported to"), "{added}");
+        assert!(!added.contains("never imported"), "{added}");
+    }
+    let written = std::fs::read_to_string(m.file()).unwrap();
+    assert!(
+        written.contains("- [ ] One") && written.contains("- [ ] Two"),
+        "{written}"
+    );
+}
+
+#[test]
+fn a_relative_and_an_absolute_name_of_one_file_are_one_record() {
+    let m = Machine::new(false);
+    std::fs::write(m.file(), fixture()).unwrap();
+    let imported = m.run_in(m.dir.path(), &["todo", "import", "--file", "todo.md"]);
+    assert!(imported.status.success(), "import");
+    let absolute = forward(&m.file());
+    let exported = m.ok(&["todo", "export", "--file", &absolute]);
+    assert!(exported.contains("exported to"), "{exported}");
+    assert!(!exported.contains("never imported"), "{exported}");
+    let relative = m.run_in(m.dir.path(), &["todo", "export", "--file", "./todo.md"]);
+    assert!(
+        String::from_utf8_lossy(&relative.stdout).contains("up to date"),
+        "{}",
+        String::from_utf8_lossy(&relative.stdout)
+    );
+}
+
+#[test]
+fn an_item_that_cannot_be_written_is_refused_with_the_reason() {
+    let m = Machine::new(false);
+    for (args, reason) in [
+        (["todo", "add", "Done", "x"], "Done or Dropped"),
+        (["todo", "add", "# x", "x"], "must not start with `#`"),
+        (["todo", "add", "me-sim", "  "], "the text is empty"),
+        (["todo", "add", "me-sim", "a\nb"], "must be one line"),
+    ] {
+        let refused = m.run(&args);
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(reason),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    let added = m.ok(&["todo", "add", "me-sim", "Fine"]);
+    let id = id_of(&added);
+    let refused = m.run(&["todo", "edit", &id, "--project", "dropped things"]);
+    assert!(!refused.status.success());
+    let refused = m.run(&["todo", "edit", &id, "--text", " "]);
+    assert!(!refused.status.success());
+    let note = m.ok(&["todo", "edit", &id, "--append", "  - a note "]);
+    assert!(note.contains("Fine"), "{note}");
+    assert!(m.ok(&["todo", "list", "--json"]).contains("\"a note\""));
+}
+
+#[test]
+fn an_added_text_reads_like_an_imported_line_so_a_later_import_finds_it() {
+    let m = Machine::new(true);
+    let added = m.ok(&["todo", "add", "me-sim", "Ship it (due 2026-12-01)"]);
+    assert!(added.contains("] Ship it (agent"), "{added}");
+    assert!(added.contains("due 2026-12-01"), "{added}");
+    let other = m.dir.path().join("other.md");
+    std::fs::write(&other, "## me-sim\n\n- [ ] Ship it (due 2026-12-01)\n").unwrap();
+    let imported = m.ok(&["todo", "import", "--file", &forward(&other)]);
+    assert!(imported.contains("0 added, 1 already"), "{imported}");
+}
+
+#[test]
+fn the_owner_column_alone_decides_the_for_you_prefix() {
+    let m = Machine::new(true);
+    let added = m.ok(&["todo", "add", "me-sim", "For you (audit): pay the bill"]);
+    assert!(added.contains("pay the bill (user"), "{added}");
+    assert!(
+        std::fs::read_to_string(m.file())
+            .unwrap()
+            .contains("- [ ] For you: pay the bill")
+    );
+    let id = id_of(&added);
+    let edited = m.ok(&["todo", "edit", &id, "--owner", "agent"]);
+    assert!(edited.contains("pay the bill (agent"), "{edited}");
+    let written = std::fs::read_to_string(m.file()).unwrap();
+    assert!(written.contains("- [ ] pay the bill"), "{written}");
+    assert!(!written.contains("For you"), "{written}");
+    let again = m.ok(&["todo", "edit", &id, "--text", "For you: pay it now"]);
+    assert!(again.contains("pay it now (user"), "{again}");
+}
+
+#[test]
+fn a_file_that_is_not_utf8_is_not_imported_and_the_error_names_it() {
+    let m = Machine::new(true);
+    std::fs::write(m.file(), [0x23, 0x20, 0xff, 0xfe, 0x0a]).unwrap();
+    let refused = m.run(&["todo", "import"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("todo.md") && stderr.contains("not valid UTF-8"),
+        "{stderr}"
+    );
+}
+
 struct World {
     dir: tempfile::TempDir,
     home: Home,
@@ -251,12 +392,16 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn world() -> World {
+    world_at("todo.md")
+}
+
+fn world_at(todo_file: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
     git(&main, &["init", "-q", "-b", "master"]);
     git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
-    let file = forward(&dir.path().join("todo.md"));
+    let file = forward(&dir.path().join(todo_file));
     let text = format!(
         "[machine]\nhost = \"wmux\"\nmax_workers = 4\n\n[todo]\nfile = \"{file}\"\n\n[project.demo]\nmain = \"{}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
@@ -384,5 +529,77 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
     assert!(
         kinds.iter().any(|kind| kind == "todo-exported"),
         "{kinds:?}"
+    );
+}
+
+fn kinds(w: &World) -> Vec<String> {
+    w.store
+        .events(EventFilter {
+            task: None,
+            limit: 500,
+        })
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
+}
+
+fn add_item(store: &mut Store, env: &Env<'_>, text: &str) -> i64 {
+    let item = AddRequest {
+        project: "demo".to_owned(),
+        text: text.to_owned(),
+        section: None,
+        owner: None,
+        not_before: None,
+        due: None,
+        notes: Vec::new(),
+    };
+    todo::add(store, env, &item).unwrap();
+    store
+        .todos(&TodoFilter::default())
+        .unwrap()
+        .last()
+        .unwrap()
+        .id
+}
+
+#[test]
+fn a_task_for_an_item_that_is_done_dropped_or_unknown_is_refused_before_it_exists() {
+    let mut w = world();
+    let env = env!(w);
+    let done = add_item(&mut w.store, &env, "Already done");
+    todo::finish(&mut w.store, &env, done, None, false).unwrap();
+    let dropped = add_item(&mut w.store, &env, "Given up");
+    todo::finish(&mut w.store, &env, dropped, None, true).unwrap();
+    for (id, slug, words) in [
+        (done, "late", "done"),
+        (dropped, "gone", "dropped"),
+        (4242, "nobody", "no to-do item"),
+    ] {
+        let refused =
+            todo::spawn_linked(&mut w.store, &env, &request(&w.brief, slug), Some(id)).unwrap_err();
+        assert!(refused.to_string().contains(words), "{refused}");
+        assert!(
+            w.store
+                .find_task(&format!("demo-{slug}"))
+                .unwrap()
+                .is_none(),
+            "no task is made for a refused link"
+        );
+    }
+}
+
+#[test]
+fn a_failing_export_after_a_close_is_logged_and_the_close_still_succeeds() {
+    let mut w = world_at("blocker/todo.md");
+    std::fs::write(w.dir.path().join("blocker"), "a file, not a folder").unwrap();
+    let env = env!(w);
+    let spawned = todo::spawn_linked(&mut w.store, &env, &request(&w.brief, "sand"), None).unwrap();
+    let report = close(&mut w.store, &env, spawned.task.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(
+        kinds(&w).iter().any(|kind| kind == "todo-export-failed"),
+        "{:?}",
+        kinds(&w)
     );
 }
