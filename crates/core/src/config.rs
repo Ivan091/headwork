@@ -626,10 +626,10 @@ pub struct ProjectConfig {
     /// Repositories a worker may push to.
     #[serde(default)]
     pub allowed_repos: Vec<Repo>,
-    /// Deprecated and not enforced: gates take machine-wide slots from `%LOCALAPPDATA%/heavy-slots`.
+    /// Deprecated and not enforced: `[gates]` replaces it with machine-wide `cpu` and `gpu` slots.
     #[serde(default)]
     pub heavy_slots: Option<u32>,
-    /// Deprecated and not enforced: the project's check scripts own the heavy gate.
+    /// Deprecated and not enforced: `[gates]` replaces it; heavy commands run under `headwork gate run <class> --`.
     #[serde(default)]
     pub heavy_gate: Option<String>,
     /// Paths a worker may read and never write.
