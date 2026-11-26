@@ -110,3 +110,9 @@ their reports by session message.
 - `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
   once both are done. A dependent whose dependency was dropped instead of merged stays queued forever: re-point or drop
   it.
+
+## To-do
+
+- The to-do list lives in the store: `todo_list`, `todo_add`, `todo_done`, `todo_edit`. Never edit `todo.md` by hand; it is
+  regenerated. Commit and push it in code-home after a change, as before.
+- A task that comes from an item gets the item's id as `todo` in `spawn`.

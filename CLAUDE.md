@@ -34,7 +34,7 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
-rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, migrate_list, report, done, recap, job_start,
+todo_list, todo_add, todo_done, todo_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume) and the worker tools (board, inbox, migrate_list, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -155,6 +155,12 @@ claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `d
 finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
 `scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
 release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
+The to-do list (`docs/todo.md`, migration 0025) lives in the store: `core/src/todo.rs` parses and renders `todo.md` (pure),
+`store/src/todos.rs` holds the rows and `todo_files`, `ops/todo.rs` imports, exports and changes items for `headwork todo` and
+the orchestrator's `todo_*` tools. `[todo] file` (machine-only) names the generated file: an export writes it after every
+change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/todo-backups`
+first. `spawn --todo <id>` links an item to a task; `apply_in` finishes it when the task closes and frees it when the task
+is dropped or fails.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -177,7 +183,7 @@ cargo run -p headwork -- status [--all] [--json]   # one line per top-level task
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
 cargo run -p headwork -- graph [--json] [--at T] [--all | --task <name>]   # the agents working together as nodes and edges (docs/dashboard.md)
 cargo run -p headwork -- dash [--port 8740] [--open]   # the agent graph as a web page on http://127.0.0.1:8740/, read only, until Ctrl+C
-cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--close confirm|silent] [--review N --decided-by user|judged --reason "..."] [--allow-ask "<cmd>"]...   # a task in its own pane, or queued
+cargo run -p headwork -- spawn <project> <slug> <brief> [--main] [--model M] [--close confirm|silent] [--review N --decided-by user|judged --reason "..."] [--allow-ask "<cmd>"]... [--todo ID]   # a task in its own pane, or queued
 cargo run -p headwork -- queue [--order a,b]   # order the queue, start every queued task that fits
 cargo run -p headwork -- close <name> [--force]   # close a task, verified; --force: stuck in closing, PRs merged (or dropped, none), no job
 cargo run -p headwork -- answer <ask-id> <choice>  # answer an ask the tick raised (e.g. keep or delete a worktree) by option number or text
@@ -187,6 +193,9 @@ cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
 cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
+cargo run -p headwork -- todo [list] [--project P] [--owner user|agent] [--state open|done|dropped|all] [--json]   # the to-do list kept in the store (docs/todo.md)
+cargo run -p headwork -- todo add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | done <id> [--note N] [--drop] | reopen <id> | edit <id> [...]
+cargo run -p headwork -- todo import [--file P] [--dry-run] | export [--file P]   # todo.md into the store (never deletes) and back out (backs up a hand-edited file)
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- jobs              # the registered long-running jobs
