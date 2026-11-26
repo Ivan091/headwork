@@ -236,7 +236,7 @@ completions (a node never runs before its inputs; a review never delivers with a
 | `review_start {}` | implementing lead | takes the `requested` review: refuses with uncommitted changes (`review-dirty`), pins `head_sha` (HEAD) and `base_sha` (merge base with the default branch), makes the review worktree, spawns the part `review` (`review-2` for a later review) of kind `review` with the generated brief |
 | `review_next {}` | reviewer lead | the ready nodes with their full prompts and models, marked `running`; empty when the round waits on nothing |
 | `review_node_done {node, item?, findings[]}` | reviewer lead | stores a node's findings (or verdicts); a malformed one is refused with the shape |
-| `review_deliver {summary}` | reviewer lead | refused while a node is ready or running (`review-nodes-open`); returns the findings numbered (confirmed and plausible only after a verify stage) and the implementing lead's address, for the reviewer lead to send with `SendMessage` |
+| `review_deliver {summary}` | reviewer lead | refused while a node is ready or running (`review-nodes-open`); returns the findings numbered (confirmed and plausible only after a verify stage, within the floor and the caps of section 13), the `listed` ones (below the floor or over a cap, with the reason) to pass on for information only, and the implementing lead's address, for the reviewer lead to send with `SendMessage` |
 | `review_resolve {items: [{id, fixed or disputed, note}]}` | implementing lead | one entry per open finding; refused while one is missing or the fixes are uncommitted; pins the new `head_sha` and returns the reviewer lead's address, for a `SendMessage` that wakes it |
 | `review_verdict {items: [{id, fix accepted or rejected, dispute accepted or kept}]}` | reviewer lead | the re-check, from fresh subagents; a kept dispute at `unsettled = "ask"` makes the review `asking` |
 | `review_finish {}` | reviewer lead | refused while a finding is open, a round is due, or an ask waits; closes the review, then the part closes itself |
@@ -274,19 +274,27 @@ enabled = false                         # until R3 is in
 lead_model = "sonnet"
 flows = { task = "code", plan = "plan" } # default flow by task kind; else "code"
 parallel = 6                            # at most this many nodes running at once per review
+floor = "doubt"                         # lightest severity delivered (important > doubt > nit); "nit" delivers all
+max_round_findings = 20                 # at most this many delivered per round; 0 is no cap
+max_task_findings = 40                  # at most this many delivered over every review of one task; 0 is no cap
 ```
+
+Section 13 explains the last three.
 
 ## 11. Board, status, log
 
 `board` shows a running review on a line under its lead (`review 2 code, level 2, round 1: running, 5 node(s) over, 2
-running, 3 finding(s)`; findings so far, over every round up to the current one; not repeated on its parts), `status` ends
-the task's line with `in review (level 2)`, or `review requested (level 2)` while the review has not started, and the event
-log carries `review-requested`, `review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`,
-`review-answer`, `review-finish`, `review-cancel` and `review-refused` (a refused trigger).
+running, 3 finding(s) · 2.4M tokens`; findings so far, over every round up to the current one; the fresh tokens the
+reviewer lead and its subagents spent; not repeated on its parts), `status` ends the task's line with `in review (level
+2)`, or `review requested (level 2)` while the review has not started (`in review (level 2, 2.4M review tokens)` once
+the review spent tokens, `reviews 2.4M tokens` after it), and the event log carries `review-requested`, `review-start`,
+`review-node`, `review-deliver`, `review-resolve`, `review-verdict`, `review-answer`, `review-finish`, `review-cancel`
+and `review-refused` (a refused trigger).
 
 `status --json` gives each task's entry a `review` field: `null` when no review is open, else
 `{"level": 2, "flow": "code", "round": 1, "state": "running", "focus": "", "findings_awaiting_lead": 0}`
-(`level` 1 to 3; `state` one of `requested`, `running`, `delivered`, `rechecking`, `asking`).
+(`level` 1 to 3; `state` one of `requested`, `running`, `delivered`, `rechecking`, `asking`), and a `review_tokens`
+field: the fresh tokens of every review of the task, 0 when none spent any.
 
 ## 12. Milestones (worker-days, one worker each)
 
@@ -300,6 +308,42 @@ log carries `review-requested`, `review-start`, `review-node`, `review-deliver`,
 
 R1 first, then R2, then R3; R4 last. A review can be used by hand from R2 on (the reviewer lead walks the flow from its
 brief), and is enforced from R3 on.
+
+## 13. Delivery policy (2026-11-26)
+
+The store held 30 finished reviews when this was measured:
+
+| Level | Fresh tokens | Findings | Important | Nits | Doubts |
+|---|---|---|---|---|---|
+| 1 (average) | 0.27M | 1.9 | 0.7 | | |
+| 2 (average) | 2.4M | 28.5 | 7.9 | about 18 | |
+| 3 (the one run) | 13.75M | 176 | 36 | 88 | 52 |
+
+The level-3 run took 2 rounds, 176 per-finding verify nodes and 152 fixes. The cost of one important finding is about
+the same at every level; the waste is the nits, each verified by its own subagent and fixed one by one. The user kept the
+level table (section 4) and chose these mechanics (`docs/decisions/2026-11-26-review-policy.md`); the pure parts are
+`core/src/review/policy.rs`:
+
+- **Severity floor.** `[reviews] floor` (default `doubt`; order important > doubt > nit) is the lightest severity
+  delivered. A finding below it gets no verify instance (`each = "finding"` skips it) and is not delivered: its
+  resolution stays empty, so it never waits on the implementing lead and never enters a fix round. `review_deliver`
+  returns it under `listed` with the reason `below-floor`, and the reviewer lead passes the list on for information,
+  needing no answer. `floor = "nit"` delivers everything, as before.
+- **Caps.** `[reviews] max_round_findings` (default 20) and `max_task_findings` (default 40, counted over every review
+  of the task: the findings ever delivered) bound what one delivery hands over; 0 is no cap. Over a cap, findings go by
+  severity (important, doubt, nit), then verdict (confirmed, plausible, none), then number; the rest are listed with
+  the reason `over-round-cap` or `over-task-cap` (the tighter cap names it).
+- **Repeats.** From round 2 on, a node's finding that repeats a finding of an earlier round of the same review (the same
+  summary once lowercased with every run of other characters one space, or the same file, line and node) is not
+  recorded. `review_node_done` says how many it dropped and which earlier findings they repeat, and the `review-node`
+  event carries them as `repeats`.
+- **Stop rule.** Another round is due only when this round had an important finding fixed (its fix accepted or still
+  awaiting the verdict) and the level allows more rounds. Fixed doubts and nits alone end the review.
+- **Cost on the surface.** `board` ends a review's line with its fresh tokens (input, cache writes and output of the
+  reviewer lead and its subagents, cache reads left out), and `status` adds the cost of all the task's reviews.
+
+Not built: dropping repeats within one round by place, since different nodes at one line often raise different issues
+(10 to 30% of such pairs overlapped in the data).
 
 ## Deferred
 

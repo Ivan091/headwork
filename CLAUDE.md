@@ -113,7 +113,8 @@ Review flows (`docs/review-flows.md`) start with R1: the pure model in `core/src
 dispute rule), migration 0019 with `Store::request_review`, `move_review` and the node and finding queries
 (`store/src/reviews.rs`), and `ops/flows.rs`: the built-in flows embedded from `flows/` (`BUILTIN_FILES`; a test keeps
 it in step with the folder), overridden or added by `<home>/flows/<name>.toml`, checked by `headwork flow check`.
-R2 starts reviews: `[reviews]` (`enabled`, off for now; `lead_model`; `flows` by task kind; `parallel`), the
+R2 starts reviews: `[reviews]` (`enabled`, off for now; `lead_model`; `flows` by task kind; `parallel`; `floor`,
+`max_round_findings`, `max_task_findings`), the
 `UserPromptSubmit` hook's trigger in a lead's tab (`review_trigger` in `ops/hook.rs`: the user's own prompt only, a
 `requested` review and a line telling the lead to call `review_start`; a near miss, an unknown flow or a review already
 open get a line and no review), the lead tool `review_start` (`ops/review.rs`: refused without a request
@@ -139,6 +140,10 @@ R4 surfaces them: `board` prints a lead's open review under it (`Store::review_s
 off), and the built-in `plan` flow (target `files`) reviews plan documents; the event log carries `review-requested`,
 `review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`, `review-answer`, `review-finish`,
 `review-cancel` and `review-refused`. The planned live trial at each level remains.
+The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
+floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for
+those below the floor), drops a later round's repeats of earlier findings, runs another round only after an important
+fix, and shows each review's fresh tokens on `board` and `status`.
 The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,
