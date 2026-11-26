@@ -2811,3 +2811,196 @@ fn the_tick_pushes_the_digest_once_a_day_when_something_waits_on_the_user() {
     run_tick(&mut w);
     assert_eq!(count(&w, "digest-pushed"), 1, "once a day");
 }
+
+fn gate_owner(
+    pid: u32,
+    class: headwork_core::gate::GateClass,
+    age_s: u64,
+) -> headwork_core::gate::Owner {
+    headwork_core::gate::Owner {
+        pid,
+        native: true,
+        class: Some(class),
+        task: "demo-sand".to_owned(),
+        task_id: None,
+        worktree: "S:/Code/demo/demo-sand".to_owned(),
+        command: "cargo test".to_owned(),
+        started: "2026-11-26 10:00:00".to_owned(),
+        epoch: Some(headwork_adapters::gate::epoch_now().saturating_sub(age_s)),
+    }
+}
+
+fn gate_slot(w: &World, class: &str, slot: u32, owner: &headwork_core::gate::Owner) -> PathBuf {
+    let dir = w
+        .dir
+        .path()
+        .join("slots")
+        .join(class)
+        .join(format!("slot-{slot}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("owner"), owner.render()).unwrap();
+    dir
+}
+
+fn gated_world(extra: &str) -> World {
+    let mut w = world_extra(false, 4, extra);
+    w.config.gates.dir = Some(
+        w.dir
+            .path()
+            .join("slots")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+    );
+    w
+}
+
+#[test]
+fn a_tick_without_a_slot_folder_reports_nothing_and_creates_none() {
+    let mut w = gated_world("");
+    let report = run_tick(&mut w);
+    assert!(rules(&report).is_empty(), "{report:?}");
+    assert!(!w.dir.path().join("slots").exists(), "never created");
+}
+
+#[test]
+fn the_tick_reaps_a_dead_holder_and_a_dead_waiter_and_logs_each() {
+    use headwork_core::gate::GateClass;
+
+    let mut w = gated_world("");
+    let mut child = sleeper();
+    let dead = child.id();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(wait_dead(dead), "the helper ended");
+    let slot = gate_slot(&w, "cpu", 1, &gate_owner(dead, GateClass::Cpu, 5));
+    let live = gate_slot(
+        &w,
+        "cpu",
+        2,
+        &gate_owner(std::process::id(), GateClass::Cpu, 5),
+    );
+    let waiter = w
+        .dir
+        .path()
+        .join("slots")
+        .join("gpu")
+        .join(format!("wait-{dead}"));
+    std::fs::create_dir_all(waiter.parent().unwrap()).unwrap();
+    std::fs::write(&waiter, gate_owner(dead, GateClass::Gpu, 5).render()).unwrap();
+
+    run_tick(&mut w);
+    assert!(!slot.exists(), "the dead holder's slot is gone");
+    assert!(!waiter.exists(), "the dead waiter's file is gone");
+    assert!(live.exists(), "a live holder stays");
+    let reaped = w
+        .store
+        .events(EventFilter {
+            task: None,
+            limit: 10_000,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "gate-reaped")
+        .collect::<Vec<_>>();
+    assert_eq!(reaped.len(), 2, "{reaped:?}");
+    let text = format!("{reaped:?}");
+    assert!(
+        text.contains("cargo test") && text.contains(&dead.to_string()),
+        "{text}"
+    );
+    run_tick(&mut w);
+    assert_eq!(count(&w, "gate-reaped"), 2, "nothing more to reap");
+}
+
+#[test]
+fn a_cpu_holder_past_the_limit_stands_until_it_ends() {
+    use headwork_core::gate::GateClass;
+
+    let mut w = gated_world("");
+    w.config.gates.held_long_min = 10;
+    let young = gate_slot(
+        &w,
+        "cpu",
+        1,
+        &gate_owner(std::process::id(), GateClass::Cpu, 5 * 60),
+    );
+    let report = run_tick(&mut w);
+    assert!(rules(&report).is_empty(), "under the limit: {report:?}");
+    std::fs::remove_dir_all(&young).unwrap();
+    let old = gate_slot(
+        &w,
+        "cpu",
+        1,
+        &gate_owner(std::process::id(), GateClass::Cpu, 11 * 60),
+    );
+    let gpu = gate_slot(
+        &w,
+        "gpu",
+        1,
+        &gate_owner(std::process::id(), GateClass::Gpu, 3 * 3600),
+    );
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report),
+        vec![(FindingId::GateHeldLong, Status::Standing)],
+        "gpu holders are never long: {report:?}"
+    );
+    assert_eq!(
+        w.store
+            .open_finding_keys(FindingId::GateHeldLong)
+            .unwrap()
+            .len(),
+        1,
+        "open"
+    );
+    run_tick(&mut w);
+    assert_eq!(count(&w, "finding"), 1, "logged once");
+    std::fs::remove_dir_all(&old).unwrap();
+    std::fs::remove_dir_all(&gpu).unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::GateHeldLong)
+            .unwrap()
+            .is_empty(),
+        "cleared when the holder ended"
+    );
+}
+
+#[test]
+fn a_waiter_past_the_limit_is_starved_until_it_leaves() {
+    use headwork_core::gate::GateClass;
+
+    let mut w = gated_world("");
+    w.config.gates.starved_min = 20;
+    let dir = w.dir.path().join("slots").join("cpu");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("wait-{}", std::process::id()));
+    std::fs::write(
+        &file,
+        gate_owner(std::process::id(), GateClass::Cpu, 10 * 60).render(),
+    )
+    .unwrap();
+    assert!(rules(&run_tick(&mut w)).is_empty(), "not yet");
+    std::fs::write(
+        &file,
+        gate_owner(std::process::id(), GateClass::Cpu, 21 * 60).render(),
+    )
+    .unwrap();
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report),
+        vec![(FindingId::GateStarved, Status::Standing)],
+        "{report:?}"
+    );
+    std::fs::remove_file(&file).unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::GateStarved)
+            .unwrap()
+            .is_empty(),
+        "cleared"
+    );
+}

@@ -370,6 +370,43 @@ pub fn wait_message(
     text
 }
 
+/// Whether something that has lasted `age_s` seconds has lasted `minutes` minutes; a limit of 0 never is.
+#[must_use]
+pub fn lasted_minutes(age_s: u64, minutes: u32) -> bool {
+    minutes > 0 && age_s >= u64::from(minutes) * 60
+}
+
+/// One class as the board line shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassLine {
+    /// The class.
+    pub class: GateClass,
+    /// Its slot count.
+    pub count: NonZeroU32,
+    /// The live holders.
+    pub holders: Vec<HolderLine>,
+    /// The live waiters.
+    pub waiting: u32,
+}
+
+/// `cpu 2/3 (me-sim-x cargo test 4m, headwork-y check.sh 1m) · 1 waiting · gpu 0/2`, after `Gates: ` on the board.
+#[must_use]
+pub fn gates_line(classes: &[ClassLine]) -> String {
+    let mut parts = Vec::new();
+    for line in classes {
+        let mut part = format!("{} {}/{}", line.class, line.holders.len(), line.count);
+        if !line.holders.is_empty() {
+            let holders: Vec<String> = line.holders.iter().map(ToString::to_string).collect();
+            let _written = write!(part, " ({})", holders.join(", "));
+        }
+        parts.push(part);
+        if line.waiting > 0 {
+            parts.push(format!("{} waiting", line.waiting));
+        }
+    }
+    parts.join(" \u{b7} ")
+}
+
 /// A duration for people: `45s`, `4m`, `2h05m`.
 #[must_use]
 pub fn held_for(seconds: u64) -> String {
@@ -425,6 +462,56 @@ mod tests {
             started: "2026-11-26 10:00:00".to_owned(),
             epoch,
         }
+    }
+
+    #[test]
+    fn minutes_are_counted_from_a_limit_and_zero_never_passes() {
+        assert!(!lasted_minutes(45 * 60 - 1, 45), "just under");
+        assert!(lasted_minutes(45 * 60, 45), "at the limit");
+        assert!(!lasted_minutes(u64::MAX, 0), "0 is off");
+    }
+
+    #[test]
+    fn the_board_line_names_holders_and_waiters() {
+        let holder = |who: &str, command: &str, held_s| HolderLine {
+            who: who.to_owned(),
+            command: command.to_owned(),
+            held_s,
+        };
+        let classes = [
+            ClassLine {
+                class: GateClass::Cpu,
+                count: count(3),
+                holders: vec![
+                    holder("me-sim-x", "cargo test", 240),
+                    holder("headwork-y", "check.sh", 60),
+                ],
+                waiting: 1,
+            },
+            ClassLine {
+                class: GateClass::Gpu,
+                count: count(2),
+                holders: Vec::new(),
+                waiting: 0,
+            },
+        ];
+        assert_eq!(
+            gates_line(&classes),
+            "cpu 2/3 (me-sim-x cargo test 4m, headwork-y check.sh 1m) \u{b7} 1 waiting \u{b7} gpu 0/2"
+        );
+        assert_eq!(gates_line(&[]), "", "no classes");
+    }
+
+    #[test]
+    fn job_codes_round_trip() {
+        for gate in [None, Some(GateClass::Cpu), Some(GateClass::Gpu)] {
+            assert_eq!(
+                GateClass::from_job_code(GateClass::job_code(gate)),
+                gate,
+                "{gate:?}"
+            );
+        }
+        assert_eq!(GateClass::from_job_code(9), None, "unknown");
     }
 
     #[test]

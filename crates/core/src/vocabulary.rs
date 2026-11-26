@@ -572,6 +572,10 @@ text_enum!(
         /// `headwork update` failed in a way worth telling (deterministic, or transient from its third attempt); it
         /// stands until a later release installs. `update` raises and clears it, not the tick.
         UpdateFailed => "update-failed",
+        /// A `cpu` gate holder has held its slot for longer than `[gates] held_long_min` minutes.
+        GateHeldLong => "gate-held-long",
+        /// A process has waited for a gate slot for longer than `[gates] starved_min` minutes.
+        GateStarved => "gate-starved",
         /// The config sources (the repository or the machine file) changed since the last `headwork config sync`.
         ConfigStale => "config-stale",
         /// `config.toml` was edited by hand after the last `headwork config sync` wrote it.
