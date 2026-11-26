@@ -24,6 +24,18 @@ use crate::home::Home;
 /// How often a waiting gate says again what it waits for.
 pub const REPORT_EVERY: Duration = Duration::from_secs(30);
 
+/// A whole number of seconds that replaces [`REPORT_EVERY`] when it is above 0 (tests).
+pub const REPORT_VAR: &str = "HEADWORK_GATE_REPORT_S";
+
+/// [`REPORT_EVERY`], or the seconds [`REPORT_VAR`] gives.
+fn report_every() -> Duration {
+    std::env::var(REPORT_VAR)
+        .ok()
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map_or(REPORT_EVERY, Duration::from_secs)
+}
+
 /// How long a waiting gate sleeps between attempts.
 pub const POLL: Duration = Duration::from_secs(1);
 
@@ -87,7 +99,7 @@ pub fn waiting_tasks(home: &Home, gates: &GatesConfig) -> Vec<(i64, GateClass)> 
 
 /// Runs `argv` holding a slot of `class`, waiting for one first; returns the command's exit code.
 ///
-/// Waiting prints `headwork: waiting for cpu (...)` to `err` at once and every [`REPORT_EVERY`]. In CI, with
+/// Waiting prints `headwork: waiting for cpu (...)` to `err` at once and every [`REPORT_EVERY`] ([`REPORT_VAR`]). In CI, with
 /// `HEADWORK_GATE_OFF=1`, or when the process tree already holds `class`, the command runs directly. The command gets
 /// `HEADWORK_GATE_HELD` with `class` added when it holds a slot or runs directly for one of those reasons, never when
 /// it runs without a slot because the slot folder could not be used. An interrupt while waiting gives up with
@@ -144,6 +156,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         epoch: Some(gate::epoch_now()),
     };
     let slots = Slots::new(dir);
+    let interrupts = gate::watch_interrupts();
     let ticket = match slots.enqueue(class, gates.count(class), owner) {
         Ok(ticket) => ticket,
         Err(error) => {
@@ -152,7 +165,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         }
     };
     let waiting = Instant::now();
-    let held = match wait_for_slot(ticket, &events, err)? {
+    let held = match wait_for_slot(ticket, interrupts.as_deref(), &events, err)? {
         Waited::Held(held) => Some(held),
         Waited::Ungated => None,
         Waited::Interrupted => {
@@ -191,18 +204,17 @@ enum Waited {
     Interrupted,
 }
 
-/// Tries for a slot until one is held, trying fails, or an interrupt comes.
+/// Tries for a slot until one is held, trying fails, or an interrupt comes. The interrupt flag is watched from before
+/// the wait file is written, so an interrupt can never leave it behind.
 fn wait_for_slot(
     mut ticket: gate::Ticket,
+    interrupts: Option<&std::sync::atomic::AtomicBool>,
     events: &Events<'_>,
     err: &mut impl Write,
 ) -> Result<Waited> {
-    let interrupts = gate::watch_interrupts();
-    let interrupted = || {
-        interrupts
-            .as_ref()
-            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-    };
+    let interrupted =
+        || interrupts.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    let every = report_every();
     let mut told: Option<Instant> = None;
     loop {
         match ticket.try_take(&local_now(), gate::epoch_now()) {
@@ -215,7 +227,7 @@ fn wait_for_slot(
                 if told.is_none() {
                     events.record(EVENT_GATE_WAIT, serde_json::json!({ "ahead": ahead }));
                 }
-                if told.is_none_or(|at| at.elapsed() >= REPORT_EVERY) {
+                if told.is_none_or(|at| at.elapsed() >= every) {
                     writeln!(err, "headwork: {}", view.wait_message(ahead))?;
                     if let Some(error) = reap_error {
                         writeln!(
