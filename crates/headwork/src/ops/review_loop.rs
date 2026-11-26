@@ -4,10 +4,13 @@
 //! lead's fixes and disputes, and finishes; the implementing lead resolves every finding. headwork stores each step, so
 //! the order holds and a park loses nothing.
 
+use std::fmt::Write as _;
+
 use anyhow::{Result, bail};
 use headwork_core::review::{
-    DisputeCall, Each, FindingText, Instance, NodeId, ReviewTarget, ReviewTrigger, ReviewerView,
-    compose, ready, round_complete, round_due, settle_dispute,
+    Candidate, DisputeCall, Each, FindingText, Instance, Limits, ListReason, NodeId, Progress,
+    ReviewTarget, ReviewTrigger, ReviewerView, Seen, compose, meets_floor, ready, repeat_of,
+    round_complete, round_due, select, settle_dispute,
 };
 use headwork_core::{Actor, FindingVerdict, NodeState, Resolution, ReviewState, Severity};
 use headwork_store::{FindingRow, NewFinding, ReviewRow, Store, Task};
@@ -153,6 +156,15 @@ pub enum FixCall {
     Rejected,
 }
 
+/// A finding a round lists for information instead of delivering it: it needs no answer.
+#[derive(Debug, Clone, Serialize)]
+pub struct Listed {
+    /// The finding.
+    pub finding: FindingRow,
+    /// Why it is not delivered.
+    pub reason: ListReason,
+}
+
 /// A step's outcome: where the review stands and what to do next.
 #[derive(Debug, Clone, Serialize)]
 pub struct Step {
@@ -160,6 +172,9 @@ pub struct Step {
     pub review: ReviewRow,
     /// The findings this step concerns, numbered.
     pub findings: Vec<FindingRow>,
+    /// The findings `review_deliver` lists for information only: below `[reviews] floor` or over a cap.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub listed: Vec<Listed>,
     /// Whom to tell with `SendMessage`, if anyone.
     pub tell: Option<String>,
     /// What to do next.
@@ -208,20 +223,36 @@ fn target_of(
     })
 }
 
-fn complete(store: &Store, loaded: &LoadedFlow, review: &ReviewRow) -> Result<bool> {
+/// The round's progress with the findings below `[reviews] floor` taken out, so no verify node runs on them.
+fn progress_of(store: &Store, env: &Env<'_>, review: &ReviewRow) -> Result<Progress> {
+    let mut progress = store.review_progress(review)?;
+    let floor = env.config.reviews.floor;
+    let light: Vec<i64> = store
+        .review_findings(review.id)?
+        .into_iter()
+        .filter(|row| row.round == review.round && !meets_floor(row.severity, floor))
+        .map(|row| row.id)
+        .collect();
+    for ids in progress.findings.values_mut() {
+        ids.retain(|id| !light.contains(id));
+    }
+    Ok(progress)
+}
+
+fn complete(store: &Store, env: &Env<'_>, loaded: &LoadedFlow, review: &ReviewRow) -> Result<bool> {
     Ok(round_complete(
         &loaded.flow,
         review.level,
-        &store.review_progress(review)?,
+        &progress_of(store, env, review)?,
     ))
 }
 
 fn due(store: &Store, loaded: &LoadedFlow, review: &ReviewRow) -> Result<bool> {
-    let fixed = store.finding_counts(review)?.fixed > 0;
+    let fixed_important = store.finding_counts(review)?.fixed_important > 0;
     Ok(round_due(
         loaded.flow.level(review.level),
         review.round,
-        fixed,
+        fixed_important,
     ))
 }
 
@@ -250,7 +281,7 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
     }
     let loaded = flow_of(env, part, &review)?;
     let level = review.level;
-    let progress = store.review_progress(&review)?;
+    let progress = progress_of(store, env, &review)?;
     let running = progress
         .instances
         .values()
@@ -301,7 +332,7 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
         });
     }
     store.take_review_nodes(&review, &take)?;
-    let after = store.review_progress(&review)?;
+    let after = progress_of(store, env, &review)?;
     let now_running = after
         .instances
         .values()
@@ -361,7 +392,7 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
         item: done.item,
     };
     if let Some(why) = &done.failed {
-        store.finish_review_node(&review, &instance, NodeState::Failed, &[], env.actor)?;
+        store.finish_review_node(&review, &instance, NodeState::Failed, &[], &[], env.actor)?;
         return Ok(format!(
             "`{}` recorded as failed ({why}); the round goes on without it",
             done.node
@@ -383,7 +414,7 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
             bail!("finding {} is not a finding of this round", done.item);
         }
         store.set_finding_verdict(done.item, verdict)?;
-        store.finish_review_node(&review, &instance, NodeState::Done, &[], env.actor)?;
+        store.finish_review_node(&review, &instance, NodeState::Done, &[], &[], env.actor)?;
         return Ok(format!(
             "verdict on finding {} recorded: {verdict}",
             done.item
@@ -394,25 +425,85 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
             "give `findings`: a list of {{file, line, severity, summary, scenario}}, empty when the node found nothing"
         );
     };
-    let new: Vec<NewFinding<'_>> = findings
+    let (new, repeats) = without_repeats(store, &review, &done.node, findings)?;
+    let ids = store.finish_review_node(
+        &review,
+        &instance,
+        NodeState::Done,
+        &new,
+        &repeats,
+        env.actor,
+    )?;
+    let mut text = format!(
+        "`{}` recorded with {} finding(s): {ids:?}",
+        done.node,
+        ids.len()
+    );
+    if !repeats.is_empty() {
+        let _ = write!(
+            text,
+            "; {} dropped as repeats of earlier rounds' findings {repeats:?}",
+            repeats.len()
+        );
+    }
+    Ok(text)
+}
+
+/// A node's findings split into the new ones and the earlier rounds' findings the rest repeat, by number.
+fn without_repeats<'a>(
+    store: &Store,
+    review: &ReviewRow,
+    node: &str,
+    findings: &'a [FindingIn],
+) -> Result<(Vec<NewFinding<'a>>, Vec<i64>)> {
+    let earlier_rows: Vec<FindingRow> = if review.round > 1 {
+        store
+            .review_findings(review.id)?
+            .into_iter()
+            .filter(|row| row.round < review.round)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let earlier: Vec<Seen<'_>> = earlier_rows
         .iter()
-        .map(|finding| NewFinding {
+        .map(|row| Seen {
+            id: row.id,
+            node: &row.node,
+            file: row.file.as_deref(),
+            line: row.line,
+            summary: &row.summary,
+        })
+        .collect();
+    let mut new = Vec::with_capacity(findings.len());
+    let mut repeats = Vec::new();
+    for finding in findings {
+        let seen = Seen {
+            id: 0,
+            node,
+            file: finding.file.as_deref(),
+            line: finding.line,
+            summary: &finding.summary,
+        };
+        if let Some(id) = repeat_of(&seen, &earlier) {
+            repeats.push(id);
+            continue;
+        }
+        new.push(NewFinding {
             file: finding.file.as_deref(),
             line: finding.line,
             severity: finding.severity,
             summary: &finding.summary,
             scenario: &finding.scenario,
-        })
-        .collect();
-    let ids = store.finish_review_node(&review, &instance, NodeState::Done, &new, env.actor)?;
-    Ok(format!(
-        "`{}` recorded with {} finding(s): {ids:?}",
-        done.node,
-        ids.len()
-    ))
+        });
+    }
+    Ok((new, repeats))
 }
 
-/// Delivers the round's findings: those a verify stage passed, or every one where none ran.
+/// Delivers the round's findings that a verify stage passed (or every one where none ran), keeping to `[reviews]
+/// floor`, `max_round_findings` and `max_task_findings`.
+///
+/// The rest that passed are listed for information with no resolution, so they never wait on the implementing lead.
 ///
 /// # Errors
 ///
@@ -420,37 +511,73 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
 pub fn deliver(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Step> {
     let review = open_of_part(store, part)?;
     let loaded = flow_of(env, part, &review)?;
-    if !complete(store, &loaded, &review)? {
+    if !complete(store, env, &loaded, &review)? {
         bail!(
             "review-nodes-open: a node of this round is still ready or running; call `review_next`"
         );
     }
-    let delivered: Vec<FindingRow> = store
+    let passed: Vec<Candidate> = store
         .review_findings(review.id)?
         .into_iter()
         .filter(|row| row.round == review.round && row.verdict.is_none_or(FindingVerdict::passes))
+        .map(|row| Candidate {
+            id: row.id,
+            severity: row.severity,
+            verdict: row.verdict,
+        })
         .collect();
+    let settings = &env.config.reviews;
+    let selection = select(
+        &passed,
+        Limits {
+            floor: settings.floor,
+            round_cap: settings.max_round_findings,
+            task_cap: settings.max_task_findings,
+            task_delivered: store.delivered_findings(review.task_id)?,
+        },
+    );
     let review = store.move_review(review.id, ReviewTrigger::Deliver, true, false, env.actor)?;
-    for finding in &delivered {
-        store.resolve_finding(finding.id, Resolution::Open, None, false)?;
+    for id in &selection.delivered {
+        store.resolve_finding(*id, Resolution::Open, None, false)?;
     }
     let lead = store.task(review.task_id)?.name.to_string();
-    let findings = store
-        .review_findings(review.id)?
-        .into_iter()
-        .filter(|row| delivered.iter().any(|d| d.id == row.id))
-        .collect::<Vec<_>>();
+    let rows = store.review_findings(review.id)?;
+    let findings: Vec<FindingRow> = rows
+        .iter()
+        .filter(|row| selection.delivered.contains(&row.id))
+        .cloned()
+        .collect();
+    let listed: Vec<Listed> = selection
+        .listed
+        .iter()
+        .filter_map(|(id, reason)| {
+            rows.iter().find(|row| row.id == *id).map(|row| Listed {
+                finding: row.clone(),
+                reason: *reason,
+            })
+        })
+        .collect();
+    let info = if listed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Also send `{lead}` the {} finding(s) under `listed` as a plain list for information, each with its \
+             place, severity, summary and reason: they need no answer and are not answered with `review_resolve`.",
+            listed.len()
+        )
+    };
     let next = if findings.is_empty() {
-        "Nothing to deliver: call `review_finish`.".to_owned()
+        format!("Nothing to deliver for an answer.{info} Then call `review_finish`.")
     } else {
         format!(
             "Send `{lead}` these findings with `SendMessage`, numbered by their ids, each with its place, severity, \
-             summary and scenario; it answers each with `review_resolve`. Then wait for its message."
+             summary and scenario; it answers each with `review_resolve`.{info} Then wait for its message."
         )
     };
     Ok(Step {
         review,
         findings,
+        listed,
         tell: Some(lead),
         next,
     })
@@ -533,6 +660,7 @@ pub fn resolve(store: &mut Store, env: &Env<'_>, lead: &Task, items: &[Resolve])
     Ok(Step {
         review,
         findings,
+        listed: Vec::new(),
         next: format!(
             "Tell the reviewer lead `{}` with `SendMessage` that your answers are recorded; it re-checks them.",
             reviewer.as_deref().unwrap_or("review")
@@ -661,6 +789,7 @@ fn after_recheck(store: &Store, review: ReviewRow) -> Result<Step> {
     Ok(Step {
         review,
         findings,
+        listed: Vec::new(),
         tell,
         next,
     })
@@ -695,6 +824,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Step> {
     Ok(Step {
         review,
         findings: Vec::new(),
+        listed: Vec::new(),
         tell: Some(lead),
         next,
     })
@@ -790,7 +920,12 @@ pub fn reviewer_busy(store: &Store, env: &Env<'_>, part: &Task) -> Result<bool> 
     match review.state {
         ReviewState::Running => {
             let loaded = flow_of(env, part, &review)?;
-            Ok(!ready(&loaded.flow, review.level, &store.review_progress(&review)?).is_empty())
+            Ok(!ready(
+                &loaded.flow,
+                review.level,
+                &progress_of(store, env, &review)?,
+            )
+            .is_empty())
         }
         ReviewState::Rechecking => Ok(true),
         ReviewState::Requested

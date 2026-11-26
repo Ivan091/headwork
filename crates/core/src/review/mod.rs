@@ -1,11 +1,12 @@
 //! Reviews on the user's word (`docs/review-flows.md`): the `review N` command, the flow graphs, which nodes are
-//! ready, the review's state machine and the dispute rule.
+//! ready, the review's state machine, the dispute rule and what a round delivers.
 //!
 //! A review is run by a reviewer lead, a part of kind `review`, that walks a flow: a named graph of small specialist
 //! reviewers, each run as a fresh subagent. Everything here is pure; the store keeps the progress and the binary acts.
 
 mod command;
 mod flow;
+mod policy;
 mod prompt;
 mod schedule;
 mod state;
@@ -18,6 +19,10 @@ pub use command::{NEAR_MISS_HINT, ParsedCommand, ReviewCommand, parse_command};
 pub use flow::{
     After, DisputeRule, Each, Flow, FlowError, FlowName, LevelSpec, ModelChoice, Node, NodeId,
     Target, Unsettled,
+};
+pub use policy::{
+    Candidate, Limits, ListReason, Seen, Selection, is_repeat, meets_floor, normalize, repeat_of,
+    select, weight,
 };
 pub use prompt::{FINDINGS_SHAPE, FindingText, ReviewTarget, VERDICT_SHAPE, compose};
 pub use schedule::{Instance, Progress, ready, round_complete};

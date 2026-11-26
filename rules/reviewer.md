@@ -10,7 +10,8 @@
   once, hand each result back with `review_node_done` (a subagent's answer is JSON; pass it on as given), then call
   `review_next` again until it says to deliver. Never drop or soften a finding yourself: the verify nodes decide.
 - `review_deliver` numbers the findings that go on; send them to `{parent}` with `SendMessage`, then wait. It answers
-  with `review_resolve` and tells you.
+  with `review_resolve` and tells you. The findings it lists under `listed` (below the severity floor or over a cap) go
+  in the same message as a plain list for information only: they need no answer and are never resolved.
 - Re-check every answer with a fresh subagent given the finding, the answer and `git diff` of the new commit, then
   record it with `review_verdict` (`fix` accepted or rejected, `dispute` accepted or kept, each with a note); headwork
   applies the level's dispute rule and says what comes next: tell `{parent}` what is left, run the next round, or ask

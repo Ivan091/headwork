@@ -628,16 +628,16 @@ fn disputes_settle_by_the_level() {
 }
 
 #[test]
-fn another_round_is_due_only_after_fixes_and_below_the_level_s_rounds() {
+fn another_round_is_due_only_after_an_important_fix_and_below_the_level_s_rounds() {
     let flow = code();
     let strict = flow.level(Level::Strict);
     assert!(
         round_due(strict, 1, true),
-        "level 3 runs round 2 after fixes"
+        "level 3 runs round 2 after an important fix"
     );
     assert!(
         !round_due(strict, 1, false),
-        "nothing fixed, nothing to re-review"
+        "no important fix (only doubts or nits, or nothing), no second round"
     );
     assert!(!round_due(strict, 2, true), "two rounds at most");
     assert!(

@@ -9,7 +9,7 @@ use headwork_core::config::{
     TemplateProblem, WorktreeCommand, check_template, expand_home,
 };
 use headwork_core::lifecycle::MergePolicy;
-use headwork_core::{Config, LayoutMode, Model, ProjectName, ProjectOverlay};
+use headwork_core::{Config, LayoutMode, Model, ProjectName, ProjectOverlay, Severity};
 
 fn fixture(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -715,4 +715,54 @@ fn digest_defaults_parse_and_a_bad_hour_is_refused() {
         ),
         "an hour past 23"
     );
+}
+
+#[test]
+fn review_policy_defaults_parse_and_bad_values_are_refused() {
+    let base = "[machine]
+host = \"wmux\"
+";
+    let config = Config::parse(base, "minimal").unwrap();
+    assert_eq!(
+        (
+            config.reviews.floor,
+            config.reviews.max_round_findings,
+            config.reviews.max_task_findings
+        ),
+        (Severity::Doubt, 20, 40),
+        "defaults"
+    );
+    let set = format!(
+        "{base}
+[reviews]
+floor = \"nit\"
+max_round_findings = 0
+max_task_findings = 5
+"
+    );
+    let config = Config::parse(&set, "set").unwrap();
+    assert_eq!(
+        (
+            config.reviews.floor,
+            config.reviews.max_round_findings,
+            config.reviews.max_task_findings
+        ),
+        (Severity::Nit, 0, 5),
+        "set values"
+    );
+    for bad in [
+        "floor = \"minor\"",
+        "floor = 1",
+        "max_round_findings = -1",
+        "max_task_findings = \"many\"",
+    ] {
+        let text = format!(
+            "{base}
+[reviews]
+{bad}
+"
+        );
+        let error = Config::parse(&text, "bad").unwrap_err();
+        assert!(matches!(error, ConfigError::Parse { .. }), "{bad}: {error}");
+    }
 }

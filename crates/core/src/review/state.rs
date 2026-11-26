@@ -174,10 +174,14 @@ const fn after_recheck(facts: ReviewFacts) -> ReviewState {
     }
 }
 
-/// Whether another full round is due after `round`: the level asks for more rounds and this one fixed something.
+/// Whether another full round is due after `round`: the level asks for more rounds and this round fixed an important
+/// finding.
+///
+/// A fix counts while its verdict is due and once it is accepted. Fixed doubts and nits alone end the review, since a
+/// second round that only polishes costs as much as the first (`docs/review-flows.md`, section 13).
 #[must_use]
-pub const fn round_due(spec: &LevelSpec, round: u8, fixed_something: bool) -> bool {
-    fixed_something && round < spec.rounds
+pub const fn round_due(spec: &LevelSpec, round: u8, fixed_important: bool) -> bool {
+    fixed_important && round < spec.rounds
 }
 
 /// What the reviewer lead's fresh re-check concluded about a dispute.

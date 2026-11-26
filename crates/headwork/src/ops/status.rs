@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 use headwork_core::review::Level;
-use headwork_core::usage::UsageConfig;
+use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{CloseMode, StatusFacts, TaskShape, TaskState, TaskStatus};
 use headwork_store::{Board, BoardTask, ByModel, Store, Task};
 use serde::Serialize;
@@ -33,6 +33,9 @@ pub struct StatusLine {
     pub estimate: Option<String>,
     /// The review running on the task, if one is open.
     pub review: Option<StatusReview>,
+    /// The fresh tokens (input, cache writes, output) every review of the task spent, its reviewer leads and their
+    /// subagents; 0 when none spent any.
+    pub review_tokens: u64,
     /// Whether the task's lead asks the user before it closes.
     pub close: CloseMode,
     /// The level of the review planned for the task: 1 light, 2 standard, 3 strict; none when no review is planned.
@@ -57,13 +60,23 @@ pub struct StatusReview {
 }
 
 impl StatusReview {
-    /// The words the status line ends with: `review requested (level N)` until the review starts, then `in review (level N)`.
+    /// The words the status line ends with: `review requested (level N)` until the review starts, then `in review (level
+    /// N)`; `spent` review tokens, when any, join the level as `(level N, X review tokens)`.
     #[must_use]
-    pub fn suffix(&self) -> String {
-        if self.state == "requested" {
-            format!("review requested (level {})", self.level)
+    pub fn suffix(&self, spent: u64) -> String {
+        let words = if self.state == "requested" {
+            "review requested"
         } else {
-            format!("in review (level {})", self.level)
+            "in review"
+        };
+        if spent == 0 {
+            format!("{words} (level {})", self.level)
+        } else {
+            format!(
+                "{words} (level {}, {} review tokens)",
+                self.level,
+                short_count(spent)
+            )
         }
     }
 }
@@ -141,9 +154,11 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             Some(_) | None => line,
         };
         let review = review(store, top)?;
-        let line = match &review {
-            Some(review) => format!("{line}, {}", review.suffix()),
-            None => line,
+        let review_tokens = store.review_tokens(top.task.id)?;
+        let line = match (&review, review_tokens) {
+            (Some(review), spent) => format!("{line}, {}", review.suffix(spent)),
+            (None, 0) => line,
+            (None, spent) => format!("{line}, reviews {} tokens", short_count(spent)),
         };
         let line = format!("{line}{}", flag_tags(&top.task));
         out.push(StatusLine {
@@ -156,6 +171,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),
             review,
+            review_tokens,
             close: top.task.close,
             review_plan: top.task.review_plan.map(Level::number),
         });
