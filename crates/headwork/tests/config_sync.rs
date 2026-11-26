@@ -813,7 +813,7 @@ fn a_shared_file_that_does_not_fit_the_machine_stops_the_adoption() {
     let refused = headwork(second_home.path(), &adopt_args("second", repo, true));
     assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
     assert!(
-        stderr(&refused).contains("shared and machine files in the repository"),
+        stderr(&refused).contains("shared and machine files already there"),
         "{}",
         stderr(&refused)
     );
@@ -875,4 +875,109 @@ fn adopt_keeps_the_machine_part_on_the_machine_by_default() {
     assert!(sync.status.success(), "{}", stderr(&sync));
     let check = synced.run(&["config", "check"]);
     assert!(check.status.success(), "{}", stderr(&check));
+}
+
+fn adopted_locally() -> Synced {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.toml"), fixture()).unwrap();
+    git(repo.path(), &["init", "-q"]);
+    let repo_arg = repo.path().to_str().unwrap().to_owned();
+    let output = headwork(home.path(), &adopt_args("test", &repo_arg, true));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let synced = Synced { home, repo };
+    synced.commit_repo("adopt");
+    synced
+}
+
+impl Synced {
+    fn local_machine_file(&self) -> PathBuf {
+        self.home.path().join("config.machine.toml")
+    }
+}
+
+#[test]
+fn a_broken_local_machine_file_fails_the_sync_and_a_repaired_one_is_followed() {
+    let synced = adopted_locally();
+    let good = std::fs::read_to_string(synced.local_machine_file()).unwrap();
+    let before = std::fs::read_to_string(synced.config()).unwrap();
+    std::fs::write(synced.local_machine_file(), "[machine\nhost =").unwrap();
+    let failed = synced.run(&["config", "sync", "--no-pull"]);
+    assert_eq!(failed.status.code(), Some(1), "{}", stdout(&failed));
+    assert_eq!(std::fs::read_to_string(synced.config()).unwrap(), before);
+    std::fs::write(synced.local_machine_file(), good).unwrap();
+    let fixed = synced.run(&["config", "sync", "--no-pull"]);
+    assert!(fixed.status.success(), "{}", stderr(&fixed));
+}
+
+#[test]
+fn the_local_machine_file_wins_over_the_repository_one_and_doctor_warns() {
+    let synced = adopted();
+    std::fs::copy(synced.machine_file(), synced.local_machine_file()).unwrap();
+    std::fs::write(synced.machine_file(), "[machine\nhost =").unwrap();
+    let check = synced.run(&["config", "check"]);
+    assert!(
+        check.status.success(),
+        "{}{}",
+        stdout(&check),
+        stderr(&check)
+    );
+    let doctor = synced.run(&["doctor", "--json"]);
+    assert!(
+        stdout(&doctor).contains("config-machine-shadow"),
+        "{}",
+        stdout(&doctor)
+    );
+}
+
+#[test]
+fn a_missing_machine_file_names_both_places_and_the_repository_one_is_then_used() {
+    let synced = adopted();
+    let machine = std::fs::read_to_string(synced.machine_file()).unwrap();
+    std::fs::remove_file(synced.machine_file()).unwrap();
+    synced.commit_repo("drop the machine file");
+    let missing = synced.run(&["config", "check"]);
+    assert_eq!(missing.status.code(), Some(1), "{}", stdout(&missing));
+    assert!(
+        format!("{}{}", stdout(&missing), stderr(&missing)).contains("config.machine.toml"),
+        "{}",
+        format!("{}{}", stdout(&missing), stderr(&missing))
+    );
+    assert!(
+        format!("{}{}", stdout(&missing), stderr(&missing)).contains("machines/test/headwork.toml"),
+        "{}",
+        format!("{}{}", stdout(&missing), stderr(&missing))
+    );
+    std::fs::create_dir_all(synced.machine_file().parent().unwrap()).unwrap();
+    std::fs::write(synced.machine_file(), machine).unwrap();
+    let check = synced.run(&["config", "check"]);
+    assert!(
+        check.status.success(),
+        "{}{}",
+        stdout(&check),
+        stderr(&check)
+    );
+}
+
+#[test]
+fn adopt_into_the_repository_refuses_while_a_local_machine_file_would_hide_it() {
+    let synced = adopted_locally();
+    let repo = synced.repo.path().to_str().unwrap();
+    let mut args = adopt_args("test", repo, true);
+    args.extend(["--machine-in-repo", "--force"]);
+    let refused = synced.run(&args);
+    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("config.machine.toml"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(
+        !synced.repo.path().join("machines").exists(),
+        "nothing written to the repository"
+    );
+    assert!(
+        synced.local_machine_file().exists(),
+        "the local file is untouched"
+    );
 }

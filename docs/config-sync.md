@@ -50,7 +50,7 @@ merge, origins (`machine`), host check and `unset` rules are the same. It is che
 
 ## 2. Merge rule
 
-The order is shared → `machines/<name>/headwork.toml` → `config.local.toml`. A later layer wins.
+The order is shared → the machine file (`~/.headwork/config.machine.toml` when it exists, else `machines/<name>/headwork.toml`) → `config.local.toml`. A later layer wins.
 
 | Case | Rule |
 |---|---|
@@ -83,14 +83,14 @@ Hostnames are not used: they change, macOS rewrites them, and they say nothing a
 | `headwork config show [--origin] [--json]` | The effective config, each key tagged `shared` / `windows` / `local` / `default`. |
 | `headwork config check` | Merge and validate without writing. Its exit code means pass or fail, so CI or a session can run it before a PR. |
 | `headwork config rollback` | Puts `config.toml.prev` back. |
-| `headwork config adopt --machine <name>` | One-time migration: splits today's live `config.toml` into shared / machine / local by the machine-only and secret key lists, writes the three files for review, and writes `sources.toml`. A shared or machine file that already exists in the repository (a second machine joins; its machine file came through a pull request) is used as it is and never written: the merge of the existing files with the split local part must still reproduce the live config, else nothing is written. `--force` replaces them. |
+| `headwork config adopt --machine <name>` | One-time migration: splits today's live `config.toml` into shared / machine / local by the machine-only and secret key lists, writes the shared file into the repository for review, the machine part to `~/.headwork/config.machine.toml` (into `machines/<name>/headwork.toml` only with `--machine-in-repo`, which refuses while a local machine file would hide it), the secrets to `config.local.toml`, and `sources.toml`. A shared or machine file that already exists in the repository (a second machine joins; its machine file came through a pull request) is used as it is and never written: the merge of the existing files with the split local part must still reproduce the live config, else nothing is written. `--force` replaces them. |
 
 Triggers:
 
 - **By hand or by the orchestrator** (a new MCP tool, `config_sync`): the main path.
 - **`update` and `install`** run `config sync --no-pull` after installing, because a new build may know new keys or new rules. On a failure they keep the old file and report it.
 - **The tick does not pull or write.** It only compares the sources' last commit and the merge result with the effective file, and raises a standing finding `config-stale` (the sources changed since the last sync) or `config-drift` (`config.toml` was hand-edited), shown on the board like the other standing findings. No network, no surprise rewrites.
-- `sync-config` (the claude_config delivery skill) ends with `headwork config sync` when it shipped a change under `headwork/` or `machines/*/headwork.toml`.
+- `sync-config` (the claude_config delivery skill) ends with `headwork config sync` when it shipped a change under `headwork/` or `machines/*/headwork.toml`. A machine with `config.machine.toml` edits that file instead and runs `headwork config sync --no-pull`.
 
 ## 5. Failure handling
 
@@ -104,7 +104,8 @@ Triggers:
 
 | Check | Fails / warns when |
 |---|---|
-| `config-sources` | ok "not synced (hand-written config)" without `sources.toml`; fails when it names a missing repository or machine file. |
+| `config-sources` | ok "not synced (hand-written config)" without `sources.toml`; fails when it names a missing repository or machine file (the message names both `~/.headwork/config.machine.toml` and the repository's file when neither exists). |
+| `config-machine-shadow` | Both machine files exist, so the local one hides the repository's (warn). |
 | `config-stale` | The repository HEAD or the merge result differs from what the last sync recorded (warn: run `headwork config sync`). |
 | `config-drift` | `config.toml` differs from the recorded sync output: a hand edit that the next sync would overwrite (warn, naming the keys). |
 | `config-secret` | A tracked source holds a secret key (fail). |
@@ -113,7 +114,7 @@ Triggers:
 ## 7. What changes elsewhere
 
 - **The Mac adoption brief** (`briefs/mac-adopt-headwork-flow.md`) shrinks to: pull claude_config, `headwork config adopt --machine mac` (or write `machines/mac/headwork.toml` from a template), review, ship it through `sync-config`, then `headwork config sync`. The pasted prices prompt goes away, because the prices are shared.
-- **The orchestrator's rules** (`rules/orchestrator.md`): a config change is a claude-config task that edits `headwork/config.toml` or `machines/<m>/headwork.toml` in a PR. After the merge, `headwork config sync` runs on each machine (the orchestrator's tool here, a line for the user on the other machine). Never edit `~/.headwork/config.toml` by hand. `orchestrator_writable` may drop `~/.headwork/config.toml` if it is there.
+- **The orchestrator's rules** (`rules/orchestrator.md`): a config change is a claude-config task that edits `headwork/config.toml` or `machines/<m>/headwork.toml` in a PR (machine-only keys of a machine that has `config.machine.toml` are edited there instead, never committed). After the merge, `headwork config sync` runs on each machine (the orchestrator's tool here, a line for the user on the other machine). Never edit `~/.headwork/config.toml` by hand. `orchestrator_writable` may drop `~/.headwork/config.toml` if it is there.
 - **The workers' rules** stay as they are (the rules are near the hook's size limit, and a worker cannot write `~/.headwork` anyway).
 - **`headwork import`** still writes `config.toml`; on a synced machine move its additions into the sources (a later step may write them there directly).
 - **claude_config**: add `headwork/`, add `machines/mac/` (so far only `machines/windows/` exists), and `.gitignore` allowlist entries. `install.sh` needs no change: headwork's own sync does the copy, so the merge logic lives in one place.

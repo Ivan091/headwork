@@ -242,6 +242,36 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
 }
 
 /// The checks of a synced config: `config-sources` always, the rest when `sources.toml` exists.
+fn missing_source(layout: &crate::ops::config_sync::Layout) -> Option<String> {
+    if !layout.repo.is_dir() {
+        return Some(slashed(&layout.repo));
+    }
+    if !layout.shared_file.is_file() {
+        return Some(slashed(&layout.shared_file));
+    }
+    (!layout.machine_file().is_file()).then(|| {
+        format!(
+            "{} (nor {})",
+            slashed(&layout.local_machine_file),
+            slashed(&layout.repo_machine_file)
+        )
+    })
+}
+
+fn machine_shadow(layout: &crate::ops::config_sync::Layout) -> Option<Check> {
+    layout.machine_files_shadow().then(|| {
+        Check::warn(
+            "config-machine-shadow",
+            format!(
+                "{} hides {}",
+                slashed(&layout.local_machine_file),
+                slashed(&layout.repo_machine_file)
+            ),
+            "remove one of the two machine files",
+        )
+    })
+}
+
 fn config_sync_checks(d: &Doctor<'_>) -> Vec<Check> {
     use super::config_sync::{self, ProblemKind};
     let inspection = match config_sync::inspect(d.home, d.platform) {
@@ -262,13 +292,7 @@ fn config_sync_checks(d: &Doctor<'_>) -> Vec<Check> {
     };
     let layout = &inspection.layout;
     let mut checks = Vec::new();
-    let missing = [
-        (!layout.repo.is_dir(), &layout.repo),
-        (!layout.shared_file.is_file(), &layout.shared_file),
-        (!layout.machine_file.is_file(), &layout.machine_file),
-    ]
-    .into_iter()
-    .find_map(|(missing, path)| missing.then(|| slashed(path)));
+    let missing = missing_source(layout);
     checks.push(missing.map_or_else(
         || {
             Check::ok(
@@ -284,10 +308,11 @@ fn config_sync_checks(d: &Doctor<'_>) -> Vec<Check> {
             Check::fail(
                 "config-sources",
                 format!("{path} is missing"),
-                "clone or pull the config repository and add the machine file, or fix sources.toml",
+                "clone or pull the config repository, run `headwork config adopt` to write config.machine.toml, or fix sources.toml",
             )
         },
     ));
+    checks.extend(machine_shadow(layout));
     checks.push(inspection.stale().map_or_else(
         || Check::ok("config-stale", "config.toml matches the sources"),
         |reason| Check::warn("config-stale", reason, "run `headwork config sync`"),
