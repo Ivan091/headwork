@@ -44,6 +44,9 @@ pub enum ConfigError {
         /// The model.
         model: Model,
     },
+    /// `digest.push_hour` is not an hour of the day.
+    #[error("digest.push_hour ({0}) must be from 0 to 23")]
+    DigestHour(u8),
     /// The stop threshold is not below the warning threshold.
     #[error("watch.disk_stop_gb ({stop}) must be below watch.disk_warn_gb ({warn})")]
     DiskThresholds {
@@ -318,6 +321,9 @@ pub struct Config {
     /// The to-do list (`docs/todo.md`).
     #[serde(default)]
     pub todo: TodoConfig,
+    /// The "Needs you" digest (`docs/todo.md`).
+    #[serde(default)]
+    pub digest: DigestConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -841,6 +847,28 @@ pub struct TodoConfig {
     pub file: Option<String>,
 }
 
+/// `[digest]`: the "Needs you" digest (`docs/todo.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DigestConfig {
+    /// Hours a tick finding stays open before the digest lists it.
+    pub finding_hours: u32,
+    /// Whether the tick pushes the digest to the user once a day.
+    pub push: bool,
+    /// The local hour (0 to 23) from which the daily push may go out.
+    pub push_hour: u8,
+}
+
+impl Default for DigestConfig {
+    fn default() -> Self {
+        Self {
+            finding_hours: 3,
+            push: true,
+            push_hour: 9,
+        }
+    }
+}
+
 /// `[dash]`: the agent-graph page (`docs/dashboard.md`) that starts with the orchestrator.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -911,6 +939,9 @@ impl Config {
                 stop: self.watch.disk_stop_gb,
                 warn: self.watch.disk_warn_gb,
             });
+        }
+        if self.digest.push_hour > 23 {
+            return Err(ConfigError::DigestHour(self.digest.push_hour));
         }
         if self.update.enabled {
             let project = &self.update.project;
