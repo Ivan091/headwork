@@ -1434,6 +1434,49 @@ fn a_changed_screen_unmarks_an_idle_session() {
     assert!(!idle_marked(&w, &session), "the screen moved");
 }
 
+fn set_tool_in_flight(w: &World, session: &str) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        "UPDATE sessions SET tool_in_flight = 'Bash' WHERE id = ?1",
+        [session],
+    )
+    .unwrap();
+}
+
+#[test]
+fn fresh_activity_unmarks_an_idle_session() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    w.limits.idle_free_merged = Some(3600);
+    w.store.touch_session(&session).unwrap();
+    run_tick(&mut w);
+    assert!(
+        !idle_marked(&w, &session),
+        "a hook event reset its idle age"
+    );
+
+    let (_, other) = idle_merged(&mut w, "snow");
+    w.limits.idle_free_merged = Some(3600);
+    set_tool_in_flight(&w, &other);
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &other), "a tool is in flight");
+}
+
+#[test]
+fn a_tool_in_flight_keeps_a_session_past_its_limit_unmarked() {
+    let mut w = world();
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    set_tool_in_flight(&w, &session);
+    let mut freed = false;
+    for _ in 0..2 {
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
+    }
+    assert!(!idle_marked(&w, &session), "a tool runs");
+    assert!(!freed, "no idle-slot finding");
+}
+
 #[test]
 fn a_session_whose_limit_turns_off_is_unmarked() {
     let mut w = world();
