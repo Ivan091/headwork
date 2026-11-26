@@ -9,7 +9,7 @@ to the task that finished it. The list now lives in headwork's store and `todo.m
 
 ## 1. The model
 
-Migration 0025 adds two tables (`crates/store/src/todos.rs`, pure types in `crates/core/src/todo.rs`).
+Migration 0026 adds two tables (`crates/store/src/todos.rs`, pure types in `crates/core/src/todo.rs`).
 
 `todos` holds one row per item:
 

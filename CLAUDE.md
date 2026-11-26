@@ -155,7 +155,7 @@ claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `d
 finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
 `scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
 release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
-The to-do list (`docs/todo.md`, migration 0025) lives in the store: `core/src/todo.rs` parses and renders `todo.md` (pure),
+The to-do list (`docs/todo.md`, migration 0026) lives in the store: `core/src/todo.rs` parses and renders `todo.md` (pure),
 `store/src/todos.rs` holds the rows and `todo_files`, `ops/todo.rs` imports, exports and changes items for `headwork todo` and
 the orchestrator's `todo_*` tools. `[todo] file` (machine-only) names the generated file: an export writes it after every
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/todo-backups`

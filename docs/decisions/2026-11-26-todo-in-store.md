@@ -1,6 +1,6 @@
 # 2026-11-26: the to-do list lives in the store and `todo.md` is generated from it
 
-The to-do list moves from a hand-edited `todo.md` into the store (migration 0025, `docs/todo.md`), because a file the
+The to-do list moves from a hand-edited `todo.md` into the store (migration 0026, `docs/todo.md`), because a file the
 orchestrator edits as prose cannot be queried, linked to a task, or written by two sessions safely. The file stays, as an
 export git can carry, and is overwritten from the store.
 
