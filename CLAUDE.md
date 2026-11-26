@@ -96,7 +96,7 @@ of 0 means that state gets only the ordinary `stuck` finding at `stuck_after_min
 answer` or the orchestrator's `answer` tool answers them by id (`ops/answer.rs`), recording who answered.
 Leads (`docs/leads.md`) start with L1: a task's shape (`core/src/lead.rs`: `Lead`, `Part { parent }`, `Plain`, from
 `tasks.parent_id` and `tasks.lead`, migration 0013), `[leads]` (`enabled`, off for now; `max_parts`; `part_title`), a
-part waiting behind its lead in the queue and for `max_parts` at start, a lead's `done` refused while a part is not
+part waiting behind its lead in the queue and, only when `[leads] max_parts` is set (optional, absent or 0 = no limit), for it at start, a lead's `done` refused while a part is not
 closed (`lead-parts-live`), and a lead's drop or close ending its parts first (`Store::drop_task`, `ops/close.rs`).
 L2 places them (`ops/place.rs`): a lead gets a workspace of its own titled with its name whatever `[layout] mode`
 says, its parts and helpers open as tabs of the lead's workspace (by recorded id, then by title; a part is refused when

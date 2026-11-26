@@ -682,8 +682,8 @@ impl Store {
                     })
                     .count()
                     > 0,
-            part_slots: match task.shape {
-                TaskShape::Part { parent } => Some(PartSlots {
+            part_slots: match (task.shape, config.leads.max_parts) {
+                (TaskShape::Part { parent }, Some(max_parts)) => Some(PartSlots {
                     live: count(
                         live.iter()
                             .filter(|other| {
@@ -693,9 +693,9 @@ impl Store {
                             })
                             .count(),
                     )?,
-                    max_parts: config.leads.max_parts.get(),
+                    max_parts: max_parts.get(),
                 }),
-                TaskShape::Lead | TaskShape::Plain => None,
+                _ => None,
             },
             dependency: self.dependency(task.depends_on)?,
             fable: self.fable_gate(&task)?,

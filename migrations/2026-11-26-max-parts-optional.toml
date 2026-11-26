@@ -1,0 +1,11 @@
+id = "2026-11-26-max-parts-optional"
+title = "[leads] max_parts is optional"
+since = "v0.1.76"
+requires = ["headwork"]
+why = """[leads] max_parts no longer has a default of 2: absent or 0 means a lead's parts are limited only by the \
+machine and project slots. A config that still sets it keeps its limit; drop the key from the shared config to lift it."""
+check = "headwork config check"
+
+[[step]]
+kind = "confirm"
+run = "headwork config check"
