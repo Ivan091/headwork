@@ -100,6 +100,7 @@ fn adopted() -> Synced {
             "--repo",
             &repo_arg,
             "--write",
+            "--machine-in-repo",
         ],
     );
     assert!(output.status.success(), "{}", stderr(&output));
@@ -779,11 +780,11 @@ fn a_second_machine_adopts_against_the_shared_file_already_in_the_repository() {
         "the shared file is never rewritten"
     );
     assert!(
-        first
-            .repo
-            .path()
-            .join("machines/second/headwork.toml")
-            .exists(),
+        !first.repo.path().join("machines/second").exists(),
+        "the machine file stays out of the repository"
+    );
+    assert!(
+        second_home.path().join("config.machine.toml").exists(),
         "the machine file is new"
     );
     assert!(second_home.path().join("sources.toml").exists(), "sources");
@@ -846,4 +847,32 @@ fn a_machine_file_already_in_the_repository_is_kept_and_only_the_home_files_are_
         synced.home.path().join("config.local.toml").exists(),
         "local"
     );
+}
+
+#[test]
+fn adopt_keeps_the_machine_part_on_the_machine_by_default() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.toml"), fixture()).unwrap();
+    git(repo.path(), &["init", "-q"]);
+    let repo_arg = repo.path().to_str().unwrap().to_owned();
+    let output = headwork(home.path(), &adopt_args("test", &repo_arg, true));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        home.path().join("config.machine.toml").exists(),
+        "machine part at home"
+    );
+    assert!(
+        !repo.path().join("machines").exists(),
+        "nothing machine-specific in the repository"
+    );
+    assert!(
+        repo.path().join("headwork/config.toml").exists(),
+        "shared part in the repository"
+    );
+    let synced = Synced { home, repo };
+    let sync = synced.run(&["config", "sync", "--no-pull"]);
+    assert!(sync.status.success(), "{}", stderr(&sync));
+    let check = synced.run(&["config", "check"]);
+    assert!(check.status.success(), "{}", stderr(&check));
 }

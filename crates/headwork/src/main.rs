@@ -617,6 +617,10 @@ enum ConfigAction {
         /// Overwrite files that exist.
         #[arg(long)]
         force: bool,
+        /// Write the machine part into the repository (`machines/<machine>/headwork.toml`) instead of keeping it in
+        /// `config.machine.toml` on this machine.
+        #[arg(long)]
+        machine_in_repo: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -2148,6 +2152,7 @@ fn config_command(action: ConfigAction, out: &mut impl Write) -> Result<ExitCode
             repo,
             write,
             force,
+            machine_in_repo,
             json,
         } => {
             let options = AdoptOptions {
@@ -2155,6 +2160,7 @@ fn config_command(action: ConfigAction, out: &mut impl Write) -> Result<ExitCode
                 repo,
                 write,
                 force,
+                machine_in_repo,
             };
             let report = sync::adopt(&home, &options, platform)?;
             if json {

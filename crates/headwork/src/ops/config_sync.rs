@@ -52,10 +52,20 @@ pub struct Layout {
     pub machine: String,
     /// `<repo>/headwork/config.toml`.
     pub shared_file: PathBuf,
-    /// `<repo>/machines/<machine>/headwork.toml`.
+    /// `<home>/config.machine.toml` when it exists, else `<repo>/machines/<machine>/headwork.toml`.
     pub machine_file: PathBuf,
     /// `<home>/config.local.toml`.
     pub local_file: PathBuf,
+}
+
+fn machine_source(home: &Home, repo: &Path, machine: &str, in_repo: bool) -> PathBuf {
+    let tracked = repo.join("machines").join(machine).join("headwork.toml");
+    let local = home.machine_config_path();
+    if local.exists() || !(in_repo || tracked.exists()) {
+        local
+    } else {
+        tracked
+    }
 }
 
 impl Layout {
@@ -69,7 +79,7 @@ impl Layout {
         }
         Ok(Self {
             shared_file: repo.join("headwork").join("config.toml"),
-            machine_file: repo.join("machines").join(machine).join("headwork.toml"),
+            machine_file: machine_source(home, &repo, machine, false),
             local_file: home.local_config_path(),
             repo,
             machine: machine.to_owned(),
@@ -984,6 +994,8 @@ pub struct AdoptOptions {
     pub write: bool,
     /// Overwrite existing files.
     pub force: bool,
+    /// Write the machine part into the repository instead of keeping it on this machine.
+    pub machine_in_repo: bool,
 }
 
 /// What `config adopt` found or wrote.
@@ -1130,7 +1142,13 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         .repo
         .clone()
         .unwrap_or_else(|| home.claude_dir().to_path_buf());
-    let layout = Layout::new(home, repo, &options.machine)?;
+    let mut layout = Layout::new(home, repo, &options.machine)?;
+    layout.machine_file = machine_source(
+        home,
+        &layout.repo,
+        &options.machine,
+        options.machine_in_repo,
+    );
     let live_path = home.config_path();
     let live_text = std::fs::read_to_string(&live_path)
         .with_context(|| format!("reading {}", live_path.display()))?;

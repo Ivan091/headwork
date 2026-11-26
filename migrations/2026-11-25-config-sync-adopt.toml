@@ -4,19 +4,14 @@ since = "v0.1.55"
 requires = ["headwork"]
 why = """headwork's config is generated from shared, machine and local layers (docs/config-sync.md); a machine \
 that still runs a hand-written config.toml must adopt them. The shared file is already in claude_config; this \
-machine adds its own machine file there through a pull request. Pass --machine <name> to apply when this \
+machine keeps its own machine part in ~/.headwork/config.machine.toml, never in the repository, so paths and \
+names internal to an employer stay on the machine. Pass --machine <name> to apply when this \
 machine has no sources.toml yet."""
 check = "headwork config check"
 
 [[step]]
 kind = "agent"
 run = "headwork config adopt --machine {machine} --repo ~/.claude"
-
-[[step]]
-kind = "user"
-say = """Put the machine part printed by the first step into machines/{machine}/headwork.toml in claude_config \
-and ship it through a pull request (sync-config); skip this when that file is already on master. The shared \
-file stays as it is, and the local part is never printed into a tracked file. Then say go."""
 
 [[step]]
 kind = "agent"

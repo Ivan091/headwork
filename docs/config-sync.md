@@ -26,10 +26,11 @@ The shared and per-machine sources live in the private `claude_config` repositor
 ```
 ~/.claude/                          (claude_config)
   headwork/config.toml              shared: models, prices, rules, reviews, layout, leads, update, project policy
-  machines/windows/headwork.toml    PC: [machine], paths, project mains, writable lists, watch roots
+  machines/windows/headwork.toml    PC (optional, see "Machine part on the machine"): [machine], paths, project mains, writable lists, watch roots
   machines/mac/headwork.toml        Mac: the same, with cmux and Mac paths
 ~/.headwork/                        (never committed)
   sources.toml                      which repository and which machine this is (written once)
+  config.machine.toml               the machine part kept on the machine; replaces machines/<name>/headwork.toml when present
   config.local.toml                 secrets and one-off local tweaks (notify_ntfy), never synced
   config.toml                       GENERATED effective config; what every headwork command reads
   config.toml.prev                  the previous effective config (one-step rollback)
@@ -37,6 +38,15 @@ The shared and per-machine sources live in the private `claude_config` repositor
 ```
 
 **Never committed:** `notify_ntfy` and any other token or topic URL, `state.db`, briefs, recaps, jobs, `config.local.toml`, `sources.toml`. Validation **refuses** a shared or machine file that sets `machine.notify_ntfy`, or any key on a short `secret_keys` list in `core`, so a secret cannot reach the repository by accident.
+
+### Machine part on the machine
+
+The machine part holds paths, project mains and hostnames, which may be internal to an employer and must not reach a
+repository that is public-facing. `headwork config adopt` therefore writes it to `<home>/config.machine.toml`, never
+into the repository, unless `--machine-in-repo` is given or the repository already has `machines/<name>/headwork.toml`
+(that file is then used as it is, as before). When `config.machine.toml` exists it takes the machine layer's place; the
+merge, origins (`machine`), host check and `unset` rules are the same. It is checked like the tracked layers, so it cannot hold
+`machine.notify_ntfy`: that goes in `config.local.toml`. See `docs/decisions/2026-11-26-machine-part-stays-local.md`.
 
 ## 2. Merge rule
 

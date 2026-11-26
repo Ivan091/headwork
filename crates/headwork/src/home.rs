@@ -168,6 +168,13 @@ impl Home {
         self.root.join("config.local.toml")
     }
 
+    /// The machine layer kept on the machine: employer-internal repository names, paths and hostnames that must not reach
+    /// the shared repository. It takes the place of `machines/<machine>/headwork.toml` when it exists.
+    #[must_use]
+    pub fn machine_config_path(&self) -> PathBuf {
+        self.root.join("config.machine.toml")
+    }
+
     /// The effective config before the last sync.
     #[must_use]
     pub fn prev_config_path(&self) -> PathBuf {
