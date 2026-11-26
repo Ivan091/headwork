@@ -102,6 +102,14 @@ pub fn spawn_shaped(
         .with_context(|| format!("reading the brief {}", new.brief.display()))?;
     let name = TaskName::new(new.request.project.clone(), new.request.slug.clone());
     let brief_path = env.home.brief_path(&name);
+    let lead_allowed = match shape {
+        TaskShape::Part { parent } => Some(
+            store
+                .user_only_allowed(parent)
+                .context("reading the user-only commands the lead was allowed")?,
+        ),
+        TaskShape::Lead | TaskShape::Plain => None,
+    };
     let asks = match env.config.project(&new.request.project) {
         Some(project) => user_go::check_go(&GoFacts {
             project: &new.request.project,
@@ -110,6 +118,7 @@ pub fn spawn_shaped(
             kind: &new.request.kind,
             brief: &brief,
             allow_ask: new.allow_ask,
+            lead_allowed: lead_allowed.as_deref(),
         })?,
         None => Vec::new(),
     };

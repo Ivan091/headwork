@@ -1103,6 +1103,19 @@ fn a_worktree_brief_naming_a_user_only_command_is_refused() {
     )
     .unwrap();
     assert_eq!(task.state, TaskState::Spawning, "prose names no command");
+    let (task, _) = try_spawn(
+        &mut w,
+        "Fix the thumbnail. Never run `scripts/publish.sh --all`; the user does.\n",
+        "forbid",
+        false,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Spawning,
+        "a forbidden command names nothing"
+    );
 }
 
 #[test]

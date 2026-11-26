@@ -12,7 +12,7 @@ use headwork_adapters::git::GitHost;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
-    TaskRequest, TaskShape, TaskState,
+    TaskRequest, TaskShape, TaskState, user_go,
 };
 use headwork_store::{Board, NewPr, NewRecap, Store, StoreError, Task, TaskId};
 use serde_json::{Value, json};
@@ -201,7 +201,8 @@ const TOOLS: &[ToolDef] = &[
                         "description": concat!(
                             "User-only commands the user explicitly asked this worker to run, each exactly as the user ",
                             "asked. The worker's first action is the `Allow` ask for them; it runs a command only after ",
-                            "the user's tap. The kind must be main-only.",
+                            "the user's tap; more than four become several asks. The kind must be main-only. A brief may ",
+                            "forbid any user-only command without this (\"never run `x`\").",
                         ),
                     },
                 }),
@@ -657,6 +658,16 @@ const TOOLS: &[ToolDef] = &[
                     "flag_reason": {
                         "type": "string",
                         "description": "One line: why these `close` and `review` values (`reason` is for Opus). Needed when judged."
+                    },
+                    "allow_ask": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": concat!(
+                            "User-only commands the user explicitly asked this part to run, each exactly as asked; only ",
+                            "commands the user allowed you, its lead. The part's first action is the `Allow` ask for them: ",
+                            "the user taps again in its tab. Its brief may name only those user-only commands too, and ",
+                            "a part that names one runs in the main checkout under your kind, so only while you run there.",
+                        ),
                     },
                 }),
                 &["slug", "brief"],
@@ -1646,19 +1657,7 @@ impl<'a> Server<'a> {
             ),
             None => None,
         };
-        let allow_ask: Vec<String> = match args.get("allow_ask") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map(str::to_owned)
-                        .context("`allow_ask` holds commands as strings")
-                })
-                .collect::<Result<_>>()?,
-            Some(Value::String(command)) => vec![command.clone()],
-            Some(_) => bail!("`allow_ask` is a list of commands"),
-        };
+        let allow_ask = allow_asks(args)?;
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -1739,6 +1738,20 @@ impl<'a> Server<'a> {
             Some(after) => Some(self.part_of(lead, after)?.id),
             None => None,
         };
+        let allow_ask = allow_asks(args)?;
+        let carries_go = !allow_ask.is_empty()
+            || !user_go::named_user_only(&brief, &self.env.config.all_user_only()).is_empty();
+        if carries_go && !lead.in_main {
+            bail!(
+                "a part names a user-only command, which runs in the main checkout, but you, its lead, run in a worktree: \
+                 run it yourself after the user's `Allow`, or leave it out of the part's brief"
+            );
+        }
+        let (kind, in_main) = if carries_go {
+            (lead.kind.clone(), true)
+        } else {
+            ("task".to_owned(), false)
+        };
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -1747,10 +1760,10 @@ impl<'a> Server<'a> {
             request: TaskRequest {
                 project,
                 slug,
-                kind: "task".to_owned(),
+                kind,
                 model,
                 effort: None,
-                in_main: false,
+                in_main,
                 keep: false,
                 close: flags.close,
                 review: flags.review,
@@ -1759,7 +1772,7 @@ impl<'a> Server<'a> {
             brief: &file,
             depends_on,
             permission_mode: PermissionMode::Auto,
-            allow_ask: &[],
+            allow_ask: &allow_ask,
         };
         reap(self.store, &self.env)?;
         let result = spawn_shaped(
@@ -2116,6 +2129,23 @@ fn spawn_flags(args: &Value, kind: &str, reason_key: &str) -> Result<super::flag
 
 fn flag(args: &Value, key: &str) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The `allow_ask` commands of a spawn or a part spawn: a list of strings, one string, or none.
+fn allow_asks(args: &Value) -> Result<Vec<String>> {
+    match args.get("allow_ask") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .context("`allow_ask` holds commands as strings")
+            })
+            .collect(),
+        Some(Value::String(command)) => Ok(vec![command.clone()]),
+        Some(_) => bail!("`allow_ask` is a list of commands"),
+    }
 }
 
 fn to_text(value: &impl serde::Serialize) -> Result<String> {

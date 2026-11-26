@@ -134,7 +134,9 @@ fn world_flagged(
             kind: kind.to_owned(),
             model: Some(Model::Haiku),
             effort: None,
-            in_main: false,
+            in_main: config
+                .project(&ProjectName::new("demo").unwrap())
+                .is_some_and(|demo| demo.is_main_only(kind)),
             keep,
             close,
             review,
@@ -2483,6 +2485,86 @@ fn part_spawn_names_the_part_after_its_lead_in_the_leads_project() {
         &json!({ "slug": "port", "brief": "Port it.", "project": "other" }),
     );
     assert!(is_error && text.contains("new task"), "{text}");
+}
+
+#[test]
+fn a_part_of_a_worktree_lead_carries_no_user_only_command() {
+    let mut w = world(
+        "enforce = true\n[leads]\nenabled = true\nmax_parts = 2\n",
+        false,
+    );
+    w.start();
+    answer_allow(
+        &mut w,
+        "scripts/publish.sh --all",
+        "Allow it for this task (Recommended)",
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "ship", "brief": "Publish.", "allow_ask": ["scripts/publish.sh --all"] }),
+    );
+    assert!(
+        is_error && text.contains("main checkout"),
+        "publishing runs in the main checkout: {text}"
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "fix", "brief": "Fix it. Never run `scripts/publish.sh`." }),
+    );
+    assert!(!is_error, "a forbidden command names nothing: {text}");
+    assert!(
+        !part_named(&w, "sand-fix").in_main,
+        "a part without a go stays in a worktree"
+    );
+}
+
+#[test]
+fn a_part_carries_only_the_user_only_commands_its_lead_was_allowed() {
+    let mut w = world_of(LEADS, "main_only = [\"publish\"]", false, "publish");
+    assert!(w.task.in_main, "the lead runs in the main checkout");
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "ship", "brief": "Then run `scripts/publish.sh --all`." }),
+    );
+    assert!(
+        is_error && text.contains("has not allowed its lead"),
+        "nothing allowed yet: {text}"
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "fix", "brief": "Fix it. Never run `scripts/publish.sh`." }),
+    );
+    assert!(!is_error, "a forbidden command names nothing: {text}");
+    answer_allow(
+        &mut w,
+        "scripts/publish.sh --all",
+        "Allow it for this task (Recommended)",
+    );
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({
+            "slug": "ship",
+            "brief": "Publish the build.",
+            "allow_ask": ["scripts/publish.sh --all"],
+        }),
+    );
+    assert!(!is_error, "the lead was allowed it: {text}");
+    let part = part_named(&w, "sand-ship");
+    assert!(
+        part.in_main && part.kind == "publish",
+        "it runs in the main checkout under its lead's kind"
+    );
+    let brief = std::fs::read_to_string(w.home.brief_path(&part.name)).unwrap();
+    assert!(
+        brief.contains("## First action: the user's go")
+            && brief.contains("run `scripts/publish.sh --all`?"),
+        "the part asks the user itself: {brief}"
+    );
+    assert!(
+        w.store.user_only_allowed(part.id).unwrap().is_empty(),
+        "the lead's go is not the part's"
+    );
 }
 
 #[test]

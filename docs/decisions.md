@@ -654,7 +654,7 @@ and the reason. This log is closed: new decisions go into `docs/decisions/`, one
   checkout, or the main checkout when that folder is the repository itself). Edits there still come from
   `orchestrator_writable`. All defaults are empty, so the live config must name them.
 - 2026-11-20 The user's go carried to a worker (`spawn --allow-ask`, approval-friction plan HW1). The flag (repeatable,
-  at most four, as `AskUserQuestion` holds four questions; MCP `allow_ask`) takes user-only commands exactly as the user
+  at most four per ask, several asks since 2026-11-26; MCP `allow_ask`) takes user-only commands exactly as the user
   asked for them. Spawn appends a "First action: the user's go" section to the brief with the `Allow` ask pre-filled
   (one question per command, options "Allow it (Recommended)" and "Do not allow it") and logs an `allow-ask` event; the
   grant itself is unchanged, the user's pick in the worker's own pane through the `PostToolUse` hook. The section lives
