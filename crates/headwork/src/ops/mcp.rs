@@ -248,10 +248,10 @@ const TOOLS: &[ToolDef] = &[
         schema: || {
             object(
                 json!({
-                    "ask": { "type": "integer", "description": "The ask's id." },
+                    "ask": { "type": "integer", "description": "The ask's id. Omit it when exactly one such ask waits." },
                     "choice": { "type": "string", "description": "The option the user picked: its number from 1 or its text." },
                 }),
-                &["ask", "choice"],
+                &["choice"],
             )
         },
     },
@@ -1662,13 +1662,12 @@ impl<'a> Server<'a> {
     }
 
     fn answer(&mut self, args: &Value) -> Result<String> {
-        let ask = args
-            .get("ask")
-            .and_then(Value::as_i64)
-            .context("`ask` must be an ask's id")?;
+        let ask = match args.get("ask") {
+            Some(ask) => headwork_store::AskId(ask.as_i64().context("`ask` must be an ask's id")?),
+            None => super::answer::only_waiting(self.store)?,
+        };
         let choice = text(args, "choice")?;
-        let report =
-            super::answer::answer(self.store, &self.env, headwork_store::AskId(ask), &choice)?;
+        let report = super::answer::answer(self.store, &self.env, ask, &choice)?;
         pump(self.store, &self.env)?;
         to_text(&report)
     }

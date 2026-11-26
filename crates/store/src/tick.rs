@@ -146,6 +146,22 @@ impl Store {
         .transpose()
     }
 
+    /// The ids of the asks that wait on an answer given outside any session's dialog (the tick's own), oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn waiting_tick_asks(&self) -> Result<Vec<AskId>, StoreError> {
+        let ids = self
+            .conn
+            .prepare(
+                "SELECT id FROM asks WHERE session_id IS NULL AND state IN ('pending', 'open') ORDER BY id",
+            )?
+            .query_map([], |row| row.get(0).map(AskId))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
     /// A session's clocks.
     ///
     /// # Errors

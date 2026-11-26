@@ -1682,6 +1682,32 @@ fn the_orchestrator_passes_on_delete_and_the_worktree_goes() {
 }
 
 #[test]
+fn an_answer_without_an_id_goes_to_the_only_waiting_ask_and_refuses_when_there_is_not_one() {
+    use headwork::ops::answer::{answer, only_waiting};
+    let mut w = world();
+    let none = only_waiting(&w.store).unwrap_err();
+    assert!(none.to_string().contains("no ask"), "{none}");
+    let (task, _) = dropped_dirty(&mut w, "sand");
+    run_tick(&mut w);
+    let ask = worktree_ask(&w, &task);
+    assert_eq!(only_waiting(&w.store).unwrap(), ask, "the one that waits");
+    let (other, _) = dropped_dirty(&mut w, "gravel");
+    run_tick(&mut w);
+    let many = only_waiting(&w.store).unwrap_err();
+    assert!(
+        many.to_string().contains("2 asks wait") && many.to_string().contains(&ask.0.to_string()),
+        "{many}"
+    );
+    let env = env_as!(w, Actor::User);
+    answer(&mut w.store, &env, ask, "1").unwrap();
+    assert_eq!(
+        only_waiting(&w.store).unwrap(),
+        worktree_ask(&w, &other),
+        "the answered one no longer counts"
+    );
+}
+
+#[test]
 fn an_answer_that_names_no_option_or_comes_from_a_worker_changes_nothing() {
     use headwork::ops::answer::answer;
     let mut w = world();

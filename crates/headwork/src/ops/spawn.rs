@@ -113,6 +113,11 @@ pub fn spawn_shaped(
         })?,
         None => Vec::new(),
     };
+    let brief = match user_go::first_action(&name, &asks) {
+        section if section.is_empty() => brief,
+        section => format!("{}\n\n{section}", brief.trim_end()),
+    };
+    keeps_brief(&brief_path, &brief)?;
     let mut request = new.request.clone();
     if request.effort.is_none() {
         let model = request
@@ -146,10 +151,6 @@ pub fn spawn_shaped(
             &serde_json::json!({ "commands": commands }),
         )?;
     }
-    let brief = match user_go::first_action(&name, &asks) {
-        section if section.is_empty() => brief,
-        section => format!("{}\n\n{section}", brief.trim_end()),
-    };
     if let Some(parent) = brief_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -178,6 +179,21 @@ pub fn spawn_shaped(
         .with_context(|| format!("writing {}", brief_path.display()))?;
     let pumped = pump(store, env)?;
     Ok((store.task(task.id)?, pumped))
+}
+
+/// Refuses to replace a brief file that holds another task's text: the file at `path` may be absent, or start with the
+/// new brief (an earlier spawn of the same text, with the worker rules appended).
+fn keeps_brief(path: &Path, brief: &str) -> Result<()> {
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    ensure!(
+        existing.trim_end().starts_with(brief.trim_end()),
+        "the brief file {} already exists with other content and spawn would overwrite it; spawn under a new slug, or \
+         pass that file's own path as the brief to keep its text",
+        path.display()
+    );
+    Ok(())
 }
 
 /// Starts every queued task the start guard lets through, in queue order, and opens its pane. A task whose pane

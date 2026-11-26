@@ -88,6 +88,28 @@ pub fn answer(store: &mut Store, env: &Env<'_>, id: AskId, choice: &str) -> Resu
     })
 }
 
+/// The one ask the tick raised that waits on an answer, for an answer that names no id.
+///
+/// # Errors
+///
+/// Fails when none waits, or when several do (the error lists their ids); also when the store fails.
+pub fn only_waiting(store: &Store) -> Result<AskId> {
+    let waiting = store.waiting_tick_asks()?;
+    match waiting.as_slice() {
+        [only] => Ok(*only),
+        [] => bail!("no ask the tick raised waits on an answer"),
+        several => bail!(
+            "{} asks wait on an answer ({}): name one with `ask`",
+            several.len(),
+            several
+                .iter()
+                .map(|id| id.0.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// The option `choice` names: its number from 1, or its whole text without regard to case.
 fn chosen(ask: &StoredAsk, choice: &str) -> Option<String> {
     let choice = choice.trim();

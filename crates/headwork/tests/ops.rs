@@ -161,6 +161,54 @@ fn brief_carries_the_rules_only_when_no_session_loads_the_plugin() {
 }
 
 #[test]
+fn spawn_refuses_to_overwrite_a_different_brief_and_accepts_the_same_text() {
+    let mut w = world(10, "builtin");
+    let (first, _) = w.spawn("kept", false);
+    let path = w.home.brief_path(&first.name);
+    let real = std::fs::read_to_string(&path).unwrap();
+    let pointer = w.brief.with_file_name("pointer.md");
+    std::fs::write(&pointer, "# Pointer\n\nSee elsewhere.\n").unwrap();
+    let request = request(&pointer, "kept", false);
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: Path::new(EXE),
+        actor: Actor::User,
+    };
+    let refused = spawn(&mut w.store, &env, &request).unwrap_err();
+    assert!(
+        refused.to_string().contains("already exists") && refused.to_string().contains("new slug"),
+        "{refused}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        real,
+        "the real brief is untouched"
+    );
+    assert!(
+        w.store
+            .find_task("demo-kept")
+            .unwrap()
+            .is_some_and(|task| task.id == first.id),
+        "no second task"
+    );
+
+    let stale = w.home.brief_path(&headwork_core::TaskName::new(
+        ProjectName::new("demo").unwrap(),
+        Slug::new("stale").unwrap(),
+    ));
+    std::fs::write(&stale, std::fs::read_to_string(&w.brief).unwrap()).unwrap();
+    let (second, _) = w.spawn("stale", false);
+    assert!(
+        std::fs::read_to_string(w.home.brief_path(&second.name))
+            .unwrap()
+            .starts_with("# Task"),
+        "a leftover file with the same text is accepted"
+    );
+}
+
+#[test]
 fn spawn_makes_the_worktree_the_workspace_and_the_launcher_pane() {
     let mut w = world(10, "builtin");
     let (task, pumped) = w.spawn("sand", false);
