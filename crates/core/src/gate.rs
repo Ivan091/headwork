@@ -358,13 +358,16 @@ pub fn held_for(seconds: u64) -> String {
     }
 }
 
-/// A command shortened for a wait message: the program's file name, without a leading `bash`, `sh`, `env` or
-/// `NAME=value`, and
-/// the next word when it is a subcommand (not an option): `cargo test`, `check.sh`.
+/// A command shortened for a wait message: `cargo test`, `check.sh`.
+///
+/// It is the program's file name, without a leading `bash`, `sh`, `env`, their options or `NAME=value`, and the next
+/// word when it is a subcommand (not an option or a path).
 #[must_use]
 pub fn short_command(command: &str) -> String {
     let mut words = command.split_whitespace().skip_while(|word| {
-        matches!(*word, "bash" | "sh" | "env" | "bash.exe" | "sh.exe") || word.contains('=')
+        matches!(*word, "bash" | "sh" | "env" | "bash.exe" | "sh.exe")
+            || word.contains('=')
+            || word.starts_with('-')
     });
     let Some(program) = words.next() else {
         return String::new();
@@ -662,6 +665,7 @@ mod tests {
             ("C:\\tools\\me-sim.exe render scene", "me-sim.exe render"),
             ("env FOO=1 cargo build", "cargo build"),
             ("python train.py", "python train.py"),
+            ("bash -c cargo test --locked", "cargo test"),
             ("bash scripts/x.sh sub/dir", "x.sh"),
             ("", ""),
             ("bash", ""),

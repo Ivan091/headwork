@@ -11,6 +11,7 @@ pub mod doctor;
 pub mod effort;
 pub mod flags;
 pub mod flows;
+pub mod gate;
 pub mod graph;
 pub mod helpers;
 pub mod hook;
