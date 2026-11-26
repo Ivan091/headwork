@@ -190,6 +190,17 @@ runs directly, so does everything in CI or with `HEADWORK_GATE_OFF=1`), gives th
 code; it logs `gate-wait`, `gate-acquired` and `gate-released` into an existing `state.db` only. `headwork gate status`
 lists holders and waiters. `[gates]` (machine layer) also takes `dir` (default `%LOCALAPPDATA%/heavy-slots`, else
 `~/.heavy-slots`; `HEADWORK_GATE_DIR` overrides it), `held_long_min` and `starved_min`.
+Jobs take `gate: "cpu" | "gpu"` (`heavy: true` still means `cpu`; `jobs.heavy` holds 0, 1 or 2, `JobRow.gate`): a gated job
+starts as `<HEADWORK_EXE or this program> gate run <class> -- <argv>`, the stored argv stays the original so a resume wraps it
+again, and `job_status` / `headwork jobs` say `waiting_for` / `waiting for cpu` while a waiter file of its pid is live;
+`job_register` takes a free slot for the registered pid (`Slots::claim_for`) or warns that the job runs over the gate. The
+tick stage `gates` (`ops/tick.rs`) reaps stale slots and dead waiters' files (event `gate-reaped`) and keeps the standing
+findings `gate-held-long` (a live `cpu` holder past `held_long_min`) and `gate-starved` (a live waiter past `starved_min`),
+one per holder or waiter, cleared when it ends. `board` prints `Gates: cpu 2/3 (...) · 1 waiting · gpu 0/2` (a `gates` field in the MCP board; only when the
+slot folder exists), `status` ends a task's line with `waiting for cpu` (a lead counts its parts), and the "Needs you" digest
+lists gate findings at once. The guard rule `heavy-ungated` (`core/src/guard/heavy.rs`) denies a worker's ungated cargo
+build, test, clippy or bench and `check.sh`, with the hint `headwork gate run cpu -- <the command>`; it is shadow until
+listed in `[hooks] enforce_rules`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -204,9 +215,9 @@ estimate at API list prices, never a bill. The tick sums rows older than `[usage
 ## Commands
 
 ```bash
-bash scripts/check.sh --quick              # fmt, clippy, line length, attribution, comment ban; before every push
-bash scripts/check.sh                      # the full gate, as CI runs it (adds tests and docs)
-cargo test -p headwork-core                # one crate
+headwork gate run cpu -- bash scripts/check.sh --quick   # fmt, clippy, line length, attribution, comment ban; before every push
+headwork gate run cpu -- bash scripts/check.sh           # the full gate, as CI runs it (adds tests and docs)
+headwork gate run cpu -- cargo test -p headwork-core     # one crate
 cargo run -p headwork -- board             # projects, tasks (parts indented under their lead), sessions (pane or tab), states, asks
 cargo run -p headwork -- status [--all] [--json]   # one line per top-level task, rolled up from its parts
 cargo run -p headwork -- log [<name>]      # the event log, all or one task
@@ -292,7 +303,7 @@ workers stack until the workspace empties. The workspace closes with its last wo
 moved (wmux cannot move a surface). The pure choice is `core/src/layout.rs`. `headwork board` prints each session's
 pane, or that it is a tab. Why it works this way is in `docs/decisions.md` (2026-11-14, split panes; 2026-11-16, panes
 close with their worker; 2026-11-19, a grid of quarters). Run the real check with
-`cargo test -p headwork --test live -- --ignored`; it opens and closes `headwork-test` workspaces.
+`headwork gate run cpu -- cargo test -p headwork --test live -- --ignored`; it opens and closes `headwork-test` workspaces.
 
 With `panes = 2` (or 1) the one split is side by side instead: the second worker takes the right half, left and right
 with a vertical divider, later workers stack as tabs, and a closed worker's pane gives the whole workspace to the other.
@@ -389,7 +400,7 @@ A hand build plus `install` stays for trying a build before it merges (a later r
 published after it was installed):
 
 ```bash
-cargo build --release -p headwork
+headwork gate run cpu -- cargo build --release -p headwork
 target/release/headwork.exe install    # renames the running copy aside, puts the build in ~/.local/bin, cleans old copies
 ```
 
@@ -493,8 +504,10 @@ so every worktree of a clone uses it). `scripts/check.sh` fails when a commit si
 `scripts/test-attribution.sh` tests the patterns. History is not rewritten.
 
 Never commit to `master`. Each change goes on a kebab-case branch, with single-line Conventional Commits and no AI
-attribution, through a pull request, then is merged. Before pushing, run `bash scripts/check.sh --quick` and
-`cargo test` for the crates you changed. The required gate is GitHub Actions: `.github/workflows/gate.yml` runs the full
+attribution, through a pull request, then is merged. Before pushing, run
+`headwork gate run cpu -- bash scripts/check.sh --quick` and `headwork gate run cpu -- cargo test -p <crate>` for the
+crates you changed; the guard rule `heavy-ungated` refuses the bare forms in worker sessions, though `check.sh` run bare
+also gates itself. The required gate is GitHub Actions: `.github/workflows/gate.yml` runs the full
 `scripts/check.sh` on Windows and macOS for every pull request (read-only), and a ruleset on `master` refuses a merge
 until both `gate` jobs pass. Before merging, wait for them with `gh pr checks <url> --watch --fail-fast`; on a failure,
 read `gh run view <id> --log-failed`, fix, push and wait again. Every push to `master` is gated, built and published

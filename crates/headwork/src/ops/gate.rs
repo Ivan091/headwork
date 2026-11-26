@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use headwork_adapters::gate::{self, Attempt, ClassView, Held, Slots};
 use headwork_core::config::GatesConfig;
-use headwork_core::gate::{GateClass, Owner, held_for, short_command};
+use headwork_core::gate::{ClassLine, GateClass, Owner, gates_line, held_for, short_command};
 use headwork_core::{Actor, Config, Role};
 use headwork_store::{Store, TaskId};
 use serde::Serialize;
@@ -23,6 +23,18 @@ use crate::home::Home;
 
 /// How often a waiting gate says again what it waits for.
 pub const REPORT_EVERY: Duration = Duration::from_secs(30);
+
+/// A whole number of seconds that replaces [`REPORT_EVERY`] when it is above 0 (tests).
+pub const REPORT_VAR: &str = "HEADWORK_GATE_REPORT_S";
+
+/// [`REPORT_EVERY`], or the seconds [`REPORT_VAR`] gives.
+fn report_every() -> Duration {
+    std::env::var(REPORT_VAR)
+        .ok()
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map_or(REPORT_EVERY, Duration::from_secs)
+}
 
 /// How long a waiting gate sleeps between attempts.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -46,12 +58,52 @@ pub fn gate_dir(home: &Home, gates: &GatesConfig) -> Option<PathBuf> {
     gate::resolve_dir(gates.dir.as_deref().map(|dir| home.expand(dir)))
 }
 
+/// The slot root when it exists as a folder: reading never creates it.
+fn existing_dir(home: &Home, gates: &GatesConfig) -> Option<PathBuf> {
+    gate_dir(home, gates).filter(|dir| dir.is_dir())
+}
+
+/// The `Gates: ...` line of `board`, or `None` when the slot folder does not exist.
+#[must_use]
+pub fn board_line(home: &Home, gates: &GatesConfig) -> Option<String> {
+    let dir = existing_dir(home, gates)?;
+    let classes: Vec<ClassLine> = Slots::new(dir)
+        .read_all(gates)
+        .iter()
+        .map(|view| ClassLine {
+            class: view.class,
+            count: view.count,
+            holders: view.live_holders().map(gate::HolderInfo::line).collect(),
+            waiting: u32::try_from(view.live_waiters().count()).unwrap_or(u32::MAX),
+        })
+        .collect();
+    Some(format!("Gates: {}\n", gates_line(&classes)))
+}
+
+/// The tasks with a live waiter, as `(task id, class)`; empty when the slot folder does not exist.
+#[must_use]
+pub fn waiting_tasks(home: &Home, gates: &GatesConfig) -> Vec<(i64, GateClass)> {
+    let Some(dir) = existing_dir(home, gates) else {
+        return Vec::new();
+    };
+    Slots::new(dir)
+        .read_all(gates)
+        .iter()
+        .flat_map(|view| {
+            view.live_waiters()
+                .filter_map(|waiter| waiter.owner.as_ref()?.task_id)
+                .map(|id| (id, view.class))
+        })
+        .collect()
+}
+
 /// Runs `argv` holding a slot of `class`, waiting for one first; returns the command's exit code.
 ///
-/// Waiting prints `headwork: waiting for cpu (...)` to `err` at once and every [`REPORT_EVERY`]. In CI, with
+/// Waiting prints `headwork: waiting for cpu (...)` to `err` at once and every [`REPORT_EVERY`] ([`REPORT_VAR`]). In CI, with
 /// `HEADWORK_GATE_OFF=1`, or when the process tree already holds `class`, the command runs directly. The command gets
-/// `HEADWORK_GATE_HELD` with `class` added. An interrupt while waiting gives up with [`INTERRUPTED`]; once the command
-/// runs, an interrupt is the command's to handle.
+/// `HEADWORK_GATE_HELD` with `class` added when it holds a slot or runs directly for one of those reasons, never when
+/// it runs without a slot because the slot folder could not be used. An interrupt while waiting gives up with
+/// [`INTERRUPTED`]; once the command runs, an interrupt is the command's to handle.
 ///
 /// # Errors
 ///
@@ -66,8 +118,9 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
     let mut command = Command::new(program_path(program, config.as_ref()));
     command.args(rest);
     let env = gate::env_from_process();
-    command.env(gate::HELD_VAR, env.held_with(class));
+    let held_var = env.held_with(class);
     if env.bypass(class).is_some() {
+        command.env(gate::HELD_VAR, &held_var);
         return run_child(&mut command, err);
     }
     let text = command_text(argv);
@@ -103,6 +156,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         epoch: Some(gate::epoch_now()),
     };
     let slots = Slots::new(dir);
+    let interrupts = gate::watch_interrupts();
     let ticket = match slots.enqueue(class, gates.count(class), owner) {
         Ok(ticket) => ticket,
         Err(error) => {
@@ -111,7 +165,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         }
     };
     let waiting = Instant::now();
-    let held = match wait_for_slot(ticket, &events, err)? {
+    let held = match wait_for_slot(ticket, interrupts.as_deref(), &events, err)? {
         Waited::Held(held) => Some(held),
         Waited::Ungated => None,
         Waited::Interrupted => {
@@ -120,6 +174,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         }
     };
     if let Some(held) = &held {
+        command.env(gate::HELD_VAR, &held_var);
         events.record(
             EVENT_GATE_ACQUIRED,
             serde_json::json!({ "waited_s": waiting.elapsed().as_secs(), "slot": held.slot() }),
@@ -149,28 +204,38 @@ enum Waited {
     Interrupted,
 }
 
-/// Tries for a slot until one is held, trying fails, or an interrupt comes.
+/// Tries for a slot until one is held, trying fails, or an interrupt comes. The interrupt flag is watched from before
+/// the wait file is written, so an interrupt can never leave it behind.
 fn wait_for_slot(
     mut ticket: gate::Ticket,
+    interrupts: Option<&std::sync::atomic::AtomicBool>,
     events: &Events<'_>,
     err: &mut impl Write,
 ) -> Result<Waited> {
-    let interrupts = gate::watch_interrupts();
-    let interrupted = || {
-        interrupts
-            .as_ref()
-            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-    };
+    let interrupted =
+        || interrupts.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
+    let every = report_every();
     let mut told: Option<Instant> = None;
     loop {
         match ticket.try_take(&local_now(), gate::epoch_now()) {
             Ok(Attempt::Held(held)) => return Ok(Waited::Held(held)),
-            Ok(Attempt::Wait { view, ahead }) => {
+            Ok(Attempt::Wait {
+                view,
+                ahead,
+                reap_error,
+            }) => {
                 if told.is_none() {
                     events.record(EVENT_GATE_WAIT, serde_json::json!({ "ahead": ahead }));
                 }
-                if told.is_none_or(|at| at.elapsed() >= REPORT_EVERY) {
+                if told.is_none_or(|at| at.elapsed() >= every) {
                     writeln!(err, "headwork: {}", view.wait_message(ahead))?;
+                    if let Some(error) = reap_error {
+                        writeln!(
+                            err,
+                            "headwork: a stale {} slot could not be taken away: {error}",
+                            view.class
+                        )?;
+                    }
                     told = Some(Instant::now());
                 }
             }
@@ -257,7 +322,7 @@ fn worktree() -> String {
 }
 
 /// Local time as `%Y-%m-%d %H:%M:%S`, else UTC in the same shape.
-fn local_now() -> String {
+pub(crate) fn local_now() -> String {
     headwork_store::local_time_now().unwrap_or_else(|| {
         let utc = headwork_core::update::format_utc(gate::epoch_now().saturating_mul(1000));
         utc.trim_end_matches('Z').replace('T', " ")

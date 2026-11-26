@@ -13,6 +13,7 @@ use anyhow::{Result, bail};
 use headwork_adapters::disk::{Disks, large_files, volume_of};
 use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
+use headwork_core::gate::{GateClass, Owner, lasted_minutes};
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
 use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
 use headwork_core::{
@@ -98,6 +99,9 @@ pub struct TickEnv<'a> {
     /// in production.
     pub slots: &'a dyn super::waiting::SlotProbe,
 }
+
+/// Event: the tick took away a gate slot or waiter file whose process is gone.
+pub const EVENT_GATE_REAPED: &str = "gate-reaped";
 
 /// What the tick did about a finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -186,6 +190,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("merged_grace", Run::merged_grace)?;
     run.stage("closing", Run::closing)?;
     run.stage("parts", Run::parts)?;
+    run.stage("gates", Run::gates)?;
     run.stage("disks", Run::disks)?;
     run.stage("runaway", Run::runaway)?;
     run.stage("stuck", Run::stuck)?;
@@ -1105,6 +1110,127 @@ impl<'b> Run<'_, 'b> {
             }
         }
         Ok(out)
+    }
+
+    fn gates(&mut self) -> Result<()> {
+        let env = self.env();
+        let gates = env.config.gates.clone();
+        let dir = super::gate::gate_dir(env.home, &gates).filter(|dir| dir.is_dir());
+        if let Some(dir) = dir {
+            let slots = headwork_adapters::gate::Slots::new(dir);
+            for &class in GateClass::ALL {
+                self.reap_gate(&slots, class)?;
+            }
+            for view in slots.read_all(&gates) {
+                self.watch_gate(&view, &gates)?;
+            }
+        }
+        self.sweep(FindingId::GateHeldLong)?;
+        self.sweep(FindingId::GateStarved)
+    }
+
+    fn reap_gate(
+        &mut self,
+        slots: &headwork_adapters::gate::Slots,
+        class: GateClass,
+    ) -> Result<()> {
+        let reaping = slots.reap(class);
+        for gone in reaping.reaped {
+            let owner = gone.owner.unwrap_or_default();
+            let task = self.known_task(&owner);
+            let data = serde_json::json!({
+                "class": class,
+                "path": slashed(&gone.path),
+                "waiter": gone.waiter,
+                "pid": owner.pid,
+                "task": owner.task,
+                "command": owner.command,
+            });
+            let actor = self.actor();
+            self.store
+                .append_event(actor, task, None, EVENT_GATE_REAPED, &data)?;
+        }
+        reaping.error.map_or(Ok(()), |error| {
+            self.error(&format!("gate:{class}"), None, &error.to_string())
+        })
+    }
+
+    fn known_task(&self, owner: &Owner) -> Option<TaskId> {
+        owner
+            .task_id
+            .map(TaskId)
+            .filter(|id| self.store.task(*id).is_ok())
+    }
+
+    fn watch_gate(
+        &mut self,
+        view: &headwork_adapters::gate::ClassView,
+        gates: &headwork_core::config::GatesConfig,
+    ) -> Result<()> {
+        let class = view.class;
+        if class == GateClass::Cpu {
+            for holder in view.live_holders().filter(|h| !h.legacy) {
+                if !lasted_minutes(holder.age_s, gates.held_long_min) {
+                    continue;
+                }
+                let owner = holder.owner.clone().unwrap_or_default();
+                let line = holder.line();
+                let key = format!(
+                    "gate-held-long:{class}:{}:{}:{}",
+                    holder.slot,
+                    owner.pid,
+                    owner.epoch.unwrap_or_default()
+                );
+                let task = self.known_task(&owner);
+                let detail = serde_json::json!({
+                    "class": class, "slot": holder.slot, "pid": owner.pid, "task": owner.task,
+                    "command": owner.command, "held_s": holder.age_s,
+                });
+                let notice = format!("The {class} gate has been held for {line}");
+                self.standing(
+                    &key,
+                    FindingId::GateHeldLong,
+                    task,
+                    Status::Standing,
+                    &detail,
+                    Some(&notice),
+                )?;
+            }
+        }
+        for waiter in view.live_waiters() {
+            if !lasted_minutes(waiter.age_s, gates.starved_min) {
+                continue;
+            }
+            let owner = waiter.owner.clone().unwrap_or_default();
+            let key = format!(
+                "gate-starved:{class}:{}:{}",
+                waiter.pid,
+                owner.epoch.unwrap_or_default()
+            );
+            let task = self.known_task(&owner);
+            let detail = serde_json::json!({
+                "class": class, "pid": waiter.pid, "task": owner.task,
+                "command": owner.command, "waited_s": waiter.age_s,
+            });
+            let notice = format!(
+                "{} has waited {} for a {class} slot",
+                if owner.task.is_empty() {
+                    owner.command.as_str()
+                } else {
+                    owner.task.as_str()
+                },
+                headwork_core::gate::held_for(waiter.age_s)
+            );
+            self.standing(
+                &key,
+                FindingId::GateStarved,
+                task,
+                Status::Standing,
+                &detail,
+                Some(&notice),
+            )?;
+        }
+        Ok(())
     }
 
     fn disks(&mut self) -> Result<()> {

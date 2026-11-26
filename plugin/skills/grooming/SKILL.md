@@ -36,8 +36,10 @@ Take A and the B items whose decision is in, and order them:
 - Value first: what loses published work or approvals, then what leaves the user uninformed, then the rest.
 - Dependencies before dependents; `depends_on` is one task, merged, no fan-in: a step that needs two waits a wave.
 - At most one store migration in flight per project (migration numbers collide).
-- Fit the slot caps (`[machine] max_workers`, each project's own cap) and the heavy gate: builds, renders and training
-  that take heavy slots share a wave only as far as the slots go.
+- Sessions are uncapped unless a cap key (`[machine] max_workers`, a project's own) is set; the tick's `many-sessions`
+  finding warns past 20 live ones, so keep a wave well under that. CPU and GPU work waits on the `[gates]` slots
+  (`cpu` 3, `gpu` 2; `headwork gate run`, gated jobs): builds, renders and training share a wave only as far as those
+  slots go, or the extra steps sit waiting.
 - A deploy only in the window its project allows (for example between scheduled runs), as its notes say.
 
 ## 4. Each step

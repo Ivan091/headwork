@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 
 use anyhow::Result;
+use headwork_core::gate::GateClass;
 use headwork_core::review::Level;
 use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{CloseMode, StatusFacts, TaskShape, TaskState, TaskStatus};
@@ -42,6 +43,8 @@ pub struct StatusLine {
     pub close: CloseMode,
     /// The level of the review planned for the task: 1 light, 2 standard, 3 strict; none when no review is planned.
     pub review_plan: Option<u8>,
+    /// The gate class a live waiter of the task or one of its parts waits for a slot of.
+    pub waiting_for: Option<GateClass>,
 }
 
 /// The open review of a task, as `status --json` reports it.
@@ -92,6 +95,20 @@ pub fn status(store: &Store, all: bool, prices: &UsageConfig) -> Result<Vec<Stat
     lines(store, &store.board(all)?, prices)
 }
 
+/// [`status`] with the gate waits: `(task id, class)` of each live waiter, as `gate::waiting_tasks` reads them.
+///
+/// # Errors
+///
+/// Returns the store's failure.
+pub fn status_waiting(
+    store: &Store,
+    all: bool,
+    prices: &UsageConfig,
+    waiting: &[(i64, GateClass)],
+) -> Result<Vec<StatusLine>> {
+    lines_waiting(store, &store.board(all)?, prices, waiting)
+}
+
 /// The status lines of a board's tasks. A part rolls up into its lead; a part whose lead is not on the board gets a
 /// line of its own, so nothing open hides.
 ///
@@ -99,6 +116,21 @@ pub fn status(store: &Store, all: bool, prices: &UsageConfig) -> Result<Vec<Stat
 ///
 /// Returns the store's failure.
 pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<StatusLine>> {
+    lines_waiting(store, board, prices, &[])
+}
+
+/// [`lines`] with the gate waits: a task whose own or whose part's waiter is live ends its line with `waiting for
+/// cpu`.
+///
+/// # Errors
+///
+/// Returns the store's failure.
+pub fn lines_waiting(
+    store: &Store,
+    board: &Board,
+    prices: &UsageConfig,
+    waiting: &[(i64, GateClass)],
+) -> Result<Vec<StatusLine>> {
     let shown = |entry: &BoardTask| match entry.task.shape {
         TaskShape::Part { parent } => board.tasks.iter().all(|other| other.task.id != parent),
         TaskShape::Lead | TaskShape::Plain => true,
@@ -163,6 +195,18 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             (None, spent) => format!("{line}, reviews {} tokens", short_count(spent)),
         };
         let line = format!("{line}{}", flag_tags(&top.task));
+        let waiting_for = std::iter::once(top)
+            .chain(parts.iter().copied())
+            .find_map(|entry| {
+                waiting
+                    .iter()
+                    .find(|(id, _)| *id == entry.task.id.0)
+                    .map(|(_, class)| *class)
+            });
+        let line = waiting_for.map_or_else(
+            || line.clone(),
+            |class| format!("{line} \u{b7} waiting for {class}"),
+        );
         let findings = open_findings(board, top, &parts);
         let line = if findings.is_empty() {
             line
@@ -183,6 +227,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             review_tokens,
             close: top.task.close,
             review_plan: top.task.review_plan.map(Level::number),
+            waiting_for,
         });
     }
     Ok(out)

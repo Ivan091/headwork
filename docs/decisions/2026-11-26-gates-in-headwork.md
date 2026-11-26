@@ -88,6 +88,29 @@ wrapping a command itself; token limits are warning only. This entry records how
   neither `CI`, `HEADWORK_GATE_OFF=1`, `HEADWORK_HEAVY_HELD=1` nor a held `cpu` says otherwise; `scripts/heavy.sh` and
   `scripts/test-heavy.sh` are gone.
 
+## Second pull request
+
+- `JobRow` keeps `heavy` (true when gated) and adds `gate`; `NewJob` takes `gate`. `job_status` and `headwork jobs` add
+  `waiting_for`. `job_register` returns the row with a `warning` field when it runs over the gate.
+- `Slots::claim_for` takes a slot for a pid without joining the queue; a registered job is already running, so it
+  cannot wait. (The review fixes below keep the queue's order.)
+- The tick reaps stale slots even in shadow mode: it is the same cleanup every waiting gate does.
+- Findings are keyed by slot, pid and epoch (holders) or pid and epoch (waiters), so each clears when that process ends.
+- The digest shows gate findings at once instead of after `[digest] finding_hours`.
+- `heavy-ungated` sees `headwork gate run ... -- <cmd>` and `heavy.sh <cmd>` as one command whose program is the wrapper, so
+  the wrapped command is never inspected; reviewers keep their own rule `reviewer-write`.
+
+## Review fixes
+
+- A native owner whose pid runs a process that started more than 5 s (`PID_REUSE_SLACK_S`) after the owner's `epoch` is
+  stale: the pid was taken over (`pid_taken_over`, start time from `proc::identify`). Owners without `epoch` keep the
+  plain pid check.
+- `claim_for` treats a pid that holds a slot or has a live waiter file as gated already (its gate takes a slot in
+  turn), takes a free slot only when the live waiters do not need it (`may_take`), and gives a `cpu` slot back to live
+  legacy slots as `try_take` does; otherwise `job_register` warns that the job runs over the gate.
+- `HEADWORK_GATE_HELD` gains the class only when the gate holds a slot or a bypass (CI, off, nested) applies; a command
+  run without a slot because the slot root is unusable leaves nested commands to gate themselves.
+
 ## Not done here
 
 - me-sim's `heavy.sh` becomes a wrapper around `headwork gate run cpu` with its `mkdir` fallback for CI; its renders and scans

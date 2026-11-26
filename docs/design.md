@@ -391,7 +391,6 @@ The chain for each ask, in order: host (wmux blocked with buttons, cmux Feed plu
 ```toml
 [machine]
 host = "wmux"
-max_children = 10
 remote_control = true
 push = "claude"
 notify_ntfy = ""
@@ -406,6 +405,7 @@ stuck_after_min = 30
 idle_free_merged_min = 30
 idle_free_review_min = 60
 retell_after_h = 6
+many_sessions = 20
 roots = ["~/.claude/projects", "{temp}", "S:/Code"]
 
 [gates]
@@ -464,6 +464,7 @@ review = { send_file = false }
 - `deliver = "pr"` means the global skills' flow (branch, Conventional Commit, push, PR); `merge = "human"` means only gh can move the task to `merged`, and the PR sits in the inbox until a person merges it.
 - `builtin` worktrees use `git worktree add -b {slug}` and `git worktree remove` (refusing when dirty).
 - `[gates]` (machine layer) sets the machine-wide slots heavy commands hold: `cpu` for cargo build, test, clippy and bench, `check.sh`, renders, scans and `git gc`; `gpu` for training. `headwork gate run <class> -- <cmd>` waits for a slot (first come first served), runs the command holding it and gives it back; `headwork gate status` lists holders and waiters. The slots are folders under `dir` (default `%LOCALAPPDATA%/heavy-slots`, else `~/.heavy-slots`), shared with the old `heavy.sh` scripts, whose root `slot-N` folders count as `cpu`. The per-project `heavy_slots` and `heavy_gate` keys are retired. See `docs/decisions/2026-11-26-gates-in-headwork.md`.
+- Sessions are not capped: `[machine] max_workers` (once `max_children`) and a project's cap are optional and absent by default; the tick's standing finding `many-sessions` warns while more than `[watch] many_sessions` (20) sessions are live.
 - `read_only_paths` turns into a child deny rule for writes there (me-studio reads me-sim, never writes it).
 - A project-local `.agentctl.toml` in the repository may add `long_jobs` and `user_only`; it may never widen `allowed_repos` or the model set.
 

@@ -192,6 +192,99 @@ fn a_second_holder_waits_for_the_first() {
 }
 
 #[test]
+fn a_waiting_gate_says_again_what_it_waits_for() {
+    let gate = Gate::new(Some(&format!(
+        "{MACHINE}[gates]
+cpu = 1
+"
+    )));
+    let first = gate.spawn(&["gate", "run", "cpu", "--", "bash", "-c", "sleep 4"]);
+    wait_until("the first holds its slot", || {
+        gate.cpu().join("slot-1").join("owner").exists()
+    });
+    let second = gate
+        .command(&["gate", "run", "cpu", "--", "bash", "-c", "exit 0"])
+        .env("HEADWORK_GATE_REPORT_S", "1")
+        .output()
+        .unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    let err = text(&second.stderr);
+    let told = err.matches("headwork: waiting for cpu (1/1: ").count();
+    assert!(told >= 2, "the wait line repeats: {err}");
+}
+
+#[test]
+fn a_gate_whose_slot_folder_cannot_be_made_runs_the_command_anyway() {
+    let gate = Gate::new(None);
+    let file = gate.slots.path().join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let output = gate
+        .command(&["gate", "run", "gpu", "--", "bash", "-c", "echo ran; exit 9"])
+        .env("HEADWORK_GATE_DIR", file.join("below"))
+        .output()
+        .unwrap();
+    let err = text(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(9),
+        "the exit code passes through: {err}"
+    );
+    assert_eq!(text(&output.stdout).trim(), "ran", "{err}");
+    assert!(
+        err.contains("; running without a slot"),
+        "with a note: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupt_while_waiting_exits_130_and_leaves_the_queue() {
+    let gate = Gate::new(Some(&format!(
+        "{MACHINE}[gates]
+cpu = 1
+"
+    )));
+    let slot = gate.cpu().join("slot-1");
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(
+        slot.join("owner"),
+        format!(
+            "pid={}
+native=1
+class=cpu
+command=hold
+epoch={}
+",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ),
+    )
+    .unwrap();
+    let waiter = gate.spawn(&["gate", "run", "cpu", "--", "bash", "-c", "exit 0"]);
+    let pid = waiter.id();
+    wait_until("the gate waits", || {
+        gate.cpu().join(format!("wait-{pid}")).exists()
+    });
+    let kill = Command::new("kill")
+        .args(["-INT", &pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success(), "kill -INT");
+    let output = waiter.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(130), "{}", text(&output.stderr));
+    let left: Vec<String> = entries(&gate.cpu())
+        .into_iter()
+        .filter(|name| name.starts_with("wait-"))
+        .collect();
+    assert!(left.is_empty(), "no waiter file left: {left:?}");
+}
+
+#[test]
 fn a_slot_whose_holder_is_gone_is_taken_over() {
     let gate = Gate::new(Some(&format!("{MACHINE}[gates]\ncpu = 1\n")));
     let mut gone = Command::new(env!("CARGO_BIN_EXE_headwork"))
@@ -260,6 +353,25 @@ fn nested_ci_and_off_run_directly() {
         gate.slots.path().join("gpu").exists(),
         "holding cpu still gates gpu"
     );
+}
+
+#[test]
+fn a_command_run_without_a_slot_is_not_marked_as_holding_one() {
+    let gate = Gate::new(None);
+    let file = gate.slots.path().join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let output = gate
+        .command(&["gate", "run", "cpu", "--", "bash", "-c", HOLDS_CPU])
+        .env("HEADWORK_GATE_DIR", file.join("below"))
+        .output()
+        .unwrap();
+    let err = text(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "nested commands still gate: {err}"
+    );
+    assert!(err.contains("running without a slot"), "{err}");
 }
 
 #[test]

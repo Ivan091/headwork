@@ -271,7 +271,7 @@ fn a_job_parked_and_started_again_is_running_after_its_restart() {
                 pid: Some(10),
                 identity: None,
                 checkpoint_path: None,
-                heavy: false,
+                gate: None,
                 restart: true,
                 log_path: "S:/w/render.log",
             },

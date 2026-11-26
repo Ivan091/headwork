@@ -512,7 +512,7 @@ fn the_writers_state_changes_are_read_per_row() {
                 pid: Some(10),
                 identity: None,
                 checkpoint_path: None,
-                heavy: false,
+                gate: None,
                 restart: true,
                 log_path: "S:/w/render.log",
             },

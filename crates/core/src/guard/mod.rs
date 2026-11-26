@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod grants;
+mod heavy;
 pub mod paths;
 pub mod shell;
 pub mod stop;
@@ -467,6 +468,11 @@ fn check_worker_command(
     }
     if scope.reviewer
         && let Some(decision) = check_reviewer_command(command)
+    {
+        return decision;
+    }
+    if !scope.reviewer
+        && let Some(decision) = heavy::check_heavy(command)
     {
         return decision;
     }

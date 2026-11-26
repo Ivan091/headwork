@@ -285,7 +285,7 @@ fn job(label: &str, policy: ParkPolicy, pid: u32, checkpoint: Option<&Path>) -> 
         park_policy: Some(policy),
         checkpoint_path: checkpoint.map(|p| p.display().to_string()),
         restart: None,
-        heavy: false,
+        gate: None,
     }
 }
 
@@ -1890,4 +1890,195 @@ fn an_orchestrator_resume_ends_the_old_session_and_the_new_one_starts_in_its_mod
     assert_eq!(task, None);
     assert_eq!(row.rc_name, "orchestrator");
     assert!(line.contains("--mode plan --summary"), "{line}");
+}
+
+#[test]
+fn a_gated_job_takes_a_free_slot_for_its_pid_and_reads_as_waiting_while_its_waiter_file_lives() {
+    use headwork::ops::jobs::{claim_gate, statuses};
+    use headwork_core::gate::{GateClass, Owner};
+
+    let mut w = world("ask");
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    let (sand, session, _) = w.working("sand");
+    let pid = w.sleeper();
+    let mut registration = job("train", ParkPolicy::Rerun, pid, None);
+    registration.gate = Some(GateClass::Gpu);
+    let env = env!(w);
+    let row = register(&mut w.store, &env, &sand, &session, &registration).unwrap();
+    assert_eq!(row.gate, Some(GateClass::Gpu), "stored as the gate");
+    assert!(row.heavy, "the older flag still reads true");
+
+    assert_eq!(claim_gate(&env, &sand, &row), None, "a free slot is taken");
+    let owner = std::fs::read_to_string(slots.join("gpu").join("slot-1").join("owner")).unwrap();
+    assert!(
+        owner.contains(&format!("pid={pid}")) && owner.contains("native=1"),
+        "{owner}"
+    );
+    assert_eq!(
+        claim_gate(&env, &sand, &row),
+        None,
+        "the pid holds one already"
+    );
+    assert!(!slots.join("gpu").join("slot-2").exists(), "no second slot");
+
+    let waiting = Owner {
+        pid,
+        native: true,
+        class: Some(GateClass::Gpu),
+        task: "demo-sand".to_owned(),
+        command: "train".to_owned(),
+        epoch: Some(headwork_adapters::gate::epoch_now()),
+        ..Owner::default()
+    };
+    let listed = statuses(&w.home, &w.config, vec![row.clone()]);
+    assert_eq!(listed[0].waiting_for, None, "no waiter file yet");
+    std::fs::write(
+        slots.join("gpu").join(format!("wait-{pid}")),
+        waiting.render(),
+    )
+    .unwrap();
+    let listed = statuses(&w.home, &w.config, vec![row]);
+    assert_eq!(listed[0].waiting_for, Some(GateClass::Gpu), "waiter file");
+    let json = serde_json::to_value(&listed[0]).unwrap();
+    assert_eq!(json["gate"], "gpu", "{json}");
+    assert_eq!(json["waiting_for"], "gpu", "{json}");
+}
+
+#[test]
+fn a_job_over_a_full_gate_gets_a_warning() {
+    use headwork::ops::jobs::claim_gate;
+    use headwork_core::gate::GateClass;
+
+    let mut w = world("ask");
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    let (sand, session, _) = w.working("sand");
+    let pids: Vec<u32> = (0..4).map(|_| w.sleeper()).collect();
+    let env = env!(w);
+    for (label, pid) in ["a", "b", "c"].into_iter().zip(&pids) {
+        let mut registration = job(label, ParkPolicy::Rerun, *pid, None);
+        registration.gate = Some(GateClass::Cpu);
+        let row = register(&mut w.store, &env, &sand, &session, &registration).unwrap();
+        assert_eq!(claim_gate(&env, &sand, &row), None, "{label}");
+    }
+    let mut registration = job("d", ParkPolicy::Rerun, pids[3], None);
+    registration.gate = Some(GateClass::Cpu);
+    let row = register(&mut w.store, &env, &sand, &session, &registration).unwrap();
+    let warning = claim_gate(&env, &sand, &row).unwrap();
+    assert!(warning.contains("runs over the cpu gate"), "{warning}");
+}
+
+#[test]
+fn the_board_line_and_status_show_gate_holders_and_waiting_tasks() {
+    use headwork::ops::gate::{board_line, waiting_tasks};
+    use headwork::ops::status::status_waiting;
+    use headwork_core::gate::{GateClass, Owner};
+
+    let mut w = world_with("ask", LEADS);
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    assert_eq!(
+        board_line(&w.home, &w.config.gates),
+        None,
+        "no folder, no line"
+    );
+    assert!(!slots.exists(), "reading never creates it");
+
+    let (lead, _, _) = w.working("plan");
+    let (part, _, _) = w.part(&lead, "render");
+    let (other, _, _) = w.working("other");
+    let owner = |task: &Task, command: &str| Owner {
+        pid: std::process::id(),
+        native: true,
+        class: Some(GateClass::Cpu),
+        task: task.name.to_string(),
+        task_id: Some(task.id.0),
+        worktree: "S:/Code/demo".to_owned(),
+        command: command.to_owned(),
+        started: "2026-11-26 10:00:00".to_owned(),
+        epoch: None,
+    };
+    let write_aged = |path: &Path, owner: &Owner, age_s: u64| {
+        std::fs::write(path, owner.render()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(age_s))
+            .unwrap();
+    };
+    let slot = slots.join("cpu").join("slot-1");
+    std::fs::create_dir_all(&slot).unwrap();
+    write_aged(&slot.join("owner"), &owner(&other, "cargo test"), 240);
+    write_aged(
+        &slots
+            .join("cpu")
+            .join(format!("wait-{}", std::process::id())),
+        &owner(&part, "bash scripts/check.sh"),
+        30,
+    );
+
+    let line = board_line(&w.home, &w.config.gates).unwrap();
+    assert_eq!(
+        line,
+        "Gates: cpu 1/3 (demo-other cargo test 4m) \u{b7} 1 waiting \u{b7} gpu 0/2\n"
+    );
+    let waiting = waiting_tasks(&w.home, &w.config.gates);
+    assert_eq!(waiting, vec![(part.id.0, GateClass::Cpu)]);
+    let lines = status_waiting(
+        &w.store,
+        false,
+        &headwork_core::usage::UsageConfig::default(),
+        &waiting,
+    )
+    .unwrap();
+    let find = |name: &str| lines.iter().find(|line| line.task == name).unwrap();
+    assert!(
+        find("demo-plan").line.ends_with("waiting for cpu"),
+        "a lead rolls up its part: {}",
+        find("demo-plan").line
+    );
+    assert_eq!(find("demo-plan").waiting_for, Some(GateClass::Cpu));
+    assert!(
+        !find("demo-other").line.contains("waiting for"),
+        "{}",
+        find("demo-other").line
+    );
+}
+
+#[test]
+fn a_gated_job_whose_pid_already_waits_takes_no_slot() {
+    use headwork::ops::jobs::claim_gate;
+    use headwork_core::gate::{GateClass, Owner};
+
+    let mut w = world("ask");
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    let (sand, session, _) = w.working("sand");
+    let pid = w.sleeper();
+    let mut registration = job("render", ParkPolicy::Rerun, pid, None);
+    registration.gate = Some(GateClass::Cpu);
+    let env = env!(w);
+    let row = register(&mut w.store, &env, &sand, &session, &registration).unwrap();
+    let waiting = Owner {
+        pid,
+        native: true,
+        class: Some(GateClass::Cpu),
+        command: "render".to_owned(),
+        epoch: Some(headwork_adapters::gate::epoch_now()),
+        ..Owner::default()
+    };
+    std::fs::create_dir_all(slots.join("cpu")).unwrap();
+    std::fs::write(
+        slots.join("cpu").join(format!("wait-{pid}")),
+        waiting.render(),
+    )
+    .unwrap();
+    assert_eq!(
+        claim_gate(&env, &sand, &row),
+        None,
+        "its gate takes a slot in turn"
+    );
+    assert!(!slots.join("cpu").join("slot-1").exists(), "no slot taken");
 }

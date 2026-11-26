@@ -23,7 +23,7 @@ use headwork_core::names::is_unsafe_char;
 use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{PlaceKind, TaskShape, UsageGroup};
-use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
+use headwork_store::{AskRow, Board, BoardTask, EventRecord};
 
 /// `text` with characters that could change how the terminal shows it (control, bidirectional, zero-width) written as
 /// escapes, so agent-written labels cannot move the cursor or reorder the line.
@@ -121,9 +121,22 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
     text
 }
 
-/// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
+/// The board as text without the gates line.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfig) -> String {
+    board_with(board, max_workers, prices, None)
+}
+
+/// The board as text: a header line, the `Gates:` line when there is one, then each project with its tasks, sessions and
+/// waiting asks.
+#[must_use]
+pub(crate) fn board_with(
+    board: &Board,
+    max_workers: Option<u32>,
+    prices: &UsageConfig,
+    gates: Option<&str>,
+) -> String {
     let asks = board
         .tasks
         .iter()
@@ -147,6 +160,9 @@ pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfi
         board.machine,
         if asks == 1 { "ask" } else { "asks" },
     );
+    if let Some(gates) = gates {
+        text.push_str(gates);
+    }
     let width = board
         .tasks
         .iter()
@@ -555,12 +571,13 @@ fn outcome_line(outcome: &TaskOutcome) -> String {
 
 /// The registered jobs.
 #[must_use]
-pub(crate) fn jobs(jobs: &[JobRow]) -> String {
+pub(crate) fn jobs(jobs: &[headwork::ops::jobs::JobStatus]) -> String {
     if jobs.is_empty() {
         return "no registered jobs\n".to_owned();
     }
     let mut text = String::new();
-    for job in jobs {
+    for status in jobs {
+        let job = &status.job;
         let pid = job
             .pid
             .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
@@ -573,6 +590,11 @@ pub(crate) fn jobs(jobs: &[JobRow]) -> String {
             job.label,
             job.argv.join(" ")
         );
+        if let Some(class) = status.waiting_for {
+            let _ = writeln!(text, "      waiting for {class}");
+        } else if let Some(class) = job.gate {
+            let _ = writeln!(text, "      gate {class}");
+        }
         if let Some(note) = &job.note {
             let _ = writeln!(text, "      {note}");
         }
@@ -1277,6 +1299,20 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("pane-9"), "{text}");
+    }
+
+    #[test]
+    fn board_prints_the_gates_line_under_the_header() {
+        let (store, _) = store();
+        let text = super::board_with(
+            &store.board(false).unwrap(),
+            Some(10),
+            &headwork_core::usage::UsageConfig::default(),
+            Some("Gates: cpu 0/3 \u{b7} gpu 0/2\n"),
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("machine "), "{text}");
+        assert_eq!(lines[1], "Gates: cpu 0/3 \u{b7} gpu 0/2", "{text}");
     }
 
     #[test]

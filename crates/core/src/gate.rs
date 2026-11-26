@@ -24,11 +24,52 @@ text_enum!(
     }
 );
 
+impl GateClass {
+    /// The integer a job row keeps in its `heavy` column: 0 for no gate, 1 for `cpu`, 2 for `gpu`.
+    #[must_use]
+    pub const fn job_code(gate: Option<Self>) -> i64 {
+        match gate {
+            None => 0,
+            Some(Self::Cpu) => 1,
+            Some(Self::Gpu) => 2,
+        }
+    }
+
+    /// The gate a job row's `heavy` column says: 0 and unknown numbers none, 1 `cpu`, 2 `gpu`.
+    #[must_use]
+    pub const fn from_job_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Cpu),
+            2 => Some(Self::Gpu),
+            _ => None,
+        }
+    }
+}
+
 /// Seconds after which a slot folder whose owner file was never written counts as stale.
 pub const UNOWNED_STALE_S: u64 = 10;
 
 /// Seconds after which a `reap.lock` folder counts as stale and may be removed.
 pub const REAP_LOCK_STALE_S: u64 = 30;
+
+/// Seconds a native owner's process may seem to have started after the owner's `epoch` and still be the owner: start
+/// times and `epoch` are whole seconds read from two clocks.
+pub const PID_REUSE_SLACK_S: u64 = 5;
+
+/// Whether the process now running under an owner's pid took the pid over.
+///
+/// It did when it started more than [`PID_REUSE_SLACK_S`] seconds after the owner's `epoch`, since the owner's
+/// process was already running then. An owner without `epoch`, or a start time that is unknown or reads 0, never
+/// counts as taken over.
+#[must_use]
+pub const fn pid_taken_over(epoch: Option<u64>, started: Option<u64>) -> bool {
+    match (epoch, started) {
+        (Some(epoch), Some(started)) => {
+            started != 0 && started > epoch.saturating_add(PID_REUSE_SLACK_S)
+        }
+        _ => false,
+    }
+}
 
 /// The owner file's name inside a slot folder.
 pub const OWNER_FILE: &str = "owner";
@@ -348,6 +389,43 @@ pub fn wait_message(
     text
 }
 
+/// Whether something that has lasted `age_s` seconds has lasted `minutes` minutes; a limit of 0 never is.
+#[must_use]
+pub fn lasted_minutes(age_s: u64, minutes: u32) -> bool {
+    minutes > 0 && age_s >= u64::from(minutes) * 60
+}
+
+/// One class as the board line shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassLine {
+    /// The class.
+    pub class: GateClass,
+    /// Its slot count.
+    pub count: NonZeroU32,
+    /// The live holders.
+    pub holders: Vec<HolderLine>,
+    /// The live waiters.
+    pub waiting: u32,
+}
+
+/// `cpu 2/3 (me-sim-x cargo test 4m, headwork-y check.sh 1m) · 1 waiting · gpu 0/2`, after `Gates: ` on the board.
+#[must_use]
+pub fn gates_line(classes: &[ClassLine]) -> String {
+    let mut parts = Vec::new();
+    for line in classes {
+        let mut part = format!("{} {}/{}", line.class, line.holders.len(), line.count);
+        if !line.holders.is_empty() {
+            let holders: Vec<String> = line.holders.iter().map(ToString::to_string).collect();
+            let _written = write!(part, " ({})", holders.join(", "));
+        }
+        parts.push(part);
+        if line.waiting > 0 {
+            parts.push(format!("{} waiting", line.waiting));
+        }
+    }
+    parts.join(" \u{b7} ")
+}
+
 /// A duration for people: `45s`, `4m`, `2h05m`.
 #[must_use]
 pub fn held_for(seconds: u64) -> String {
@@ -403,6 +481,76 @@ mod tests {
             started: "2026-11-26 10:00:00".to_owned(),
             epoch,
         }
+    }
+
+    #[test]
+    fn a_pid_is_taken_over_only_by_a_process_that_started_well_after_the_epoch() {
+        let cases = [
+            (Some(100), Some(90), false),
+            (Some(100), Some(100), false),
+            (Some(100), Some(105), false),
+            (Some(100), Some(106), true),
+            (Some(100), Some(0), false),
+            (Some(100), None, false),
+            (None, Some(1_000), false),
+        ];
+        for (epoch, started, taken) in cases {
+            assert_eq!(
+                pid_taken_over(epoch, started),
+                taken,
+                "{epoch:?} {started:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn minutes_are_counted_from_a_limit_and_zero_never_passes() {
+        assert!(!lasted_minutes(45 * 60 - 1, 45), "just under");
+        assert!(lasted_minutes(45 * 60, 45), "at the limit");
+        assert!(!lasted_minutes(u64::MAX, 0), "0 is off");
+    }
+
+    #[test]
+    fn the_board_line_names_holders_and_waiters() {
+        let holder = |who: &str, command: &str, held_s| HolderLine {
+            who: who.to_owned(),
+            command: command.to_owned(),
+            held_s,
+        };
+        let classes = [
+            ClassLine {
+                class: GateClass::Cpu,
+                count: count(3),
+                holders: vec![
+                    holder("me-sim-x", "cargo test", 240),
+                    holder("headwork-y", "check.sh", 60),
+                ],
+                waiting: 1,
+            },
+            ClassLine {
+                class: GateClass::Gpu,
+                count: count(2),
+                holders: Vec::new(),
+                waiting: 0,
+            },
+        ];
+        assert_eq!(
+            gates_line(&classes),
+            "cpu 2/3 (me-sim-x cargo test 4m, headwork-y check.sh 1m) \u{b7} 1 waiting \u{b7} gpu 0/2"
+        );
+        assert_eq!(gates_line(&[]), "", "no classes");
+    }
+
+    #[test]
+    fn job_codes_round_trip() {
+        for gate in [None, Some(GateClass::Cpu), Some(GateClass::Gpu)] {
+            assert_eq!(
+                GateClass::from_job_code(GateClass::job_code(gate)),
+                gate,
+                "{gate:?}"
+            );
+        }
+        assert_eq!(GateClass::from_job_code(9), None, "unknown");
     }
 
     #[test]
