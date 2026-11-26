@@ -9,11 +9,13 @@ The user asked for the scrum words: the to-do list is the backlog, ordering it i
   stay accepted for one release. The old tools are no longer listed, so a session that starts after the update
   sees only `backlog_*`, while one started before keeps working. `[todo]` loads as `[backlog]` and `doctor` warns
   (`config-keys`), like `max_children`.
-- The export moves to `backlog.md` when the machine file names it. The first export to a file never imported, while
-  another file was imported before, writes the new file and carries the import over. The old file is never deleted
-  and is only touched when `[backlog] leave_pointer = true`, which replaces its text with one pointer line after a
-  copy goes to `<home>/backlog-backups`. Backups go to `<home>/backlog-backups`; the old `todo-backups` stays where
-  it is.
+- The export moves to `backlog.md` when the machine file names it. A move is decided from `backlog_files.configured_at`
+  (added by 0027, filled from `exported_at`): an export of the configured file whose path never was the configured one
+  moves from the last configured path; an export to `--file` never moves. The old file is never deleted and is only
+  touched when `[backlog] leave_pointer = true`, which replaces its text with one pointer line after a copy goes to
+  `<home>/backlog-backups`. The pointer is written before the new file is recorded, so a failed move is retried by the
+  next export. `[todo]` is folded into `[backlog]` before the config is read rather than a serde alias, because a
+  machine mid-migration can have both sections in different layers.
 - Grooming and planning are two skills in headwork's plugin (`plugin/skills/grooming/SKILL.md` and
   `plugin/skills/planning/SKILL.md`, shown as `headwork:grooming` and `headwork:planning`), not orchestrator rules:
   they are procedures the orchestrator follows when asked, and the rules only say when to use them. Grooming decides

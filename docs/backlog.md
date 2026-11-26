@@ -190,27 +190,36 @@ push_hour = 9
 
 ## 9. Renamed from todo
 
-The feature was called "todo" until migration 0027. Every old name below still works for one release and is then
-removed; none of them is listed any more.
+The feature was called "todo" until migration 0027. Each old name below is accepted for one release wherever its new
+name is (the old tools, like the new ones, by the orchestrator only), and is then removed. None of them appears in
+`--help` or `tools/list`.
 
-| Was | Is | The old name |
+| Was | Is | Until removed |
 |---|---|---|
-| Tables `todos`, `todo_files`, index `todos_by_task` | `backlog_items`, `backlog_files`, `backlog_items_by_task` (migration 0027, which also rewrites the event types `todo-*` to `backlog-*`) | gone; the migration moves the rows |
+| Tables `todos`, `todo_files`, index `todos_by_task` | `backlog_items`, `backlog_files` (with the new `configured_at`), `backlog_items_by_task` | nothing to keep: migration 0027 moves the rows and rewrites the event types `todo-*` to `backlog-*` |
 | `headwork todo ...` | `headwork backlog ...` | a hidden alias that prints `headwork todo is deprecated; use headwork backlog` on stderr |
-| MCP `todo_list`, `todo_add`, `todo_done`, `todo_edit` | `backlog_list`, `backlog_add`, `backlog_done`, `backlog_edit` | still accepted by `tools/call` (orchestrator only), not in `tools/list` |
-| `headwork spawn --todo <id>`, the `todo` argument of the MCP `spawn` | `--backlog <id>`, `backlog` | both still accepted |
-| Config `[todo] file` | `[backlog] file` | still loads; `headwork doctor` (check `config-keys`) warns, naming `todo.file` and `backlog.file`. `todo.file` stays machine-only |
+| MCP `todo_list`, `todo_add`, `todo_done`, `todo_edit` | `backlog_list`, `backlog_add`, `backlog_done`, `backlog_edit` | accepted by `tools/call` |
+| `headwork spawn --todo <id>`, the `todo` argument of the MCP `spawn` | `--backlog <id>`, `backlog` | accepted; the first of `backlog` and `todo` that is not null counts |
+| Config `[todo]` | `[backlog]` | folded into `[backlog]` before the config is read, so one layer may still say `[todo]` while another says `[backlog]`; a key the two give different values is refused (`todo.<key> and backlog.<key> differ`). `headwork doctor` (check `config-keys`) names each `todo.<key>`; `todo.file` and `todo.leave_pointer` stay machine-only |
 | The folder `<home>/todo-backups` | `<home>/backlog-backups` | left in place: never listed, pruned, moved or deleted; new copies go to the new folder |
 
-The JSON key `todo_unlinked` of the spawn result is now `backlog_unlinked`.
+Output names have no alias: the spawn result's `todo_unlinked` is `backlog_unlinked`, and events are `backlog-*`. The
+migration note `2026-11-26-todo-in-store` still runs `headwork todo`; the change that removes the aliases rewrites its
+commands to `headwork backlog`.
 
 ### Moving the file
 
-The generated file keeps the name the machine's `[backlog] file` gives it. To move it (on the Windows PC from
-`S:/Code/todo.md` to `S:/Code/backlog.md`, migration note `2026-11-26-todo-to-backlog`), point `[backlog] file` at the
-new name. The first export to a file headwork never used, while it imported or exported another file before, writes the
-new file from the store (it counts as imported from then on), logs `backlog-moved` with both names, and says
-"moved from ..." in its output. The old file is never deleted: it stays as it was, or, with `[backlog] leave_pointer =
-true` (machine-only, default off), its text is copied to `<home>/backlog-backups` and replaced by one line naming the
-new file. The pointer is written once; later exports touch only the new file. A new file that already exists and was
-never imported is refused as in section 4.
+The generated file keeps the name the machine's `[backlog] file` gives it. To move it (for example from `todo.md` to
+`backlog.md`, migration note `2026-11-26-todo-to-backlog`), point `[backlog] file` at the new name. `backlog_files`
+records, per path, when it was last exported as the configured file (`configured_at`; migration 0027 fills it from
+`exported_at` for the files exported before). An export of the configured file whose path never was the configured one,
+while another path was, is a move from the path configured most recently (`move_source` in `core/src/backlog.rs`). An
+export to `--file` never moves anything and never marks its path configured.
+
+A move first deals with the old file, then writes and records the new one, then logs `backlog-moved` with both names;
+the output says "moved from ...". The old file is never deleted. It stays as it was, or, with `[backlog] leave_pointer =
+true` (machine-only, default off), its text is copied to `<home>/backlog-backups` and replaced by one line naming the new
+file. A failure in that step writes nothing new, so the next export tries the move again; a file already holding the
+pointer is not copied a second time. The pointer's hash becomes the old file's last export, so pointing `[backlog] file`
+back at it later writes the list there without taking the pointer for a hand edit. A new file that already exists and
+was never imported (a copy) is refused as in section 4 until `headwork backlog import`; the next export then moves.

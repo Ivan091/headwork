@@ -170,7 +170,8 @@ The backlog (`docs/backlog.md`, migrations 0026 and 0027; it was the to-do list)
 `store/src/backlog.rs` holds the rows (`backlog_items`) and `backlog_files`, `ops/backlog.rs` imports, exports and changes items for `headwork backlog` and
 the orchestrator's `backlog_*` tools. `[backlog] file` (machine-only) names the generated file: an export writes it after every
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/backlog-backups`
-first. `spawn --backlog <id>` links an item to a task; `apply_in` finishes it when the task closes and frees it when the task
+first; pointing it at a new file moves the list there (`backlog-moved`, `configured_at`; the old file stays, with a pointer
+line under `[backlog] leave_pointer`). `spawn --backlog <id>` links an item to a task; `apply_in` finishes it when the task closes and frees it when the task
 is dropped or fails. The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
 listed in `docs/backlog.md`, section 9.
 The "Needs you" digest (`docs/backlog.md`, section 8; `core/src/digest.rs` builds it, `store/src/digest.rs` reads, `ops/digest.rs` gathers) lists what waits on the user in at most ten lines: asks, backlog items due, migration notes the tick found, pull requests whose session ended, old findings, the user's open items. It leads the orchestrator's session start (deferred to its first prompt when the rules leave no room), `board`, `status`, the park recap and resume summary, and goes out once a day through the tick's `digest` stage (`[digest]`).
