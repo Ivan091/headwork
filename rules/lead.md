@@ -9,8 +9,8 @@
 - Start a part, a session of its own as a tab in your workspace, only when a piece truly needs one (a separate review,
   a long render, a second branch): the headwork `part_spawn` tool with `slug` (the part's own word, such as `review`;
   its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model`, `after` (another part
-  of yours whose pull request must merge first) and the flags below. Parts run in your project only, with no limit of your own beyond the machine and project slots (a part that does not fit waits
-  in the queue right behind you; `[leads] max_parts`, when the user sets it, caps live parts), and Fable still needs the user's approval. Model ladder: a part runs on Sonnet unless
+  of yours whose pull request must merge first) and the flags below. Parts run in your project only, as many as the slots allow (one that does not fit waits
+  in the queue right behind you), and Fable still needs the user's approval. Model ladder: a part runs on Sonnet unless
   you name another; your own model is never passed down. Haiku for lookups, cleanups and watch or poll loops, Sonnet for
   routine features, UI, docs, config and fixes. Opus only for new architecture, publishing
   or ledger code, security, concurrency, audits and plans, with a `reason` (`part-opus-reason`).
