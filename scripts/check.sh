@@ -13,9 +13,14 @@ case "${1:-}" in
     ;;
 esac
 
-# shellcheck source=scripts/heavy.sh
-. scripts/heavy.sh
-heavy_hold "check.sh $([[ "$quick" == true ]] && echo --quick || echo full) in $(basename "$PWD")"
+held=${HEADWORK_GATE_HELD:-}
+held=",${held// /},"
+if [[ -z "${CI:-}" && "${HEADWORK_GATE_OFF:-0}" != 1 && "${HEADWORK_HEAVY_HELD:-0}" != 1 && "$held" != *,cpu,* ]]; then
+  if headwork gate status > /dev/null 2>&1; then
+    exec headwork gate run cpu -- bash scripts/check.sh "$@"
+  fi
+  printf 'no headwork on PATH that knows gate: running without a cpu slot\n' >&2
+fi
 
 step() { printf '\n== %s\n' "$1"; }
 
@@ -32,9 +37,6 @@ if [[ "$quick" == false ]]; then
   step "cargo doc"
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 fi
-
-step "heavy gate tests"
-bash scripts/test-heavy.sh
 
 step "untangle tests"
 node dash/untangle.test.js
