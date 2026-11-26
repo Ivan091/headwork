@@ -1559,6 +1559,41 @@ fn shaped(
     store.create_task(config, &new, Actor::Orchestrator)
 }
 
+fn config_with_leads(leads: &str) -> Config {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
+    let text = std::fs::read_to_string(path).unwrap();
+    Config::parse(
+        &format!(
+            "{text}
+[leads]
+enabled = true
+{leads}"
+        ),
+        "config.toml",
+    )
+    .unwrap()
+}
+
+fn lead_in(store: &mut Store, config: &Config, project: &str, slug: &str) -> Task {
+    let lead = shaped(store, config, project, slug, headwork_core::TaskShape::Lead).unwrap();
+    store.start_task(config, lead.id, Actor::Tick).unwrap();
+    store
+        .transition(lead.id, &Trigger::SessionStarted(LIVE), Actor::Hook)
+        .unwrap();
+    lead
+}
+
+fn part_in(store: &mut Store, config: &Config, project: &str, lead: &Task, slug: &str) -> Task {
+    shaped(
+        store,
+        config,
+        project,
+        slug,
+        headwork_core::TaskShape::Part { parent: lead.id },
+    )
+    .unwrap()
+}
+
 fn lead_with_parts(store: &mut Store, config: &Config, parts: &[&str]) -> (Task, Vec<Task>) {
     let lead = shaped(
         store,
@@ -1704,7 +1739,12 @@ fn a_part_goes_only_under_a_live_lead_of_its_own_project() {
 
 #[test]
 fn a_part_beyond_max_parts_waits_and_starts_when_a_sibling_closes() {
-    let (mut store, config) = store();
+    let (mut store, _) = store();
+    let config = config_with_leads(
+        "max_parts = 2
+",
+    );
+    store.sync_projects(&config).unwrap();
     let (_, parts) = lead_with_parts(&mut store, &config, &["a", "b", "c"]);
     store.start_task(&config, parts[0].id, Actor::Tick).unwrap();
     store.start_task(&config, parts[1].id, Actor::Tick).unwrap();
@@ -2452,4 +2492,44 @@ fn an_idle_mark_on_a_working_task_frees_nothing() {
     );
     store.set_session_idle(&session, true, Actor::Tick).unwrap();
     assert_eq!(workers(&store), (1, 0), "still holds its slot");
+}
+
+#[test]
+fn without_max_parts_or_with_zero_a_lead_runs_any_number_of_parts() {
+    for leads in [
+        "",
+        "max_parts = 0
+",
+    ] {
+        let mut store = Store::open_in_memory().unwrap();
+        let config = config_with_leads(leads);
+        store.sync_projects(&config).unwrap();
+        let (_, parts) = lead_with_parts(&mut store, &config, &["a", "b", "c", "d"]);
+        for part in &parts {
+            store.start_task(&config, part.id, Actor::Tick).unwrap();
+        }
+    }
+}
+
+#[test]
+fn two_leads_share_the_project_slots_without_a_part_limit() {
+    let mut store = Store::open_in_memory().unwrap();
+    let config = config_with_leads("");
+    store.sync_projects(&config).unwrap();
+    let first = lead_in(&mut store, &config, "work-service", "one");
+    let second = lead_in(&mut store, &config, "work-service", "two");
+    let a = part_in(&mut store, &config, "work-service", &first, "one-a");
+    let b = part_in(&mut store, &config, "work-service", &second, "two-a");
+    store.start_task(&config, a.id, Actor::Tick).unwrap();
+    let error = store.start_task(&config, b.id, Actor::Tick).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            StoreError::Refused {
+                refusal: Refusal::ProjectCapReached { cap: 3 },
+                ..
+            }
+        ),
+        "the other lead's part waits for the project's slots: {error}"
+    );
 }

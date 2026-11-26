@@ -108,7 +108,7 @@ Config, `[leads]`:
 ```toml
 [leads]
 enabled = true      # top-level tasks are leads; placement of section 2
-max_parts = 2       # live parts per lead at once
+# max_parts = 2     # optional cap on live parts per lead; absent or 0 = no limit
 part_title = "{part}"   # a part's tab title
 ask_before_close = true # a lead asks the user (an ask headed `Close`) before its task closes
 ```
@@ -161,12 +161,12 @@ rest through Bash):
 
 | Tool | For | Limits |
 |---|---|---|
-| `part_spawn {slug, brief, model?, after?}` | a lead | its own project; `max_parts` live parts; the model within `[models] allowed` (Fable still needs the user); `after` names another part of the same lead |
+| `part_spawn {slug, brief, model?, after?}` | a lead | its own project; machine and project slots only (`max_parts` caps live parts when set); the model within `[models] allowed` (Fable still needs the user); `after` names another part of the same lead |
 | `part_drop {name}` | a lead | its own parts |
 | `board`, `inbox` | a lead | itself and its parts |
 
 **Slots.** A part takes a slot under the machine's `max_workers` and the project cap like every task, so the machine
-never runs more sessions than today. On top of that a lead may hold at most `max_parts` live parts. A part that does not
+never runs more sessions than today. A lead has no part limit of its own unless `[leads] max_parts` is set (absent or 0 = no limit; `docs/decisions/2026-11-26-no-part-limit.md`). A part that does not
 fit waits in the queue right behind its lead's `queue_rank`, ahead of tasks queued later, so a started task finishes
 before new tasks start. The lead holds its own slot while it waits for its parts.
 
@@ -197,7 +197,7 @@ line when the task finishes or fails. This is the "task x is finished successful
 
 1. Status: one line per task when asked, plus one unprompted line when a task finishes or fails.
 2. The lead starts its parts itself, with `part_spawn`.
-3. Parts count against the machine's `max_workers` and the project cap, with at most `max_parts = 2` live per lead.
+3. Parts count against the machine's `max_workers` and the project cap, with no per-lead limit unless `max_parts` is set.
 4. Every top-level task is a lead.
 5. A lead's close is refused while a part runs; only the orchestrator's forced close ends the parts first.
 6. Parts in another project go through the orchestrator as a new task.

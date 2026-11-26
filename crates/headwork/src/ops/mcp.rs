@@ -610,8 +610,9 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "part_spawn",
         description: "A lead's tool: start a part, a session of its own for one piece of your task, as a tab in your \
-                      workspace. Its task is `<your slug>-<slug>` in your project. At most `[leads] max_parts` of your \
-                      parts run at once; one more waits in the queue right behind you. Fable needs the user's approval.",
+                      workspace. Its task is `<your slug>-<slug>` in your project. Parts are limited only by the machine and \
+                      project slots (and `[leads] max_parts` when the user sets it); one that does not fit waits in the queue right \
+                      behind you. Fable needs the user's approval.",
         roles: WORKER,
         schema: || {
             object(

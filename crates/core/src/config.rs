@@ -735,8 +735,13 @@ pub struct LeadsConfig {
     /// New top-level tasks are leads. Off by default until the lead's placement and `part_spawn` are built
     /// (`docs/decisions.md`, 2026-11-21).
     pub enabled: bool,
-    /// At most this many live parts per lead at once; a part beyond it waits in the queue behind its lead.
-    pub max_parts: NonZeroU32,
+    /// At most this many live parts per lead at once; a part beyond it waits in the queue behind its lead. Absent or 0
+    /// means no limit: a part then waits only for the machine and project slots.
+    #[serde(
+        deserialize_with = "deserialize_max_parts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_parts: Option<NonZeroU32>,
     /// The title of a part's tab. `{part}` is the part's own slug after its lead's, `{name}` the full task name,
     /// `{model}` and `{effort}` as in `[layout] title`.
     pub part_title: String,
@@ -821,11 +826,19 @@ impl LeadsConfig {
     }
 }
 
+fn deserialize_max_parts<'de, D>(deserializer: D) -> Result<Option<NonZeroU32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<u32>::deserialize(deserializer)?;
+    Ok(value.and_then(NonZeroU32::new))
+}
+
 impl Default for LeadsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_parts: NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            max_parts: None,
             part_title: DEFAULT_PART_TITLE.to_owned(),
             ask_before_close: true,
         }
