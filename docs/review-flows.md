@@ -278,13 +278,15 @@ parallel = 6                            # at most this many nodes running at onc
 
 ## 11. Board, status, log
 
-`board` shows a running review under its task (`review 2 code, round 1: 5/7 nodes, 3 findings`), `status` adds
-`in review (level 2)` to the task's line, and the event log carries `review-requested`, `review-started`,
-`review-node`, `review-delivered`, `review-resolved`, `review-verdict`, `review-asked`, `review-finished`.
+`board` shows a running review on a line under its lead (`review 2 code, level 2, round 1: running, 5 node(s) over, 2
+running, 3 finding(s)`; findings so far, over every round up to the current one; not repeated on its parts), `status` ends
+the task's line with `in review (level 2)`, or `review requested (level 2)` while the review has not started, and the event
+log carries `review-requested`, `review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`,
+`review-answer`, `review-finish`, `review-cancel` and `review-refused` (a refused trigger).
 
 `status --json` gives each task's entry a `review` field: `null` when no review is open, else
 `{"level": 2, "flow": "code", "round": 1, "state": "running", "focus": "", "findings_awaiting_lead": 0}`
-(`level` 1 to 3; `state` one of `requested`, `running`, `delivered`, `rechecking`, `asking`). The text `line` is unchanged.
+(`level` 1 to 3; `state` one of `requested`, `running`, `delivered`, `rechecking`, `asking`).
 
 ## 12. Milestones (worker-days, one worker each)
 
