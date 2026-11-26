@@ -23,6 +23,7 @@ pub const MACHINE_ONLY: &[&str] = &[
     "backlog.file",
     "backlog.leave_pointer",
     "todo.file",
+    "todo.leave_pointer",
 ];
 
 /// Key patterns only the local file may set. An empty string value is refused too: the key must not appear at all.

@@ -844,3 +844,36 @@ host = \"wmux\"
         .leave_pointer
     );
 }
+
+#[test]
+fn todo_beside_backlog_folds_into_backlog_and_only_different_values_are_refused() {
+    let base = "[machine]\nhost = \"wmux\"\n";
+    let cases = [
+        (
+            "[todo]\nleave_pointer = true\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            Some((Some("S:/x/backlog.md"), true)),
+        ),
+        (
+            "[todo]\nfile = \"S:/x/backlog.md\"\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            Some((Some("S:/x/backlog.md"), false)),
+        ),
+        (
+            "[todo]\nfile = \"S:/x/todo.md\"\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            None,
+        ),
+    ];
+    for (text, expected) in cases {
+        let parsed = Config::parse(&format!("{base}{text}"), "both");
+        if let Some((file, pointer)) = expected {
+            let config = parsed.unwrap();
+            assert_eq!(config.backlog.file.as_deref(), file, "{text}");
+            assert_eq!(config.backlog.leave_pointer, pointer, "{text}");
+        } else {
+            let error = parsed.unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::TodoConflict { key, .. } if key == "file"),
+                "{text}: {error}"
+            );
+        }
+    }
+}
