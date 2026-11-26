@@ -56,6 +56,18 @@ pub struct StatusReview {
     pub findings_awaiting_lead: u32,
 }
 
+impl StatusReview {
+    /// The words the status line ends with: `review requested (level N)` until the review starts, then `in review (level N)`.
+    #[must_use]
+    pub fn suffix(&self) -> String {
+        if self.state == "requested" {
+            format!("review requested (level {})", self.level)
+        } else {
+            format!("in review (level {})", self.level)
+        }
+    }
+}
+
 /// The status of every top-level task on the board: not closed ones, or all with `all`.
 ///
 /// # Errors
@@ -128,8 +140,9 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             }
             Some(_) | None => line,
         };
-        let line = match &top.review {
-            Some(review) => format!("{line}, in review (level {})", review.level),
+        let review = review(store, top)?;
+        let line = match &review {
+            Some(review) => format!("{line}, {}", review.suffix()),
             None => line,
         };
         let line = format!("{line}{}", flag_tags(&top.task));
@@ -142,7 +155,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             line,
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),
-            review: review(store, top)?,
+            review,
             close: top.task.close,
             review_plan: top.task.review_plan.map(Level::number),
         });
