@@ -4,6 +4,7 @@
 //! its event in one transaction. Refusals are logged as events too, so a wrong deny can be debugged from the log.
 
 mod backup;
+mod digest;
 mod error;
 mod graph;
 mod hooks;
@@ -27,6 +28,7 @@ use headwork_core::{Actor, MachineMode};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
+pub use digest::EVENT_DIGEST_PUSHED;
 pub use error::StoreError;
 pub use graph::{EventMark, EventRange, SpendOf};
 pub use hooks::{
