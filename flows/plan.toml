@@ -1,0 +1,66 @@
+name = "plan"
+description = "A plan document, such as a design or a milestone plan, before it is built"
+target = "files"
+
+[levels.1]
+pushback = """
+Report only what would make the plan fail as written: a step the code cannot support, a contradiction with an \
+approved design or decision. Name the line and the evidence. When unsure, leave it out."""
+dispute = "reason"
+unsettled = "accept"
+rounds = 1
+
+[levels.2]
+pushback = """
+Report what would make the plan fail, and the gaps that will cost a rework: choices left open, steps without an \
+owner or an order, estimates far off. Mark minor issues as nit. Expect each finding to be challenged with evidence."""
+dispute = "evidence"
+unsettled = "ask"
+rounds = 1
+
+[levels.3]
+pushback = """
+Be strict. Report failures, gaps and nits, and doubt the plan's approach and scope: say when a simpler plan, a \
+smaller first step or a different order would serve better, marked doubt. Ask for evidence."""
+dispute = "evidence"
+unsettled = "ask"
+rounds = 2
+argue_back = true
+
+[[node]]
+id = "feasibility"
+prompt = "plan/feasibility.md"
+from_level = 1
+model = { 1 = "sonnet", 2 = "opus", 3 = "opus" }
+
+[[node]]
+id = "consistency"
+prompt = "plan/consistency.md"
+from_level = 1
+model = "sonnet"
+
+[[node]]
+id = "open-points"
+prompt = "plan/open-points.md"
+from_level = 2
+model = "sonnet"
+
+[[node]]
+id = "effort"
+prompt = "plan/effort.md"
+from_level = 2
+model = "sonnet"
+
+[[node]]
+id = "challenge-scope"
+prompt = "plan/challenge-scope.md"
+from_level = 3
+model = "opus"
+
+[[node]]
+id = "verify"
+prompt = "plan/verify.md"
+from_level = 2
+after = ["*"]
+each = "finding"
+model = "opus"

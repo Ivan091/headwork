@@ -57,6 +57,31 @@ pub const BUILTIN_FILES: &[(&str, &str)] = &[
         "code/verify.md",
         include_str!("../../../../flows/code/verify.md"),
     ),
+    ("plan.toml", include_str!("../../../../flows/plan.toml")),
+    (
+        "plan/feasibility.md",
+        include_str!("../../../../flows/plan/feasibility.md"),
+    ),
+    (
+        "plan/consistency.md",
+        include_str!("../../../../flows/plan/consistency.md"),
+    ),
+    (
+        "plan/open-points.md",
+        include_str!("../../../../flows/plan/open-points.md"),
+    ),
+    (
+        "plan/effort.md",
+        include_str!("../../../../flows/plan/effort.md"),
+    ),
+    (
+        "plan/challenge-scope.md",
+        include_str!("../../../../flows/plan/challenge-scope.md"),
+    ),
+    (
+        "plan/verify.md",
+        include_str!("../../../../flows/plan/verify.md"),
+    ),
 ];
 
 /// The folder of a home's own flows.
@@ -148,8 +173,14 @@ fn sources(home: &Path) -> BTreeMap<String, (Origin, Result<String, String>)> {
         }
     }
     let dir = home_flows_dir(home);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return found;
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return found,
+        Err(error) => {
+            let problem = format!("reading {}: {error}", dir.display());
+            found.insert("flows/".to_owned(), (Origin::Home(dir), Err(problem)));
+            return found;
+        }
     };
     let mut files: Vec<PathBuf> = entries
         .filter_map(Result::ok)

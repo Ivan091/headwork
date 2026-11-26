@@ -134,6 +134,11 @@ the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` i
 (`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
 `review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
 review.
+R4 surfaces them: `board` prints a lead's open review under it (`Store::review_summary`), `status` ends its line with
+`in review (level N)` (`review requested (level N)` before it starts), `doctor` validates every flow (check `flows`: a broken one fails while reviews are on, warns while
+off), and the built-in `plan` flow (target `files`) reviews plan documents; the event log carries `review-requested`,
+`review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`, `review-answer`, `review-finish`,
+`review-cancel` and `review-refused`. The planned live trial at each level remains.
 The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,

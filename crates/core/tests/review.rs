@@ -77,6 +77,82 @@ fn levels_round_trip_through_their_numbers() {
 }
 
 #[test]
+fn the_plan_flow_runs_more_nodes_at_each_level() {
+    let flow = Flow::parse(include_str!("../../../flows/plan.toml"))
+        .expect("the built-in plan flow is valid");
+    let ids = |level| -> Vec<String> {
+        flow.nodes_at(level)
+            .map(|node| node.id.to_string())
+            .collect()
+    };
+    assert_eq!(ids(Level::Light), ["feasibility", "consistency"], "level 1");
+    assert_eq!(
+        ids(Level::Standard),
+        [
+            "feasibility",
+            "consistency",
+            "open-points",
+            "effort",
+            "verify"
+        ],
+        "level 2"
+    );
+    assert_eq!(
+        ids(Level::Strict),
+        [
+            "feasibility",
+            "consistency",
+            "open-points",
+            "effort",
+            "challenge-scope",
+            "verify"
+        ],
+        "level 3"
+    );
+    let feasibility = flow.node("feasibility").unwrap();
+    assert_eq!(
+        feasibility.model_at(Level::Light),
+        Some(Model::Sonnet),
+        "sonnet at 1"
+    );
+    assert_eq!(
+        feasibility.model_at(Level::Standard),
+        Some(Model::Opus),
+        "opus at 2"
+    );
+    assert_eq!(
+        feasibility.model_at(Level::Strict),
+        Some(Model::Opus),
+        "opus at 3"
+    );
+    let verify = flow.node("verify").unwrap();
+    assert_eq!(
+        verify.after,
+        After::Earlier,
+        "verify waits for every earlier node"
+    );
+    assert_eq!(
+        flow.inputs(verify, Level::Standard).len(),
+        4,
+        "verify's inputs at level 2"
+    );
+    assert_eq!(
+        flow.inputs(verify, Level::Strict).len(),
+        5,
+        "verify's inputs at level 3"
+    );
+    assert_eq!(
+        flow.level(Level::Strict).rounds,
+        2,
+        "level 3 runs two rounds"
+    );
+    assert!(
+        flow.check(|_| true, Model::ALL).is_empty(),
+        "the plan flow is valid"
+    );
+}
+
+#[test]
 fn the_code_flow_runs_more_nodes_at_each_level() {
     let flow = code();
     let ids = |level| -> Vec<String> {

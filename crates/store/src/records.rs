@@ -233,6 +233,8 @@ pub struct BoardTask {
     /// The same by the model that spent them, for the estimate.
     #[serde(skip)]
     pub models: crate::usage::ByModel,
+    /// Its open review, when it is the implementing lead of one.
+    pub review: Option<crate::reviews::ReviewSummary>,
 }
 
 /// The whole board.

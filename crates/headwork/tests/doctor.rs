@@ -812,3 +812,54 @@ fn doctor_finds_no_pending_note_without_a_repository_that_has_an_origin() {
         "no notes"
     );
 }
+
+#[test]
+fn a_broken_flow_override_warns_while_reviews_are_off_and_fails_while_on() {
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "flows"),
+        Status::Ok,
+        "{}",
+        detail(&report, "flows")
+    );
+    assert!(
+        detail(&report, "flows").contains("code"),
+        "{}",
+        detail(&report, "flows")
+    );
+    assert!(
+        detail(&report, "flows").contains("plan"),
+        "{}",
+        detail(&report, "flows")
+    );
+    let flows = install.home.root().join("flows");
+    std::fs::create_dir_all(&flows).unwrap();
+    std::fs::write(flows.join("code.toml"), "name = \"code\"\n").unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "flows"), Status::Warn, "reviews off");
+    assert!(
+        detail(&report, "flows").starts_with("broken flows: code (")
+            && detail(&report, "flows").ends_with(')'),
+        "{}",
+        detail(&report, "flows")
+    );
+    let path = install.home.root().join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n[reviews]\nenabled = true\n")).unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "flows"), Status::Fail, "reviews on");
+}
+
+#[test]
+fn an_unreadable_flows_folder_is_a_problem_not_a_pass() {
+    let install = install();
+    std::fs::write(install.home.root().join("flows"), "not a folder").unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "flows"), Status::Warn, "reviews off");
+    assert!(
+        detail(&report, "flows").contains("broken flows: flows/ (reading "),
+        "{}",
+        detail(&report, "flows")
+    );
+}
