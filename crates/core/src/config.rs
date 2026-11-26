@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::MergePolicy;
 use crate::names::ProjectName;
-use crate::vocabulary::{CloseMode, Model, RuleId};
+use crate::vocabulary::{CloseMode, Model, RuleId, Severity};
 
 /// Placeholders a command template may use.
 pub const PLACEHOLDERS: &[&str] = &["slug", "branch", "main", "worktree", "out", "temp"];
@@ -757,6 +757,13 @@ pub struct ReviewsConfig {
     pub flows: BTreeMap<String, String>,
     /// At most this many nodes running at once per review.
     pub parallel: NonZeroU32,
+    /// The lightest severity delivered to the implementing lead (important > doubt > nit); lighter findings are listed
+    /// for information and get no verify subagent. `nit` delivers everything.
+    pub floor: Severity,
+    /// At most this many findings delivered per round; the rest are listed. 0 is no cap.
+    pub max_round_findings: u32,
+    /// At most this many findings delivered over every review of one task; the rest are listed. 0 is no cap.
+    pub max_task_findings: u32,
 }
 
 impl ReviewsConfig {
@@ -774,6 +781,9 @@ impl Default for ReviewsConfig {
             lead_model: Model::Sonnet,
             flows: BTreeMap::new(),
             parallel: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
+            floor: Severity::Doubt,
+            max_round_findings: 20,
+            max_task_findings: 40,
         }
     }
 }
