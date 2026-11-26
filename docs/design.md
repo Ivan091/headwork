@@ -321,7 +321,7 @@ The root does not need Bash for orchestration any more. Messages between session
 5. **Worktrees.** For `merged`/`dropped` tasks whose sessions are gone: run the project's worktree remove command; on refusal (dirty, unpushed) create a tool ask "1 Keep the worktree (Recommended) 2 Delete it".
 6. **Disk.** Free space on each volume that holds `~/.claude`, `~/.agentctl`, the temp folder and project folders: below `disk_warn` (15 GB) → inbox and host notification; below `disk_stop` (5 GB) → pause the queue, find the fastest-growing file, act as in step 7.
 7. **Runaway output.** Sizes of files under the watched roots (worktrees, `~/.claude/projects`, temp, job logs) compared with the last tick: growth over `growth_limit` (1 GB per minute) or a file over `file_limit` (20 GB) → find the writing process; if it belongs to a closed task or no live session, end it and alert; if it belongs to a live task, alert at once and end it below `disk_stop`. Job logs are capped by the tool itself.
-8. **Stuck and blocked.** `working` with no hook event for `stuck_after` (30 min) and no tool in flight → read the last screen; unchanged → inbox "stuck". An ask open for more than 2 hours → one reminder notification.
+8. **Stuck and blocked.** `working`, `in_review`, `merged` and `closing` (live session) with no hook event for `stuck_after` (30 min) and no tool in flight → read the last screen; unchanged → inbox "stuck"; an `in_review` or `merged` session that runs nothing instead frees its worker slot after `idle_free_review_min` (60) or `idle_free_merged_min` (30) (docs/decisions/2026-11-26-idle-slots-freed.md). An ask open for more than 2 hours → one reminder notification.
 9. **Rules files.** Hash `rules/*.md`; a change bumps `rules_version`.
 10. **Self.** Rotate the tool's log; record the tick.
 
@@ -403,6 +403,8 @@ disk_stop_gb = 5
 growth_limit_gb_per_min = 1
 file_limit_gb = 20
 stuck_after_min = 30
+idle_free_merged_min = 30
+idle_free_review_min = 60
 roots = ["~/.claude/projects", "{temp}", "S:/Code"]
 
 [models]

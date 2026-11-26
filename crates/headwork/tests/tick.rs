@@ -1323,12 +1323,12 @@ fn a_session_that_runs_a_job_or_a_shell_keeps_its_slot() {
             Actor::Worker,
         )
         .unwrap();
-    let findings = count(&w, "finding");
+    let mut freed = false;
     for _ in 0..3 {
-        run_tick(&mut w);
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
     }
     assert!(!idle_marked(&w, &session), "a job runs");
-    assert_eq!(count(&w, "finding"), findings, "no finding");
+    assert!(!freed, "no idle-slot finding");
     child.kill().unwrap();
     child.wait().unwrap();
 
@@ -1345,10 +1345,10 @@ fn a_session_that_runs_a_job_or_a_shell_keeps_its_slot() {
         .unwrap();
     w.slots.set_shell(true);
     for _ in 0..3 {
-        run_tick(&mut w);
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
     }
     assert!(!idle_marked(&w, &session), "a shell runs");
-    assert_eq!(count(&w, "finding"), findings, "no finding either");
+    assert!(!freed, "no idle-slot finding either");
 }
 
 #[test]
@@ -1371,6 +1371,104 @@ fn a_review_session_waits_for_its_own_idle_limit() {
     assert!(
         idle_marked(&w, &session),
         "marked once its own limit passed"
+    );
+}
+
+fn idle_merged(w: &mut World, slug: &str) -> (Task, String) {
+    let task = merged(w, slug);
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    run_tick(w);
+    run_tick(w);
+    assert!(idle_marked(w, &session), "marked idle");
+    (task, session)
+}
+
+#[test]
+fn a_state_whose_idle_limit_is_off_gets_the_ordinary_stuck_finding() {
+    for review in [false, true] {
+        let mut w = world();
+        w.limits.stuck_after = 0;
+        w.limits.idle_free_merged = None;
+        w.limits.idle_free_review = None;
+        let session = if review {
+            let (_, session) = working(&mut w, "sand");
+            w.git.set("sand", pr(PrState::Open));
+            run_tick(&mut w);
+            session
+        } else {
+            let task = merged(&mut w, "sand");
+            w.store.session_of(task.id).unwrap().unwrap().id
+        };
+        run_tick(&mut w);
+        let second = run_tick(&mut w);
+        assert!(
+            rules(&second).contains(&(FindingId::Stuck, Status::Standing)),
+            "review {review}: {:?}",
+            second.lines
+        );
+        assert!(!idle_marked(&w, &session), "review {review}: no mark");
+    }
+}
+
+#[test]
+fn a_merged_session_not_yet_past_its_limit_stays_unmarked() {
+    let mut w = world();
+    w.limits.stuck_after = 0;
+    w.limits.idle_free_merged = Some(3600);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    for _ in 0..3 {
+        run_tick(&mut w);
+    }
+    assert!(!idle_marked(&w, &session), "not past its limit");
+}
+
+#[test]
+fn a_changed_screen_unmarks_an_idle_session() {
+    let mut w = world();
+    let (task, session) = idle_merged(&mut w, "sand");
+    w.host
+        .set_screen(&trust_surface(&w, &task), "something new");
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "the screen moved");
+}
+
+#[test]
+fn a_session_whose_limit_turns_off_is_unmarked() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    w.limits.idle_free_merged = None;
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "no limit, no mark");
+}
+
+#[test]
+fn an_unreadable_screen_unmarks_an_idle_session() {
+    let mut w = world();
+    let (task, session) = idle_merged(&mut w, "sand");
+    w.host.fail_screen(&trust_surface(&w, &task));
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "the slot is taken back");
+}
+
+#[test]
+fn an_idle_session_that_becomes_busy_is_unmarked_and_reported_stuck() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    let launcher = sleeper();
+    let pid = launcher.id();
+    w.children.push(launcher);
+    w.store
+        .session_launched(&session, pid, headwork::ops::waiting::FAKE_CLAUDE, "job")
+        .unwrap();
+    w.slots.set_shell(true);
+    let report = run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "busy again");
+    assert!(
+        rules(&report).contains(&(FindingId::Stuck, Status::Standing)),
+        "{:?}",
+        report.lines
     );
 }
 

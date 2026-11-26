@@ -203,14 +203,6 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     Ok(run.report)
 }
 
-/// How long a session has been quiet and what the stuck check weighs it against.
-#[derive(Debug, Clone, Copy)]
-struct QuietFor {
-    idle_s: Option<u64>,
-    after: u64,
-    idle_free: bool,
-}
-
 struct Run<'a, 'b> {
     store: &'a mut Store,
     t: &'a TickEnv<'b>,
@@ -1212,6 +1204,10 @@ impl<'b> Run<'_, 'b> {
                 if session.state != SessionState::Live {
                     continue;
                 }
+                if idle_free.is_none() {
+                    let actor = self.actor();
+                    self.store.set_session_idle(&session.id, false, actor)?;
+                }
                 let clock = self.store.session_clock(&session.id)?;
                 let quiet = watch::stuck_after(clock.idle_age_s, clock.tool_in_flight, None, after);
                 let Some(surface) = session
@@ -1233,6 +1229,8 @@ impl<'b> Run<'_, 'b> {
                 {
                     Ok(screen) => screen,
                     Err(error) => {
+                        let actor = self.actor();
+                        self.store.set_session_idle(&session.id, false, actor)?;
                         self.error(
                             &format!("stuck-screen:{}", session.id),
                             Some(id),
@@ -1256,69 +1254,76 @@ impl<'b> Run<'_, 'b> {
                     }
                     continue;
                 }
-                self.quiet_session(
-                    state,
+                if idle_free.is_none() {
+                    self.report_stuck(state, id, &session, clock.idle_age_s)?;
+                    continue;
+                }
+                let busy = super::waiting::busy_facts(
+                    self.store,
                     id,
-                    &session,
-                    QuietFor {
-                        idle_s: clock.idle_age_s,
-                        after,
-                        idle_free: idle_free.is_some(),
-                    },
+                    &session.id,
+                    session.claude_pid,
                     &procs,
                 )?;
+                if busy.runs_nothing() {
+                    self.free_idle_slot(state, id, &session.id, clock.idle_age_s.unwrap_or(after))?;
+                } else {
+                    let actor = self.actor();
+                    self.store.set_session_idle(&session.id, false, actor)?;
+                    self.report_stuck(state, id, &session, clock.idle_age_s)?;
+                }
             }
         }
         self.sweep(FindingId::IdleSlot)?;
         self.sweep(FindingId::Stuck)
     }
 
-    fn quiet_session(
+    fn report_stuck(
         &mut self,
         state: TaskState,
         id: TaskId,
         session: &SessionRow,
-        quiet: QuietFor,
-        procs: &dyn Fn() -> Vec<headwork_core::reap::Proc>,
+        idle_s: Option<u64>,
     ) -> Result<()> {
         let name = self.name(id)?;
-        if !quiet.idle_free {
-            let notice = if state == TaskState::Working {
-                format!("{name} looks stuck: no activity and an unchanged screen")
-            } else {
-                format!("{name} looks stuck in {state}: no activity and an unchanged screen")
-            };
-            self.standing(
-                &format!("stuck:{}", session.id),
-                FindingId::Stuck,
-                Some(id),
-                Status::Standing,
-                &serde_json::json!({ "idle_s": quiet.idle_s, "state": state.as_str() }),
-                Some(&notice),
-            )?;
-            return Ok(());
-        }
-        let busy =
-            super::waiting::busy_facts(self.store, id, &session.id, session.claude_pid, &procs)?;
-        let actor = self.actor();
-        if !busy.runs_nothing() {
-            self.store.set_session_idle(&session.id, false, actor)?;
-            return Ok(());
-        }
-        self.store.set_session_idle(&session.id, true, actor)?;
-        let idle_s = quiet.idle_s.unwrap_or(quiet.after);
+        let notice = if state == TaskState::Working {
+            format!("{name} looks stuck: no activity and an unchanged screen")
+        } else {
+            format!("{name} looks stuck in {state}: no activity and an unchanged screen")
+        };
         self.standing(
-            &format!("idle-slot:{}", session.id),
+            &format!("stuck:{}", session.id),
+            FindingId::Stuck,
+            Some(id),
+            Status::Standing,
+            &serde_json::json!({ "idle_s": idle_s, "state": state.as_str() }),
+            Some(&notice),
+        )
+        .map(drop)
+    }
+
+    fn free_idle_slot(
+        &mut self,
+        state: TaskState,
+        id: TaskId,
+        session: &str,
+        idle_s: u64,
+    ) -> Result<()> {
+        let name = self.name(id)?;
+        let actor = self.actor();
+        self.store.set_session_idle(session, true, actor)?;
+        self.standing(
+            &format!("idle-slot:{session}"),
             FindingId::IdleSlot,
             Some(id),
             Status::Standing,
             &serde_json::json!({ "idle_s": idle_s, "state": state.as_str() }),
             Some(&format!(
-                "{name} has sat idle in {state} for {} min: its worker slot is freed; it stays open until it is closed",
+                "{name} has sat idle at its prompt for {} min in {state}: its worker slot is freed; it stays open until it is closed",
                 idle_s / 60
             )),
-        )?;
-        Ok(())
+        )
+        .map(drop)
     }
 
     fn asks(&mut self) -> Result<()> {

@@ -403,16 +403,20 @@ fn idle_slots_check(config: &Config) -> Check {
             ),
         );
     }
-    let never: Vec<&str> = [(merged, "merged"), (review, "review")]
-        .into_iter()
-        .filter(|(minutes, _)| *minutes == 0)
-        .map(|(_, state)| state)
-        .collect();
+    let off: Vec<&str> = [
+        (merged, "merged", "idle_free_merged_min"),
+        (review, "review", "idle_free_review_min"),
+    ]
+    .into_iter()
+    .filter(|(minutes, _, _)| *minutes == 0)
+    .map(|(_, _, key)| key)
+    .collect();
     Check::warn(
         "idle-slots",
         format!(
-            "an idle session in {} never frees its worker slot (merged {merged} min, review {review} min)",
-            never.join(" or ")
+            "{} is 0: such a session never frees its slot and gets only the stuck finding after stuck_after_min ({} min)",
+            off.join(" and "),
+            config.watch.stuck_after_min
         ),
         "set [watch] idle_free_merged_min / idle_free_review_min above 0",
     )

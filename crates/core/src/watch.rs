@@ -137,18 +137,7 @@ pub enum Stuck {
 }
 
 /// Decides the stuck check. `idle_s` is the time since the last hook event; `screen_unchanged` is `None` when the
-/// screen was not looked at before.
-#[must_use]
-pub const fn stuck(
-    idle_s: Option<u64>,
-    tool_in_flight: bool,
-    screen_unchanged: Option<bool>,
-    limits: &Limits,
-) -> Stuck {
-    stuck_after(idle_s, tool_in_flight, screen_unchanged, limits.stuck_after)
-}
-
-/// Decides the stuck check against a threshold of `after_s` seconds, as [`stuck`] does for `stuck_after`.
+/// screen was not looked at before; `after_s` is how long a quiet session may sit before it counts.
 #[must_use]
 pub const fn stuck_after(
     idle_s: Option<u64>,
@@ -475,7 +464,7 @@ Is this a project you created or one you trust?
             (Some(600), false, Some(true), Stuck::Yes),
         ] {
             assert_eq!(
-                stuck(idle, tool, same, &LIMITS),
+                stuck_after(idle, tool, same, LIMITS.stuck_after),
                 expected,
                 "idle {idle:?}, tool {tool}, unchanged {same:?}"
             );

@@ -2998,6 +2998,18 @@ fn a_hook_call_clears_the_idle_mark() {
             .unwrap(),
         "the hook call already cleared it"
     );
+    let cleared = w
+        .store
+        .events(EventFilter {
+            task: None,
+            limit: 1000,
+        })
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == headwork_store::EVENT_SESSION_IDLE && event.data["idle"] == false
+        });
+    assert!(cleared, "a session-idle event with idle false was written");
 }
 
 #[test]

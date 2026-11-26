@@ -76,7 +76,7 @@ pub fn facts(
     candidate: Candidate<'_>,
     procs: &dyn Fn() -> Vec<Proc>,
 ) -> Result<WaitFacts> {
-    let mut facts = WaitFacts {
+    let facts = WaitFacts {
         waiting_ask: store.dialog_ask_waits(candidate.session)?,
         ..WaitFacts::default()
     };
@@ -90,11 +90,10 @@ pub fn facts(
         candidate.claude_pid,
         procs,
     )?;
-    facts.running_job = busy.running_job;
-    facts.live_part = busy.live_part;
-    facts.background_work = busy.background_work;
-    facts.shell_running = busy.shell_running;
-    Ok(facts)
+    Ok(WaitFacts {
+        waiting_ask: true,
+        ..busy
+    })
 }
 
 /// What a session runs, with `waiting_ask` unset.
