@@ -2,6 +2,7 @@
 //! output, stuck sessions, spawn timeouts, ask reminders and the merged grace.
 
 use crate::config::WatchConfig;
+use crate::vocabulary::TaskState;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -18,6 +19,10 @@ pub struct Limits {
     pub file: u64,
     /// Seconds without a hook event before a session may be stuck.
     pub stuck_after: u64,
+    /// Seconds a `merged` session may sit idle before it gives up its slot; `None` never frees it.
+    pub idle_free_merged: Option<u64>,
+    /// Seconds an `in_review` session may sit idle before it gives up its slot; `None` never frees it.
+    pub idle_free_review: Option<u64>,
     /// Seconds a spawning task may take to report `SessionStart`.
     pub spawn_timeout: u64,
     /// Seconds an ask may wait before each reminder.
@@ -34,12 +39,15 @@ impl Limits {
     pub fn from_config(watch: &WatchConfig) -> Self {
         let gib = |n: u32| u64::from(n) * GIB;
         let minutes = |n: u32| u64::from(n) * 60;
+        let optional = |n: u32| (n > 0).then(|| minutes(n));
         Self {
             disk_warn: gib(watch.disk_warn_gb),
             disk_stop: gib(watch.disk_stop_gb),
             growth: gib(watch.growth_limit_gb_per_min),
             file: gib(watch.file_limit_gb),
             stuck_after: minutes(watch.stuck_after_min),
+            idle_free_merged: optional(watch.idle_free_merged_min),
+            idle_free_review: optional(watch.idle_free_review_min),
             spawn_timeout: u64::from(watch.spawn_timeout_s),
             ask_remind: minutes(watch.ask_remind_min),
             merged_grace: minutes(watch.merged_grace_min),
@@ -137,8 +145,19 @@ pub const fn stuck(
     screen_unchanged: Option<bool>,
     limits: &Limits,
 ) -> Stuck {
+    stuck_after(idle_s, tool_in_flight, screen_unchanged, limits.stuck_after)
+}
+
+/// Decides the stuck check against a threshold of `after_s` seconds, as [`stuck`] does for `stuck_after`.
+#[must_use]
+pub const fn stuck_after(
+    idle_s: Option<u64>,
+    tool_in_flight: bool,
+    screen_unchanged: Option<bool>,
+    after_s: u64,
+) -> Stuck {
     let quiet = match idle_s {
-        Some(idle) => idle >= limits.stuck_after,
+        Some(idle) => idle >= after_s,
         None => false,
     };
     if !quiet || tool_in_flight {
@@ -147,6 +166,27 @@ pub const fn stuck(
     match screen_unchanged {
         Some(true) => Stuck::Yes,
         Some(false) | None => Stuck::Sample,
+    }
+}
+
+/// Seconds a session in `state` may sit idle at its prompt before it gives up its worker slot; `None` when the state
+/// never frees one (or the limit is off).
+#[must_use]
+pub const fn idle_free_after(state: TaskState, limits: &Limits) -> Option<u64> {
+    match state {
+        TaskState::InReview => limits.idle_free_review,
+        TaskState::Merged => limits.idle_free_merged,
+        TaskState::Queued
+        | TaskState::Spawning
+        | TaskState::Working
+        | TaskState::NeedsUser
+        | TaskState::Closing
+        | TaskState::Parking
+        | TaskState::Closed
+        | TaskState::Dropped
+        | TaskState::Failed
+        | TaskState::Interrupted
+        | TaskState::Parked => None,
     }
 }
 
@@ -292,6 +332,8 @@ mod tests {
         growth: 100,
         file: 1000,
         stuck_after: 60,
+        idle_free_merged: Some(120),
+        idle_free_review: None,
         spawn_timeout: 120,
         ask_remind: 600,
         merged_grace: 300,
@@ -342,6 +384,53 @@ Is this a project you created or one you trust?
         ] {
             assert_eq!(disk_level(free, &LIMITS), level, "{free} bytes free");
         }
+    }
+
+    #[test]
+    fn the_stuck_threshold_is_the_one_given() {
+        for (idle, tool, same, after, expected) in [
+            (Some(59), false, Some(true), 60, Stuck::No),
+            (Some(60), false, Some(true), 60, Stuck::Yes),
+            (Some(60), false, None, 60, Stuck::Sample),
+            (Some(100), true, Some(true), 60, Stuck::No),
+            (Some(100), false, Some(true), 0, Stuck::Yes),
+            (None, false, Some(true), 0, Stuck::No),
+        ] {
+            assert_eq!(
+                stuck_after(idle, tool, same, after),
+                expected,
+                "{idle:?} {tool} {same:?} {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_merged_and_in_review_free_a_slot_when_idle() {
+        let limits = Limits {
+            idle_free_merged: Some(10),
+            idle_free_review: Some(20),
+            ..LIMITS
+        };
+        for state in TaskState::ALL {
+            let expected = if *state == TaskState::InReview {
+                Some(20)
+            } else if *state == TaskState::Merged {
+                Some(10)
+            } else {
+                None
+            };
+            assert_eq!(idle_free_after(*state, &limits), expected, "{state}");
+        }
+        assert_eq!(
+            idle_free_after(TaskState::Merged, &LIMITS),
+            Some(120),
+            "merged"
+        );
+        assert_eq!(
+            idle_free_after(TaskState::InReview, &LIMITS),
+            None,
+            "review off"
+        );
     }
 
     #[test]
@@ -460,6 +549,15 @@ Is this a project you created or one you trust?
         let limits = Limits::from_config(&WatchConfig::default());
         assert_eq!(limits.disk_warn, 15 * GIB, "disk warning");
         assert_eq!(limits.stuck_after, 30 * 60, "stuck after");
+        assert_eq!(limits.idle_free_merged, Some(30 * 60), "idle free merged");
+        assert_eq!(limits.idle_free_review, Some(60 * 60), "idle free review");
+        let off = Limits::from_config(&WatchConfig {
+            idle_free_merged_min: 0,
+            idle_free_review_min: 0,
+            ..WatchConfig::default()
+        });
+        assert_eq!(off.idle_free_merged, None, "merged off");
+        assert_eq!(off.idle_free_review, None, "review off");
         assert_eq!(limits.spawn_timeout, 120, "spawn timeout");
         assert_eq!(limits.ask_remind, 120 * 60, "ask reminder");
         assert_eq!(limits.merged_grace, 10 * 60, "merged grace");

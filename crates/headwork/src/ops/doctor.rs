@@ -203,6 +203,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(deprecated_keys_check(d));
         if let Ok(config) = &config {
             checks.push(unenforced_keys_check(config));
+            checks.push(idle_slots_check(config));
         }
     }
     let store = store_check(d, &mut checks);
@@ -389,6 +390,32 @@ fn trust_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check 
         )
     };
     Check::ok("trust", detail)
+}
+
+fn idle_slots_check(config: &Config) -> Check {
+    let merged = config.watch.idle_free_merged_min;
+    let review = config.watch.idle_free_review_min;
+    if merged > 0 && review > 0 {
+        return Check::ok(
+            "idle-slots",
+            format!(
+                "idle sessions free their slot after {merged} min in merged, {review} min in review"
+            ),
+        );
+    }
+    let never: Vec<&str> = [(merged, "merged"), (review, "review")]
+        .into_iter()
+        .filter(|(minutes, _)| *minutes == 0)
+        .map(|(_, state)| state)
+        .collect();
+    Check::warn(
+        "idle-slots",
+        format!(
+            "an idle session in {} never frees its worker slot (merged {merged} min, review {review} min)",
+            never.join(" or ")
+        ),
+        "set [watch] idle_free_merged_min / idle_free_review_min above 0",
+    )
 }
 
 fn unenforced_keys_check(config: &Config) -> Check {

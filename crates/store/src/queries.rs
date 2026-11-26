@@ -341,6 +341,9 @@ fn live_tasks(conn: &Connection) -> Result<Vec<LiveTask>, StoreError> {
                                     AND a.kind IN {DIALOG_ASK_KINDS})
                               FROM sessions s WHERE s.task_id = t.id
                               ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 0)
+                    OR (t.state IN ('in_review', 'merged')
+                        AND COALESCE((SELECT s.idle_since IS NOT NULL FROM sessions s WHERE s.task_id = t.id
+                                      ORDER BY s.started_at DESC, s.rowid DESC LIMIT 1), 0))
              FROM tasks t WHERE t.state <> 'closed'"
         ),
     )?;

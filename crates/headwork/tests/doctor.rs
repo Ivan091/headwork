@@ -437,6 +437,36 @@ fn an_ignored_config_key_is_flagged() {
 }
 
 #[test]
+fn idle_slots_are_ok_by_default_and_warn_when_a_limit_is_off() {
+    let install = install();
+    let clean = run(&install, &FakeProbe::default());
+    assert_eq!(status(&clean, "idle-slots"), Status::Ok, "defaults");
+    assert_eq!(
+        detail(&clean, "idle-slots"),
+        "idle sessions free their slot after 30 min in merged, 60 min in review"
+    );
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen(
+            "stuck_after_min = 30",
+            "stuck_after_min = 30
+idle_free_merged_min = 0",
+            1,
+        ),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "idle-slots"), Status::Warn, "merged off");
+    assert!(
+        detail(&report, "idle-slots").contains("merged"),
+        "{}",
+        detail(&report, "idle-slots")
+    );
+}
+
+#[test]
 fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
     let install = install();
     let clean = run(&install, &FakeProbe::default());

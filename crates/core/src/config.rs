@@ -372,6 +372,12 @@ pub struct WatchConfig {
     pub file_limit_gb: u32,
     /// Minutes without a hook event before a session counts as stuck.
     pub stuck_after_min: u32,
+    /// Minutes a `merged` session may sit idle at its prompt (no hook event, no tool in flight, unchanged screen,
+    /// nothing running) before it gives up its worker slot; 0 never frees it.
+    pub idle_free_merged_min: u32,
+    /// Minutes an `in_review` session may sit idle at its prompt (no hook event, no tool in flight, unchanged screen,
+    /// nothing running) before it gives up its worker slot; 0 never frees it.
+    pub idle_free_review_min: u32,
     /// Seconds a spawning task may take to report `SessionStart` before it counts as failed.
     pub spawn_timeout_s: u32,
     /// Minutes an ask may wait on the user before the next reminder.
@@ -396,6 +402,8 @@ impl Default for WatchConfig {
             growth_limit_gb_per_min: 1,
             file_limit_gb: 20,
             stuck_after_min: 30,
+            idle_free_merged_min: 30,
+            idle_free_review_min: 60,
             spawn_timeout_s: 120,
             ask_remind_min: 120,
             merged_grace_min: 10,

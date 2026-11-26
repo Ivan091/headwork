@@ -2977,6 +2977,30 @@ fn a_worker_typed_past_its_ask_takes_its_slot_back() {
 }
 
 #[test]
+fn a_hook_call_clears_the_idle_mark() {
+    let mut w = world("", false);
+    w.start();
+    let task = w.store.tasks_in(TaskState::Working).unwrap()[0];
+    let session = w.store.session_of(task).unwrap().unwrap().id;
+    assert!(
+        w.store
+            .set_session_idle(&session, true, Actor::Tick)
+            .unwrap(),
+        "marked"
+    );
+    w.hook(
+        HookEvent::UserPromptSubmit,
+        &json!({ "prompt": "back again" }),
+    );
+    assert!(
+        !w.store
+            .set_session_idle(&session, false, Actor::Tick)
+            .unwrap(),
+        "the hook call already cleared it"
+    );
+}
+
+#[test]
 fn a_worker_running_a_shell_or_a_background_agent_keeps_its_slot() {
     let mut w = world("", false);
     w.start();

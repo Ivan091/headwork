@@ -30,6 +30,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0022_task_flags.sql"),
     include_str!("../migrations/0023_migrations_applied.sql"),
     include_str!("../migrations/0024_worktree_removal.sql"),
+    include_str!("../migrations/0025_session_idle.sql"),
 ];
 
 /// Applies the migrations the database lacks, each in its own immediate transaction.

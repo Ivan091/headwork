@@ -51,7 +51,7 @@ pub use usage::{
     ByModel, EVENT_HELPER_SESSION, EVENT_USAGE_ROLLED_UP, FileMark, RoleDelegation, RolledUp,
     TaskTokens, UsageBatch, UsageQuery, UsageTag, UsageTotal, all_models,
 };
-pub use waiting::{EVENT_SESSION_WAITING, WaitingCandidate};
+pub use waiting::{EVENT_SESSION_IDLE, EVENT_SESSION_WAITING, WaitingCandidate};
 
 /// The SQL expression for the current time, UTC, with milliseconds.
 pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";

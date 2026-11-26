@@ -213,6 +213,7 @@ pub fn run_hook(
     };
     store.touch_session(&session.id)?;
     store.set_session_waiting(&session.id, false, Actor::Hook)?;
+    store.set_session_idle(&session.id, false, Actor::Hook)?;
     if let Some(mode) = input
         .get("permission_mode")
         .and_then(Value::as_str)
