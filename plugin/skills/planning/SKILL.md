@@ -28,8 +28,9 @@ item of its own first (`backlog_add`, then `backlog_edit` the old one), so closi
 
 ## 3. Check before spawning
 
-Grooming's ordering rules (its section 3), now against what actually runs on `board` and `status`: free slots, store
-migrations and the heavy gate, plus any live task editing the same files. A conflict gets `depends_on` on that task, or
+Grooming's ordering rules (its section 3), now against what actually runs on `board` and `status`: the live session
+count (uncapped unless a cap key is set; `many-sessions` warns past 20), store migrations, the `[gates]` line (`cpu` and
+`gpu` slots held and waited for), plus any live task editing the same files. A conflict gets `depends_on` on that task, or
 the step moves a wave.
 
 ## 4. Spawn and follow through
