@@ -172,7 +172,7 @@ CREATE TABLE jobs (
   cwd TEXT NOT NULL,
   pid INTEGER,
   checkpoint_path TEXT,
-  heavy INTEGER NOT NULL DEFAULT 0,
+  heavy INTEGER NOT NULL DEFAULT 0,  -- the job's gate: 0 none, 1 cpu, 2 gpu
   state TEXT NOT NULL CHECK (state IN ('running', 'stopping', 'parked', 'done', 'failed')),
   log_path TEXT NOT NULL,
   started_at TEXT NOT NULL
@@ -306,7 +306,7 @@ Hard rules that hooks cannot see stay in transitions and the tick: caps, main-on
 | `report(status, summary, links?, pr?)` | child | Stores the report; `status=review` with a PR moves to `in_review`. |
 | `done()` | child | Section 2.3. |
 | `handoff(text)` | child | Writes `handoffs/<name>.md` plus a mechanical part (branch, head, `git status`, open asks, jobs). |
-| `job_start(label, argv, park_policy, checkpoint_path?, heavy?)`, `job_status()`, `job_stop(id)` | child | Starts a long job detached under the tool, logs to a capped file, takes a heavy slot. |
+| `job_start(label, argv, park_policy, checkpoint_path?, gate?)`, `job_status()`, `job_stop(id)` | child | Starts a long job detached under the tool and logs to a capped file. A gated job (`gate: "cpu"` or `"gpu"`; the old `heavy: true` means `cpu`) runs as `headwork gate run <class> -- <argv>`, so it waits there for a machine-wide slot (section 5, `[gates]`). |
 
 The root does not need Bash for orchestration any more. Messages between sessions stay Claude's own `SendMessage` **[V]**; the tool only records them.
 
@@ -408,6 +408,12 @@ idle_free_review_min = 60
 retell_after_h = 6
 roots = ["~/.claude/projects", "{temp}", "S:/Code"]
 
+[gates]
+cpu = 3
+gpu = 2
+held_long_min = 45
+starved_min = 30
+
 [models]
 default = "sonnet"
 allowed = ["haiku", "sonnet", "opus", "fable"]
@@ -423,8 +429,6 @@ merge = "deliver"
 main_only = ["car-training", "pro-render", "publish", "release"]
 user_only = ["scripts/publish-now.sh", "scripts/publish.sh", "scripts/reupload.sh", "scripts/release.sh"]
 allowed_repos = ["Ivan091/me-sim"]
-heavy_slots = 2
-heavy_gate = "scripts/heavy.sh"
 review = { send_file = true }
 long_jobs = ["scripts/rl-run.sh", "cargo run --release -p render"]
 jobs.car-training = { park_policy = "checkpoint", checkpoint = "{out}/checkpoint.json" }
@@ -459,7 +463,7 @@ review = { send_file = false }
 
 - `deliver = "pr"` means the global skills' flow (branch, Conventional Commit, push, PR); `merge = "human"` means only gh can move the task to `merged`, and the PR sits in the inbox until a person merges it.
 - `builtin` worktrees use `git worktree add -b {slug}` and `git worktree remove` (refusing when dirty).
-- `heavy_gate` keeps me-sim's own `scripts/heavy.sh` as the slot owner; the tool only shows its state. Projects without one get the tool's own slots.
+- `[gates]` (machine layer) sets the machine-wide slots heavy commands hold: `cpu` for cargo build, test, clippy and bench, `check.sh`, renders, scans and `git gc`; `gpu` for training. `headwork gate run <class> -- <cmd>` waits for a slot (first come first served), runs the command holding it and gives it back; `headwork gate status` lists holders and waiters. The slots are folders under `dir` (default `%LOCALAPPDATA%/heavy-slots`, else `~/.heavy-slots`), shared with the old `heavy.sh` scripts, whose root `slot-N` folders count as `cpu`. The per-project `heavy_slots` and `heavy_gate` keys are retired. See `docs/decisions/2026-11-26-gates-in-headwork.md`.
 - `read_only_paths` turns into a child deny rule for writes there (me-studio reads me-sim, never writes it).
 - A project-local `.agentctl.toml` in the repository may add `long_jobs` and `user_only`; it may never widen `allowed_repos` or the model set.
 
@@ -500,7 +504,7 @@ Run by hand or at logon (Task Scheduler / launchd, delayed until `host.ping` ans
 1. Machine `resuming`. Host restore check: if the host restored Claude panes anyway, the ones whose session id is parked are closed first, so no conversation runs twice.
 2. Children, in park order: `ensure_workspace`, then `spawn(... agentctl launch --task N --resume)`. The launcher runs `claude --resume <id> --remote-control <name> -n <name> --model <m> --permission-mode <mode> -- "Resumed after a restart. Read ~/.agentctl/handoffs/<name>.md and continue."` with cwd = the worktree, because resume keeps the launch folder **[V]**. Same name, same phone thread **[V]**.
 3. Resume failure (transcript missing, flag changed): one retry, then a fresh session with a new id, the brief plus the handoff, the same name; recorded in the recap.
-4. Jobs restart with their argv, within heavy slots, `rerun` ones after `checkpoint` ones.
+4. Jobs restart with their argv, `rerun` ones after `checkpoint` ones; a gated job is wrapped in `headwork gate run <class>` again, so it waits for its slot.
 5. The root starts last, with a first prompt pointing at the recap: what came back, what did not, what waits on the user, what was lost.
 6. Machine `normal`, queue resumes.
 

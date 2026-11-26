@@ -5,3 +5,6 @@ User decision (slots rework, `S:/Code/notes/slots-rework-2026-11-26.md`): CPU-he
 - Slot count: 3, from `HEADWORK_HEAVY_SLOTS` (bad values give 3). me-sim and me-studio today default to 2, a constant in their `heavy_slots` (`${ME_SIM_HEAVY_SLOTS:-2}`, with `case ... slots=2` for bad values). Slots are plain folders, so scripts with different counts share them: until those two change, a headwork check can take `slot-3` while theirs stop at `slot-2`. The change for 3 there is `2` to `3` in both places of `heavy_slots` in `scripts/heavy.sh`, and `ME_SIM_HEAVY_SLOTS=2` in `scripts/heavy-test.sh` stays (the tests set their own count).
 - Waits print "heavy: waiting N s for one of 3 slots ... held by" every 30 s and never fail. In CI (`CI` set) and with `HEADWORK_HEAVY_OFF=1` the check runs directly; a slot folder that cannot be created also runs directly, with a message.
 - `scripts/heavy.sh` is kept small and named after its job so the Rust `headwork gate` of task `headwork-gate-in-rust` can replace it; `scripts/test-heavy.sh` is part of the full and quick check.
+
+Superseded the same day by `docs/decisions/2026-11-26-gates-in-headwork.md`: `check.sh` now reruns itself under
+`headwork gate run cpu`, and `scripts/heavy.sh` and `scripts/test-heavy.sh` are gone.

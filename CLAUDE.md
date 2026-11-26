@@ -29,7 +29,7 @@ plugin/                 the Claude Code plugin: hooks.json (each hook calls `hea
 rules/                  built-in orchestrator and worker rules, injected at SessionStart
 flows/                  built-in review flows (TOML graphs) and their node prompts, embedded in the binary
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
-scripts/check.sh        the quality gate; holds one of 3 machine-wide CPU slots (scripts/heavy.sh, tests in test-heavy.sh)
+scripts/check.sh        the quality gate; reruns itself under `headwork gate run cpu` when the installed headwork knows gates
 docs/                   design, research, trials, decisions
 ```
 
@@ -58,8 +58,8 @@ the main checkout with `git pull --ff-only`; the guard rule `worker-force-push` 
 and allows `--force-with-lease` only to the task's own recorded branch, one branch at a time (`--all`, `--branches`,
 `--mirror`, `--tags`, `--prune`, `--delete` are refused); `install = true` on a project lets its workers run
 `headwork install` and a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`). The project keys
-`heavy_slots` and `heavy_gate` are retired: still read, not enforced, and `doctor` warns under `config-keys`, since gates
-take machine-wide slots from `%LOCALAPPDATA%/heavy-slots`;
+`heavy_slots` and `heavy_gate` are retired: still read, not enforced, and `doctor` warns under `config-keys`, since
+`[gates]` sets the machine-wide slots;
 `[hooks] orchestrator_repos` names notes repositories the orchestrator may commit and push in (project checkouts inside
 them excluded); `orchestrator_writable` gives it the edits there. A worker may write paths outside its folder only
 when granted (`core/src/guard/grants.rs`): its project's `extra_writable = [{ path, kinds }]` for its task kind, and
@@ -179,6 +179,17 @@ line under `[backlog] leave_pointer`). `spawn --backlog <id>` links an item to a
 is dropped or fails. The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
 listed in `docs/backlog.md`, section 9.
 The "Needs you" digest (`docs/backlog.md`, section 8; `core/src/digest.rs` builds it, `store/src/digest.rs` reads, `ops/digest.rs` gathers) lists what waits on the user in at most ten lines: asks, backlog items due, migration notes the tick found, pull requests whose session ended, old findings, the user's open items. It leads the orchestrator's session start (deferred to its first prompt when the rules leave no room), `board`, `status`, the park recap and resume summary, and goes out once a day through the tick's `digest` stage (`[digest]`).
+Gates (`docs/decisions/2026-11-26-gates-in-headwork.md`): CPU-heavy work (cargo build, test, clippy and bench, `check.sh`,
+renders, scans, `git gc`) holds one of `[gates] cpu` (3) machine-wide slots and training one of `gpu` (2). The classes, the
+owner file and the pure decisions are `core/src/gate.rs`; the folders `adapters/src/gate.rs`: `<dir>/<class>/slot-N`
+made with `create_dir`, an `owner` file of `key=value` lines (`pid`, `native=1`, `class`, `task`, `worktree`, `command`,
+`started`, `epoch`), a slot whose holder is gone taken over under `reap.lock`, `wait-<pid>` files served first come first
+served, and the old `heavy.sh` root `slot-N` counted as `cpu`. `headwork gate run <class> -- <cmd>` (`ops/gate.rs`) waits,
+saying what it waits for at once and every 30 s, runs the command with `HEADWORK_GATE_HELD` extended (a class already held
+runs directly, so does everything in CI or with `HEADWORK_GATE_OFF=1`), gives the slot back and exits with the command's
+code; it logs `gate-wait`, `gate-acquired` and `gate-released` into an existing `state.db` only. `headwork gate status`
+lists holders and waiters. `[gates]` (machine layer) also takes `dir` (default `%LOCALAPPDATA%/heavy-slots`, else
+`~/.heavy-slots`; `HEADWORK_GATE_DIR` overrides it), `held_long_min` and `starved_min`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
@@ -217,6 +228,8 @@ cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file 
 cargo run -p headwork -- digest [--json]   # "Needs you": asks, backlog items due, migration notes, waiting pull requests, old findings (docs/backlog.md, section 8)
 cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
+cargo run -p headwork -- gate run cpu|gpu -- <cmd...>   # wait for a machine-wide slot, run the command holding it, exit with its code
+cargo run -p headwork -- gate status [--json]   # each gate class: count, holders (task, command, age, stale), waiters
 cargo run -p headwork -- jobs              # the registered long-running jobs
 cargo run -p headwork -- job forget <id> --reason "..."   # mark a job over without touching any process
 cargo run -p headwork -- recap <name>      # a task's newest recap
@@ -485,7 +498,8 @@ attribution, through a pull request, then is merged. Before pushing, run `bash s
 `scripts/check.sh` on Windows and macOS for every pull request (read-only), and a ruleset on `master` refuses a merge
 until both `gate` jobs pass. Before merging, wait for them with `gh pr checks <url> --watch --fail-fast`; on a failure,
 read `gh run view <id> --log-failed`, fix, push and wait again. Every push to `master` is gated, built and published
-as release `v0.1.<run>` with both binaries and `SHA256SUMS` (`.github/workflows/release.yml`, `docs/autoupdate.md`). `check.sh` waits for a free slot in `%LOCALAPPDATA%/heavy-slots` (3, `HEADWORK_HEAVY_SLOTS`) and prints who holds them; CI runs it directly
-(`docs/decisions/2026-11-26-check-takes-cpu-slots.md`). CI `check.sh` skips the comment ban, whose checker lives in the user config, so `--quick` runs it locally. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
+as release `v0.1.<run>` with both binaries and `SHA256SUMS` (`.github/workflows/release.yml`, `docs/autoupdate.md`). `check.sh` reruns itself under `headwork gate run cpu` when the installed headwork knows `gate` (one of `[gates] cpu`, 3,
+slots in `%LOCALAPPDATA%/heavy-slots`) and says who holds them while it waits; CI and `HEADWORK_GATE_OFF=1` run it
+directly, and so does a machine whose headwork predates gates, with a note (`docs/decisions/2026-11-26-gates-in-headwork.md`). CI `check.sh` skips the comment ban, whose checker lives in the user config, so `--quick` runs it locally. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
 and commits use the GitHub noreply address. Use the global `contribute` and `ship` skills; this repository has no ship
 script of its own yet.

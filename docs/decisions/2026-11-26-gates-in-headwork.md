@@ -69,6 +69,25 @@ wrapping a command itself; token limits are warning only. This entry records how
 - The tick raises the standing finding `many-sessions`, with a notice, while more than `[watch] many_sessions` (20) sessions
   are live. It refuses nothing.
 
+## Choices taken in the first pull request
+
+- The owner file also carries `task_id` (`HEADWORK_TASK`), and `task` holds the task's name when the store resolves it,
+  else the id: the wait message names tasks, and later readers join on the id.
+- Waiters and holders are ordered by `(epoch, pid)`: seconds tie often, and every reader must order a class the same way.
+- Owner and wait files are written to `<name>.tmp` and renamed into place, so a reader never takes half a `pid` for a dead
+  holder; `.tmp` files older than 10 s are removed when a class is reaped.
+- A `native=1` pid is checked through the system's process list on Windows (`sysinfo`), not `proc::is_alive`, whose
+  `tasklist` takes a third of a second per pid, too slow for a poll every second; on unix `proc::is_alive` is used. When
+  Git Bash's `ps -el` cannot be run, a non-native owner counts as alive.
+- After a `cpu` holder takes its slot it gives it back only when the holders before it plus the live legacy slots fill the
+  count, so of several new holders only the newest yield.
+- The wait message adds `; N ahead` when live waiters came before this one.
+- The gate's local `started` time comes from SQLite's `localtime` (the store crate's `local_time_now`), with UTC as the
+  fallback; the workspace has no time zone crate.
+- `check.sh` reruns itself as `headwork gate run cpu -- bash scripts/check.sh` when `headwork gate status` works and
+  neither `CI`, `HEADWORK_GATE_OFF=1`, `HEADWORK_HEAVY_HELD=1` nor a held `cpu` says otherwise; `scripts/heavy.sh` and
+  `scripts/test-heavy.sh` are gone.
+
 ## Not done here
 
 - me-sim's `heavy.sh` becomes a wrapper around `headwork gate run cpu` with its `mkdir` fallback for CI; its renders and scans
