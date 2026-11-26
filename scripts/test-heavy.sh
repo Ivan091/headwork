@@ -13,6 +13,7 @@ check() {
         echo "ok: $1"
     else
         echo "FAIL: $1"
+        tail -n 20 "$work"/*.err 2>/dev/null || true
         failures=$((failures + 1))
     fi
 }
