@@ -267,6 +267,11 @@ fn spawn_takes_an_integer_item_id_and_refuses_a_string_or_an_unknown_id() {
     assert_eq!(spawned["task"]["name"], "demo-linked");
     assert_eq!(spawned["backlog_unlinked"], Value::Null);
     assert_eq!(
+        spawned["todo_unlinked"],
+        Value::Null,
+        "the old key for one release"
+    );
+    assert_eq!(
         w.store.backlog_item(id).unwrap().task.map(|task| task.name),
         Some("demo-linked".to_owned())
     );

@@ -1712,6 +1712,7 @@ impl<'a> Server<'a> {
             "task": spawned.task,
             "queue": spawned.pumped,
             "backlog_unlinked": spawned.unlinked,
+            "todo_unlinked": spawned.unlinked,
         }))
     }
 
