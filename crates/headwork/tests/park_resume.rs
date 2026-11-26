@@ -1988,8 +1988,7 @@ fn the_board_line_and_status_show_gate_holders_and_waiting_tasks() {
     let (lead, _, _) = w.working("plan");
     let (part, _, _) = w.part(&lead, "render");
     let (other, _, _) = w.working("other");
-    let epoch = headwork_adapters::gate::epoch_now();
-    let owner = |task: &Task, command: &str, age: u64| Owner {
+    let owner = |task: &Task, command: &str| Owner {
         pid: std::process::id(),
         native: true,
         class: Some(GateClass::Cpu),
@@ -1998,22 +1997,27 @@ fn the_board_line_and_status_show_gate_holders_and_waiting_tasks() {
         worktree: "S:/Code/demo".to_owned(),
         command: command.to_owned(),
         started: "2026-11-26 10:00:00".to_owned(),
-        epoch: Some(epoch - age),
+        epoch: None,
+    };
+    let write_aged = |path: &Path, owner: &Owner, age_s: u64| {
+        std::fs::write(path, owner.render()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(age_s))
+            .unwrap();
     };
     let slot = slots.join("cpu").join("slot-1");
     std::fs::create_dir_all(&slot).unwrap();
-    std::fs::write(
-        slot.join("owner"),
-        owner(&other, "cargo test", 240).render(),
-    )
-    .unwrap();
-    std::fs::write(
-        slots
+    write_aged(&slot.join("owner"), &owner(&other, "cargo test"), 240);
+    write_aged(
+        &slots
             .join("cpu")
             .join(format!("wait-{}", std::process::id())),
-        owner(&part, "bash scripts/check.sh", 30).render(),
-    )
-    .unwrap();
+        &owner(&part, "bash scripts/check.sh"),
+        30,
+    );
 
     let line = board_line(&w.home, &w.config.gates).unwrap();
     assert_eq!(

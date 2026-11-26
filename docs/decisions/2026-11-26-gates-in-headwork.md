@@ -100,6 +100,12 @@ wrapping a command itself; token limits are warning only. This entry records how
 - `heavy-ungated` sees `headwork gate run ... -- <cmd>` and `heavy.sh <cmd>` as one command whose program is the wrapper, so
   the wrapped command is never inspected; reviewers keep their own rule `reviewer-write`.
 
+## Review fixes
+
+- A native owner whose pid runs a process that started more than 5 s (`PID_REUSE_SLACK_S`) after the owner's `epoch` is
+  stale: the pid was taken over (`pid_taken_over`, start time from `proc::identify`). Owners without `epoch` keep the
+  plain pid check.
+
 ## Not done here
 
 - me-sim's `heavy.sh` becomes a wrapper around `headwork gate run cpu` with its `mkdir` fallback for CI; its renders and scans

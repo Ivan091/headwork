@@ -18,8 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use headwork_core::config::GatesConfig;
 use headwork_core::gate::{
     GateClass, GateEnv, HolderLine, OWNER_FILE, Owner, REAP_LOCK, REAP_LOCK_STALE_S,
-    UNOWNED_STALE_S, first_free_slot, free_slots, may_take, must_give_back, slot_number,
-    wait_message, wait_pid,
+    UNOWNED_STALE_S, first_free_slot, free_slots, may_take, must_give_back, pid_taken_over,
+    slot_number, wait_message, wait_pid,
 };
 
 /// Overrides the slot root (tests).
@@ -113,10 +113,22 @@ pub fn watch_interrupts() -> Option<Arc<AtomicBool>> {
         .map(|()| flag)
 }
 
+/// What runs under an OS-native process id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeProcess {
+    /// Nothing.
+    Gone,
+    /// A process, started at `started` (seconds since the Unix epoch) when that could be read.
+    Running {
+        /// Its start time, when known.
+        started: Option<u64>,
+    },
+}
+
 /// Asks whether a holder's process runs.
 pub trait Liveness: fmt::Debug + Send + Sync {
-    /// Whether the process with this OS-native id runs.
-    fn native(&self, pid: u32) -> bool;
+    /// What runs under this OS-native id.
+    fn native(&self, pid: u32) -> NativeProcess;
     /// The Git Bash (MSYS) pids that run, or `None` when they cannot be read; asked on Windows only.
     fn git_bash(&self) -> Option<HashSet<u32>>;
 }
@@ -128,12 +140,18 @@ pub struct SystemLiveness;
 impl Liveness for SystemLiveness {
     /// On Windows by the system's process list (`tasklist`, which [`crate::proc::is_alive`] runs, takes a third of a
     /// second, too slow for a poll every second); elsewhere by [`crate::proc::is_alive`], which also knows a zombie
-    /// is gone. A pid that cannot be checked counts as running.
-    fn native(&self, pid: u32) -> bool {
+    /// is gone. The start time comes from [`crate::proc::identify`]. A pid that cannot be checked counts as running.
+    fn native(&self, pid: u32) -> NativeProcess {
+        let running = |identity: Option<crate::proc::ProcessIdentity>| NativeProcess::Running {
+            started: identity.map(|identity| identity.started),
+        };
         if cfg!(windows) {
-            crate::proc::identify(pid).is_some()
-        } else {
-            crate::proc::is_alive(pid).unwrap_or(true)
+            return crate::proc::identify(pid)
+                .map_or(NativeProcess::Gone, |identity| running(Some(identity)));
+        }
+        match crate::proc::is_alive(pid) {
+            Ok(false) => NativeProcess::Gone,
+            Ok(true) | Err(_) => running(crate::proc::identify(pid)),
         }
     }
 
@@ -145,7 +163,7 @@ impl Liveness for SystemLiveness {
 /// One pass of liveness questions: each pid is asked once, Git Bash's table read at most once.
 struct Probe<'a> {
     liveness: &'a dyn Liveness,
-    native: HashMap<u32, bool>,
+    native: HashMap<u32, NativeProcess>,
     git_bash: GitBashTable,
 }
 
@@ -168,15 +186,21 @@ impl<'a> Probe<'a> {
         }
     }
 
-    /// Whether the owner's process runs. An owner without `native=1` on Windows was written by a Git Bash script, so
-    /// its pid is looked up in Git Bash's table; when that table cannot be read it counts as running.
+    /// Whether the owner's process runs. A process that started more than
+    /// [`headwork_core::gate::PID_REUSE_SLACK_S`] seconds after the owner's `epoch` took its pid over, so the owner is
+    /// gone ([`pid_taken_over`]). An owner without `native=1` on Windows was written by a Git Bash script, so its pid
+    /// is looked up in Git Bash's table; when that table cannot be read it counts as running.
     fn alive(&mut self, owner: &Owner) -> bool {
         if owner.native || !cfg!(windows) {
             let liveness = self.liveness;
-            return *self
+            let now = *self
                 .native
                 .entry(owner.pid)
                 .or_insert_with(|| liveness.native(owner.pid));
+            return match now {
+                NativeProcess::Gone => false,
+                NativeProcess::Running { started } => !pid_taken_over(owner.epoch, started),
+            };
         }
         if matches!(self.git_bash, GitBashTable::Unread) {
             self.git_bash = self
@@ -889,6 +913,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct Fake {
         native: Mutex<HashSet<u32>>,
+        started: Mutex<HashMap<u32, u64>>,
         git_bash: Mutex<HashSet<u32>>,
     }
 
@@ -896,8 +921,13 @@ mod tests {
         fn live(pids: &[u32]) -> Arc<Self> {
             Arc::new(Self {
                 native: Mutex::new(pids.iter().copied().collect()),
+                started: Mutex::new(HashMap::new()),
                 git_bash: Mutex::new(HashSet::new()),
             })
+        }
+
+        fn started_at(&self, pid: u32, started: u64) {
+            self.started.lock().unwrap().insert(pid, started);
         }
 
         fn end(&self, pid: u32) {
@@ -906,8 +936,13 @@ mod tests {
     }
 
     impl Liveness for Fake {
-        fn native(&self, pid: u32) -> bool {
-            self.native.lock().unwrap().contains(&pid)
+        fn native(&self, pid: u32) -> NativeProcess {
+            if !self.native.lock().unwrap().contains(&pid) {
+                return NativeProcess::Gone;
+            }
+            NativeProcess::Running {
+                started: self.started.lock().unwrap().get(&pid).copied(),
+            }
         }
 
         fn git_bash(&self) -> Option<HashSet<u32>> {
@@ -1063,6 +1098,45 @@ mod tests {
         let written =
             Owner::parse(&std::fs::read_to_string(held.path().join(OWNER_FILE)).unwrap()).unwrap();
         assert_eq!(written.pid, 2, "the new owner");
+    }
+
+    #[test]
+    fn a_pid_taken_over_after_the_owner_began_is_stale() {
+        let fake = Fake::live(&[7, 8]);
+        let (_dir, slots) = slots(&fake);
+        let dir = slots.class_dir(GateClass::Cpu);
+        write_slot(&dir, 1, &owner(7, 1_000).render());
+        write_slot(&dir, 2, &owner(8, 1_000).render());
+        write_slot(
+            &dir,
+            3,
+            &Owner {
+                epoch: None,
+                ..owner(8, 0)
+            }
+            .render(),
+        );
+        fake.started_at(7, 1_000 + headwork_core::gate::PID_REUSE_SLACK_S + 1);
+        fake.started_at(8, 990);
+        let view = slots.read(GateClass::Cpu, count(3));
+        let stale: Vec<(u32, bool)> = view
+            .holders
+            .iter()
+            .map(|holder| (holder.slot, holder.stale))
+            .collect();
+        assert_eq!(stale, [(1, true), (2, false), (3, false)], "{view:?}");
+        fake.started_at(8, 5_000);
+        let view = slots.read(GateClass::Cpu, count(3));
+        let stale: Vec<(u32, bool)> = view
+            .holders
+            .iter()
+            .map(|holder| (holder.slot, holder.stale))
+            .collect();
+        assert_eq!(
+            stale,
+            [(1, true), (2, true), (3, false)],
+            "an owner without epoch keeps the plain pid check: {view:?}"
+        );
     }
 
     #[test]

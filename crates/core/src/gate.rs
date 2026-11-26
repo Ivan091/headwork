@@ -52,6 +52,25 @@ pub const UNOWNED_STALE_S: u64 = 10;
 /// Seconds after which a `reap.lock` folder counts as stale and may be removed.
 pub const REAP_LOCK_STALE_S: u64 = 30;
 
+/// Seconds a native owner's process may seem to have started after the owner's `epoch` and still be the owner: start
+/// times and `epoch` are whole seconds read from two clocks.
+pub const PID_REUSE_SLACK_S: u64 = 5;
+
+/// Whether the process now running under an owner's pid took the pid over.
+///
+/// It did when it started more than [`PID_REUSE_SLACK_S`] seconds after the owner's `epoch`, since the owner's
+/// process was already running then. An owner without `epoch`, or a start time that is unknown or reads 0, never
+/// counts as taken over.
+#[must_use]
+pub const fn pid_taken_over(epoch: Option<u64>, started: Option<u64>) -> bool {
+    match (epoch, started) {
+        (Some(epoch), Some(started)) => {
+            started != 0 && started > epoch.saturating_add(PID_REUSE_SLACK_S)
+        }
+        _ => false,
+    }
+}
+
 /// The owner file's name inside a slot folder.
 pub const OWNER_FILE: &str = "owner";
 
@@ -461,6 +480,26 @@ mod tests {
             command: "cargo test --workspace".to_owned(),
             started: "2026-11-26 10:00:00".to_owned(),
             epoch,
+        }
+    }
+
+    #[test]
+    fn a_pid_is_taken_over_only_by_a_process_that_started_well_after_the_epoch() {
+        let cases = [
+            (Some(100), Some(90), false),
+            (Some(100), Some(100), false),
+            (Some(100), Some(105), false),
+            (Some(100), Some(106), true),
+            (Some(100), Some(0), false),
+            (Some(100), None, false),
+            (None, Some(1_000), false),
+        ];
+        for (epoch, started, taken) in cases {
+            assert_eq!(
+                pid_taken_over(epoch, started),
+                taken,
+                "{epoch:?} {started:?}"
+            );
         }
     }
 

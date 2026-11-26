@@ -2812,11 +2812,9 @@ fn the_tick_pushes_the_digest_once_a_day_when_something_waits_on_the_user() {
     assert_eq!(count(&w, "digest-pushed"), 1, "once a day");
 }
 
-fn gate_owner(
-    pid: u32,
-    class: headwork_core::gate::GateClass,
-    age_s: u64,
-) -> headwork_core::gate::Owner {
+/// An owner without `epoch`, so its age comes from its file's time ([`write_aged`]): a backdated `epoch` before this
+/// process started would read as a pid taken over.
+fn gate_owner(pid: u32, class: headwork_core::gate::GateClass) -> headwork_core::gate::Owner {
     headwork_core::gate::Owner {
         pid,
         native: true,
@@ -2826,11 +2824,29 @@ fn gate_owner(
         worktree: "S:/Code/demo/demo-sand".to_owned(),
         command: "cargo test".to_owned(),
         started: "2026-11-26 10:00:00".to_owned(),
-        epoch: Some(headwork_adapters::gate::epoch_now().saturating_sub(age_s)),
+        epoch: None,
     }
 }
 
-fn gate_slot(w: &World, class: &str, slot: u32, owner: &headwork_core::gate::Owner) -> PathBuf {
+/// Writes an owner file last changed `age_s` seconds ago.
+fn write_aged(path: &Path, owner: &headwork_core::gate::Owner, age_s: u64) {
+    std::fs::write(path, owner.render()).unwrap();
+    let at = std::time::SystemTime::now() - Duration::from_secs(age_s);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+}
+
+fn gate_slot(
+    w: &World,
+    class: &str,
+    slot: u32,
+    owner: &headwork_core::gate::Owner,
+    age_s: u64,
+) -> PathBuf {
     let dir = w
         .dir
         .path()
@@ -2838,7 +2854,7 @@ fn gate_slot(w: &World, class: &str, slot: u32, owner: &headwork_core::gate::Own
         .join(class)
         .join(format!("slot-{slot}"));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("owner"), owner.render()).unwrap();
+    write_aged(&dir.join("owner"), owner, age_s);
     dir
 }
 
@@ -2873,12 +2889,13 @@ fn the_tick_reaps_a_dead_holder_and_a_dead_waiter_and_logs_each() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(wait_dead(dead), "the helper ended");
-    let slot = gate_slot(&w, "cpu", 1, &gate_owner(dead, GateClass::Cpu, 5));
+    let slot = gate_slot(&w, "cpu", 1, &gate_owner(dead, GateClass::Cpu), 5);
     let live = gate_slot(
         &w,
         "cpu",
         2,
-        &gate_owner(std::process::id(), GateClass::Cpu, 5),
+        &gate_owner(std::process::id(), GateClass::Cpu),
+        5,
     );
     let waiter = w
         .dir
@@ -2887,7 +2904,7 @@ fn the_tick_reaps_a_dead_holder_and_a_dead_waiter_and_logs_each() {
         .join("gpu")
         .join(format!("wait-{dead}"));
     std::fs::create_dir_all(waiter.parent().unwrap()).unwrap();
-    std::fs::write(&waiter, gate_owner(dead, GateClass::Gpu, 5).render()).unwrap();
+    write_aged(&waiter, &gate_owner(dead, GateClass::Gpu), 5);
 
     run_tick(&mut w);
     assert!(!slot.exists(), "the dead holder's slot is gone");
@@ -2923,7 +2940,8 @@ fn a_cpu_holder_past_the_limit_stands_until_it_ends() {
         &w,
         "cpu",
         1,
-        &gate_owner(std::process::id(), GateClass::Cpu, 5 * 60),
+        &gate_owner(std::process::id(), GateClass::Cpu),
+        5 * 60,
     );
     let report = run_tick(&mut w);
     assert!(rules(&report).is_empty(), "under the limit: {report:?}");
@@ -2932,13 +2950,15 @@ fn a_cpu_holder_past_the_limit_stands_until_it_ends() {
         &w,
         "cpu",
         1,
-        &gate_owner(std::process::id(), GateClass::Cpu, 11 * 60),
+        &gate_owner(std::process::id(), GateClass::Cpu),
+        11 * 60,
     );
     let gpu = gate_slot(
         &w,
         "gpu",
         1,
-        &gate_owner(std::process::id(), GateClass::Gpu, 3 * 3600),
+        &gate_owner(std::process::id(), GateClass::Gpu),
+        3 * 3600,
     );
     let report = run_tick(&mut w);
     assert_eq!(
@@ -2977,17 +2997,17 @@ fn a_waiter_past_the_limit_is_starved_until_it_leaves() {
     let dir = w.dir.path().join("slots").join("cpu");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("wait-{}", std::process::id()));
-    std::fs::write(
+    write_aged(
         &file,
-        gate_owner(std::process::id(), GateClass::Cpu, 10 * 60).render(),
-    )
-    .unwrap();
+        &gate_owner(std::process::id(), GateClass::Cpu),
+        10 * 60,
+    );
     assert!(rules(&run_tick(&mut w)).is_empty(), "not yet");
-    std::fs::write(
+    write_aged(
         &file,
-        gate_owner(std::process::id(), GateClass::Cpu, 21 * 60).render(),
-    )
-    .unwrap();
+        &gate_owner(std::process::id(), GateClass::Cpu),
+        21 * 60,
+    );
     let report = run_tick(&mut w);
     assert_eq!(
         rules(&report),
