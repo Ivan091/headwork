@@ -20,3 +20,6 @@ copied: the part's first action is its own `Allow` ask, and the user taps again 
 **More than four allow-asks become several asks.** `MAX_ALLOW_ASKS` and its refusal are gone; the first-action
 section groups the questions by four (`QUESTIONS_PER_ASK`) and tells the worker to call `AskUserQuestion` once per
 group, one after another. The `PostToolUse` hook already grants per answered question, so nothing else changed.
+
+The rules files are unchanged: they sit near the size a hook may inject, so the guidance lives in the `spawn` and
+`part_spawn` tool descriptions and in the refusal texts.

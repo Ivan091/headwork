@@ -71,7 +71,8 @@ pub enum GoRefusal {
     #[error(
         "the task names `{pattern}`, a user-only command, but kind `{kind}` of {project} is not main-only: {}; add \
          `--allow-ask \"<exact command>\"` when the user asked a worker to run it. If the brief only warns against it, \
-         take the command out of the brief: the worker rules already keep it the user's",
+         forbid it right before it, as in \"never run `{pattern}`\", or take it out: the worker rules already keep it \
+         the user's",
         kind_hint(.project, .suggested)
     )]
     NotMainOnly {

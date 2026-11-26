@@ -201,7 +201,8 @@ const TOOLS: &[ToolDef] = &[
                         "description": concat!(
                             "User-only commands the user explicitly asked this worker to run, each exactly as the user ",
                             "asked. The worker's first action is the `Allow` ask for them; it runs a command only after ",
-                            "the user's tap; more than four become several asks. The kind must be main-only.",
+                            "the user's tap; more than four become several asks. The kind must be main-only. A brief may ",
+                            "forbid any user-only command without this (\"never run `x`\").",
                         ),
                     },
                 }),

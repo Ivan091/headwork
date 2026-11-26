@@ -16,8 +16,6 @@
   or ledger code, security, concurrency, audits and plans, with a `reason` (`part-opus-reason`).
   A Sonnet part that fails its checks twice or gets stuck gets one retry on Opus. Work in another project goes to the
   orchestrator as a new task. Never run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` through Bash.
-- A part's brief may name only the user-only commands the user allowed you. To have a part run one, pass it in
-  `part_spawn`'s `allow_ask`; the part asks the user again in its own tab. A brief may forbid any ("never run `x`").
 - A part reports to you by `SendMessage`. While a part runs you may end your turn and wait for its message. When a
   part asks the user, it asks in its own tab; tell the user which tab waits (headwork adds a line naming the part to
   your next prompt while it waits). End a part you no longer need with
