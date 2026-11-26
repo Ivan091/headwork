@@ -798,28 +798,32 @@ fn a_second_machine_adopts_against_the_shared_file_already_in_the_repository() {
 }
 
 #[test]
-fn a_shared_file_that_does_not_fit_the_machine_stops_the_adoption() {
+fn a_shared_file_that_differs_from_the_machine_is_overridden_in_the_machine_file() {
     let first = adopted();
     let shared_path = first.repo.path().join("headwork/config.toml");
     let shared = std::fs::read_to_string(&shared_path).unwrap();
     std::fs::write(
         &shared_path,
-        shared.replace("default = \"sonnet\"", "default = \"haiku\""),
+        format!(
+            "{}\n[leads]\nenabled = true\n\n[project.elsewhere]\nallowed_repos = [\"x/y\"]\n",
+            shared.replace("default = \"sonnet\"", "default = \"haiku\"")
+        ),
     )
     .unwrap();
     let second_home = tempfile::tempdir().unwrap();
     std::fs::write(second_home.path().join("config.toml"), fixture()).unwrap();
     let repo = first.repo.path().to_str().unwrap();
-    let refused = headwork(second_home.path(), &adopt_args("second", repo, true));
-    assert_eq!(refused.status.code(), Some(1), "{}", stdout(&refused));
+    let written = headwork(second_home.path(), &adopt_args("second", repo, true));
+    assert!(written.status.success(), "{}", stderr(&written));
+    let machine = std::fs::read_to_string(second_home.path().join("config.machine.toml")).unwrap();
+    assert!(machine.contains("default = \"sonnet\""), "{machine}");
+    assert!(machine.contains("unset"), "{machine}");
+    let check = headwork(second_home.path(), &["config", "check"]);
     assert!(
-        stderr(&refused).contains("shared and machine files already there"),
-        "{}",
-        stderr(&refused)
-    );
-    assert!(
-        !first.repo.path().join("machines/second").exists(),
-        "nothing written"
+        check.status.success(),
+        "{}{}",
+        stdout(&check),
+        stderr(&check)
     );
 }
 
