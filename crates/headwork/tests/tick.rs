@@ -1446,20 +1446,38 @@ fn set_tool_in_flight(w: &World, session: &str) {
 #[test]
 fn fresh_activity_unmarks_an_idle_session() {
     let mut w = world();
-    let (_, session) = idle_merged(&mut w, "sand");
-    w.limits.idle_free_merged = Some(3600);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(60);
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        "UPDATE sessions SET last_event_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours') WHERE id = ?1",
+        [&session],
+    )
+    .unwrap();
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert!(idle_marked(&w, &session), "marked idle");
+    run_tick(&mut w);
+    assert!(
+        idle_marked(&w, &session),
+        "control: still marked without activity"
+    );
     w.store.touch_session(&session).unwrap();
     run_tick(&mut w);
     assert!(
         !idle_marked(&w, &session),
         "a hook event reset its idle age"
     );
+}
 
-    let (_, other) = idle_merged(&mut w, "snow");
-    w.limits.idle_free_merged = Some(3600);
-    set_tool_in_flight(&w, &other);
+#[test]
+fn a_tool_in_flight_unmarks_an_idle_session() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    set_tool_in_flight(&w, &session);
     run_tick(&mut w);
-    assert!(!idle_marked(&w, &other), "a tool is in flight");
+    assert!(!idle_marked(&w, &session), "a tool is in flight");
 }
 
 #[test]
