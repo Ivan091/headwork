@@ -532,7 +532,8 @@ impl Slots {
     ///
     /// # Errors
     ///
-    /// Returns [`GateError::Io`] when a slot cannot be made or written.
+    /// Returns [`GateError::Io`] when a slot cannot be made or written, or when no slot was taken and stale slots could
+    /// not be taken away.
     pub fn claim_for(
         &self,
         class: GateClass,
@@ -543,10 +544,10 @@ impl Slots {
     ) -> Result<Option<u32>, GateError> {
         let dir = self.class_dir(class);
         std::fs::create_dir_all(&dir).map_err(io_error("creating", &dir))?;
-        drop(self.reap(class));
+        let reap_error = self.reap(class).error;
         let view = self.read(class, count);
         if free_slots(count, view.used()) == 0 {
-            return Ok(None);
+            return reap_error.map_or(Ok(None), Err);
         }
         let ticket = Ticket {
             slots: self.clone(),
@@ -560,7 +561,7 @@ impl Slots {
             wait_file: None,
         };
         let Some(held) = ticket.claim(&view, started, epoch)? else {
-            return Ok(None);
+            return reap_error.map_or(Ok(None), Err);
         };
         let slot = held.slot();
         held.keep();
@@ -589,6 +590,8 @@ pub enum Attempt {
         view: ClassView,
         /// Live waiters that came before this one.
         ahead: u32,
+        /// Why a stale slot or file could not be taken away, which may be what keeps this one waiting.
+        reap_error: Option<GateError>,
     },
 }
 
@@ -602,25 +605,38 @@ impl Ticket {
     /// Tries once to take a slot: takes stale slots and dead waiters' files away, then takes the first free slot when
     /// fewer live waiters came before this one than slots are free. A `cpu` holder that then finds the older holders
     /// and the live legacy slots fill the count gives the slot back and keeps waiting. The slot's owner file records
-    /// `started` (local time) and `epoch` as the moment it was taken. On success the wait file is removed.
+    /// `started` (local time) and `epoch` as the moment it was taken. On success the wait file is removed; a wait
+    /// carries the reaping's failure, if any.
     ///
     /// # Errors
     ///
     /// Returns [`GateError::Io`] when a slot cannot be made or written.
     pub fn try_take(&mut self, started: &str, epoch: u64) -> Result<Attempt, GateError> {
-        drop(self.slots.reap(self.class));
+        let reap_error = self.slots.reap(self.class).error;
         let view = self.slots.read(self.class, self.count);
         let ahead = view.waiters_before(&self.owner);
         if !may_take(free_slots(self.count, view.used()), ahead) {
-            return Ok(Attempt::Wait { view, ahead });
+            return Ok(Attempt::Wait {
+                view,
+                ahead,
+                reap_error,
+            });
         }
         let Some(held) = self.claim(&view, started, epoch)? else {
-            return Ok(Attempt::Wait { view, ahead });
+            return Ok(Attempt::Wait {
+                view,
+                ahead,
+                reap_error,
+            });
         };
         let Some(held) = self.settle(held)? else {
             let view = self.slots.read(self.class, self.count);
             let ahead = view.waiters_before(&self.owner);
-            return Ok(Attempt::Wait { view, ahead });
+            return Ok(Attempt::Wait {
+                view,
+                ahead,
+                reap_error,
+            });
         };
         self.leave();
         Ok(Attempt::Held(held))
@@ -1027,7 +1043,7 @@ mod tests {
         let mut third = slots
             .enqueue(GateClass::Cpu, count(2), owner(3, 12))
             .unwrap();
-        let Attempt::Wait { view, ahead } = third.try_take("t", epoch_now()).unwrap() else {
+        let Attempt::Wait { view, ahead, .. } = third.try_take("t", epoch_now()).unwrap() else {
             panic!("a third holder must wait");
         };
         assert_eq!(ahead, 0, "no one ahead");
@@ -1232,6 +1248,24 @@ mod tests {
             "the dead waiter's file is still taken away: {reaping:?}"
         );
         assert!(!dir.join("wait-8").exists(), "its file is gone");
+    }
+
+    #[test]
+    fn a_wait_says_why_a_stale_slot_stays() {
+        let fake = Fake::live(&[2]);
+        let (_dir, slots) = slots(&fake);
+        let dir = slots.class_dir(GateClass::Cpu);
+        let slot = write_slot(&dir, 1, &owner(9, 1).render());
+        let pinned = Pinned::new(&slot);
+        let mut ticket = slots
+            .enqueue(GateClass::Cpu, count(1), owner(2, 20))
+            .unwrap();
+        let attempt = ticket.try_take("t", epoch_now()).unwrap();
+        drop(pinned);
+        let Attempt::Wait { reap_error, .. } = attempt else {
+            panic!("the pinned slot cannot be taken");
+        };
+        assert!(reap_error.is_some(), "the failure is carried");
     }
 
     #[test]

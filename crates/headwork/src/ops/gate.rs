@@ -204,12 +204,23 @@ fn wait_for_slot(
     loop {
         match ticket.try_take(&local_now(), gate::epoch_now()) {
             Ok(Attempt::Held(held)) => return Ok(Waited::Held(held)),
-            Ok(Attempt::Wait { view, ahead }) => {
+            Ok(Attempt::Wait {
+                view,
+                ahead,
+                reap_error,
+            }) => {
                 if told.is_none() {
                     events.record(EVENT_GATE_WAIT, serde_json::json!({ "ahead": ahead }));
                 }
                 if told.is_none_or(|at| at.elapsed() >= REPORT_EVERY) {
                     writeln!(err, "headwork: {}", view.wait_message(ahead))?;
+                    if let Some(error) = reap_error {
+                        writeln!(
+                            err,
+                            "headwork: a stale {} slot could not be taken away: {error}",
+                            view.class
+                        )?;
+                    }
                     told = Some(Instant::now());
                 }
             }
