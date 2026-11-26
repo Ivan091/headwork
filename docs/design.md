@@ -391,7 +391,6 @@ The chain for each ask, in order: host (wmux blocked with buttons, cmux Feed plu
 ```toml
 [machine]
 host = "wmux"
-max_children = 10
 remote_control = true
 push = "claude"
 notify_ntfy = ""
