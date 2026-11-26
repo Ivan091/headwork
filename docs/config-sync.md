@@ -5,7 +5,7 @@ Approved by the user on 2026-11-25 with every recommendation in the decision tab
 ## Today
 
 - Each machine reads one file, `~/.headwork/config.toml` (`Home::load_config`, `crates/headwork/src/home.rs:147`), plus each project's `.headwork.toml` overlay.
-- The Windows file has 145 lines. About half of it is machine-specific: `[machine]` (host, shell, wmux), all `S:/Code` and `C:/Users/User` paths (`[hooks] orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `[watch] roots`, every `project.*.main`, `read_only_paths`, `extra_writable`). The rest is shared: `[models]`, `[usage.prices]`, `enforce_rules`, `[layout]`, `[leads]`, `[update]`, `[reviews]`, the watch thresholds, and each project's policy (`deliver`, `main_only`, `user_only`, `jobs`, `allowed_repos`, `long_jobs`; `heavy_*` is deprecated and not enforced, `docs/decisions/2026-11-25-heavy-keys-deprecated.md`).
+- The Windows file has 145 lines. About half of it is machine-specific: `[machine]` (host, shell, wmux), all `S:/Code` and `C:/Users/User` paths (`[hooks] orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `[watch] roots`, `[todo] file`, every `project.*.main`, `read_only_paths`, `extra_writable`). The rest is shared: `[models]`, `[usage.prices]`, `enforce_rules`, `[layout]`, `[leads]`, `[update]`, `[reviews]`, the watch thresholds, and each project's policy (`deliver`, `main_only`, `user_only`, `jobs`, `allowed_repos`, `long_jobs`; `heavy_*` is deprecated and not enforced, `docs/decisions/2026-11-25-heavy-keys-deprecated.md`).
 - The Mac gets its config by hand (`briefs/mac-adopt-headwork-flow.md`, plus a pasted prompt for the prices).
 - `[machine] notify_ntfy` is a secret: anyone who knows the topic URL can read and send the notifications.
 
@@ -26,7 +26,7 @@ The shared and per-machine sources live in the private `claude_config` repositor
 ```
 ~/.claude/                          (claude_config)
   headwork/config.toml              shared: models, prices, rules, reviews, layout, leads, update, project policy
-  machines/windows/headwork.toml    PC (optional, see "Machine part on the machine"): [machine], paths, project mains, writable lists, watch roots
+  machines/windows/headwork.toml    PC (optional, see "Machine part on the machine"): [machine], paths, project mains, writable lists, watch roots, [todo] file
   machines/mac/headwork.toml        Mac: the same, with cmux and Mac paths
 ~/.headwork/                        (never committed)
   sources.toml                      which repository and which machine this is (written once)
@@ -60,7 +60,7 @@ The order is shared → the machine file (`~/.headwork/config.machine.toml` when
 | Appending to a shared array | Explicit: `extend.hooks.enforce_rules = ["x"]` in the machine file. It is rarely needed, so this is optional for v1. |
 | Removing a key or table | `unset = ["project.me-sim-site", "hooks.enforce_rules"]` at the top of the machine or local file. Unsetting a key that no lower layer sets is an error, which catches typos. |
 | Projects | Shared holds a project's policy. A project **exists on a machine only when that machine's file gives it a `main`**, so a project the Mac does not have needs no `unset`. A shared project with no `main` is dropped, and the drop is listed in the sync output. |
-| Paths | There is no `{code}`-style variable in v1. Keys that hold paths simply live in the machine file. Validation refuses a shared file that sets a machine-only key (`machine.*`, `project.*.main`, `read_only_paths`, `extra_writable`, `hooks.orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `watch.roots`). That keeps the shared file portable. |
+| Paths | There is no `{code}`-style variable in v1. Keys that hold paths simply live in the machine file. Validation refuses a shared file that sets a machine-only key (`machine.*`, `project.*.main`, `read_only_paths`, `extra_writable`, `hooks.orchestrator_writable`, `orchestrator_repos`, `brief_writable`, `watch.roots`, `todo.file`). That keeps the shared file portable. |
 
 The merge works on `toml::Value`, as a pure function in `core` (`core/src/config_layers.rs`) that returns the merged value and a per-key origin map. `Config::parse` (with `deny_unknown_fields`) then checks the result exactly as today.
 

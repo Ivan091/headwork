@@ -4,11 +4,11 @@ The to-do list moves from a hand-edited `todo.md` into the store (migration 0025
 orchestrator edits as prose cannot be queried, linked to a task, or written by two sessions safely. The file stays, as an
 export git can carry, and is overwritten from the store.
 
-Choices taken: an import matches items by their text (whitespace collapsed, a leading `For you:` removed) so it is
+Choices taken: an import matches items by their text (whitespace collapsed, a leading `For you:` or `For you (...):` removed, the same reading `add` and `edit` give a text) so it is
 idempotent and tolerates the export's own wording, and never deletes or changes a row; nothing is exported to a file that
 exists until it was imported once, so a first run cannot replace a list the store has not read; a file edited by hand
 since the last export is copied to `<home>/todo-backups` (newest 10) and then overwritten, because the store is the
 source and the hand edit is still recoverable; dropped items stay in the store and are not exported, and only the 20 most
 recent done items are, because the file is read by people who want the open list; a group `(superseded ...)` or
 `(dropped ...)` closes an item as dropped, one that starts with `done` as done, whatever the rest says; `[todo] file` is a
-machine-only config key, since its path differs per machine; a failed export never undoes a change.
+machine-only config key, since its path differs per machine; a failed export never undoes a change; the owner column is the only source of ownership, so the `For you:` words are removed from the text and printed again by the export for the user's items; a link refused after a task started leaves the task running and says so, instead of rolling the task back.

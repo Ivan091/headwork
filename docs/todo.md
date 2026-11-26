@@ -17,10 +17,10 @@ Migration 0025 adds two tables (`crates/store/src/todos.rs`, pure types in `crat
 |---|---|
 | `project` | The area heading: `me-sim`, `headwork`, `claude-config`, `me-studio`, `Setup`, `general` (items outside every heading, and everything that came from the Done and Dropped sections) |
 | `section` | A `###` subheading under the project, or none |
-| `text` | The item, without the checkbox, the groups `added`, `not_before` and `due` came from, and a trailing done or dropped group |
+| `text` | The item, one line, without the checkbox, the groups `added`, `not_before` and `due` came from, a trailing done or dropped group and a `For you:` prefix |
 | `notes` | The indented sub-bullets, one per line |
 | `state` | `open`, `done` or `dropped` |
-| `owner` | `user` when the text starts with `For you` (any case), else `agent` |
+| `owner` | `user` or `agent`: the only place ownership lives. A leading `For you:` or `For you (...):` (any case) is removed from the text when an item is imported, added or edited, and sets `user` |
 | `added`, `not_before`, `due` | `YYYY-MM-DD` or none |
 | `done_on`, `done_note` | When an item was done or dropped, and what was said |
 | `task_id` | The task spawned for it |
@@ -54,9 +54,9 @@ Lines are split on `\n` only, so a stray `\r` inside a line stays and one at its
 
 The export (`render`) writes the title and one intro paragraph, then every open item by project (in the order of the
 projects' first items, `general` last) with the items that have no section first and each section after, then
-`## Done (last 20)` with the 20 most recent done items. An item prints `For you: ` when its owner is the user and the
-text does not already say so, and `(not before D) (due D) (added D)` unless the text already says that date. A linked open
-item ends with `(task <name>, <state>)`. Dropped items are not written. The reader understands what the renderer
+`## Done (last 20)` with the 20 most recent done items. An item prints `For you: ` when its owner is the user (and only then), and `(not before D) (due D) (added D)` unless the
+text already says that date. A linked open item ends with `(task <name>)`; the reader also takes the earlier
+`(task <name>, <state>)`, and the state is shown by `todo_list` and the CLI list only. Dropped items are not written. The reader understands what the renderer
 writes: a test renders then parses and compares text, state, owner and dates.
 
 ## 3. Import
@@ -64,7 +64,7 @@ writes: a test renders then parses and compares text, state, owner and dates.
 `headwork todo import [--file P] [--dry-run]` reads the file (default `[todo] file`), matches each item to the store by
 text, and adds the ones the store lacks.
 
-- Identity is the text with whitespace collapsed and a leading `For you:` removed. An item whose text a row already has,
+- Identity is the text with whitespace collapsed and a leading `For you:` or `For you (...):` removed. An item whose text a row already has,
   in any state, counts as `already` and is skipped. A second line with the same text in the same file counts as
   `duplicate` and is skipped.
 - It never deletes or changes a row and never writes the file. Importing the same file twice adds nothing.
@@ -77,20 +77,29 @@ text, and adds the ones the store lacks.
 after a close that finished an item, and in every tick (a safety net: a store changed while no export was possible is
 written at the next tick).
 
-1. Render. When the content hashes to `todo_files.export_hash` and the file exists, nothing is written. The hash ignores
-   the difference between `\n` and `\r\n`, so a Windows checkout does not look edited.
-2. A file that exists while `todo_files` has no `imported_at` for its path is never written: the command says "run
-   `headwork todo import` first".
-3. When the file on disk no longer hashes to `export_hash` (edited by hand since the last export, or never exported
-   after an import), it is copied to `<home>/todo-backups/todo-<timestamp>.md` first (the newest 10 are kept),
-   `todo-export-overwrote` is logged with the copy's path and the command's output names the copy.
-4. The write is atomic: a temp file in the same folder, then a rename.
+1. Render. When the content hashes to `todo_files.export_hash` and the file exists, nothing is written (a file edited by
+   hand stays until the store changes). The hash ignores the difference between `\n` and `\r\n`, so a Windows checkout
+   does not look edited. A file that is missing is written again.
+2. A file that exists while `todo_files` has neither `imported_at` nor an `export_hash` for its path is never written: the
+   command says "run `headwork todo import` first". A file headwork created itself has an `export_hash`, so it counts
+   as imported.
+3. The new content is written to a temp file in the same folder (its name is unique per call). Then, when the file on
+   disk no longer hashes to `export_hash` (edited by hand since the last export, or never exported after an import), it
+   is copied to `<home>/todo-backups/todo-<timestamp>.md` (the newest 10 are kept), `todo-export-overwrote` is logged with
+   the copy's path and the command's output names the copy. A temp file that cannot be written makes no copy and no event.
+4. The temp file is renamed over the file.
+
+The path is made absolute (and resolved when the file exists) before it is used as the key of `todo_files`, so `--file
+todo.md` and its absolute path are one record.
 
 headwork never commits `todo.md`; the orchestrator commits and pushes it in code-home as before. With no `[todo] file`
 and no `--file`, nothing is exported and the output says so. The key is machine-only (`machines/<name>/headwork.toml`,
 `docs/config-sync.md`), since the path differs per machine.
 
-A failed export never undoes a change: the change is in the store and the output carries `export failed: <why>`.
+A failed export never undoes a change: the change is in the store and the output carries `export failed: <why>`. After
+a close a failed export logs `todo-export-failed` with the error and the close stands. In the tick a failed export is
+the stage's error (a `tick-error` finding) and the later stages run; a file that exists and was never imported stays
+quiet there, since setting `[todo] file` is followed by the import step of the migration note.
 
 ## 5. Commands and tools
 
@@ -106,6 +115,12 @@ headwork todo export [--file P] [--json]
 
 A list line is `#<id> [<project>/<section>] <text> (owner, dates, task <name>, <state>)`.
 
+An item must be writable to the file: the text is non-empty and one line, the project is non-empty, one line, does not
+start with `#` and does not start with Done or Dropped (those headings hold finished items), the section is one line
+and does not start with `#`, and each note is one line (a leading `- ` is dropped). `add` and `edit` trim, read the text
+as an import reads a line (date groups become the fields, a `For you:` prefix the owner; an explicit option wins) and
+refuse what is left with the reason; the store refuses it too.
+
 The orchestrator has `todo_list`, `todo_add`, `todo_done` and `todo_edit` with the same filters and fields; each returns
 the item lines and the export outcome. Workers have none of them.
 
@@ -113,14 +128,15 @@ the item lines and the export outcome. Workers have none of them.
 
 `headwork spawn ... --todo <id>` and the `todo` argument of the MCP `spawn` tool tie a task to an item.
 
-- Refused, before the task exists, when the item is not open or a live task already holds it (a live task is one that is
-  not closed, dropped or failed).
+- Refused, before the task exists, when the item is unknown, not open or a live task already holds it (a live task is
+  one that is not closed, dropped or failed). A link refused after the task started leaves it running unlinked: the
+  spawn output and the MCP result (`todo_unlinked`) say so and why.
 - `todos.task_id` is set once the task exists; `todo_list` shows the task and its state, and the export prints it.
 - Where a task's state changes (`apply_in` in `crates/store/src/queries.rs`, the one place every path goes through:
   the finisher, the tick, `close --force`, a part's drop), a task that becomes `closed` finishes its item: `done` today
-  with the note `task <name>`, and `merged <url>, <url>` after it when the task had merged pull requests. A task that
-  becomes `dropped` or `failed` frees the item, which stays open. The export follows the close
-  (`ops::close`, after `Cleaned`).
+  with the note `task <name>` (the link ends), and `merged <url>, <url>` after it when the task had merged pull requests. A task that
+  becomes `dropped` or `failed` frees the item, which stays open. The export follows every close
+  (`ops::close`, after `Cleaned`; a no-op when nothing changed).
 - A change of the item by hand (`todo done`, a drop) unlinks it.
 
 ## 7. One machine
