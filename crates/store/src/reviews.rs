@@ -132,11 +132,11 @@ pub struct ReviewSummary {
     pub round: u8,
     /// Where it is.
     pub state: ReviewState,
-    /// Node instances of the round that are over.
-    pub nodes_done: u32,
+    /// Node instances of the round that are over, done or failed.
+    pub nodes_over: u32,
     /// Node instances of the round that run.
     pub nodes_running: u32,
-    /// Findings of the round.
+    /// Findings so far, over every round up to the current one.
     pub findings: u32,
 }
 
@@ -144,13 +144,13 @@ impl std::fmt::Display for ReviewSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "review {} {}, level {}, round {}: {}, {} node(s) done, {} running, {} finding(s)",
+            "review {} {}, level {}, round {}: {}, {} node(s) over, {} running, {} finding(s)",
             self.id,
             self.flow,
             self.level,
             self.round,
             self.state,
-            self.nodes_done,
+            self.nodes_over,
             self.nodes_running,
             self.findings
         )
@@ -350,11 +350,13 @@ fn open_review_in(conn: &Connection, task: TaskId) -> Result<Option<ReviewRow>, 
     .transpose()
 }
 
+fn count_of(conn: &Connection, review: &ReviewRow, sql: &str) -> Result<u32, StoreError> {
+    let n: i64 = conn.query_row(sql, params![review.id, review.round], |row| row.get(0))?;
+    u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
+}
+
 fn counts_in(conn: &Connection, review: &ReviewRow) -> Result<FindingCounts, StoreError> {
-    let count = |sql: &str| -> Result<u32, StoreError> {
-        let n: i64 = conn.query_row(sql, params![review.id, review.round], |row| row.get(0))?;
-        u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
-    };
+    let count = |sql: &str| count_of(conn, review, sql);
     Ok(FindingCounts {
         awaiting_lead: count(
             "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round <= ?2 \
@@ -464,26 +466,21 @@ impl Store {
         else {
             return Ok(None);
         };
-        let count = |sql: &str| -> Result<u32, StoreError> {
-            let n: i64 = self
-                .conn
-                .query_row(sql, params![review.id, review.round], |row| row.get(0))?;
-            u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
-        };
+        let count = |sql: &str| count_of(&self.conn, &review, sql);
         Ok(Some(ReviewSummary {
             id: review.id,
             flow: review.flow.clone(),
             level: review.level,
             round: review.round,
             state: review.state,
-            nodes_done: count(
+            nodes_over: count(
                 "SELECT COUNT(*) FROM review_nodes WHERE review_id = ?1 AND round = ?2 AND state IN ('done', 'failed')",
             )?,
             nodes_running: count(
                 "SELECT COUNT(*) FROM review_nodes WHERE review_id = ?1 AND round = ?2 AND state = 'running'",
             )?,
             findings: count(
-                "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2",
+                "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round <= ?2",
             )?,
         }))
     }
