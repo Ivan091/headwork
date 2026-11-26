@@ -67,7 +67,7 @@ impl Machine {
     }
 
     fn add_user_item(&self, text: &str) {
-        self.ok(&["todo", "add", "demo", text, "--owner", "user"]);
+        self.ok(&["backlog", "add", "demo", text, "--owner", "user"]);
     }
 }
 
@@ -97,7 +97,7 @@ fn an_empty_digest_says_so_and_adds_nothing_to_board_or_status() {
 fn due_and_user_items_show_on_the_digest_the_board_and_the_status() {
     let m = Machine::new("");
     m.ok(&[
-        "todo",
+        "backlog",
         "add",
         "demo",
         "Renew the invented licence",
@@ -107,7 +107,7 @@ fn due_and_user_items_show_on_the_digest_the_board_and_the_status() {
         "2020-01-02",
     ]);
     m.ok(&[
-        "todo",
+        "backlog",
         "add",
         "demo",
         "Tidy the invented shelf",
@@ -116,14 +116,15 @@ fn due_and_user_items_show_on_the_digest_the_board_and_the_status() {
     ]);
     let digest = m.ok(&["digest"]);
     assert!(
-        digest.starts_with("Needs you\n- todo #1: Renew the invented licence (due 2020-01-02)\n"),
+        digest
+            .starts_with("Needs you\n- backlog #1: Renew the invented licence (due 2020-01-02)\n"),
         "{digest}"
     );
     assert!(!digest.contains("shelf"), "agent items stay out: {digest}");
     for command in ["board", "status"] {
         let text = m.ok(&[command]);
         assert!(
-            text.starts_with("Needs you\n- todo #1"),
+            text.starts_with("Needs you\n- backlog #1"),
             "{command}: {text}"
         );
     }

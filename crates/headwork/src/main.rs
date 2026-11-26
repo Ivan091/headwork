@@ -213,7 +213,7 @@ enum Command {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`; every live task when absent.
         name: Option<String>,
     },
-    /// Show what waits on the user: asks, to-do items due, migration notes, pull requests, standing findings.
+    /// Show what waits on the user: asks, backlog items due, migration notes, pull requests, standing findings.
     Digest {
         /// Print the digest as JSON.
         #[arg(long)]
@@ -313,9 +313,10 @@ enum Command {
         #[command(subcommand)]
         action: MigrateAction,
     },
-    /// The to-do list kept in the store and exported to `todo.md` (`docs/todo.md`): list, add, done, reopen, edit, import,
+    /// The backlog list kept in the store and exported to `backlog.md` (`docs/backlog.md`): list, add, done, reopen, edit, import,
     /// export.
-    Todo(TodoArgs),
+    #[command(alias = "todo")]
+    Backlog(BacklogArgs),
     /// The effective config generated from the shared, machine and local layers (`docs/config-sync.md`).
     Config {
         #[command(subcommand)]
@@ -517,24 +518,24 @@ impl From<SettledArg> for headwork_core::migrate::Settled {
     }
 }
 
-/// The arguments of `todo`: a subcommand, or the filters of `todo list` when there is none.
+/// The arguments of `backlog`: a subcommand, or the filters of `backlog list` when there is none.
 #[derive(Debug, clap::Args)]
-struct TodoArgs {
+struct BacklogArgs {
     #[command(subcommand)]
-    action: Option<TodoAction>,
+    action: Option<BacklogAction>,
     #[command(flatten)]
-    list: TodoListArgs,
+    list: BacklogListArgs,
 }
 
-/// What `todo list` shows.
+/// What `backlog list` shows.
 #[derive(Debug, Clone, clap::Args)]
-struct TodoListArgs {
+struct BacklogListArgs {
     /// Only this project.
     #[arg(long)]
     project: Option<String>,
     /// Only items for this owner: `user` or `agent`.
     #[arg(long)]
-    owner: Option<headwork_core::todo::TodoOwner>,
+    owner: Option<headwork_core::backlog::BacklogOwner>,
     /// `open` (the default), `done`, `dropped` or `all`.
     #[arg(long, default_value = "open")]
     state: String,
@@ -543,11 +544,11 @@ struct TodoListArgs {
     json: bool,
 }
 
-/// What `todo` does.
+/// What `backlog` does.
 #[derive(Debug, Subcommand)]
-enum TodoAction {
+enum BacklogAction {
     /// List items, open ones by default.
-    List(TodoListArgs),
+    List(BacklogListArgs),
     /// Add an item, last.
     Add {
         /// The area heading, such as `me-sim` or `Setup`.
@@ -559,13 +560,13 @@ enum TodoAction {
         section: Option<String>,
         /// Who acts: `user` or `agent`; the user when the text starts with `For you`.
         #[arg(long)]
-        owner: Option<headwork_core::todo::TodoOwner>,
+        owner: Option<headwork_core::backlog::BacklogOwner>,
         /// The first day it may start, `YYYY-MM-DD`.
         #[arg(long, value_name = "DATE")]
-        not_before: Option<headwork_core::todo::TodoDate>,
+        not_before: Option<headwork_core::backlog::BacklogDate>,
         /// The day it is due, `YYYY-MM-DD`.
         #[arg(long, value_name = "DATE")]
-        due: Option<headwork_core::todo::TodoDate>,
+        due: Option<headwork_core::backlog::BacklogDate>,
         /// A sub-bullet under the item; repeatable.
         #[arg(long = "note", value_name = "NOTE")]
         notes: Vec<String>,
@@ -610,7 +611,7 @@ enum TodoAction {
         section: Option<String>,
         /// The new owner: `user` or `agent`.
         #[arg(long)]
-        owner: Option<headwork_core::todo::TodoOwner>,
+        owner: Option<headwork_core::backlog::BacklogOwner>,
         /// The new first day, `YYYY-MM-DD`, or `none` to clear it.
         #[arg(long, value_name = "DATE|none")]
         not_before: Option<String>,
@@ -624,9 +625,9 @@ enum TodoAction {
         #[arg(long)]
         json: bool,
     },
-    /// Read a `todo.md` and add the items the store lacks (matched by text); never deletes, changes or rewrites anything.
+    /// Read a `backlog.md` and add the items the store lacks (matched by text); never deletes, changes or rewrites anything.
     Import {
-        /// The file; `[todo] file` when absent.
+        /// The file; `[backlog] file` when absent.
         #[arg(long)]
         file: Option<PathBuf>,
         /// Report what would be added and write nothing.
@@ -636,9 +637,9 @@ enum TodoAction {
         #[arg(long)]
         json: bool,
     },
-    /// Write the store's items to `todo.md` now, when the content changed since the last export.
+    /// Write the store's items to `backlog.md` now, when the content changed since the last export.
     Export {
-        /// The file; `[todo] file` when absent.
+        /// The file; `[backlog] file` when absent.
         #[arg(long)]
         file: Option<PathBuf>,
         /// Print JSON instead of text.
@@ -841,10 +842,10 @@ struct SpawnArgs {
     /// worker's first action is the `Allow` ask for it, and it runs the command only after the user's tap.
     #[arg(long = "allow-ask", value_name = "COMMAND")]
     allow_ask: Vec<String>,
-    /// The to-do item (its id from `headwork todo`) this task comes from: it is linked to the task and finished when the
+    /// The backlog item (its id from `headwork backlog`) this task comes from: it is linked to the task and finished when the
     /// task closes.
-    #[arg(long, value_name = "ID")]
-    todo: Option<i64>,
+    #[arg(long, value_name = "ID", alias = "todo")]
+    backlog: Option<i64>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -866,6 +867,15 @@ fn main() -> ExitCode {
         .version(headwork::version::text())
         .get_matches_from(with_default_command(std::env::args_os().collect()));
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|word| word == "todo")
+    {
+        let mut err = io::stderr().lock();
+        if writeln!(err, "headwork todo is deprecated; use headwork backlog").is_err() {
+            return ExitCode::from(2);
+        }
+    }
     let mut out = io::stdout().lock();
     match run(cli, &mut out) {
         Ok(code) => code,
@@ -1037,7 +1047,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Graph { .. }
         | Command::Log { .. }
         | Command::Spawn(_)
-        | Command::Todo(_)
+        | Command::Backlog(_)
         | Command::Queue { .. }
         | Command::Close { .. }
         | Command::Answer { .. }
@@ -1082,7 +1092,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         }
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
-        Command::Todo(args) => todo_command(&mut store, &ctx, args, out),
+        Command::Backlog(args) => backlog_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, force, json } => {
             close_command(&mut store, &ctx, &name, force, json, out)
@@ -1531,7 +1541,7 @@ fn spawn_command(
     };
     let spawned = ctx.with_env(|env| {
         reap(store, env)?;
-        headwork::ops::todo::spawn_linked(store, env, &request, args.todo)
+        headwork::ops::backlog::spawn_linked(store, env, &request, args.backlog)
     })?;
     if args.json {
         json_out(
@@ -1539,6 +1549,7 @@ fn spawn_command(
             &serde_json::json!({
                 "task": spawned.task,
                 "queue": spawned.pumped,
+                "backlog_unlinked": spawned.unlinked,
                 "todo_unlinked": spawned.unlinked,
             }),
         )?;
@@ -1552,16 +1563,16 @@ fn spawn_command(
     Ok(exit_for(&spawned.pumped))
 }
 
-fn todo_command(
+fn backlog_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
-    args: TodoArgs,
+    args: BacklogArgs,
     out: &mut impl Write,
 ) -> Result<ExitCode> {
-    use headwork::ops::todo as list;
-    match args.action.unwrap_or(TodoAction::List(args.list)) {
-        TodoAction::List(filter) => todo_list_command(store, &filter, out)?,
-        TodoAction::Import {
+    use headwork::ops::backlog as list;
+    match args.action.unwrap_or(BacklogAction::List(args.list)) {
+        BacklogAction::List(filter) => backlog_list_command(store, &filter, out)?,
+        BacklogAction::Import {
             file,
             dry_run,
             json,
@@ -1580,7 +1591,7 @@ fn todo_command(
                 out.write_all(report.text().as_bytes())?;
             }
         }
-        TodoAction::Export { file, json } => {
+        BacklogAction::Export { file, json } => {
             let done = list::export(store, ctx.home, ctx.config, file.as_deref(), Actor::User)?;
             if json {
                 json_out(out, &done)?;
@@ -1591,16 +1602,20 @@ fn todo_command(
                 return Ok(ExitCode::FAILURE);
             }
         }
-        changing @ (TodoAction::Add { .. }
-        | TodoAction::Done { .. }
-        | TodoAction::Reopen { .. }
-        | TodoAction::Edit { .. }) => todo_change_command(store, ctx, changing, out)?,
+        changing @ (BacklogAction::Add { .. }
+        | BacklogAction::Done { .. }
+        | BacklogAction::Reopen { .. }
+        | BacklogAction::Edit { .. }) => backlog_change_command(store, ctx, changing, out)?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn todo_list_command(store: &Store, filter: &TodoListArgs, out: &mut impl Write) -> Result<()> {
-    let items = headwork::ops::todo::list(
+fn backlog_list_command(
+    store: &Store,
+    filter: &BacklogListArgs,
+    out: &mut impl Write,
+) -> Result<()> {
+    let items = headwork::ops::backlog::list(
         store,
         filter.project.as_deref(),
         filter.owner,
@@ -1609,7 +1624,7 @@ fn todo_list_command(store: &Store, filter: &TodoListArgs, out: &mut impl Write)
     if filter.json {
         json_out(out, &items)?;
     } else if items.is_empty() {
-        writeln!(out, "no matching to-do items")?;
+        writeln!(out, "no matching backlog items")?;
     } else {
         for item in &items {
             writeln!(out, "{}", item.line())?;
@@ -1618,15 +1633,15 @@ fn todo_list_command(store: &Store, filter: &TodoListArgs, out: &mut impl Write)
     Ok(())
 }
 
-fn todo_change_command(
+fn backlog_change_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
-    action: TodoAction,
+    action: BacklogAction,
     out: &mut impl Write,
 ) -> Result<()> {
-    use headwork::ops::todo::{self as list, AddRequest};
+    use headwork::ops::backlog::{self as list, AddRequest};
     let (done, json) = match action {
-        TodoAction::Add {
+        BacklogAction::Add {
             project,
             text,
             section,
@@ -1647,7 +1662,7 @@ fn todo_change_command(
             };
             (ctx.with_env(|env| list::add(store, env, &request))?, json)
         }
-        TodoAction::Done {
+        BacklogAction::Done {
             id,
             note,
             drop,
@@ -1656,10 +1671,10 @@ fn todo_change_command(
             ctx.with_env(|env| list::finish(store, env, id, note.as_deref(), drop))?,
             json,
         ),
-        TodoAction::Reopen { id, json } => {
+        BacklogAction::Reopen { id, json } => {
             (ctx.with_env(|env| list::reopen(store, env, id))?, json)
         }
-        TodoAction::Edit {
+        BacklogAction::Edit {
             id,
             text,
             project,
@@ -1670,7 +1685,7 @@ fn todo_change_command(
             append,
             json,
         } => {
-            let edit = headwork_store::TodoEdit {
+            let edit = headwork_store::BacklogEdit {
                 text,
                 project,
                 section: section.map(|section| (section != "none").then_some(section)),
@@ -1682,7 +1697,7 @@ fn todo_change_command(
             };
             (ctx.with_env(|env| list::edit(store, env, id, &edit))?, json)
         }
-        TodoAction::List(_) | TodoAction::Import { .. } | TodoAction::Export { .. } => {
+        BacklogAction::List(_) | BacklogAction::Import { .. } | BacklogAction::Export { .. } => {
             return Ok(());
         }
     };
@@ -1693,7 +1708,7 @@ fn todo_change_command(
     }
 }
 
-fn date_or_none(text: &str) -> Result<Option<headwork_core::todo::TodoDate>> {
+fn date_or_none(text: &str) -> Result<Option<headwork_core::backlog::BacklogDate>> {
     if text == "none" {
         Ok(None)
     } else {

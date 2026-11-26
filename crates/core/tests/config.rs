@@ -786,3 +786,94 @@ max_task_findings = 5
         assert!(matches!(error, ConfigError::Parse { .. }), "{bad}: {error}");
     }
 }
+
+#[test]
+fn the_todo_section_loads_as_backlog_and_is_named_as_deprecated() {
+    let cases = [
+        (
+            "[todo]\nfile = \"S:/x/backlog.md\"\n",
+            vec![("todo.file", "backlog.file")],
+        ),
+        (
+            "[todo]\nfile = \"S:/x/backlog.md\"\nleave_pointer = true\n",
+            vec![
+                ("todo.file", "backlog.file"),
+                ("todo.leave_pointer", "backlog.leave_pointer"),
+            ],
+        ),
+        ("[backlog]\nfile = \"S:/x/backlog.md\"\n", Vec::new()),
+    ];
+    for (text, expected) in cases {
+        let config = Config::parse(
+            &format!(
+                "[machine]
+host = \"wmux\"
+{text}"
+            ),
+            "todo",
+        )
+        .unwrap();
+        assert_eq!(
+            config.backlog.file.as_deref(),
+            Some("S:/x/backlog.md"),
+            "{text}"
+        );
+        let named: Vec<(String, String)> = expected
+            .into_iter()
+            .map(|(old, new)| (old.to_owned(), new.to_owned()))
+            .collect();
+        assert_eq!(Config::deprecated_keys(text), named, "{text}");
+    }
+    let config = Config::parse(
+        "[machine]
+host = \"wmux\"
+[backlog]\nleave_pointer = true\n",
+        "pointer",
+    )
+    .unwrap();
+    assert!(config.backlog.leave_pointer);
+    assert!(
+        !Config::parse(
+            "[machine]
+host = \"wmux\"
+",
+            "empty"
+        )
+        .unwrap()
+        .backlog
+        .leave_pointer
+    );
+}
+
+#[test]
+fn todo_beside_backlog_folds_into_backlog_and_only_different_values_are_refused() {
+    let base = "[machine]\nhost = \"wmux\"\n";
+    let cases = [
+        (
+            "[todo]\nleave_pointer = true\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            Some((Some("S:/x/backlog.md"), true)),
+        ),
+        (
+            "[todo]\nfile = \"S:/x/backlog.md\"\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            Some((Some("S:/x/backlog.md"), false)),
+        ),
+        (
+            "[todo]\nfile = \"S:/x/todo.md\"\n[backlog]\nfile = \"S:/x/backlog.md\"\n",
+            None,
+        ),
+    ];
+    for (text, expected) in cases {
+        let parsed = Config::parse(&format!("{base}{text}"), "both");
+        if let Some((file, pointer)) = expected {
+            let config = parsed.unwrap();
+            assert_eq!(config.backlog.file.as_deref(), file, "{text}");
+            assert_eq!(config.backlog.leave_pointer, pointer, "{text}");
+        } else {
+            let error = parsed.unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::TodoConflict { key, .. } if key == "file"),
+                "{text}: {error}"
+            );
+        }
+    }
+}

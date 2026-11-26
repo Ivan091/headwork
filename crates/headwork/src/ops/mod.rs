@@ -1,6 +1,7 @@
 //! What the commands do, against a store, a config and a [`TerminalHost`], so it can be tested with the fake host.
 
 pub mod answer;
+pub mod backlog;
 pub mod clean;
 pub mod close;
 pub mod config_sync;
@@ -40,7 +41,6 @@ pub mod status;
 pub mod tick;
 pub mod tick_lock;
 pub mod title;
-pub mod todo;
 pub mod trust;
 pub mod update;
 pub mod usage;

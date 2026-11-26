@@ -1,4 +1,4 @@
-//! What the "Needs you" digest (`docs/todo.md`) reads from the store, as the plain facts `headwork_core::digest` builds
+//! What the "Needs you" digest (`docs/backlog.md`) reads from the store, as the plain facts `headwork_core::digest` builds
 //! from. Every query is a read; none of them calls the network or a process.
 
 use std::collections::BTreeMap;

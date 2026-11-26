@@ -1,4 +1,4 @@
-//! The to-do list in the store: adding, finishing, importing by text, the link to a task and what its end does.
+//! The backlog list in the store: adding, finishing, importing by text, the link to a task and what its end does.
 
 #![expect(
     clippy::unwrap_used,
@@ -7,15 +7,15 @@
 
 use std::path::Path;
 
+use headwork_core::backlog::{BacklogDraft, BacklogOwner, BacklogState, parse};
 use headwork_core::lifecycle::{CleanupFacts, WorktreeEnd};
-use headwork_core::todo::{TodoDraft, TodoOwner, TodoState, parse};
 use headwork_core::{
     Actor, Config, PermissionMode, ProjectName, Slug, TaskRequest, TaskState, Trigger,
 };
 use headwork_store::{
-    EVENT_TODO_ADDED, EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED, EVENT_TODO_EXPORTED,
-    EVENT_TODO_IMPORTED, EventFilter, NewTask, PrSeen, Store, StoreError, Task, TodoEdit,
-    TodoFilter,
+    BacklogEdit, BacklogFilter, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE, EVENT_BACKLOG_DROPPED,
+    EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED, EventFilter, NewTask,
+    PrSeen, Store, StoreError, Task,
 };
 
 fn store() -> (Store, Config) {
@@ -26,11 +26,11 @@ fn store() -> (Store, Config) {
     (store, config)
 }
 
-fn draft(text: &str) -> TodoDraft {
+fn draft(text: &str) -> BacklogDraft {
     let mut draft = parse(&format!("## me-sim\n\n- [ ] {text}\n"))
         .items
         .remove(0);
-    draft.state = TodoState::Open;
+    draft.state = BacklogState::Open;
     draft
 }
 
@@ -70,7 +70,7 @@ fn kinds(store: &Store) -> Vec<String> {
         .unwrap()
         .into_iter()
         .map(|event| event.kind)
-        .filter(|kind| kind.starts_with("todo-"))
+        .filter(|kind| kind.starts_with("backlog-"))
         .collect()
 }
 
@@ -96,33 +96,35 @@ fn close(store: &mut Store, task: &Task, first: &[Trigger]) {
 #[test]
 fn an_added_item_goes_last_and_is_listed_by_filter() {
     let (mut store, _) = store();
-    let first = store.add_todo(&draft("one"), Actor::Orchestrator).unwrap();
+    let first = store
+        .add_backlog_item(&draft("one"), Actor::Orchestrator)
+        .unwrap();
     let mut mine = draft("For you: two");
-    mine.owner = TodoOwner::User;
+    mine.owner = BacklogOwner::User;
     mine.project = "headwork".to_owned();
-    let second = store.add_todo(&mine, Actor::Orchestrator).unwrap();
+    let second = store.add_backlog_item(&mine, Actor::Orchestrator).unwrap();
     assert!(second.position > first.position, "new items go last");
-    let all = store.todos(&TodoFilter::default()).unwrap();
+    let all = store.backlog_items(&BacklogFilter::default()).unwrap();
     assert_eq!(
         all.iter().map(|t| t.id).collect::<Vec<_>>(),
         [first.id, second.id]
     );
     let user = store
-        .todos(&TodoFilter {
-            owner: Some(TodoOwner::User),
-            ..TodoFilter::default()
+        .backlog_items(&BacklogFilter {
+            owner: Some(BacklogOwner::User),
+            ..BacklogFilter::default()
         })
         .unwrap();
     assert_eq!(user.len(), 1, "owner filter");
     let project = store
-        .todos(&TodoFilter {
+        .backlog_items(&BacklogFilter {
             project: Some("me-sim".to_owned()),
-            ..TodoFilter::default()
+            ..BacklogFilter::default()
         })
         .unwrap();
     assert_eq!(project.len(), 1, "project filter");
     assert!(
-        kinds(&store).contains(&EVENT_TODO_ADDED.to_owned()),
+        kinds(&store).contains(&EVENT_BACKLOG_ADDED.to_owned()),
         "event"
     );
 }
@@ -130,45 +132,54 @@ fn an_added_item_goes_last_and_is_listed_by_filter() {
 #[test]
 fn finishing_dropping_and_reopening_follow_the_state() {
     let (mut store, _) = store();
-    let one = store.add_todo(&draft("one"), Actor::User).unwrap();
+    let one = store.add_backlog_item(&draft("one"), Actor::User).unwrap();
     let done = store
-        .finish_todo(one.id, Some("by hand"), false, Actor::User)
+        .finish_backlog_item(one.id, Some("by hand"), false, Actor::User)
         .unwrap();
-    assert_eq!(done.draft.state, TodoState::Done);
+    assert_eq!(done.draft.state, BacklogState::Done);
     assert_eq!(done.draft.done_note.as_deref(), Some("by hand"));
-    assert_eq!(done.draft.done_on, Some(store.todo_today().unwrap()));
-    let again = store.finish_todo(one.id, None, false, Actor::User);
+    assert_eq!(done.draft.done_on, Some(store.backlog_today().unwrap()));
+    let again = store.finish_backlog_item(one.id, None, false, Actor::User);
     assert!(
-        matches!(again, Err(StoreError::TodoRefused { .. })),
+        matches!(again, Err(StoreError::BacklogRefused { .. })),
         "{again:?}"
     );
-    let reopened = store.reopen_todo(one.id, Actor::User).unwrap();
+    let reopened = store.reopen_backlog_item(one.id, Actor::User).unwrap();
     assert_eq!(
         (reopened.draft.state, reopened.draft.done_on),
-        (TodoState::Open, None)
+        (BacklogState::Open, None)
     );
-    let dropped = store.finish_todo(one.id, None, true, Actor::User).unwrap();
-    assert_eq!(dropped.draft.state, TodoState::Dropped);
+    let dropped = store
+        .finish_backlog_item(one.id, None, true, Actor::User)
+        .unwrap();
+    assert_eq!(dropped.draft.state, BacklogState::Dropped);
     let kinds = kinds(&store);
-    for kind in [EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED] {
+    for kind in [
+        EVENT_BACKLOG_DONE,
+        EVENT_BACKLOG_DROPPED,
+        EVENT_BACKLOG_EDITED,
+    ] {
         assert!(kinds.contains(&kind.to_owned()), "{kind} in {kinds:?}");
     }
-    assert!(matches!(store.todo(999), Err(StoreError::UnknownTodo(999))));
+    assert!(matches!(
+        store.backlog_item(999),
+        Err(StoreError::UnknownBacklogItem(999))
+    ));
 }
 
 #[test]
 fn an_edit_changes_only_what_it_names_and_appends_notes() {
     let (mut store, _) = store();
-    let one = store.add_todo(&draft("one"), Actor::User).unwrap();
+    let one = store.add_backlog_item(&draft("one"), Actor::User).unwrap();
     let edited = store
-        .edit_todo(
+        .edit_backlog_item(
             one.id,
-            &TodoEdit {
+            &BacklogEdit {
                 text: Some("uno".to_owned()),
                 section: Some(Some("Audit".to_owned())),
                 due: Some(Some("2026-12-24".parse().unwrap())),
                 append: Some("a note".to_owned()),
-                ..TodoEdit::default()
+                ..BacklogEdit::default()
             },
             Actor::User,
         )
@@ -182,12 +193,12 @@ fn an_edit_changes_only_what_it_names_and_appends_notes() {
     );
     assert_eq!(edited.draft.notes, ["a note"]);
     let cleared = store
-        .edit_todo(
+        .edit_backlog_item(
             one.id,
-            &TodoEdit {
+            &BacklogEdit {
                 due: Some(None),
                 section: Some(None),
-                ..TodoEdit::default()
+                ..BacklogEdit::default()
             },
             Actor::User,
         )
@@ -198,26 +209,31 @@ fn an_edit_changes_only_what_it_names_and_appends_notes() {
 #[test]
 fn import_counts_new_known_and_repeated_items_and_changes_nothing_else() {
     let (mut store, _) = store();
-    let known = store.add_todo(&draft("Already here"), Actor::User).unwrap();
+    let known = store
+        .add_backlog_item(&draft("Already here"), Actor::User)
+        .unwrap();
     store
-        .finish_todo(known.id, None, false, Actor::User)
+        .finish_backlog_item(known.id, None, false, Actor::User)
         .unwrap();
     let drafts = parse(
         "## p\n\n- [ ] Brand new\n- [ ] For you: Already here\n- [ ] Brand  new\n- [ ] Another\n",
     )
     .items;
-    let plan = store.todo_import_plan(&drafts).unwrap();
+    let plan = store.backlog_import_plan(&drafts).unwrap();
     assert_eq!((plan.added, plan.already, plan.duplicate), (2, 1, 1));
     assert_eq!(
-        store.todos(&TodoFilter::default()).unwrap().len(),
+        store
+            .backlog_items(&BacklogFilter::default())
+            .unwrap()
+            .len(),
         1,
         "a plan writes nothing"
     );
     let counts = store
-        .import_todos("S:/x/todo.md", &drafts, Actor::User)
+        .import_backlog_items("S:/x/backlog.md", &drafts, Actor::User)
         .unwrap();
     assert_eq!(counts, plan);
-    let rows = store.todos(&TodoFilter::default()).unwrap();
+    let rows = store.backlog_items(&BacklogFilter::default()).unwrap();
     assert_eq!(
         rows.iter()
             .map(|t| t.draft.text.as_str())
@@ -227,11 +243,11 @@ fn import_counts_new_known_and_repeated_items_and_changes_nothing_else() {
     );
     assert_eq!(
         rows.first().map(|t| t.draft.state),
-        Some(TodoState::Done),
+        Some(BacklogState::Done),
         "an old row is not changed"
     );
     let again = store
-        .import_todos("S:/x/todo.md", &drafts, Actor::User)
+        .import_backlog_items("S:/x/backlog.md", &drafts, Actor::User)
         .unwrap();
     assert_eq!(
         (again.added, again.already, again.duplicate),
@@ -240,71 +256,73 @@ fn import_counts_new_known_and_repeated_items_and_changes_nothing_else() {
     );
     assert!(
         store
-            .todo_file("S:/x/todo.md")
+            .backlog_file("S:/x/backlog.md")
             .unwrap()
             .unwrap()
             .imported_at
             .is_some()
     );
-    assert!(kinds(&store).contains(&EVENT_TODO_IMPORTED.to_owned()));
+    assert!(kinds(&store).contains(&EVENT_BACKLOG_IMPORTED.to_owned()));
 }
 
 #[test]
 fn the_export_record_keeps_the_last_hash() {
     let (mut store, _) = store();
-    assert!(store.todo_file("p").unwrap().is_none());
-    store.record_todo_export("p", "abc", Actor::Tick).unwrap();
-    let file = store.todo_file("p").unwrap().unwrap();
+    assert!(store.backlog_file("p").unwrap().is_none());
+    store
+        .record_backlog_export("p", "abc", true, Actor::Tick)
+        .unwrap();
+    let file = store.backlog_file("p").unwrap().unwrap();
     assert_eq!(
         (file.export_hash.as_deref(), file.imported_at),
         (Some("abc"), None)
     );
-    store.import_todos("p", &[], Actor::User).unwrap();
-    let file = store.todo_file("p").unwrap().unwrap();
+    store.import_backlog_items("p", &[], Actor::User).unwrap();
+    let file = store.backlog_file("p").unwrap().unwrap();
     assert_eq!(
         file.export_hash.as_deref(),
         Some("abc"),
         "an import keeps the hash"
     );
     assert!(file.imported_at.is_some());
-    assert!(kinds(&store).contains(&EVENT_TODO_EXPORTED.to_owned()));
+    assert!(kinds(&store).contains(&EVENT_BACKLOG_EXPORTED.to_owned()));
 }
 
 #[test]
 fn a_linked_item_is_refused_to_a_second_live_task_and_freed_when_the_first_drops() {
     let (mut store, config) = store();
     let item = store
-        .add_todo(&draft("Do it"), Actor::Orchestrator)
+        .add_backlog_item(&draft("Do it"), Actor::Orchestrator)
         .unwrap();
     let first = task(&mut store, &config, "first");
     store
-        .link_todo(item.id, first.id, Actor::Orchestrator)
+        .link_backlog_item(item.id, first.id, Actor::Orchestrator)
         .unwrap();
     assert_eq!(
-        store.todo(item.id).unwrap().task.map(|t| t.name),
+        store.backlog_item(item.id).unwrap().task.map(|t| t.name),
         Some("me-sim-first".to_owned())
     );
     let second = task(&mut store, &config, "second");
-    let refused = store.link_todo(item.id, second.id, Actor::Orchestrator);
+    let refused = store.link_backlog_item(item.id, second.id, Actor::Orchestrator);
     assert!(
-        matches!(refused, Err(StoreError::TodoRefused { .. })),
+        matches!(refused, Err(StoreError::BacklogRefused { .. })),
         "{refused:?}"
     );
     store.drop_task(first.id, Actor::Orchestrator).unwrap();
-    let freed = store.todo(item.id).unwrap();
+    let freed = store.backlog_item(item.id).unwrap();
     assert_eq!(
         (freed.draft.state, freed.task),
-        (TodoState::Open, None),
+        (BacklogState::Open, None),
         "a dropped task frees the item"
     );
     store
-        .link_todo(item.id, second.id, Actor::Orchestrator)
+        .link_backlog_item(item.id, second.id, Actor::Orchestrator)
         .unwrap();
     close(&mut store, &first, &[Trigger::BeginClosing]);
-    let still = store.todo(item.id).unwrap();
+    let still = store.backlog_item(item.id).unwrap();
     assert_eq!(
         still.draft.state,
-        TodoState::Open,
+        BacklogState::Open,
         "the first task closing changes nothing"
     );
     assert_eq!(still.task.map(|t| t.name), Some("me-sim-second".to_owned()));
@@ -314,11 +332,11 @@ fn a_linked_item_is_refused_to_a_second_live_task_and_freed_when_the_first_drops
 fn a_closed_task_finishes_its_item_with_its_name_and_merged_pull_requests() {
     let (mut store, config) = store();
     let item = store
-        .add_todo(&draft("Do it"), Actor::Orchestrator)
+        .add_backlog_item(&draft("Do it"), Actor::Orchestrator)
         .unwrap();
     let worker = task(&mut store, &config, "worker");
     store
-        .link_todo(item.id, worker.id, Actor::Orchestrator)
+        .link_backlog_item(item.id, worker.id, Actor::Orchestrator)
         .unwrap();
     for (number, state) in [(7, "merged"), (8, "closed")] {
         store
@@ -336,36 +354,40 @@ fn a_closed_task_finishes_its_item_with_its_name_and_merged_pull_requests() {
     }
     close(&mut store, &worker, &[Trigger::ForceClose]);
     assert_eq!(store.task(worker.id).unwrap().state, TaskState::Closed);
-    let done = store.todo(item.id).unwrap();
-    assert_eq!(done.draft.state, TodoState::Done);
-    assert_eq!(done.draft.done_on, Some(store.todo_today().unwrap()));
+    let done = store.backlog_item(item.id).unwrap();
+    assert_eq!(done.draft.state, BacklogState::Done);
+    assert_eq!(done.draft.done_on, Some(store.backlog_today().unwrap()));
     assert_eq!(
         done.draft.done_note.as_deref(),
         Some("task me-sim-worker merged https://github.com/Ivan091/me-sim/pull/7")
     );
-    assert!(kinds(&store).contains(&EVENT_TODO_DONE.to_owned()));
+    assert!(kinds(&store).contains(&EVENT_BACKLOG_DONE.to_owned()));
 }
 
 #[test]
 fn an_item_that_is_not_open_cannot_be_linked() {
     let (mut store, config) = store();
-    let item = store.add_todo(&draft("Done already"), Actor::User).unwrap();
+    let item = store
+        .add_backlog_item(&draft("Done already"), Actor::User)
+        .unwrap();
     store
-        .finish_todo(item.id, None, false, Actor::User)
+        .finish_backlog_item(item.id, None, false, Actor::User)
         .unwrap();
     let worker = task(&mut store, &config, "late");
-    let refused = store.link_todo(item.id, worker.id, Actor::Orchestrator);
+    let refused = store.link_backlog_item(item.id, worker.id, Actor::Orchestrator);
     assert!(
-        matches!(refused, Err(StoreError::TodoRefused { .. })),
+        matches!(refused, Err(StoreError::BacklogRefused { .. })),
         "{refused:?}"
     );
 }
 
 fn linked(store: &mut Store, config: &Config, slug: &str, text: &str) -> (Task, i64) {
-    let item = store.add_todo(&draft(text), Actor::Orchestrator).unwrap();
+    let item = store
+        .add_backlog_item(&draft(text), Actor::Orchestrator)
+        .unwrap();
     let worker = task(store, config, slug);
     store
-        .link_todo(item.id, worker.id, Actor::Orchestrator)
+        .link_backlog_item(item.id, worker.id, Actor::Orchestrator)
         .unwrap();
     (worker, item.id)
 }
@@ -379,9 +401,9 @@ fn a_failed_task_frees_its_item_and_leaves_it_open() {
         .transition(worker.id, &Trigger::LaunchFailed, Actor::Tick)
         .unwrap();
     assert_eq!(store.task(worker.id).unwrap().state, TaskState::Failed);
-    let freed = store.todo(id).unwrap();
-    assert_eq!((freed.draft.state, freed.task), (TodoState::Open, None));
-    assert!(kinds(&store).contains(&EVENT_TODO_EDITED.to_owned()));
+    let freed = store.backlog_item(id).unwrap();
+    assert_eq!((freed.draft.state, freed.task), (BacklogState::Open, None));
+    assert!(kinds(&store).contains(&EVENT_BACKLOG_EDITED.to_owned()));
 }
 
 #[test]
@@ -389,23 +411,23 @@ fn a_closing_task_leaves_an_item_that_is_already_done_or_dropped_as_it_was() {
     let (mut store, config) = store();
     let (done_worker, done_id) = linked(&mut store, &config, "first", "Finished by hand");
     store
-        .finish_todo(done_id, Some("by hand"), false, Actor::User)
+        .finish_backlog_item(done_id, Some("by hand"), false, Actor::User)
         .unwrap();
     let (dropped_worker, dropped_id) = linked(&mut store, &config, "second", "Dropped by hand");
     store
-        .finish_todo(dropped_id, Some("not needed"), true, Actor::User)
+        .finish_backlog_item(dropped_id, Some("not needed"), true, Actor::User)
         .unwrap();
     close(&mut store, &done_worker, &[Trigger::ForceClose]);
     close(&mut store, &dropped_worker, &[Trigger::ForceClose]);
-    let done = store.todo(done_id).unwrap();
+    let done = store.backlog_item(done_id).unwrap();
     assert_eq!(
         (done.draft.state, done.draft.done_note.as_deref()),
-        (TodoState::Done, Some("by hand"))
+        (BacklogState::Done, Some("by hand"))
     );
-    let dropped = store.todo(dropped_id).unwrap();
+    let dropped = store.backlog_item(dropped_id).unwrap();
     assert_eq!(
         (dropped.draft.state, dropped.draft.done_note.as_deref()),
-        (TodoState::Dropped, Some("not needed"))
+        (BacklogState::Dropped, Some("not needed"))
     );
 }
 
@@ -428,7 +450,7 @@ fn the_done_note_lists_every_merged_pull_request_in_order() {
             .unwrap();
     }
     close(&mut store, &worker, &[Trigger::ForceClose]);
-    let done = store.todo(id).unwrap();
+    let done = store.backlog_item(id).unwrap();
     assert_eq!(
         done.draft.done_note.as_deref(),
         Some(
@@ -440,7 +462,7 @@ fn the_done_note_lists_every_merged_pull_request_in_order() {
 
 #[test]
 fn an_item_that_cannot_be_written_to_the_file_is_refused() {
-    type Change = fn(&mut TodoDraft);
+    type Change = fn(&mut BacklogDraft);
     let (mut store, _) = store();
     let cases: [(Change, &str); 6] = [
         (|d| d.text = "  ".to_owned(), "the text is empty"),
@@ -462,9 +484,9 @@ fn an_item_that_cannot_be_written_to_the_file_is_refused() {
     for (change, message) in cases {
         let mut bad = draft("fine");
         change(&mut bad);
-        let refused = store.add_todo(&bad, Actor::User);
+        let refused = store.add_backlog_item(&bad, Actor::User);
         assert!(
-            matches!(&refused, Err(StoreError::InvalidTodo(_))),
+            matches!(&refused, Err(StoreError::InvalidBacklogItem(_))),
             "{refused:?}"
         );
         assert!(
@@ -472,19 +494,25 @@ fn an_item_that_cannot_be_written_to_the_file_is_refused() {
             "{message}"
         );
     }
-    assert_eq!(store.todos(&TodoFilter::default()).unwrap().len(), 0);
-    let one = store.add_todo(&draft("one"), Actor::User).unwrap();
-    let refused = store.edit_todo(
+    assert_eq!(
+        store
+            .backlog_items(&BacklogFilter::default())
+            .unwrap()
+            .len(),
+        0
+    );
+    let one = store.add_backlog_item(&draft("one"), Actor::User).unwrap();
+    let refused = store.edit_backlog_item(
         one.id,
-        &TodoEdit {
+        &BacklogEdit {
             project: Some("Dropped items".to_owned()),
-            ..TodoEdit::default()
+            ..BacklogEdit::default()
         },
         Actor::User,
     );
     assert!(
-        matches!(refused, Err(StoreError::InvalidTodo(_))),
+        matches!(refused, Err(StoreError::InvalidBacklogItem(_))),
         "{refused:?}"
     );
-    assert_eq!(store.todo(one.id).unwrap().draft.project, "me-sim");
+    assert_eq!(store.backlog_item(one.id).unwrap().draft.project, "me-sim");
 }

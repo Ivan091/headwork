@@ -1,0 +1,27 @@
+id = "2026-11-26-todo-to-backlog"
+title = "Rename the to-do list to the backlog: [todo] becomes [backlog], todo.md becomes backlog.md"
+requires = ["headwork"]
+why = """headwork's to-do list is now the backlog (docs/backlog.md): the store tables, `headwork backlog`, the \
+orchestrator's backlog_* tools, the config section [backlog] and the exported file. [todo] still loads for one release \
+and doctor warns (config-keys). A machine that keeps the list renames the section in its machine file and moves the \
+export to backlog.md; the first export writes the new file and leaves the old one in place, with a one-line pointer \
+only when [backlog] leave_pointer = true. The plugin gained the grooming and planning skills: a session sees them once it starts after \
+the pull. A machine with no [todo] section passes the check and skips this note."""
+check = "! grep -qs '^\\[todo\\]' \"${HEADWORK_HOME:-$HOME/.headwork}/config.toml\""
+
+[[step]]
+kind = "user"
+say = """In the machine file (~/.headwork/config.machine.toml when it exists, else machines/{machine}/headwork.toml in \
+claude_config through a pull request, sync-config), replace the [todo] section with [backlog]: file = "<this machine's \
+backlog.md, forward slashes>" (on the Windows PC: S:/Code/backlog.md) and, to leave a pointer in the old file, \
+leave_pointer = true. Then run headwork config sync (--no-pull for a local file) and say go."""
+
+[[step]]
+kind = "agent"
+run = "headwork backlog export"
+
+[[step]]
+kind = "user"
+say = """Check that the new backlog.md lists the items and the old todo.md is still there (with the pointer line when \
+leave_pointer is set), then commit both in their repository. Restart the orchestrator (park and resume, or end it and \
+run headwork orchestrator) so it loads the grooming and planning skills and the backlog_* tools, and say go."""

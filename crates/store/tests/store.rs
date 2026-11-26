@@ -2533,3 +2533,95 @@ fn two_leads_share_the_project_slots_without_a_part_limit() {
         "the other lead's part waits for the project's slots: {error}"
     );
 }
+
+#[test]
+fn the_backlog_migration_renames_the_tables_and_the_event_types_and_keeps_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 26);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO todos (id, project, text, state, owner, task_id, position, created_at, updated_at)
+             VALUES (1, 'demo', 'Keep me', 'open', 'user', 7, 1, 't', 't');
+         INSERT INTO todo_files (path, imported_at, export_hash, exported_at)
+             VALUES ('S:/x/todo.md', 't', 'abc', '2026-11-26T10:00:00.000Z');
+         INSERT INTO todo_files (path, imported_at) VALUES ('S:/x/never.md', 't');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'todo-added', '{}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'todo-export-overwrote', '{}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'todo-export-failed', '{}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'tick-error', '{}')",
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.schema_version().unwrap(),
+        i64::try_from(MIGRATIONS.len()).unwrap()
+    );
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (text, task): (String, i64) = conn
+        .query_row(
+            "SELECT text, task_id FROM backlog_items WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (text.as_str(), task),
+        ("Keep me", 7),
+        "the item and its task link"
+    );
+    let mut files = conn
+        .prepare("SELECT path, export_hash, configured_at FROM backlog_files ORDER BY path")
+        .unwrap();
+    let files: Vec<(String, Option<String>, Option<String>)> = files
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("S:/x/never.md".to_owned(), None, None),
+            (
+                "S:/x/todo.md".to_owned(),
+                Some("abc".to_owned()),
+                Some("2026-11-26T10:00:00.000Z".to_owned())
+            ),
+        ],
+        "an exported file counts as the configured one it was"
+    );
+    let mut statement = conn.prepare("SELECT type FROM events ORDER BY id").unwrap();
+    let kinds: Vec<String> = statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "backlog-added",
+            "backlog-export-overwrote",
+            "backlog-export-failed",
+            "tick-error"
+        ]
+    );
+    let old_tables: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('todos', 'todo_files', 'todos_by_task')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_tables, 0);
+    let index: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'backlog_items_by_task'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1);
+}

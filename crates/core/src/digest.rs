@@ -1,4 +1,4 @@
-//! The "Needs you" digest (`docs/todo.md`): what waits on the user, as at most ten lines.
+//! The "Needs you" digest (`docs/backlog.md`): what waits on the user, as at most ten lines.
 //!
 //! The builder is pure. The binary gathers the [`Facts`] from the store; ages arrive in seconds and the clock as
 //! [`Facts::today`], so the same facts always give the same digest.
@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::todo::{Todo, TodoDate, TodoOwner, TodoState};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, BacklogState};
 
 /// The header of a digest that holds lines.
 pub const HEADER: &str = "Needs you";
@@ -68,11 +68,11 @@ pub struct FindingFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
     /// Today on this machine's clock.
-    pub today: TodoDate,
+    pub today: BacklogDate,
     /// The asks that wait.
     pub asks: Vec<AskFact>,
-    /// The to-do items, in any state.
-    pub todos: Vec<Todo>,
+    /// The backlog items, in any state.
+    pub backlog_items: Vec<BacklogItem>,
     /// The migration notes that wait.
     pub notes: Vec<NoteFact>,
     /// The tasks whose pull requests wait.
@@ -184,22 +184,25 @@ fn ask_line(ask: &AskFact) -> String {
     )
 }
 
-fn dated_todos(todos: &[Todo], today: &TodoDate) -> Vec<(TodoDate, i64, String)> {
-    let mut dated: Vec<(TodoDate, i64, String)> = todos
+fn dated_backlog_items(
+    backlog_items: &[BacklogItem],
+    today: &BacklogDate,
+) -> Vec<(BacklogDate, i64, String)> {
+    let mut dated: Vec<(BacklogDate, i64, String)> = backlog_items
         .iter()
-        .filter(|todo| todo.draft.state == TodoState::Open && todo.task.is_none())
-        .filter_map(|todo| {
-            let text = shorten(&todo.draft.text, TEXT_LIMIT);
-            match (&todo.draft.due, &todo.draft.not_before) {
+        .filter(|item| item.draft.state == BacklogState::Open && item.task.is_none())
+        .filter_map(|item| {
+            let text = shorten(&item.draft.text, TEXT_LIMIT);
+            match (&item.draft.due, &item.draft.not_before) {
                 (Some(due), _) if due <= today => Some((
                     due.clone(),
-                    todo.id,
-                    format!("todo #{}: {text} (due {due})", todo.id),
+                    item.id,
+                    format!("backlog #{}: {text} (due {due})", item.id),
                 )),
                 (_, Some(from)) if from <= today => Some((
                     from.clone(),
-                    todo.id,
-                    format!("todo #{}: {text} (from {from})", todo.id),
+                    item.id,
+                    format!("backlog #{}: {text} (from {from})", item.id),
                 )),
                 _ => None,
             }
@@ -211,14 +214,14 @@ fn dated_todos(todos: &[Todo], today: &TodoDate) -> Vec<(TodoDate, i64, String)>
 
 /// Builds the digest from `facts`.
 ///
-/// Asks come oldest first, then to-do items due or started, migration notes, pull requests, findings open long enough,
+/// Asks come oldest first, then backlog items due or started, migration notes, pull requests, findings open long enough,
 /// and the other open items of the user, trimmed to [`MAX_LINES`] with a closing line for the rest.
 #[must_use]
 pub fn build(facts: &Facts) -> Digest {
     let mut asks: Vec<&AskFact> = facts.asks.iter().collect();
     asks.sort_by_key(|ask| (std::cmp::Reverse(ask.waiting_s), ask.id));
     let mut lines: Vec<String> = asks.into_iter().map(ask_line).collect();
-    let dated = dated_todos(&facts.todos, &facts.today);
+    let dated = dated_backlog_items(&facts.backlog_items, &facts.today);
     let listed: Vec<i64> = dated.iter().map(|(_, id, _)| *id).collect();
     lines.extend(dated.into_iter().map(|(_, _, line)| line));
     lines.extend(facts.notes.iter().map(|note| {
@@ -249,27 +252,27 @@ pub fn build(facts: &Facts) -> Digest {
             age(finding.open_s)
         )
     }));
-    let mut rest: Vec<&Todo> = facts
-        .todos
+    let mut rest: Vec<&BacklogItem> = facts
+        .backlog_items
         .iter()
-        .filter(|todo| {
-            todo.draft.state == TodoState::Open
-                && todo.draft.owner == TodoOwner::User
-                && todo.task.is_none()
-                && !listed.contains(&todo.id)
-                && todo
+        .filter(|item| {
+            item.draft.state == BacklogState::Open
+                && item.draft.owner == BacklogOwner::User
+                && item.task.is_none()
+                && !listed.contains(&item.id)
+                && item
                     .draft
                     .not_before
                     .as_ref()
                     .is_none_or(|from| from <= &facts.today)
         })
         .collect();
-    rest.sort_by_key(|todo| (todo.position, todo.id));
-    lines.extend(rest.into_iter().map(|todo| {
+    rest.sort_by_key(|item| (item.position, item.id));
+    lines.extend(rest.into_iter().map(|item| {
         format!(
-            "todo #{}: {}",
-            todo.id,
-            shorten(&todo.draft.text, TEXT_LIMIT)
+            "backlog #{}: {}",
+            item.id,
+            shorten(&item.draft.text, TEXT_LIMIT)
         )
     }));
     trim(lines)
@@ -290,24 +293,24 @@ fn trim(mut lines: Vec<String>) -> Digest {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::todo::{LinkedTask, TodoDraft};
+    use crate::backlog::{BacklogDraft, LinkedTask};
     use crate::vocabulary::TaskState;
 
-    fn date(text: &str) -> TodoDate {
-        TodoDate::parse(text).unwrap()
+    fn date(text: &str) -> BacklogDate {
+        BacklogDate::parse(text).unwrap()
     }
 
-    fn todo(id: i64, text: &str, owner: TodoOwner) -> Todo {
-        Todo {
+    fn item(id: i64, text: &str, owner: BacklogOwner) -> BacklogItem {
+        BacklogItem {
             id,
             position: id,
             task: None,
-            draft: TodoDraft {
+            draft: BacklogDraft {
                 project: "demo".to_owned(),
                 section: None,
                 text: text.to_owned(),
                 notes: Vec::new(),
-                state: TodoState::Open,
+                state: BacklogState::Open,
                 owner,
                 added: None,
                 not_before: None,
@@ -331,7 +334,7 @@ mod tests {
         Facts {
             today: date("2026-11-26"),
             asks: Vec::new(),
-            todos: Vec::new(),
+            backlog_items: Vec::new(),
             notes: Vec::new(),
             prs: Vec::new(),
             findings: Vec::new(),
@@ -353,15 +356,15 @@ mod tests {
             ask(8, Some("demo-new"), "Close?", 600),
             ask(3, None, "Pick one", 3 * 3600 + 5),
         ];
-        let mut due = todo(1, "Pay the invoice", TodoOwner::User);
+        let mut due = item(1, "Pay the invoice", BacklogOwner::User);
         due.draft.due = Some(date("2026-11-20"));
-        let mut from = todo(2, "Start the survey", TodoOwner::Agent);
+        let mut from = item(2, "Start the survey", BacklogOwner::Agent);
         from.draft.not_before = Some(date("2026-11-26"));
-        let mut future = todo(3, "Later thing", TodoOwner::User);
+        let mut future = item(3, "Later thing", BacklogOwner::User);
         future.draft.not_before = Some(date("2026-12-01"));
-        let plain = todo(4, "Review the draft", TodoOwner::User);
-        let agent = todo(5, "Agent chore", TodoOwner::Agent);
-        facts.todos = vec![plain, future, from, due, agent];
+        let plain = item(4, "Review the draft", BacklogOwner::User);
+        let agent = item(5, "Agent chore", BacklogOwner::Agent);
+        facts.backlog_items = vec![plain, future, from, due, agent];
         facts.notes = vec![NoteFact {
             address: "demo/2026-11-26-x".into(),
             title: "Set a key".into(),
@@ -388,12 +391,12 @@ mod tests {
             [
                 "ask 3 orchestrator: Pick one (waiting 3h)",
                 "ask 8 demo-new: Close? (waiting 10m)",
-                "todo #1: Pay the invoice (due 2026-11-20)",
-                "todo #2: Start the survey (from 2026-11-26)",
+                "backlog #1: Pay the invoice (due 2026-11-20)",
+                "backlog #2: Start the survey (from 2026-11-26)",
                 "migration note demo/2026-11-26-x: Set a key",
                 "pr demo-fix: https://example.test/pull/1",
                 "finding stuck demo-fix (open 5h)",
-                "todo #4: Review the draft",
+                "backlog #4: Review the draft",
             ],
             "order and shapes"
         );
@@ -408,8 +411,8 @@ mod tests {
     #[test]
     fn more_than_fits_ends_with_a_count() {
         let mut facts = facts();
-        facts.todos = (1..=14)
-            .map(|id| todo(id, "Item", TodoOwner::User))
+        facts.backlog_items = (1..=14)
+            .map(|id| item(id, "Item", BacklogOwner::User))
             .collect();
         let digest = build(&facts);
         assert_eq!(digest.lines.len(), 8, "eight items");
@@ -425,8 +428,8 @@ mod tests {
     #[test]
     fn a_digest_that_does_not_fit_loses_lines_then_becomes_a_count() {
         let mut facts = facts();
-        facts.todos = (1..=4)
-            .map(|id| todo(id, "Item", TodoOwner::User))
+        facts.backlog_items = (1..=4)
+            .map(|id| item(id, "Item", BacklogOwner::User))
             .collect();
         let digest = build(&facts);
         let full = digest.render();
@@ -445,8 +448,8 @@ mod tests {
     #[test]
     fn exactly_nine_items_all_show() {
         let mut facts = facts();
-        facts.todos = (1..=9)
-            .map(|id| todo(id, "Item", TodoOwner::User))
+        facts.backlog_items = (1..=9)
+            .map(|id| item(id, "Item", BacklogOwner::User))
             .collect();
         let digest = build(&facts);
         assert_eq!((digest.lines.len(), digest.more), (9, 0), "nine fit");
@@ -455,17 +458,17 @@ mod tests {
     #[test]
     fn done_dropped_and_linked_items_are_left_out() {
         let mut facts = facts();
-        let mut done = todo(1, "Done one", TodoOwner::User);
-        done.draft.state = TodoState::Done;
-        let mut dropped = todo(2, "Dropped one", TodoOwner::User);
-        dropped.draft.state = TodoState::Dropped;
-        let mut linked = todo(3, "Linked one", TodoOwner::User);
+        let mut done = item(1, "Done one", BacklogOwner::User);
+        done.draft.state = BacklogState::Done;
+        let mut dropped = item(2, "Dropped one", BacklogOwner::User);
+        dropped.draft.state = BacklogState::Dropped;
+        let mut linked = item(3, "Linked one", BacklogOwner::User);
         linked.task = Some(LinkedTask {
             id: 1,
             name: "demo-x".into(),
             state: TaskState::Working,
         });
-        facts.todos = vec![done, dropped, linked];
+        facts.backlog_items = vec![done, dropped, linked];
         assert!(build(&facts).is_empty(), "nothing open and free");
     }
 

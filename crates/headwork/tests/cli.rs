@@ -570,3 +570,25 @@ fn usage_by_delegation_splits_main_session_from_subagents() {
     assert!(text.contains("50%") && text.contains("25%"), "{text}");
     assert!(text.contains("2000k"), "{text}");
 }
+
+#[test]
+fn todo_is_a_hidden_deprecated_alias_of_backlog() {
+    let home = home_with_fixture();
+    let help = stdout(&headwork(home.path(), &["--help"]));
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("todo ")),
+        "{help}"
+    );
+    let new = headwork(home.path(), &["backlog", "list", "--json"]);
+    let old = headwork(home.path(), &["todo", "list", "--json"]);
+    assert!(new.status.success(), "{}", stderr(&new));
+    assert!(old.status.success(), "{}", stderr(&old));
+    assert_eq!(stdout(&old), stdout(&new), "the same command");
+    assert_eq!(stderr(&new), "", "no notice for the new name");
+    assert_eq!(
+        stderr(&old).lines().collect::<Vec<_>>(),
+        ["headwork todo is deprecated; use headwork backlog"]
+    );
+}

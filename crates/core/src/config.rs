@@ -30,6 +30,14 @@ pub enum ConfigError {
         #[source]
         source: Box<toml::de::Error>,
     },
+    /// `[todo]`, the deprecated name of `[backlog]`, and `[backlog]` give one key different values.
+    #[error("{origin}: todo.{key} and backlog.{key} differ; keep only [backlog]")]
+    TodoConflict {
+        /// Which file or text.
+        origin: String,
+        /// The key.
+        key: String,
+    },
     /// The model's default is not in its allowed set.
     #[error("models.default `{0}` is not in models.allowed")]
     DefaultModelNotAllowed(Model),
@@ -318,10 +326,10 @@ pub struct Config {
     /// Reviews on the user's word (`docs/review-flows.md`).
     #[serde(default)]
     pub reviews: ReviewsConfig,
-    /// The to-do list (`docs/todo.md`).
+    /// The backlog list (`docs/backlog.md`); a `[todo]` section is folded into it first ([`fold_todo`]).
     #[serde(default)]
-    pub todo: TodoConfig,
-    /// The "Needs you" digest (`docs/todo.md`).
+    pub backlog: BacklogConfig,
+    /// The "Needs you" digest (`docs/backlog.md`).
     #[serde(default)]
     pub digest: DigestConfig,
     /// Projects by name.
@@ -868,15 +876,54 @@ impl Default for UpdateConfig {
     }
 }
 
-/// `[todo]`: the file the to-do list is exported to (`docs/todo.md`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct TodoConfig {
-    /// The `todo.md` to export to after every change; no export while this is unset. `~` is expanded.
-    pub file: Option<String>,
+/// Moves the deprecated `[todo]` section into `[backlog]`.
+///
+/// A configuration that still has `[todo]` in one layer and `[backlog]` in another loads: a key in only one of them is
+/// kept, the same value in both is kept once, and different values are refused with [`ConfigError::TodoConflict`]. A
+/// `[todo]` that is not a table becomes `[backlog]` as it is when there is no `[backlog]`, so deserializing reports it.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::TodoConflict`] for a key the two sections set differently, or for a `[todo]` beside a
+/// `[backlog]` when either is not a table.
+pub fn fold_todo(table: &mut toml::Table, origin: &str) -> Result<(), ConfigError> {
+    let Some(old) = table.remove("todo") else {
+        return Ok(());
+    };
+    let Some(current) = table.get_mut("backlog") else {
+        table.insert("backlog".to_owned(), old);
+        return Ok(());
+    };
+    let conflict = |key: &str| ConfigError::TodoConflict {
+        origin: origin.to_owned(),
+        key: key.to_owned(),
+    };
+    let (toml::Value::Table(old), Some(current)) = (old, current.as_table_mut()) else {
+        return Err(conflict("*"));
+    };
+    for (key, value) in old {
+        match current.get(&key) {
+            Some(present) if *present != value => return Err(conflict(&key)),
+            Some(_) => {}
+            None => {
+                current.insert(key, value);
+            }
+        }
+    }
+    Ok(())
 }
 
-/// `[digest]`: the "Needs you" digest (`docs/todo.md`).
+/// `[backlog]`: the file the backlog list is exported to (`docs/backlog.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BacklogConfig {
+    /// The `backlog.md` to export to after every change; no export while this is unset. `~` is expanded.
+    pub file: Option<String>,
+    /// Write a one-line pointer into the previously imported file when the export moves to a new file.
+    pub leave_pointer: bool,
+}
+
+/// `[digest]`: the "Needs you" digest (`docs/backlog.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DigestConfig {
@@ -946,10 +993,13 @@ impl Config {
     /// the default model outside the allowed set, a project allowing a model the machine does not, disk thresholds
     /// out of order, an unknown template placeholder, or a malformed repository.
     pub fn parse(text: &str, origin: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(text).map_err(|source| ConfigError::Parse {
+        let parse_error = |source| ConfigError::Parse {
             origin: origin.to_owned(),
             source: Box::new(source),
-        })?;
+        };
+        let mut table: toml::Table = toml::from_str(text).map_err(parse_error)?;
+        fold_todo(&mut table, origin)?;
+        let config: Self = toml::Value::Table(table).try_into().map_err(parse_error)?;
         config.validate()?;
         Ok(config)
     }
@@ -1008,6 +1058,12 @@ impl Config {
             })
             .map(|(section, old, new)| (format!("{section}.{old}"), format!("{section}.{new}")))
             .collect();
+        if let Some(keys) = table.get("todo").and_then(toml::Value::as_table) {
+            found.extend(
+                keys.keys()
+                    .map(|key| (format!("todo.{key}"), format!("backlog.{key}"))),
+            );
+        }
         if let Some(projects) = table.get("project").and_then(toml::Value::as_table) {
             found.extend(
                 projects

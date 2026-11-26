@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0b1b5fdfff3ba8d76ae800ba2c843b62a9e572c42faa5489ccb0c305dc1c4279 # shrinks to drafts = [BacklogDraft { project: "proj", section: None, text: "k", notes: [], state: Open, owner: Agent, added: None, not_before: None, due: None, done_on: None, done_note: None }, BacklogDraft { project: "proj", section: None, text: "k", notes: [], state: Open, owner: Agent, added: None, not_before: None, due: Some(BacklogDate("2020-01-01")), done_on: None, done_note: None }]

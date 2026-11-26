@@ -76,6 +76,14 @@ const BOTH: &[Role] = &[Role::Orchestrator, Role::Worker];
 const ORCHESTRATOR: &[Role] = &[Role::Orchestrator];
 const WORKER: &[Role] = &[Role::Worker];
 
+/// Tool names accepted for one more release and no longer listed, each with the tool that replaced it.
+const DEPRECATED_TOOL_NAMES: &[(&str, &str)] = &[
+    ("todo_list", "backlog_list"),
+    ("todo_add", "backlog_add"),
+    ("todo_done", "backlog_done"),
+    ("todo_edit", "backlog_edit"),
+];
+
 /// The worker tools only a lead's session sees and may call.
 const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start", "review_resolve"];
 
@@ -186,13 +194,13 @@ const TOOLS: &[ToolDef] = &[
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
                     "depends_on": { "type": "string", "description": "Name of a task that must be merged first." },
-                    "todo": {
+                    "backlog": {
                         "type": "integer",
                         "description": concat!(
-                            "The id of the open to-do item this task comes from (`todo_list`): it is linked to the task and ",
+                            "The id of the open backlog item this task comes from (`backlog_list`): it is linked to the task and ",
                             "finished when the task closes. Refused before the task starts when the item is not open or a live task holds ",
                             "it; a link refused after the task started leaves it running unlinked and the result says why ",
-                            "(`todo_unlinked`).",
+                            "(`backlog_unlinked`).",
                         ),
                     },
                     "allow_ask": {
@@ -381,9 +389,9 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
-        name: "todo_list",
+        name: "backlog_list",
         description: concat!(
-            "The to-do list (kept in the store, exported to `todo.md`): one line per item with its id, project, text, owner, ",
+            "The backlog list (kept in the store, exported to `backlog.md`): one line per item with its id, project, text, owner, ",
             "dates and the task spawned for it. Open items by default.",
         ),
         roles: ORCHESTRATOR,
@@ -399,9 +407,9 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
-        name: "todo_add",
+        name: "backlog_add",
         description: concat!(
-            "Add an item to the to-do list, last, and export `todo.md`. Never edit `todo.md` by hand. Text that starts with ",
+            "Add an item to the backlog list, last, and export `backlog.md`. Never edit `backlog.md` by hand. Text that starts with ",
             "`For you` is the user's. Commit and push the regenerated file afterwards.",
         ),
         roles: ORCHESTRATOR,
@@ -421,8 +429,8 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
-        name: "todo_done",
-        description: "Mark an open to-do item done, or dropped with `drop`, today, with a note, and export `todo.md`.",
+        name: "backlog_done",
+        description: "Mark an open backlog item done, or dropped with `drop`, today, with a note, and export `backlog.md`.",
         roles: ORCHESTRATOR,
         schema: || {
             object(
@@ -436,8 +444,8 @@ const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
-        name: "todo_edit",
-        description: "Change a to-do item (text, project, section, owner, dates, a note to append) and export `todo.md`.",
+        name: "backlog_edit",
+        description: "Change a backlog item (text, project, section, owner, dates, a note to append) and export `backlog.md`.",
         roles: ORCHESTRATOR,
         schema: || {
             object(
@@ -1016,6 +1024,10 @@ impl<'a> Server<'a> {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let name = DEPRECATED_TOOL_NAMES
+            .iter()
+            .find(|(old, _)| *old == name)
+            .map_or(name, |(_, current)| *current);
         let args = params
             .get("arguments")
             .cloned()
@@ -1120,10 +1132,10 @@ impl<'a> Server<'a> {
             "update" => self.update(args),
             "migrate_list" => self.migrate_list(args),
             "migrate_mark" => self.migrate_mark(args),
-            "todo_list" => self.todo_list(args),
-            "todo_add" => self.todo_add(args),
-            "todo_done" => self.todo_done(args),
-            "todo_edit" => self.todo_edit(args),
+            "backlog_list" => self.backlog_list(args),
+            "backlog_add" => self.backlog_add(args),
+            "backlog_done" => self.backlog_done(args),
+            "backlog_edit" => self.backlog_edit(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -1324,9 +1336,9 @@ impl<'a> Server<'a> {
         )
     }
 
-    fn todo_list(&self, args: &Value) -> Result<String> {
+    fn backlog_list(&self, args: &Value) -> Result<String> {
         let word = |key| args.get(key).and_then(Value::as_str);
-        let items = super::todo::list(
+        let items = super::backlog::list(
             self.store,
             word("project"),
             word("owner").map(str::parse).transpose()?,
@@ -1335,12 +1347,12 @@ impl<'a> Server<'a> {
         to_text(
             &items
                 .iter()
-                .map(headwork_core::todo::Todo::line)
+                .map(headwork_core::backlog::BacklogItem::line)
                 .collect::<Vec<_>>(),
         )
     }
 
-    fn todo_add(&mut self, args: &Value) -> Result<String> {
+    fn backlog_add(&mut self, args: &Value) -> Result<String> {
         let optional = |key| args.get(key).and_then(Value::as_str);
         let notes: Vec<String> = match args.get("notes") {
             None | Some(Value::Null) => Vec::new(),
@@ -1354,7 +1366,7 @@ impl<'a> Server<'a> {
                 .collect::<Result<_>>()?,
             Some(_) => bail!("`notes` is a list of lines"),
         };
-        let request = super::todo::AddRequest {
+        let request = super::backlog::AddRequest {
             project: text(args, "project")?,
             text: text(args, "text")?,
             section: optional("section").map(str::to_owned),
@@ -1363,23 +1375,23 @@ impl<'a> Server<'a> {
             due: optional("due").map(str::parse).transpose()?,
             notes,
         };
-        to_text(&super::todo::add(self.store, &self.env, &request)?)
+        to_text(&super::backlog::add(self.store, &self.env, &request)?)
     }
 
-    fn todo_done(&mut self, args: &Value) -> Result<String> {
+    fn backlog_done(&mut self, args: &Value) -> Result<String> {
         let note = args.get("note").and_then(Value::as_str);
-        to_text(&super::todo::finish(
+        to_text(&super::backlog::finish(
             self.store,
             &self.env,
-            todo_id(args)?,
+            backlog_id(args)?,
             note,
             flag(args, "drop"),
         )?)
     }
 
-    fn todo_edit(&mut self, args: &Value) -> Result<String> {
+    fn backlog_edit(&mut self, args: &Value) -> Result<String> {
         let optional = |key| args.get(key).and_then(Value::as_str);
-        let date = |key| -> Result<Option<Option<headwork_core::todo::TodoDate>>> {
+        let date = |key| -> Result<Option<Option<headwork_core::backlog::BacklogDate>>> {
             optional(key)
                 .map(|word| {
                     if word == "none" {
@@ -1390,7 +1402,7 @@ impl<'a> Server<'a> {
                 })
                 .transpose()
         };
-        let edit = headwork_store::TodoEdit {
+        let edit = headwork_store::BacklogEdit {
             text: optional("text").map(str::to_owned),
             project: optional("project").map(str::to_owned),
             section: optional("section").map(|word| (word != "none").then(|| word.to_owned())),
@@ -1400,10 +1412,10 @@ impl<'a> Server<'a> {
             append: optional("append").map(str::to_owned),
             added: None,
         };
-        to_text(&super::todo::edit(
+        to_text(&super::backlog::edit(
             self.store,
             &self.env,
-            todo_id(args)?,
+            backlog_id(args)?,
             &edit,
         )?)
     }
@@ -1681,21 +1693,25 @@ impl<'a> Server<'a> {
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
         };
-        let todo = match args.get("todo") {
-            None | Some(Value::Null) => None,
+        let item = match ["backlog", "todo"]
+            .iter()
+            .find_map(|key| args.get(*key).filter(|value| !value.is_null()))
+        {
+            None => None,
             Some(value) => Some(
                 value
                     .as_i64()
-                    .ok_or_else(|| anyhow!("`todo` is a to-do item's id, an integer"))?,
+                    .ok_or_else(|| anyhow!("`backlog` is a backlog item's id, an integer"))?,
             ),
         };
         reap(self.store, &self.env)?;
-        let result = super::todo::spawn_linked(self.store, &self.env, &request, todo);
+        let result = super::backlog::spawn_linked(self.store, &self.env, &request, item);
         std::fs::remove_file(&file).ok();
         let spawned = result?;
         to_text(&json!({
             "task": spawned.task,
             "queue": spawned.pumped,
+            "backlog_unlinked": spawned.unlinked,
             "todo_unlinked": spawned.unlinked,
         }))
     }
@@ -2091,7 +2107,7 @@ fn items<T: serde::de::DeserializeOwned>(args: &Value) -> Result<Vec<T>> {
         .map_err(|error| anyhow!("`items` does not have the expected shape: {error}"))
 }
 
-fn todo_id(args: &Value) -> Result<i64> {
+fn backlog_id(args: &Value) -> Result<i64> {
     args.get("id")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("`id` is required and must be an integer"))
