@@ -544,7 +544,8 @@ const TOOLS: &[ToolDef] = &[
         name: "job_register",
         description: "Register a long-running process you started (a training run, a render) so a park can stop it \
                       cleanly and a resume can start it again. Policy `checkpoint` waits for a fresh checkpoint file \
-                      before stopping, `rerun` stops it at once and runs it again, `finish` is left to run.",
+                      before stopping, `rerun` stops it at once and runs it again, `finish` is left to run. With a \
+                      `gate` the result warns when the pid holds no slot and none was free.",
         roles: WORKER,
         schema: || {
             object(
@@ -556,7 +557,8 @@ const TOOLS: &[ToolDef] = &[
                     "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
                     "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
                     "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
-                    "heavy": { "type": "boolean" },
+                    "gate": { "type": "string", "enum": ["cpu", "gpu"], "description": "The machine-wide gate the job holds a slot of while it runs: cpu for builds, renders and scans, gpu for training. job_start waits for a free slot; job_register takes a free one for the pid, else warns." },
+                    "heavy": { "type": "boolean", "description": "Older spelling of gate cpu; gate wins when both are given." },
                 }),
                 &["label", "argv"],
             )
@@ -566,7 +568,8 @@ const TOOLS: &[ToolDef] = &[
         name: "job_start",
         description: "Start a long-running process (a training run, a render) detached from this session and register \
                       it, so it survives your turn and a park can stop it cleanly and a resume can start it again. \
-                      Use this instead of a background shell. Policies as for job_register.",
+                      Use this instead of a background shell. Policies as for job_register. With a `gate` it runs as \
+                      `headwork gate run <class> --`, so it waits for a slot first and job_status says `waiting_for`.",
         roles: WORKER,
         schema: || {
             object(
@@ -577,7 +580,8 @@ const TOOLS: &[ToolDef] = &[
                     "park_policy": { "type": "string", "enum": ["checkpoint", "rerun", "finish"] },
                     "checkpoint_path": { "type": "string", "description": "The file a checkpoint job rewrites." },
                     "restart": { "type": "boolean", "description": "Start it again after a restart; true when absent." },
-                    "heavy": { "type": "boolean" },
+                    "gate": { "type": "string", "enum": ["cpu", "gpu"], "description": "The machine-wide gate the job holds a slot of while it runs: cpu for builds, renders and scans, gpu for training. job_start waits for a free slot; job_register takes a free one for the pid, else warns." },
+                    "heavy": { "type": "boolean", "description": "Older spelling of gate cpu; gate wins when both are given." },
                 }),
                 &["label", "argv"],
             )
@@ -1260,13 +1264,13 @@ impl<'a> Server<'a> {
 
     fn job_register(&mut self, session: &str, task: &Task, args: &Value) -> Result<String> {
         let registration = registration(args)?;
-        to_text(&jobs::register(
-            self.store,
-            &self.env,
-            task,
-            session,
-            &registration,
-        )?)
+        let row = jobs::register(self.store, &self.env, task, session, &registration)?;
+        let warning = jobs::claim_gate(&self.env, task, &row);
+        let mut value = serde_json::to_value(&row)?;
+        if let (Some(warning), Some(object)) = (warning, value.as_object_mut()) {
+            object.insert("warning".to_owned(), Value::String(warning));
+        }
+        to_text(&value)
     }
 
     fn job_status(&mut self, session: &str, role: Role) -> Result<String> {
@@ -1276,7 +1280,8 @@ impl<'a> Server<'a> {
         } else {
             None
         };
-        to_text(&self.store.open_jobs(task)?)
+        let jobs = self.store.open_jobs(task)?;
+        to_text(&jobs::statuses(self.env.home, self.env.config, jobs))
     }
 
     fn job_stop(&mut self, task: &Task, args: &Value) -> Result<String> {
@@ -2241,7 +2246,12 @@ fn registration(args: &Value) -> Result<Registration> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         restart: args.get("restart").and_then(Value::as_bool),
-        heavy: flag(args, "heavy"),
+        gate: args
+            .get("gate")
+            .and_then(Value::as_str)
+            .map(str::parse)
+            .transpose()?
+            .or_else(|| flag(args, "heavy").then_some(headwork_core::gate::GateClass::Cpu)),
     })
 }
 

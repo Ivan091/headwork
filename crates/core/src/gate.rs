@@ -24,6 +24,28 @@ text_enum!(
     }
 );
 
+impl GateClass {
+    /// The integer a job row keeps in its `heavy` column: 0 for no gate, 1 for `cpu`, 2 for `gpu`.
+    #[must_use]
+    pub const fn job_code(gate: Option<Self>) -> i64 {
+        match gate {
+            None => 0,
+            Some(Self::Cpu) => 1,
+            Some(Self::Gpu) => 2,
+        }
+    }
+
+    /// The gate a job row's `heavy` column says: 0 and unknown numbers none, 1 `cpu`, 2 `gpu`.
+    #[must_use]
+    pub const fn from_job_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Cpu),
+            2 => Some(Self::Gpu),
+            _ => None,
+        }
+    }
+}
+
 /// Seconds after which a slot folder whose owner file was never written counts as stale.
 pub const UNOWNED_STALE_S: u64 = 10;
 

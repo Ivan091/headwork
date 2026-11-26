@@ -1153,7 +1153,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             answer_command(&mut store, &ctx, AskId(ask), &choice, json, out)
         }
         Command::Tick { json, .. } => tick_command(&mut store, &ctx, json, out),
-        Command::Jobs { json } => jobs_command(&mut store, json, out),
+        Command::Jobs { json } => jobs_command(&mut store, &ctx, json, out),
         Command::Job {
             action: JobAction::Forget { id, reason },
         } => {
@@ -1307,9 +1307,14 @@ fn resume_command(
     })
 }
 
-fn jobs_command(store: &mut Store, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+fn jobs_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
     headwork::ops::jobs::refresh(store, Actor::User)?;
-    let jobs = store.open_jobs(None)?;
+    let jobs = headwork::ops::jobs::statuses(ctx.home, ctx.config, store.open_jobs(None)?);
     if json {
         json_out(out, &jobs)?;
     } else {

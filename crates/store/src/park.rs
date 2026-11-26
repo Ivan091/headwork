@@ -1,6 +1,7 @@
 //! Parks, recaps and the jobs registry (design sections 2.2 and 6).
 
 use headwork_core::config::ParkPolicy;
+use headwork_core::gate::GateClass;
 use headwork_core::process::ProcessIdentity;
 use headwork_core::{Actor, JobState, MachineMode, RecapKind};
 use rusqlite::{OptionalExtension, params};
@@ -89,7 +90,9 @@ pub struct JobRow {
     pub identity: Option<ProcessIdentity>,
     /// The file a `checkpoint` park waits on.
     pub checkpoint_path: Option<String>,
-    /// It holds a heavy slot.
+    /// The gate it runs under; `heavy` below is true exactly when it has one.
+    pub gate: Option<GateClass>,
+    /// It runs under a gate; kept for readers of the older JSON.
     pub heavy: bool,
     /// Resume starts it again after a park.
     pub restart: bool,
@@ -126,8 +129,8 @@ pub struct NewJob<'a> {
     pub identity: Option<&'a ProcessIdentity>,
     /// The checkpoint file.
     pub checkpoint_path: Option<&'a str>,
-    /// It holds a heavy slot.
-    pub heavy: bool,
+    /// The gate it runs under.
+    pub gate: Option<GateClass>,
     /// Resume starts it again.
     pub restart: bool,
     /// Where its output goes.
@@ -147,7 +150,7 @@ type RawJob = (
     String,
     Option<i64>,
     Option<String>,
-    bool,
+    i64,
     bool,
     String,
     String,
@@ -209,7 +212,8 @@ fn into_job(raw: RawJob) -> Result<JobRow, StoreError> {
             .transpose()?,
         identity: identity(pid_image, pid_started)?,
         checkpoint_path,
-        heavy,
+        gate: GateClass::from_job_code(heavy),
+        heavy: GateClass::from_job_code(heavy).is_some(),
         restart,
         state: state.parse()?,
         log_path,
@@ -610,7 +614,7 @@ impl Store {
                 job.cwd,
                 job.pid.map(i64::from),
                 job.checkpoint_path,
-                job.heavy,
+                GateClass::job_code(job.gate),
                 job.restart,
                 job.log_path,
                 image,

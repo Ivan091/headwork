@@ -257,7 +257,7 @@ fn worktree() -> String {
 }
 
 /// Local time as `%Y-%m-%d %H:%M:%S`, else UTC in the same shape.
-fn local_now() -> String {
+pub(crate) fn local_now() -> String {
     headwork_store::local_time_now().unwrap_or_else(|| {
         let utc = headwork_core::update::format_utc(gate::epoch_now().saturating_mul(1000));
         utc.trim_end_matches('Z').replace('T', " ")

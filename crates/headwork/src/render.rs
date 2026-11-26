@@ -23,7 +23,7 @@ use headwork_core::names::is_unsafe_char;
 use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_core::usage::{UsageConfig, short_count};
 use headwork_core::{PlaceKind, TaskShape, UsageGroup};
-use headwork_store::{AskRow, Board, BoardTask, EventRecord, JobRow};
+use headwork_store::{AskRow, Board, BoardTask, EventRecord};
 
 /// `text` with characters that could change how the terminal shows it (control, bidirectional, zero-width) written as
 /// escapes, so agent-written labels cannot move the cursor or reorder the line.
@@ -555,12 +555,13 @@ fn outcome_line(outcome: &TaskOutcome) -> String {
 
 /// The registered jobs.
 #[must_use]
-pub(crate) fn jobs(jobs: &[JobRow]) -> String {
+pub(crate) fn jobs(jobs: &[headwork::ops::jobs::JobStatus]) -> String {
     if jobs.is_empty() {
         return "no registered jobs\n".to_owned();
     }
     let mut text = String::new();
-    for job in jobs {
+    for status in jobs {
+        let job = &status.job;
         let pid = job
             .pid
             .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
@@ -573,6 +574,11 @@ pub(crate) fn jobs(jobs: &[JobRow]) -> String {
             job.label,
             job.argv.join(" ")
         );
+        if let Some(class) = status.waiting_for {
+            let _ = writeln!(text, "      waiting for {class}");
+        } else if let Some(class) = job.gate {
+            let _ = writeln!(text, "      gate {class}");
+        }
         if let Some(note) = &job.note {
             let _ = writeln!(text, "      {note}");
         }

@@ -491,6 +491,50 @@ impl Slots {
     }
 }
 
+impl Slots {
+    /// Takes a free slot of a class for the process `owner.pid` names, without waiting and without joining the queue.
+    ///
+    /// Stale slots are reaped first. The slot stays taken after this returns; it ends with its holder, as any slot.
+    /// Returns the slot number, or `None` when no slot is free (or the live waiters ahead need the free ones).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateError::Io`] when a slot cannot be made or written.
+    pub fn claim_for(
+        &self,
+        class: GateClass,
+        count: NonZeroU32,
+        owner: Owner,
+        started: &str,
+        epoch: u64,
+    ) -> Result<Option<u32>, GateError> {
+        let dir = self.class_dir(class);
+        std::fs::create_dir_all(&dir).map_err(io_error("creating", &dir))?;
+        self.reap(class).ok();
+        let view = self.read(class, count);
+        if free_slots(count, view.used()) == 0 {
+            return Ok(None);
+        }
+        let ticket = Ticket {
+            slots: self.clone(),
+            class,
+            count,
+            owner: Owner {
+                class: Some(class),
+                native: true,
+                ..owner
+            },
+            wait_file: None,
+        };
+        let Some(held) = ticket.claim(&view, started, epoch)? else {
+            return Ok(None);
+        };
+        let slot = held.slot();
+        held.keep();
+        Ok(Some(slot))
+    }
+}
+
 /// A place in a class's queue; dropping it leaves the queue.
 #[derive(Debug)]
 pub struct Ticket {
@@ -657,6 +701,11 @@ impl Held {
     #[must_use]
     pub const fn class(&self) -> GateClass {
         self.class
+    }
+
+    /// Leaves the slot taken: dropping no longer removes it, so it lasts until its holder's process is gone.
+    pub fn keep(mut self) {
+        self.released = true;
     }
 
     /// Gives the slot back by removing its folder.

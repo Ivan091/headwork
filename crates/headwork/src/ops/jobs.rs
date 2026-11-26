@@ -7,10 +7,13 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail, ensure};
 use headwork_adapters::proc::{self, Liveness};
 use headwork_core::config::ParkPolicy;
+use headwork_core::gate::{GateClass, Owner};
 use headwork_core::{Actor, JobState};
 use headwork_store::{JobRow, NewJob, Store, Task, TaskId};
+use serde::Serialize;
 
 use super::Env;
+use crate::home::Home;
 
 /// What a session says about a job it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +32,8 @@ pub struct Registration {
     pub checkpoint_path: Option<String>,
     /// Resume starts it again; true when absent.
     pub restart: Option<bool>,
-    /// It holds a heavy slot.
-    pub heavy: bool,
+    /// The gate it runs under (`headwork gate run <class> --`); none when absent.
+    pub gate: Option<GateClass>,
 }
 
 /// Registers a job of a task's session.
@@ -90,7 +93,7 @@ pub fn register(
             pid: job.pid,
             identity: identity.as_ref(),
             checkpoint_path: checkpoint.as_deref(),
-            heavy: job.heavy,
+            gate: job.gate,
             restart: job.restart.unwrap_or(true),
             log_path: &super::slashed(&log),
         },
@@ -99,6 +102,108 @@ pub fn register(
     store
         .job(id)?
         .with_context(|| format!("job {id} vanished after it was registered"))
+}
+
+/// What a registered job's gate came to: a warning when its process holds no slot and none could be taken for it.
+///
+/// Takes a free slot of the job's class for its pid when the pid holds none; nothing happens for a job without a gate or
+/// a pid.
+#[must_use]
+pub fn claim_gate(env: &Env<'_>, task: &Task, job: &JobRow) -> Option<String> {
+    let (class, pid) = (job.gate?, job.pid?);
+    let gates = &env.config.gates;
+    let Some(dir) = super::gate::gate_dir(env.home, gates) else {
+        return Some(format!(
+            "job `{}` runs over the {class} gate: no slot folder",
+            job.label
+        ));
+    };
+    let slots = headwork_adapters::gate::Slots::new(dir);
+    let view = slots.read(class, gates.count(class));
+    let holds = view
+        .live_holders()
+        .any(|holder| holder.owner.as_ref().is_some_and(|owner| owner.pid == pid));
+    if holds {
+        return None;
+    }
+    let owner = Owner {
+        pid,
+        native: true,
+        class: Some(class),
+        task: task.name.to_string(),
+        task_id: Some(task.id.0),
+        worktree: job.cwd.clone(),
+        command: job.argv.join(" "),
+        ..Owner::default()
+    };
+    let claimed = slots.claim_for(
+        class,
+        gates.count(class),
+        owner,
+        &super::gate::local_now(),
+        headwork_adapters::gate::epoch_now(),
+    );
+    match claimed {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(format!(
+            "job `{}` runs over the {class} gate: all {} slots are taken and it holds none; start gated jobs with job_start",
+            job.label,
+            gates.count(class)
+        )),
+        Err(error) => Some(format!(
+            "job `{}` runs over the {class} gate: {error}",
+            job.label
+        )),
+    }
+}
+
+/// A job as `job_status` and `headwork jobs` show it: the row, and the class it waits for a slot of.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobStatus {
+    /// The registered job.
+    #[serde(flatten)]
+    pub job: JobRow,
+    /// The class whose slot its process waits for now.
+    pub waiting_for: Option<GateClass>,
+}
+
+/// The jobs with what each running gated one waits for: a live waiter file of its pid in its class.
+#[must_use]
+pub fn statuses(home: &Home, config: &headwork_core::Config, jobs: Vec<JobRow>) -> Vec<JobStatus> {
+    let gates = &config.gates;
+    let slots = super::gate::gate_dir(home, gates).map(headwork_adapters::gate::Slots::new);
+    let views: Vec<_> = slots
+        .iter()
+        .flat_map(|slots| {
+            GateClass::ALL
+                .iter()
+                .filter(|class| jobs.iter().any(|job| job.gate == Some(**class)))
+                .map(|&class| slots.read(class, gates.count(class)))
+        })
+        .collect();
+    jobs.into_iter()
+        .map(|job| {
+            let waiting_for = job.gate.filter(|class| {
+                job.state == JobState::Running
+                    && views.iter().any(|view| {
+                        view.class == *class
+                            && view
+                                .live_waiters()
+                                .any(|waiter| Some(waiter.pid) == job.pid)
+                    })
+            });
+            JobStatus { job, waiting_for }
+        })
+        .collect()
+}
+
+/// The `headwork` program a gated job runs through: `HEADWORK_EXE`, else this program.
+fn gate_exe() -> PathBuf {
+    std::env::var_os("HEADWORK_EXE")
+        .filter(|exe| !exe.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("headwork"))
 }
 
 /// A job log larger than this is rotated when its job starts.
@@ -316,6 +421,23 @@ pub fn program_for(program: &str, shell: &Path) -> PathBuf {
     }
 }
 
+/// The process that runs a job: the program itself, or `headwork gate run <class> -- <program>` for a gated job.
+fn job_command(job: &JobRow, program: &str, args: &[String], shell: &Path) -> Command {
+    let Some(class) = job.gate else {
+        let mut command = Command::new(program_for(program, shell));
+        command.args(args);
+        return command;
+    };
+    let mut command = Command::new(gate_exe());
+    command
+        .args(["gate", "run", class.as_str(), "--", program])
+        .args(args);
+    if let Some(task) = job.task_id {
+        command.env(headwork_adapters::runtime::ENV_TASK, task.0.to_string());
+    }
+    command
+}
+
 /// Starts a parked job again with its stored command line, detached, appending to its log.
 ///
 /// # Errors
@@ -336,11 +458,8 @@ pub fn restart(store: &mut Store, job: &JobRow, shell: &Path, actor: Actor) -> R
     let err = log
         .try_clone()
         .with_context(|| format!("opening {}", job.log_path))?;
-    let mut command = Command::new(program_for(program, shell));
-    command
-        .args(args)
-        .current_dir(&job.cwd)
-        .stdin(Stdio::null());
+    let mut command = job_command(job, program, args, shell);
+    command.current_dir(&job.cwd).stdin(Stdio::null());
     let (pid, _) = proc::spawn_detached_to(&mut command, log.into(), err.into())?;
     let identity = proc::identify(pid);
     store.set_job_pid(job.id, pid, identity.as_ref(), actor)?;
@@ -352,7 +471,60 @@ pub fn restart(store: &mut Store, job: &JobRow, shell: &Path, actor: Actor) -> R
 mod tests {
     use std::path::Path;
 
-    use super::{open_log, program_for, rotate_log};
+    use headwork_core::JobState;
+    use headwork_core::config::ParkPolicy;
+    use headwork_core::gate::GateClass;
+    use headwork_store::{JobRow, TaskId};
+
+    use super::{job_command, open_log, program_for, rotate_log};
+
+    fn row(gate: Option<GateClass>) -> JobRow {
+        JobRow {
+            id: 1,
+            task_id: Some(TaskId(7)),
+            project: "demo".to_owned(),
+            label: "render".to_owned(),
+            park_policy: ParkPolicy::Rerun,
+            argv: vec!["cargo".to_owned(), "test".to_owned()],
+            cwd: ".".to_owned(),
+            pid: None,
+            identity: None,
+            checkpoint_path: None,
+            gate,
+            heavy: gate.is_some(),
+            restart: true,
+            state: JobState::Running,
+            log_path: "log".to_owned(),
+            started_at: String::new(),
+            note: None,
+        }
+    }
+
+    fn line(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_gated_job_runs_through_headwork_gate_run_and_an_ungated_one_directly() {
+        let shell = Path::new("bash");
+        let args = ["test".to_owned()];
+        let gated = job_command(&row(Some(GateClass::Gpu)), "cargo", &args, shell);
+        assert_eq!(line(&gated), ["gate", "run", "gpu", "--", "cargo", "test"]);
+        let task = gated
+            .get_envs()
+            .find(|(key, _)| *key == "HEADWORK_TASK")
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            task.map(|v| v.to_string_lossy().into_owned()),
+            Some("7".to_owned())
+        );
+        let plain = job_command(&row(None), "cargo", &args, shell);
+        assert_eq!(plain.get_program(), "cargo");
+        assert_eq!(line(&plain), ["test"]);
+    }
 
     #[test]
     fn a_bare_shell_becomes_the_configured_one() {
