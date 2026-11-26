@@ -45,7 +45,8 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 - Publishing, uploads, logins and releases are the user's alone. When the user explicitly asked for a worker to run
   one, spawn it under a main-only kind of the project (`--kind <kind> --main`) with `--allow-ask "<exact command>"` per
   command: the worker's first action is the `Allow` ask, and it runs the command only after the user's tap in its pane.
-  Never write the go into the brief; spawn refuses a brief naming a user-only command under another kind.
+  Never write the go into the brief; spawn refuses a brief naming a user-only command under another kind, unless
+  the words right before it forbid it ("never run `x`", "do not run `x`", "no `x`").
 - headwork's hard rules are {mode}. A broken rule is logged with its id; when enforced, the call is refused.
 
 ## Silent or confirm, and review
