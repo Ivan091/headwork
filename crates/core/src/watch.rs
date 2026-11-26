@@ -2,7 +2,7 @@
 //! output, stuck sessions, spawn timeouts, ask reminders and the merged grace.
 
 use crate::config::WatchConfig;
-use crate::vocabulary::TaskState;
+use crate::vocabulary::{FindingId, TaskState};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -31,6 +31,26 @@ pub struct Limits {
     pub merged_grace: u64,
     /// Seconds a closing task may keep processes alive before the tick ends them.
     pub closing_grace: u64,
+}
+
+/// Seconds a standing finding of this kind stays silent before the user is told again; `None` tells it once.
+#[must_use]
+pub fn retell_after(watch: &WatchConfig, rule: FindingId) -> Option<u64> {
+    let hours = watch
+        .retell_after_h_by_rule
+        .get(&rule)
+        .copied()
+        .unwrap_or(watch.retell_after_h);
+    (hours > 0).then(|| u64::from(hours) * 3600)
+}
+
+/// Whether a finding silent for `quiet_s` seconds is told again after `after`.
+#[must_use]
+pub const fn retell_due(quiet_s: u64, after: Option<u64>) -> bool {
+    match after {
+        Some(limit) => quiet_s >= limit,
+        None => false,
+    }
 }
 
 impl Limits {
@@ -531,6 +551,36 @@ Is this a project you created or one you trust?
         for (age, session, over, why) in cases {
             assert_eq!(merged_grace_over(age, session, &LIMITS), over, "{why}");
         }
+    }
+
+    #[test]
+    fn a_finding_is_told_again_after_its_kinds_hours() {
+        let mut watch = WatchConfig::default();
+        assert_eq!(
+            retell_after(&watch, FindingId::Stuck),
+            Some(6 * 3600),
+            "default"
+        );
+        watch.retell_after_h_by_rule.insert(FindingId::Stuck, 2);
+        watch.retell_after_h_by_rule.insert(FindingId::Runaway, 0);
+        assert_eq!(
+            retell_after(&watch, FindingId::Stuck),
+            Some(2 * 3600),
+            "per kind"
+        );
+        assert_eq!(
+            retell_after(&watch, FindingId::Runaway),
+            None,
+            "0 tells once"
+        );
+        assert_eq!(
+            retell_after(&watch, FindingId::IdleSlot),
+            Some(6 * 3600),
+            "others keep the default"
+        );
+        assert!(!retell_due(2 * 3600 - 1, Some(2 * 3600)), "not yet");
+        assert!(retell_due(2 * 3600, Some(2 * 3600)), "due");
+        assert!(!retell_due(u64::MAX, None), "never");
     }
 
     #[test]

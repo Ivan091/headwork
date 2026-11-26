@@ -163,6 +163,9 @@ pub struct Notice {
     pub at: String,
     /// What to tell.
     pub text: String,
+    /// What left it when not `headwork update`, such as `tick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// `<home>/update.json`.
@@ -252,9 +255,18 @@ impl UpdateState {
         self.notices.push(Notice {
             at: update::format_utc(now_ms),
             text,
+            source: None,
         });
         let extra = self.notices.len().saturating_sub(KEPT_NOTICES);
         self.notices.drain(..extra);
+    }
+
+    /// Leaves a notice from the tick.
+    pub fn tick_notice(&mut self, now_ms: u64, text: String) {
+        self.notice(now_ms, text);
+        if let Some(last) = self.notices.last_mut() {
+            last.source = Some(TICK_SOURCE.to_owned());
+        }
     }
 
     fn result(&mut self, now_ms: u64, outcome: impl Into<String>) {
@@ -1533,6 +1545,25 @@ fn install_notice(
     (!parts.is_empty()).then(|| format!("{name} is installed; {}.", parts.join("; ")))
 }
 
+/// The `source` of a notice the tick left.
+pub const TICK_SOURCE: &str = "tick";
+
+/// Leaves a notice from the tick for the orchestrator's next prompt, waiting briefly for an update that holds the lock.
+/// Returns whether it was left.
+///
+/// # Errors
+///
+/// Fails when the lock or `update.json` cannot be handled.
+pub fn leave_tick_notice(home: &Home, now_ms: u64, text: String) -> Result<bool> {
+    let Some(_lock) = UpdateLock::take_waiting(home, NOTICE_GRACE)? else {
+        return Ok(false);
+    };
+    let mut state = UpdateState::load(home);
+    state.tick_notice(now_ms, text);
+    state.save(home)?;
+    Ok(true)
+}
+
 /// Takes the notices waiting for the orchestrator's next prompt, oldest first, so each is told once.
 ///
 /// Empty when none wait, or while an update holds the lock: they wait for the prompt after.
@@ -1541,6 +1572,18 @@ fn install_notice(
 ///
 /// Fails when the lock or `update.json` cannot be handled.
 pub fn take_notices(home: &Home) -> Result<Vec<String>> {
+    Ok(take_notice_entries(home)?
+        .into_iter()
+        .map(|notice| notice.text)
+        .collect())
+}
+
+/// [`take_notices`] with each notice's source.
+///
+/// # Errors
+///
+/// Fails when the lock or `update.json` cannot be handled.
+pub fn take_notice_entries(home: &Home) -> Result<Vec<Notice>> {
     if UpdateState::load(home).notices.is_empty() {
         return Ok(Vec::new());
     }
@@ -1552,7 +1595,7 @@ pub fn take_notices(home: &Home) -> Result<Vec<String>> {
     if !notices.is_empty() {
         state.save(home)?;
     }
-    Ok(notices.into_iter().map(|notice| notice.text).collect())
+    Ok(notices)
 }
 
 /// What started an update.

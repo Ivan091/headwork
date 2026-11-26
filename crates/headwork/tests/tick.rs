@@ -342,6 +342,10 @@ fn a_session_that_never_starts_fails_after_the_spawn_timeout() {
         "shadow mode leaves the pane alone: {:?}",
         w.host.calls()
     );
+    let notices = UpdateState::load(&w.home).notices;
+    assert_eq!(notices.len(), 1, "the orchestrator is told: {notices:?}");
+    assert_eq!(notices[0].source.as_deref(), Some("tick"), "from the tick");
+    assert!(notices[0].text.contains("demo-sand"), "{notices:?}");
 }
 
 #[test]
@@ -375,6 +379,13 @@ fn a_vanished_pane_interrupts_the_task() {
         rules(&report),
         [(FindingId::PaneLost, Status::Applied)],
         "finding"
+    );
+    let notices = UpdateState::load(&w.home).notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].source.as_deref(), Some("tick"), "from the tick");
+    assert!(
+        notices[0].text.contains("demo-sand") && notices[0].text.contains("interrupted"),
+        "{notices:?}"
     );
 }
 
@@ -703,6 +714,13 @@ fn enforcing_starts_closing_a_merged_task_that_reported() {
         "closing"
     );
     assert_ne!(state(&w, &task), TaskState::Merged, "left merged");
+    let notices = UpdateState::load(&w.home).notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].source.as_deref(), Some("tick"), "from the tick");
+    assert!(
+        notices[0].text.contains("demo-sand") && notices[0].text.contains("closing"),
+        "{notices:?}"
+    );
 }
 
 #[test]
@@ -1146,6 +1164,106 @@ fn a_huge_file_in_a_live_worktree_is_reported_and_its_session_left_alone() {
     assert_eq!(line.task.as_deref(), Some("demo-sand"), "attributed");
     assert!(notified(&w, "Runaway"), "{:?}", w.host.calls());
     assert!(is_alive(w.children[0].id()).unwrap(), "the session lives");
+}
+
+fn age_findings(w: &World, hours: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE findings SET first_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{hours} hours')"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+fn told(w: &World, needle: &str) -> usize {
+    w.host
+        .calls()
+        .iter()
+        .filter(|c| c.starts_with("notify") && c.contains(needle))
+        .count()
+}
+
+fn huge_file_world(extra: &str) -> World {
+    let mut w = world_extra(true, 10, extra);
+    w.limits = runaway_limits();
+    let (task, _) = working(&mut w, "sand");
+    let dir = PathBuf::from(w.store.worktree_of(task.id).unwrap().unwrap().path);
+    write_file(&dir.join("big.bin"), 1500);
+    w
+}
+
+#[test]
+fn a_standing_finding_is_told_again_after_the_retell_hours() {
+    let mut w = huge_file_world("");
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(told(&w, "Runaway"), 1, "told once at first");
+    age_findings(&w, 5);
+    run_tick(&mut w);
+    assert_eq!(
+        told(&w, "Runaway"),
+        1,
+        "five hours is inside the default six"
+    );
+    age_findings(&w, 7);
+    run_tick(&mut w);
+    assert_eq!(told(&w, "Runaway"), 2, "told again after seven hours");
+    assert!(notified(&w, "Still open: Runaway"), "{:?}", w.host.calls());
+    run_tick(&mut w);
+    assert_eq!(told(&w, "Runaway"), 2, "then quiet for another stretch");
+    assert_eq!(count(&w, "finding-told"), 1, "logged");
+}
+
+#[test]
+fn the_retell_hours_follow_the_kind_and_zero_tells_once() {
+    let mut w = huge_file_world(
+        "
+[watch]
+retell_after_h = 6
+[watch.retell_after_h_by_rule]
+runaway = 1
+",
+    );
+    run_tick(&mut w);
+    age_findings(&w, 2);
+    run_tick(&mut w);
+    assert_eq!(told(&w, "Runaway"), 2, "this kind is told after one hour");
+
+    let mut never = huge_file_world(
+        "
+[watch]
+retell_after_h = 0
+",
+    );
+    run_tick(&mut never);
+    age_findings(&never, 100);
+    run_tick(&mut never);
+    assert_eq!(told(&never, "Runaway"), 1, "0 tells once");
+}
+
+#[test]
+fn board_and_status_show_the_open_findings() {
+    let mut w = huge_file_world("");
+    run_tick(&mut w);
+    age_findings(&w, 3);
+    let board = w.store.board(false).unwrap();
+    assert_eq!(board.findings.len(), 1, "{:?}", board.findings);
+    assert_eq!(board.findings[0].rule, "runaway");
+    assert_eq!(board.findings[0].task.as_deref(), Some("demo-sand"));
+    let lines = headwork::ops::status::lines(
+        &w.store,
+        &board,
+        &headwork_core::usage::UsageConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(lines[0].findings, ["runaway (open 3h)"], "{lines:?}");
+    assert!(
+        lines[0].line.contains("open findings: runaway"),
+        "{}",
+        lines[0].line
+    );
 }
 
 #[test]

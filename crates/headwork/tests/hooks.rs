@@ -2904,16 +2904,26 @@ fn update_notices_reach_the_orchestrators_next_prompt_once() {
             at: "2026-11-22T12:00:00Z".to_owned(),
             text: "update to v0.1.9 failed at smoke (deterministic, attempt 1): boom; the installed build runs on"
                 .to_owned(),
+            source: None,
         }],
         ..UpdateState::default()
     }
     .save(&w.home)
     .unwrap();
+    assert!(
+        headwork::ops::update::leave_tick_notice(
+            &w.home,
+            1_000,
+            "the tick failed demo-sand.".to_owned()
+        )
+        .unwrap(),
+        "left"
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     assert_eq!(
         UpdateState::load(&w.home).notices.len(),
-        1,
+        2,
         "a worker's prompt leaves the notices"
     );
     w.store
@@ -2934,6 +2944,7 @@ fn update_notices_reach_the_orchestrators_next_prompt_once() {
     let text = context(&w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "hi" })));
     assert!(
         text.contains("headwork update: update to v0.1.9 failed at smoke")
+            && text.contains("headwork tick: the tick failed demo-sand.")
             && text.contains("Tell the user with a push notification."),
         "{text}"
     );

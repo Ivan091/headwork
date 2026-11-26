@@ -178,6 +178,22 @@ pub(crate) fn board(board: &Board, max_workers: u32, prices: &UsageConfig) -> St
             ask_line(&mut text, ask);
         }
     }
+    if !board.findings.is_empty() {
+        text.push_str(
+            "
+tick findings that stand
+",
+        );
+        for finding in &board.findings {
+            let _ = writeln!(
+                text,
+                "  {} {} (open {})",
+                finding.rule,
+                finding.task.as_deref().unwrap_or("-"),
+                headwork_core::digest::age(finding.open_s)
+            );
+        }
+    }
     text
 }
 

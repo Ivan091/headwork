@@ -31,6 +31,8 @@ pub struct StatusLine {
     pub tokens: u64,
     /// Their estimate at API list prices, when `[usage.prices]` holds any.
     pub estimate: Option<String>,
+    /// The tick findings that stand on the task and its parts, as `rule (open age)`.
+    pub findings: Vec<String>,
     /// The review running on the task, if one is open.
     pub review: Option<StatusReview>,
     /// The fresh tokens (input, cache writes, output) every review of the task spent, its reviewer leads and their
@@ -161,6 +163,12 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             (None, spent) => format!("{line}, reviews {} tokens", short_count(spent)),
         };
         let line = format!("{line}{}", flag_tags(&top.task));
+        let findings = open_findings(board, top, &parts);
+        let line = if findings.is_empty() {
+            line
+        } else {
+            format!("{line} · open findings: {}", findings.join(", "))
+        };
         out.push(StatusLine {
             task,
             status,
@@ -170,6 +178,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             line,
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),
+            findings,
             review,
             review_tokens,
             close: top.task.close,
@@ -177,6 +186,25 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
         });
     }
     Ok(out)
+}
+
+fn open_findings(board: &Board, top: &BoardTask, parts: &[&BoardTask]) -> Vec<String> {
+    let ids: Vec<_> = std::iter::once(top)
+        .chain(parts.iter().copied())
+        .map(|entry| entry.task.id)
+        .collect();
+    board
+        .findings
+        .iter()
+        .filter(|finding| finding.task_id.is_some_and(|id| ids.contains(&id)))
+        .map(|finding| {
+            format!(
+                "{} (open {})",
+                finding.rule,
+                headwork_core::digest::age(finding.open_s)
+            )
+        })
+        .collect()
 }
 
 /// The tags a task's flags add to its line: ` · silent` and ` · review N planned`.

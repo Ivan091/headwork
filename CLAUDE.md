@@ -91,7 +91,7 @@ blocking. A closing task whose session ended frees its worker slot, and so does 
 idle_overflow`, and an answered session works again at once, over the cap if need be. A session idle at its prompt in `in_review` (`[watch] idle_free_review_min`, 60) or `merged` (`idle_free_merged_min`, 30) that runs
 nothing frees its slot the same way after at least that long (the screen is compared over two ticks): `sessions.idle_since`, migration 0025,
 event `session-idle`, standing finding `idle-slot` with a notice. Its next hook call takes the slot back, and the tick never closes it. A limit
-of 0 means that state gets only the ordinary `stuck` finding at `stuck_after_min`. The stuck check also covers `in_review`, `merged` and
+of 0 means that state gets only the ordinary `stuck` finding at `stuck_after_min`. A standing finding with a notice is told again after `[watch] retell_after_h` hours (6; per kind in `[watch.retell_after_h_by_rule]`; event `finding-told`), `board` and `status` list open findings, and a task the tick failed, interrupted or began closing on its own leaves a `source = "tick"` notice for the orchestrator's next prompt (`docs/decisions/2026-11-26-tick-tells-again.md`). The stuck check also covers `in_review`, `merged` and
 `closing` (live session); a closing session is only reported stuck, never freed. Doctor check `idle-slots` warns when a limit is 0. Asks the tick raises have no dialog: `headwork
 answer` or the orchestrator's `answer` tool answers them by id (`ops/answer.rs`), recording who answered.
 Leads (`docs/leads.md`) start with L1: a task's shape (`core/src/lead.rs`: `Lead`, `Part { parent }`, `Plain`, from
