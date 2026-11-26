@@ -2,7 +2,8 @@
 
 Status: plan of 2026-11-22. R1 (core, store, `flow check`, the `code` flow), R2 (the trigger, `review_start`, the
 reviewer lead's part and rules, `reviewer-write`, `review-unstarted`) and R3 (the loop tools, rounds, the dispute ask,
-`review-open`, `review-unfinished`) are built; R4 is not. It builds on leads (`docs/leads.md`): a review is a part of the task, and
+`review-open`, `review-unfinished`) are built, and so is R4's surface (2026-11-26: reviews on `board` and `status`, the
+`plan` flow, `doctor` check `flows`); R4's planned live trial at each level is not run yet. It builds on leads (`docs/leads.md`): a review is a part of the task, and
 that part is the reviewer lead.
 
 ## 1. The model
@@ -292,7 +293,7 @@ parallel = 6                            # at most this many nodes running at onc
 | R1 | Core and store: `core/src/review/` (parser, flow model and validation, ready-node scheduling, state machine, dispute rule), migration 0019, store queries, `flow check`, the built-in `code` flow and its prompts; table and proptest cases | 1.5 |
 | R2 | Start: the hook's trigger, `review_start`, the review worktree, the part of kind `review`, `rules/reviewer.md`, the `reviewer-write` and `review-unstarted` rules, `[reviews]` config | 1 |
 | R3 | The loop: `review_next`, `review_node_done`, `review_deliver`, `review_resolve`, `review_verdict`, `review_finish`, rounds, the dispute ask, `review-open` and `review-unfinished`, the lead's "Reviews" section | 1.5 |
-| R4 | Surface and trial: board, status, log, the `plan` flow, `doctor` check `flows`, one real review at each level on a headwork task; results in `docs/trials/` | 1 |
+| R4 | Surface and trial: board, status, log, the `plan` flow, `doctor` check `flows`, one real review at each level on a headwork task; results in `docs/trials/` (surface built 2026-11-26; the trial remains) | 1 |
 | | Total | about 5 |
 
 R1 first, then R2, then R3; R4 last. A review can be used by hand from R2 on (the reviewer lead walks the flow from its
