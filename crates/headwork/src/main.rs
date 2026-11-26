@@ -1442,13 +1442,14 @@ fn board(
     } else {
         out.write_all(headwork::ops::digest::section(store, ctx.config).as_bytes())?;
         out.write_all(
-            render::board(
+            render::board_with(
                 &board,
                 ctx.config
                     .machine
                     .max_workers
                     .map(std::num::NonZeroU32::get),
                 &ctx.config.usage,
+                headwork::ops::gate::board_line(ctx.home, &ctx.config.gates).as_deref(),
             )
             .as_bytes(),
         )?;
@@ -1464,7 +1465,8 @@ fn status_command(
     out: &mut impl Write,
 ) -> Result<ExitCode> {
     ctx.with_env(|env| headwork::ops::lost::reconcile(store, env).map(drop))?;
-    let lines = headwork::ops::status::status(store, all, &ctx.config.usage)?;
+    let waiting = headwork::ops::gate::waiting_tasks(ctx.home, &ctx.config.gates);
+    let lines = headwork::ops::status::status_waiting(store, all, &ctx.config.usage, &waiting)?;
     if json {
         json_out(out, &lines)?;
     } else {

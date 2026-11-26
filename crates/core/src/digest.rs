@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use crate::FindingId;
 use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, BacklogState};
 
 /// The header of a digest that holds lines.
@@ -212,9 +213,16 @@ fn dated_backlog_items(
     dated
 }
 
+fn is_gate_finding(kind: &str) -> bool {
+    [FindingId::GateHeldLong, FindingId::GateStarved]
+        .iter()
+        .any(|rule| rule.as_str() == kind)
+}
+
 /// Builds the digest from `facts`.
 ///
-/// Asks come oldest first, then backlog items due or started, migration notes, pull requests, findings open long enough,
+/// Asks come oldest first, then backlog items due or started, migration notes, pull requests, findings open long enough
+/// (gate findings, a stale holder or a starved wait, at once),
 /// and the other open items of the user, trimmed to [`MAX_LINES`] with a closing line for the rest.
 #[must_use]
 pub fn build(facts: &Facts) -> Digest {
@@ -241,7 +249,7 @@ pub fn build(facts: &Facts) -> Digest {
     let mut findings: Vec<&FindingFact> = facts
         .findings
         .iter()
-        .filter(|finding| finding.open_s >= threshold)
+        .filter(|finding| finding.open_s >= threshold || is_gate_finding(&finding.kind))
         .collect();
     findings.sort_by_key(|finding| std::cmp::Reverse(finding.open_s));
     lines.extend(findings.into_iter().map(|finding| {
@@ -422,6 +430,27 @@ mod tests {
         assert!(
             text.ends_with("... and 6 more: headwork digest\n"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn gate_findings_show_at_once_and_other_young_findings_do_not() {
+        let mut facts = facts();
+        facts.findings = ["gate-starved", "gate-held-long", "stuck"]
+            .iter()
+            .map(|kind| FindingFact {
+                kind: (*kind).to_owned(),
+                task: Some("demo-fix".to_owned()),
+                open_s: 120,
+            })
+            .collect();
+        assert_eq!(
+            build(&facts).lines,
+            vec![
+                "finding gate-starved demo-fix (open 2m)",
+                "finding gate-held-long demo-fix (open 2m)"
+            ],
+            "only the gate ones"
         );
     }
 

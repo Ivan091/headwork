@@ -1968,3 +1968,77 @@ fn a_job_over_a_full_gate_gets_a_warning() {
     let warning = claim_gate(&env, &sand, &row).unwrap();
     assert!(warning.contains("runs over the cpu gate"), "{warning}");
 }
+
+#[test]
+fn the_board_line_and_status_show_gate_holders_and_waiting_tasks() {
+    use headwork::ops::gate::{board_line, waiting_tasks};
+    use headwork::ops::status::status_waiting;
+    use headwork_core::gate::{GateClass, Owner};
+
+    let mut w = world_with("ask", LEADS);
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    assert_eq!(
+        board_line(&w.home, &w.config.gates),
+        None,
+        "no folder, no line"
+    );
+    assert!(!slots.exists(), "reading never creates it");
+
+    let (lead, _, _) = w.working("plan");
+    let (part, _, _) = w.part(&lead, "render");
+    let (other, _, _) = w.working("other");
+    let epoch = headwork_adapters::gate::epoch_now();
+    let owner = |task: &Task, command: &str, age: u64| Owner {
+        pid: std::process::id(),
+        native: true,
+        class: Some(GateClass::Cpu),
+        task: task.name.to_string(),
+        task_id: Some(task.id.0),
+        worktree: "S:/Code/demo".to_owned(),
+        command: command.to_owned(),
+        started: "2026-11-26 10:00:00".to_owned(),
+        epoch: Some(epoch - age),
+    };
+    let slot = slots.join("cpu").join("slot-1");
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(
+        slot.join("owner"),
+        owner(&other, "cargo test", 240).render(),
+    )
+    .unwrap();
+    std::fs::write(
+        slots
+            .join("cpu")
+            .join(format!("wait-{}", std::process::id())),
+        owner(&part, "bash scripts/check.sh", 30).render(),
+    )
+    .unwrap();
+
+    let line = board_line(&w.home, &w.config.gates).unwrap();
+    assert_eq!(
+        line,
+        "Gates: cpu 1/3 (demo-other cargo test 4m) \u{b7} 1 waiting \u{b7} gpu 0/2\n"
+    );
+    let waiting = waiting_tasks(&w.home, &w.config.gates);
+    assert_eq!(waiting, vec![(part.id.0, GateClass::Cpu)]);
+    let lines = status_waiting(
+        &w.store,
+        false,
+        &headwork_core::usage::UsageConfig::default(),
+        &waiting,
+    )
+    .unwrap();
+    let find = |name: &str| lines.iter().find(|line| line.task == name).unwrap();
+    assert!(
+        find("demo-plan").line.ends_with("waiting for cpu"),
+        "a lead rolls up its part: {}",
+        find("demo-plan").line
+    );
+    assert_eq!(find("demo-plan").waiting_for, Some(GateClass::Cpu));
+    assert!(
+        !find("demo-other").line.contains("waiting for"),
+        "{}",
+        find("demo-other").line
+    );
+}

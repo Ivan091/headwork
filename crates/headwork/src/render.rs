@@ -121,9 +121,22 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
     text
 }
 
-/// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
+/// The board as text without the gates line.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfig) -> String {
+    board_with(board, max_workers, prices, None)
+}
+
+/// The board as text: a header line, the `Gates:` line when there is one, then each project with its tasks, sessions and
+/// waiting asks.
+#[must_use]
+pub(crate) fn board_with(
+    board: &Board,
+    max_workers: Option<u32>,
+    prices: &UsageConfig,
+    gates: Option<&str>,
+) -> String {
     let asks = board
         .tasks
         .iter()
@@ -147,6 +160,9 @@ pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfi
         board.machine,
         if asks == 1 { "ask" } else { "asks" },
     );
+    if let Some(gates) = gates {
+        text.push_str(gates);
+    }
     let width = board
         .tasks
         .iter()
@@ -1283,6 +1299,20 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("pane-9"), "{text}");
+    }
+
+    #[test]
+    fn board_prints_the_gates_line_under_the_header() {
+        let (store, _) = store();
+        let text = super::board_with(
+            &store.board(false).unwrap(),
+            10,
+            &headwork_core::usage::UsageConfig::default(),
+            Some("Gates: cpu 0/3 \u{b7} gpu 0/2\n"),
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("machine "), "{text}");
+        assert_eq!(lines[1], "Gates: cpu 0/3 \u{b7} gpu 0/2", "{text}");
     }
 
     #[test]

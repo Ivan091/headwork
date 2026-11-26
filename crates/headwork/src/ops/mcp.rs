@@ -1587,22 +1587,26 @@ impl<'a> Server<'a> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
         super::lost::reconcile(self.store, &self.env)?;
         let board = to_text(&self.scoped_board(session, role, all)?)?;
+        let gates =
+            super::gate::board_line(self.env.home, &self.env.config.gates).unwrap_or_default();
         Ok(if role == Role::Orchestrator {
             format!(
-                "{}{board}",
+                "{}{gates}{board}",
                 super::digest::section(self.store, self.env.config)
             )
         } else {
-            board
+            format!("{gates}{board}")
         })
     }
 
     fn status(&mut self, args: &Value) -> Result<String> {
         super::lost::reconcile(self.store, &self.env)?;
-        let lines = to_text(&super::status::status(
+        let waiting = super::gate::waiting_tasks(self.env.home, &self.env.config.gates);
+        let lines = to_text(&super::status::status_waiting(
             self.store,
             flag(args, "all"),
             &self.env.config.usage,
+            &waiting,
         )?)?;
         Ok(format!(
             "{}{lines}",

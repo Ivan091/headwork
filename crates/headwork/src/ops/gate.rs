@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use headwork_adapters::gate::{self, Attempt, ClassView, Held, Slots};
 use headwork_core::config::GatesConfig;
-use headwork_core::gate::{GateClass, Owner, held_for, short_command};
+use headwork_core::gate::{ClassLine, GateClass, Owner, gates_line, held_for, short_command};
 use headwork_core::{Actor, Config, Role};
 use headwork_store::{Store, TaskId};
 use serde::Serialize;
@@ -44,6 +44,45 @@ pub const EVENT_GATE_RELEASED: &str = "gate-released";
 #[must_use]
 pub fn gate_dir(home: &Home, gates: &GatesConfig) -> Option<PathBuf> {
     gate::resolve_dir(gates.dir.as_deref().map(|dir| home.expand(dir)))
+}
+
+/// The slot root when it exists as a folder: reading never creates it.
+fn existing_dir(home: &Home, gates: &GatesConfig) -> Option<PathBuf> {
+    gate_dir(home, gates).filter(|dir| dir.is_dir())
+}
+
+/// The `Gates: ...` line of `board`, or `None` when the slot folder does not exist.
+#[must_use]
+pub fn board_line(home: &Home, gates: &GatesConfig) -> Option<String> {
+    let dir = existing_dir(home, gates)?;
+    let classes: Vec<ClassLine> = Slots::new(dir)
+        .read_all(gates)
+        .iter()
+        .map(|view| ClassLine {
+            class: view.class,
+            count: view.count,
+            holders: view.live_holders().map(gate::HolderInfo::line).collect(),
+            waiting: u32::try_from(view.live_waiters().count()).unwrap_or(u32::MAX),
+        })
+        .collect();
+    Some(format!("Gates: {}\n", gates_line(&classes)))
+}
+
+/// The tasks with a live waiter, as `(task id, class)`; empty when the slot folder does not exist.
+#[must_use]
+pub fn waiting_tasks(home: &Home, gates: &GatesConfig) -> Vec<(i64, GateClass)> {
+    let Some(dir) = existing_dir(home, gates) else {
+        return Vec::new();
+    };
+    Slots::new(dir)
+        .read_all(gates)
+        .iter()
+        .flat_map(|view| {
+            view.live_waiters()
+                .filter_map(|waiter| waiter.owner.as_ref()?.task_id)
+                .map(|id| (id, view.class))
+        })
+        .collect()
 }
 
 /// Runs `argv` holding a slot of `class`, waiting for one first; returns the command's exit code.
