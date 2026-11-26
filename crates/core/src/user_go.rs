@@ -4,8 +4,9 @@
 //! `AskUserQuestion` headed `Allow` in the worker's own session. `spawn --allow-ask "<command>"` makes that ask the
 //! worker's first action; the go is still the user's tap there, never the brief or the orchestrator. A task that names
 //! a user-only command, in its brief or as an allow-ask, must be a main-only kind: publishing runs in the main checkout.
-//! A lead's part may instead name the user-only commands the user allowed its lead. A command in backticks that the
-//! words right before it forbid ("never run `x`") names nothing.
+//! A lead's part follows the same rule and may besides name only the user-only commands the user allowed its lead;
+//! such a part runs in the main checkout under its lead's main-only kind (`part_spawn`). A command in backticks that
+//! the words right before it forbid ("never run `x`") names nothing.
 
 use std::fmt::Write as _;
 
@@ -131,15 +132,16 @@ pub fn check_go(facts: &GoFacts<'_>) -> Result<Vec<AllowAsk>, GoRefusal> {
         .iter()
         .map(|command| allow_ask(command, facts.user_only))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut named = named_user_only(facts.brief, facts.user_only)
+    let named: Vec<String> = named_user_only(facts.brief, facts.user_only)
         .into_iter()
-        .chain(asks.iter().flat_map(|ask| ask.patterns.iter().cloned()));
-    if let Some(allowed) = facts.lead_allowed {
-        return named
-            .find(|pattern| !allowed.contains(pattern))
-            .map_or(Ok(asks), |pattern| Err(GoRefusal::NotLeadAllowed(pattern)));
+        .chain(asks.iter().flat_map(|ask| ask.patterns.iter().cloned()))
+        .collect();
+    if let Some(allowed) = facts.lead_allowed
+        && let Some(pattern) = named.iter().find(|pattern| !allowed.contains(pattern))
+    {
+        return Err(GoRefusal::NotLeadAllowed(pattern.clone()));
     }
-    match named.next() {
+    match named.into_iter().next() {
         Some(pattern) if !facts.main_only.iter().any(|kind| kind == facts.kind) => {
             Err(GoRefusal::NotMainOnly {
                 project: facts.project.clone(),
@@ -225,27 +227,30 @@ const JOINERS: &[&str] = &["or", "nor", ",", ", or", ", nor"];
 ///
 /// It does when it ends with a negation, optionally followed by one command verb ("never run", "do not call", "no"),
 /// or when it is only `or`, `nor` or a comma after a forbidden command ("never run `x` or `y`"). Anything else counts,
-/// so "never" in an earlier sentence or clause, "do not forget to run", `and`, or a joiner with a verb ("or run")
-/// forbid nothing and the guard stays closed.
+/// so "never" in an earlier sentence or clause, "do not forget to run", "whether or not", `and`, or a joiner with a
+/// verb ("or run") forbid nothing and the guard stays closed. A bare "no" before a command ("there is no `x` on CI")
+/// forbids it too: a mention that runs nothing, which the worker's own guard still refuses to run.
 fn forbidden(before: &str, previous_forbidden: bool) -> bool {
     let lower = before.to_lowercase().replace(['\u{2019}', '\u{2018}'], "'");
-    let clause = lower.trim_end_matches(|c: char| {
-        c.is_whitespace() || matches!(c, '"' | '\'' | '\u{201c}' | '\u{201d}' | '(')
-    });
-    if previous_forbidden && JOINERS.contains(&clause.trim_start()) {
+    let quote_or_space =
+        |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\u{201c}' | '\u{201d}' | '(');
+    let clause = lower.trim_end_matches(quote_or_space);
+    if previous_forbidden && JOINERS.contains(&clause.trim_start_matches(quote_or_space)) {
         return true;
     }
     let words: Vec<&str> = clause
         .split(|c: char| c.is_whitespace() || matches!(c, '(' | '"' | '\u{201c}'))
+        .map(|word| word.trim_matches(['-', '*', '_']))
         .filter(|word| !word.is_empty())
         .collect();
     let words = match words.split_last() {
         Some((last, rest)) if COMMAND_VERBS.contains(last) => rest,
         _ => words.as_slice(),
     };
-    words
-        .last()
-        .is_some_and(|word| NEGATIONS.contains(&word.trim_matches(['-', '*', '_'])))
+    match words {
+        [.., "or", "not"] | [] => false,
+        [.., last] => NEGATIONS.contains(last),
+    }
 }
 
 fn patterns_run(found: &[SimpleCommand], user_only: &[String]) -> Vec<String> {
@@ -370,6 +375,15 @@ mod tests {
         allow_ask: &[&str],
         lead_allowed: &[&str],
     ) -> Result<Vec<AllowAsk>, GoRefusal> {
+        check_part_of_kind("publish", brief, allow_ask, lead_allowed)
+    }
+
+    fn check_part_of_kind(
+        kind: &str,
+        brief: &str,
+        allow_ask: &[&str],
+        lead_allowed: &[&str],
+    ) -> Result<Vec<AllowAsk>, GoRefusal> {
         let Ok(project) = ProjectName::new("me-studio") else {
             return Ok(Vec::new());
         };
@@ -381,7 +395,7 @@ mod tests {
             project: &project,
             main_only: &main_only,
             user_only: &user_only,
-            kind: "task",
+            kind,
             brief,
             allow_ask: &allow_ask,
             lead_allowed: Some(&lead_allowed),
@@ -422,6 +436,16 @@ mod tests {
             ("bullet", "- never run `scripts/release.sh`"),
             ("bold", "**Never** run `scripts/release.sh`."),
             ("upper case", "NEVER RUN `scripts/release.sh`"),
+            (
+                "no as a statement",
+                "There is no `scripts/release.sh` on CI.",
+            ),
+            ("with no", "Ship it with no `scripts/release.sh`."),
+            ("no after punctuation", "Tests: no `scripts/release.sh`."),
+            (
+                "quoted list",
+                "Never run \"`scripts/release.sh`\" or \"`me-studio publish x`\".",
+            ),
         ];
         for (name, brief) in table {
             assert_eq!(
@@ -441,91 +465,117 @@ mod tests {
         }
     }
 
+    const STILL_COUNTS: &[(&str, &str, &[&str])] = &[
+        (
+            "plain",
+            "Run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "never in another sentence",
+            "Never skip the tests. Run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "never in another clause",
+            "Do not wait, run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "never after a semicolon",
+            "Never guess; run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "do not forget",
+            "Do not forget to run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "a verb after the negation",
+            "Never skip `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "and after a forbidden one",
+            "Never run `cargo clean` and `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "or with a verb",
+            "Never run `cargo clean`, or run `scripts/release.sh` instead.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "then after a forbidden one",
+            "Never run `cargo clean`, then run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "not with a comma",
+            "Whether or not, `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "no with a comma",
+            "No, run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "a word ending in no",
+            "Piano `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "unclosed backtick",
+            "Never run `cargo clean` then `scripts/release.sh",
+            &["scripts/release.sh"],
+        ),
+        (
+            "fenced after never",
+            "Never run this by hand:\n\n```bash\nscripts/release.sh\n```\n",
+            &["scripts/release.sh"],
+        ),
+        (
+            "fenced never",
+            "```bash\n# never\nnever run scripts/release.sh\nscripts/release.sh\n```\n",
+            &["scripts/release.sh"],
+        ),
+        (
+            "whether or not",
+            "Whether or not `scripts/release.sh` passes, report it.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "or not before a verb",
+            "Tests or not, run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "a sentence break after a forbidden one",
+            "Never run `cargo clean`. Or `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "a unicode comma after a forbidden one",
+            "Never run `cargo clean`\u{ff0c} `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "a chain broken by and",
+            "Never run `cargo clean` and `cargo doc`, `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+        (
+            "one forbidden, one asked",
+            "Never run `me-studio publish x`.\nThen run `scripts/release.sh`.",
+            &["scripts/release.sh"],
+        ),
+    ];
+
     #[test]
     fn a_command_not_forbidden_right_before_it_still_counts() {
-        let table: &[(&str, &str, &[&str])] = &[
-            (
-                "plain",
-                "Run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "never in another sentence",
-                "Never skip the tests. Run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "never in another clause",
-                "Do not wait, run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "never after a semicolon",
-                "Never guess; run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "do not forget",
-                "Do not forget to run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "a verb after the negation",
-                "Never skip `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "and after a forbidden one",
-                "Never run `cargo clean` and `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "or with a verb",
-                "Never run `cargo clean`, or run `scripts/release.sh` instead.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "then after a forbidden one",
-                "Never run `cargo clean`, then run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "not with a comma",
-                "Whether or not, `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "no with a comma",
-                "No, run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "a word ending in no",
-                "Piano `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-            (
-                "unclosed backtick",
-                "Never run `cargo clean` then `scripts/release.sh",
-                &["scripts/release.sh"],
-            ),
-            (
-                "fenced after never",
-                "Never run this by hand:\n\n```bash\nscripts/release.sh\n```\n",
-                &["scripts/release.sh"],
-            ),
-            (
-                "fenced never",
-                "```bash\n# never\nnever run scripts/release.sh\nscripts/release.sh\n```\n",
-                &["scripts/release.sh"],
-            ),
-            (
-                "one forbidden, one asked",
-                "Never run `me-studio publish x`.\nThen run `scripts/release.sh`.",
-                &["scripts/release.sh"],
-            ),
-        ];
-        for (name, brief, expected) in table {
+        for (name, brief, expected) in STILL_COUNTS {
             assert_eq!(
                 named_user_only(brief, &strings(USER_ONLY)),
                 strings(expected),
@@ -572,6 +622,31 @@ mod tests {
             Ok(Vec::new()),
             "forbidden names nothing"
         );
+        assert_eq!(
+            check_part_of_kind("task", "Never run `me-studio publish x`.", &[], &[]),
+            Ok(Vec::new()),
+            "a worktree part may forbid any"
+        );
+    }
+
+    #[test]
+    fn a_part_in_a_worktree_is_refused_even_what_its_lead_was_allowed() {
+        for (name, brief, allow_ask) in [
+            ("in the brief", "Run `scripts/release.sh v1`.", &[][..]),
+            (
+                "as an allow-ask",
+                "Release it.",
+                &["scripts/release.sh v1"][..],
+            ),
+        ] {
+            assert!(
+                matches!(
+                    check_part_of_kind("task", brief, allow_ask, &["scripts/release.sh"]),
+                    Err(GoRefusal::NotMainOnly { .. })
+                ),
+                "{name}: publishing runs in the main checkout"
+            );
+        }
     }
 
     #[test]

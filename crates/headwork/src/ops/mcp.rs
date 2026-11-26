@@ -12,7 +12,7 @@ use headwork_adapters::git::GitHost;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
-    TaskRequest, TaskShape, TaskState,
+    TaskRequest, TaskShape, TaskState, user_go,
 };
 use headwork_store::{Board, NewPr, NewRecap, Store, StoreError, Task, TaskId};
 use serde_json::{Value, json};
@@ -665,7 +665,8 @@ const TOOLS: &[ToolDef] = &[
                         "description": concat!(
                             "User-only commands the user explicitly asked this part to run, each exactly as asked; only ",
                             "commands the user allowed you, its lead. The part's first action is the `Allow` ask for them: ",
-                            "the user taps again in its tab. Its brief may name only those user-only commands too.",
+                            "the user taps again in its tab. Its brief may name only those user-only commands too, and ",
+                            "a part that names one runs in the main checkout under your kind, so only while you run there.",
                         ),
                     },
                 }),
@@ -1738,6 +1739,19 @@ impl<'a> Server<'a> {
             None => None,
         };
         let allow_ask = allow_asks(args)?;
+        let carries_go = !allow_ask.is_empty()
+            || !user_go::named_user_only(&brief, &self.env.config.all_user_only()).is_empty();
+        if carries_go && !lead.in_main {
+            bail!(
+                "a part names a user-only command, which runs in the main checkout, but you, its lead, run in a worktree: \
+                 run it yourself after the user's `Allow`, or leave it out of the part's brief"
+            );
+        }
+        let (kind, in_main) = if carries_go {
+            (lead.kind.clone(), true)
+        } else {
+            ("task".to_owned(), false)
+        };
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -1746,10 +1760,10 @@ impl<'a> Server<'a> {
             request: TaskRequest {
                 project,
                 slug,
-                kind: "task".to_owned(),
+                kind,
                 model,
                 effort: None,
-                in_main: false,
+                in_main,
                 keep: false,
                 close: flags.close,
                 review: flags.review,

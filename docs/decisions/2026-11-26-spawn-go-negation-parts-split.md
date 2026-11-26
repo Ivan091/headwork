@@ -13,9 +13,12 @@ run `a` and `x`" and every fenced code block. A per-line rule was rejected: "Nev
 The worker's `PreToolUse` guard still refuses the command itself, so a forbidden mention never becomes a go.
 
 **A part may name what its lead was allowed.** For a part, `spawn_shaped` reads the lead's `user-only-allowed`
-patterns; the part's brief and its new `part_spawn` `allow_ask` may name only those (refusal `NotLeadAllowed`), and
-the main-only kind check does not apply, since the lead already holds the user's go for it. The lead's go is not
-copied: the part's first action is its own `Allow` ask, and the user taps again in the part's tab.
+patterns; the part's brief and its new `part_spawn` `allow_ask` may name only those (refusal `NotLeadAllowed`). The
+main-only rule still holds, because it is about where publishing runs, not who gave the go: a part that names one
+runs in the main checkout under its lead's kind, and `part_spawn` refuses it when the lead itself runs in a worktree.
+Two sessions may then share the main checkout; admission has no lock on it, and the part's work there is the
+publishing step the lead was allowed. The lead's go is not copied: the part's first action is its own `Allow` ask,
+and the user taps again in the part's tab. "Whether or not" is no negation; a bare "no" is ("there is no `x`").
 
 **More than four allow-asks become several asks.** `MAX_ALLOW_ASKS` and its refusal are gone; the first-action
 section groups the questions by four (`QUESTIONS_PER_ASK`) and tells the worker to call `AskUserQuestion` once per

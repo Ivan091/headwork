@@ -103,7 +103,11 @@ pub fn spawn_shaped(
     let name = TaskName::new(new.request.project.clone(), new.request.slug.clone());
     let brief_path = env.home.brief_path(&name);
     let lead_allowed = match shape {
-        TaskShape::Part { parent } => Some(store.user_only_allowed(parent)?),
+        TaskShape::Part { parent } => Some(
+            store
+                .user_only_allowed(parent)
+                .context("reading the user-only commands the lead was allowed")?,
+        ),
         TaskShape::Lead | TaskShape::Plain => None,
     };
     let asks = match env.config.project(&new.request.project) {
