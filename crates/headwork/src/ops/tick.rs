@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use headwork_adapters::disk::{Disks, large_files, volume_of};
 use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
@@ -196,6 +196,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("update", Run::update)?;
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
+    run.stage("todo", Run::todo)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -334,6 +335,25 @@ impl<'b> Run<'_, 'b> {
         }
         self.sweep(FindingId::ConfigStale)?;
         self.sweep(FindingId::ConfigDrift)
+    }
+
+    /// Writes the to-do list to its file when the store changed since the last export (a safety net for changes made while
+    /// no export was possible). A failed export is the stage's error, so it becomes a `tick-error` finding and the later
+    /// stages still run. A file that exists and was never imported stays quiet here on purpose: setting `[todo] file` is
+    /// followed by the import step of the migration note, `headwork todo export` and every todo command report it loudly,
+    /// and a tick finding would nag a machine that set the key on purpose before importing. An export that finds the lock
+    /// held by another one is quiet too: the next tick tries again.
+    fn todo(&mut self) -> Result<()> {
+        let env = self.env();
+        let (home, config, actor) = (env.home, env.config, self.actor());
+        match super::todo::export(self.store, home, config, None, actor)? {
+            super::todo::Export::Failed { error } => bail!("{error}"),
+            super::todo::Export::Unconfigured
+            | super::todo::Export::Unchanged
+            | super::todo::Export::Written { .. }
+            | super::todo::Export::Busy
+            | super::todo::Export::NotImported { .. } => Ok(()),
+        }
     }
 
     /// Reports migration notes that wait for this machine; fetches each repository's default branch but never runs a step.

@@ -39,6 +39,7 @@ pub mod status;
 pub mod tick;
 pub mod tick_lock;
 pub mod title;
+pub mod todo;
 pub mod trust;
 pub mod update;
 pub mod usage;
@@ -160,6 +161,96 @@ pub fn host_for(config: &Config) -> Result<Box<dyn TerminalHost>> {
 #[must_use]
 pub fn slashed(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
+}
+
+/// A file written in full next to its target and not yet in its place: [`StagedFile::commit`] renames it over the target,
+/// and dropping it without a commit removes it.
+#[derive(Debug)]
+pub struct StagedFile {
+    temp: Option<PathBuf>,
+    target: PathBuf,
+}
+
+impl StagedFile {
+    /// Puts the staged file in place of the target.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rename fails; the temp file is removed then.
+    pub fn commit(mut self) -> Result<()> {
+        let Some(temp) = self.temp.take() else {
+            return Ok(());
+        };
+        std::fs::rename(&temp, &self.target).map_err(|error| {
+            drop(std::fs::remove_file(&temp));
+            anyhow::Error::new(error).context(format!(
+                "replacing {} with {}",
+                self.target.display(),
+                temp.display()
+            ))
+        })
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if let Some(temp) = self.temp.take() {
+            drop(std::fs::remove_file(temp));
+        }
+    }
+}
+
+/// Writes `text` to a temp file next to `path`, named for this process and call so two writers never share one, and
+/// returns it ready to be committed.
+///
+/// # Errors
+///
+/// Fails when no temp file can be created or written.
+pub fn stage_file(path: &Path, text: &str) -> Result<StagedFile> {
+    use std::io::Write as _;
+
+    let name = path.file_name().map_or_else(
+        || "file".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    for attempt in 0_u32..1000 {
+        let temp = path.with_file_name(format!(
+            ".{name}.{}-{nanos}-{attempt}.tmp",
+            std::process::id()
+        ));
+        let opened = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp);
+        match opened {
+            Ok(mut file) => {
+                let staged = StagedFile {
+                    temp: Some(temp.clone()),
+                    target: path.to_path_buf(),
+                };
+                file.write_all(text.as_bytes())
+                    .with_context(|| format!("writing {}", temp.display()))?;
+                return Ok(staged);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", temp.display()));
+            }
+        }
+    }
+    bail!("no free temp file name next to {}", path.display())
+}
+
+/// Replaces `path` with `text` through a temp file and a rename, so a reader never sees half a file.
+///
+/// # Errors
+///
+/// Fails when the temp file cannot be written or the rename fails.
+pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    stage_file(path, text)?.commit()
 }
 
 /// The host label of a task's pane: `<project>/<slug>`.

@@ -1130,6 +1130,16 @@ fn root_rules_name_the_binary_and_fit_the_hook_limit() {
     assert!(text.len() < 10_000, "{}", text.len());
 }
 
+#[test]
+fn orchestrator_rules_keep_a_margin_under_the_hook_limit_with_long_paths() {
+    let w = world("", false);
+    let files = RuleFiles::load(&w.home, &w.config, &[], "orchestrator").unwrap();
+    let long_exe = format!("S:/{}/headwork.exe", "d".repeat(80));
+    let text = files.render(Role::Orchestrator, &w.config, Path::new(&long_exe), None);
+    assert!(text.contains(&format!("\"{long_exe}\" spawn")), "{text}");
+    assert!(text.len() < 9_400, "{}", text.len());
+}
+
 fn worker_identity(w: &World) -> Identity {
     Identity {
         session: Some(w.session.clone()),
@@ -1284,6 +1294,10 @@ fn mcp_tools_follow_the_role() {
             "config_sync",
             "migrate_list",
             "migrate_mark",
+            "todo_list",
+            "todo_add",
+            "todo_done",
+            "todo_edit",
             "rules",
             "rule_add",
             "rule_retire",

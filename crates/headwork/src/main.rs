@@ -32,7 +32,7 @@ use headwork::ops::relay::Relay;
 use headwork::ops::reload;
 use headwork::ops::resume::{self, ResumeOptions, TaskOutcome, resume};
 use headwork::ops::shadow::shadow_report;
-use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
+use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump};
 use headwork::ops::tick::{TickEnv, tick};
 use headwork::ops::tick_lock::{self, Acquired};
 use headwork::ops::update::{
@@ -307,6 +307,9 @@ enum Command {
         #[command(subcommand)]
         action: MigrateAction,
     },
+    /// The to-do list kept in the store and exported to `todo.md` (`docs/todo.md`): list, add, done, reopen, edit, import,
+    /// export.
+    Todo(TodoArgs),
     /// The effective config generated from the shared, machine and local layers (`docs/config-sync.md`).
     Config {
         #[command(subcommand)]
@@ -508,6 +511,136 @@ impl From<SettledArg> for headwork_core::migrate::Settled {
     }
 }
 
+/// The arguments of `todo`: a subcommand, or the filters of `todo list` when there is none.
+#[derive(Debug, clap::Args)]
+struct TodoArgs {
+    #[command(subcommand)]
+    action: Option<TodoAction>,
+    #[command(flatten)]
+    list: TodoListArgs,
+}
+
+/// What `todo list` shows.
+#[derive(Debug, Clone, clap::Args)]
+struct TodoListArgs {
+    /// Only this project.
+    #[arg(long)]
+    project: Option<String>,
+    /// Only items for this owner: `user` or `agent`.
+    #[arg(long)]
+    owner: Option<headwork_core::todo::TodoOwner>,
+    /// `open` (the default), `done`, `dropped` or `all`.
+    #[arg(long, default_value = "open")]
+    state: String,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+/// What `todo` does.
+#[derive(Debug, Subcommand)]
+enum TodoAction {
+    /// List items, open ones by default.
+    List(TodoListArgs),
+    /// Add an item, last.
+    Add {
+        /// The area heading, such as `me-sim` or `Setup`.
+        project: String,
+        /// The item text; starting with `For you` makes it the user's.
+        text: String,
+        /// A subheading under the project.
+        #[arg(long)]
+        section: Option<String>,
+        /// Who acts: `user` or `agent`; the user when the text starts with `For you`.
+        #[arg(long)]
+        owner: Option<headwork_core::todo::TodoOwner>,
+        /// The first day it may start, `YYYY-MM-DD`.
+        #[arg(long, value_name = "DATE")]
+        not_before: Option<headwork_core::todo::TodoDate>,
+        /// The day it is due, `YYYY-MM-DD`.
+        #[arg(long, value_name = "DATE")]
+        due: Option<headwork_core::todo::TodoDate>,
+        /// A sub-bullet under the item; repeatable.
+        #[arg(long = "note", value_name = "NOTE")]
+        notes: Vec<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark an open item done, or dropped with `--drop`, today.
+    Done {
+        /// The item's id.
+        id: i64,
+        /// What was done, or why it was dropped.
+        #[arg(long)]
+        note: Option<String>,
+        /// Drop the item instead of finishing it; a dropped item is kept in the store and not exported.
+        #[arg(long)]
+        drop: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a done or dropped item back to open.
+    Reopen {
+        /// The item's id.
+        id: i64,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change an item.
+    Edit {
+        /// The item's id.
+        id: i64,
+        /// The new text.
+        #[arg(long)]
+        text: Option<String>,
+        /// The new project.
+        #[arg(long)]
+        project: Option<String>,
+        /// The new subheading; `none` takes the item out of its subheading.
+        #[arg(long)]
+        section: Option<String>,
+        /// The new owner: `user` or `agent`.
+        #[arg(long)]
+        owner: Option<headwork_core::todo::TodoOwner>,
+        /// The new first day, `YYYY-MM-DD`, or `none` to clear it.
+        #[arg(long, value_name = "DATE|none")]
+        not_before: Option<String>,
+        /// The new due day, `YYYY-MM-DD`, or `none` to clear it.
+        #[arg(long, value_name = "DATE|none")]
+        due: Option<String>,
+        /// Add a sub-bullet.
+        #[arg(long, value_name = "NOTE")]
+        append: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a `todo.md` and add the items the store lacks (matched by text); never deletes, changes or rewrites anything.
+    Import {
+        /// The file; `[todo] file` when absent.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Report what would be added and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write the store's items to `todo.md` now, when the content changed since the last export.
+    Export {
+        /// The file; `[todo] file` when absent.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// What `migrate` does.
 #[derive(Debug, Subcommand)]
 enum MigrateAction {
@@ -702,6 +835,10 @@ struct SpawnArgs {
     /// worker's first action is the `Allow` ask for it, and it runs the command only after the user's tap.
     #[arg(long = "allow-ask", value_name = "COMMAND")]
     allow_ask: Vec<String>,
+    /// The to-do item (its id from `headwork todo`) this task comes from: it is linked to the task and finished when the
+    /// task closes.
+    #[arg(long, value_name = "ID")]
+    todo: Option<i64>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -894,6 +1031,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Graph { .. }
         | Command::Log { .. }
         | Command::Spawn(_)
+        | Command::Todo(_)
         | Command::Queue { .. }
         | Command::Close { .. }
         | Command::Answer { .. }
@@ -937,6 +1075,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         }
         Command::Log { name, limit, json } => log(&store, &ctx, name, limit, json, out),
         Command::Spawn(args) => spawn_command(&mut store, &ctx, args, out),
+        Command::Todo(args) => todo_command(&mut store, &ctx, args, out),
         Command::Queue { order, json } => queue_command(&mut store, &ctx, &order, json, out),
         Command::Close { name, force, json } => {
             close_command(&mut store, &ctx, &name, force, json, out)
@@ -1354,17 +1493,176 @@ fn spawn_command(
         permission_mode: args.mode,
         allow_ask: &args.allow_ask,
     };
-    let (task, pumped) = ctx.with_env(|env| {
+    let spawned = ctx.with_env(|env| {
         reap(store, env)?;
-        spawn(store, env, &request)
+        headwork::ops::todo::spawn_linked(store, env, &request, args.todo)
     })?;
     if args.json {
-        json_out(out, &serde_json::json!({ "task": task, "queue": pumped }))?;
+        json_out(
+            out,
+            &serde_json::json!({
+                "task": spawned.task,
+                "queue": spawned.pumped,
+                "todo_unlinked": spawned.unlinked,
+            }),
+        )?;
     } else {
-        writeln!(out, "{} {}", task.name, task.state)?;
-        out.write_all(render::pumped(&pumped).as_bytes())?;
+        writeln!(out, "{} {}", spawned.task.name, spawned.task.state)?;
+        if let Some(why) = &spawned.unlinked {
+            writeln!(out, "the task runs unlinked: {why}")?;
+        }
+        out.write_all(render::pumped(&spawned.pumped).as_bytes())?;
     }
-    Ok(exit_for(&pumped))
+    Ok(exit_for(&spawned.pumped))
+}
+
+fn todo_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    args: TodoArgs,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    use headwork::ops::todo as list;
+    match args.action.unwrap_or(TodoAction::List(args.list)) {
+        TodoAction::List(filter) => todo_list_command(store, &filter, out)?,
+        TodoAction::Import {
+            file,
+            dry_run,
+            json,
+        } => {
+            let report = list::import(
+                store,
+                ctx.home,
+                ctx.config,
+                file.as_deref(),
+                dry_run,
+                Actor::User,
+            )?;
+            if json {
+                json_out(out, &report)?;
+            } else {
+                out.write_all(report.text().as_bytes())?;
+            }
+        }
+        TodoAction::Export { file, json } => {
+            let done = list::export(store, ctx.home, ctx.config, file.as_deref(), Actor::User)?;
+            if json {
+                json_out(out, &done)?;
+            } else {
+                writeln!(out, "{}", done.summary())?;
+            }
+            if matches!(done, list::Export::NotImported { .. }) {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        changing @ (TodoAction::Add { .. }
+        | TodoAction::Done { .. }
+        | TodoAction::Reopen { .. }
+        | TodoAction::Edit { .. }) => todo_change_command(store, ctx, changing, out)?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn todo_list_command(store: &Store, filter: &TodoListArgs, out: &mut impl Write) -> Result<()> {
+    let items = headwork::ops::todo::list(
+        store,
+        filter.project.as_deref(),
+        filter.owner,
+        Some(&filter.state),
+    )?;
+    if filter.json {
+        json_out(out, &items)?;
+    } else if items.is_empty() {
+        writeln!(out, "no matching to-do items")?;
+    } else {
+        for item in &items {
+            writeln!(out, "{}", item.line())?;
+        }
+    }
+    Ok(())
+}
+
+fn todo_change_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    action: TodoAction,
+    out: &mut impl Write,
+) -> Result<()> {
+    use headwork::ops::todo::{self as list, AddRequest};
+    let (done, json) = match action {
+        TodoAction::Add {
+            project,
+            text,
+            section,
+            owner,
+            not_before,
+            due,
+            notes,
+            json,
+        } => {
+            let request = AddRequest {
+                project,
+                text,
+                section,
+                owner,
+                not_before,
+                due,
+                notes,
+            };
+            (ctx.with_env(|env| list::add(store, env, &request))?, json)
+        }
+        TodoAction::Done {
+            id,
+            note,
+            drop,
+            json,
+        } => (
+            ctx.with_env(|env| list::finish(store, env, id, note.as_deref(), drop))?,
+            json,
+        ),
+        TodoAction::Reopen { id, json } => {
+            (ctx.with_env(|env| list::reopen(store, env, id))?, json)
+        }
+        TodoAction::Edit {
+            id,
+            text,
+            project,
+            section,
+            owner,
+            not_before,
+            due,
+            append,
+            json,
+        } => {
+            let edit = headwork_store::TodoEdit {
+                text,
+                project,
+                section: section.map(|section| (section != "none").then_some(section)),
+                owner,
+                not_before: not_before.as_deref().map(date_or_none).transpose()?,
+                due: due.as_deref().map(date_or_none).transpose()?,
+                append,
+                added: None,
+            };
+            (ctx.with_env(|env| list::edit(store, env, id, &edit))?, json)
+        }
+        TodoAction::List(_) | TodoAction::Import { .. } | TodoAction::Export { .. } => {
+            return Ok(());
+        }
+    };
+    if json {
+        json_out(out, &done)
+    } else {
+        Ok(out.write_all(done.text().as_bytes())?)
+    }
+}
+
+fn date_or_none(text: &str) -> Result<Option<headwork_core::todo::TodoDate>> {
+    if text == "none" {
+        Ok(None)
+    } else {
+        Ok(Some(text.parse()?))
+    }
 }
 
 fn queue_command(

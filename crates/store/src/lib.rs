@@ -17,6 +17,7 @@ mod reports;
 mod reviews;
 mod sessions;
 mod tick;
+mod todos;
 mod usage;
 mod waiting;
 
@@ -47,6 +48,10 @@ pub use reviews::{
 };
 pub use sessions::{EndedSession, Launched, LivePids, Place};
 pub use tick::{PrSeen, SessionClock, StoredAsk, TopicAsk, WaitingAsk};
+pub use todos::{
+    EVENT_TODO_ADDED, EVENT_TODO_DONE, EVENT_TODO_DROPPED, EVENT_TODO_EDITED, EVENT_TODO_EXPORTED,
+    EVENT_TODO_IMPORTED, ImportCounts, TodoEdit, TodoFile, TodoFilter,
+};
 pub use usage::{
     ByModel, EVENT_HELPER_SESSION, EVENT_USAGE_ROLLED_UP, FileMark, RoleDelegation, RolledUp,
     TaskTokens, UsageBatch, UsageQuery, UsageTag, UsageTotal, all_models,

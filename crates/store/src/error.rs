@@ -84,6 +84,23 @@ pub enum StoreError {
     /// A stored review node id is not valid.
     #[error("stored review node: {0}")]
     BadNode(#[from] headwork_core::review::FlowError),
+    /// No to-do item with this id.
+    #[error("no to-do item with id {0}")]
+    UnknownTodo(i64),
+    /// A to-do change was refused.
+    #[error("to-do item {id}: {reason}")]
+    TodoRefused {
+        /// The item.
+        id: i64,
+        /// Why.
+        reason: String,
+    },
+    /// A to-do item cannot be written as it is.
+    #[error("to-do item: {0}")]
+    InvalidTodo(#[source] headwork_core::todo::TodoError),
+    /// A stored to-do date is not a date.
+    #[error("stored to-do date: {0}")]
+    BadTodoDate(#[from] headwork_core::todo::TodoError),
     /// Event data is not valid JSON.
     #[error("event data: {0}")]
     Json(#[from] serde_json::Error),

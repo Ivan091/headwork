@@ -213,6 +213,7 @@ fn apply_in(
             let data =
                 serde_json::json!({ "trigger": trigger.name(), "from": step.from, "to": step.to });
             insert_event(tx, actor, Some(id), None, EVENT_TRANSITION, &data)?;
+            crate::todos::task_ended(tx, &task, step.to, actor)?;
             Ok(Ok(step))
         }
         Err(refusal) => Ok(Err((task, refusal))),

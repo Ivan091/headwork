@@ -21,7 +21,7 @@ use super::close::{begin_own_close, close, close_dropped_part, close_forced, end
 use super::jobs::{self, Registration};
 use super::review_loop;
 use super::rules;
-use super::spawn::{SpawnRequest, pump, spawn, spawn_shaped};
+use super::spawn::{SpawnRequest, pump, spawn_shaped};
 use super::{Env, close::reap};
 
 /// The protocol revision offered when the client names none.
@@ -186,6 +186,15 @@ const TOOLS: &[ToolDef] = &[
                     "keep": { "type": "boolean", "description": "A standing role that does not close when idle." },
                     "in_main": { "type": "boolean", "description": "Run in the project's main checkout." },
                     "depends_on": { "type": "string", "description": "Name of a task that must be merged first." },
+                    "todo": {
+                        "type": "integer",
+                        "description": concat!(
+                            "The id of the open to-do item this task comes from (`todo_list`): it is linked to the task and ",
+                            "finished when the task closes. Refused before the task starts when the item is not open or a live task holds ",
+                            "it; a link refused after the task started leaves it running unlinked and the result says why ",
+                            "(`todo_unlinked`).",
+                        ),
+                    },
                     "allow_ask": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -367,6 +376,81 @@ const TOOLS: &[ToolDef] = &[
                     "reason": { "type": "string" },
                 }),
                 &["note", "state", "reason"],
+            )
+        },
+    },
+    ToolDef {
+        name: "todo_list",
+        description: concat!(
+            "The to-do list (kept in the store, exported to `todo.md`): one line per item with its id, project, text, owner, ",
+            "dates and the task spawned for it. Open items by default.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "project": { "type": "string" },
+                    "owner": { "type": "string", "enum": ["user", "agent"] },
+                    "state": { "type": "string", "enum": ["open", "done", "dropped", "all"], "description": "open by default." },
+                }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
+        name: "todo_add",
+        description: concat!(
+            "Add an item to the to-do list, last, and export `todo.md`. Never edit `todo.md` by hand. Text that starts with ",
+            "`For you` is the user's. Commit and push the regenerated file afterwards.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "project": { "type": "string", "description": "The area heading: me-sim, headwork, me-studio, Setup, ..." },
+                    "text": { "type": "string" },
+                    "section": { "type": "string", "description": "A subheading under the project." },
+                    "owner": { "type": "string", "enum": ["user", "agent"], "description": "The user for `For you` text." },
+                    "not_before": { "type": "string", "description": "YYYY-MM-DD: do not start before." },
+                    "due": { "type": "string", "description": "YYYY-MM-DD." },
+                    "notes": { "type": "array", "items": { "type": "string" }, "description": "Sub-bullets." },
+                }),
+                &["project", "text"],
+            )
+        },
+    },
+    ToolDef {
+        name: "todo_done",
+        description: "Mark an open to-do item done, or dropped with `drop`, today, with a note, and export `todo.md`.",
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "note": { "type": "string", "description": "What was done, or why it was dropped." },
+                    "drop": { "type": "boolean", "description": "Drop the item instead of finishing it." },
+                }),
+                &["id"],
+            )
+        },
+    },
+    ToolDef {
+        name: "todo_edit",
+        description: "Change a to-do item (text, project, section, owner, dates, a note to append) and export `todo.md`.",
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "project": { "type": "string" },
+                    "section": { "type": "string", "description": "`none` takes the item out of its section." },
+                    "owner": { "type": "string", "enum": ["user", "agent"] },
+                    "not_before": { "type": "string", "description": "YYYY-MM-DD, or `none` to clear it." },
+                    "due": { "type": "string", "description": "YYYY-MM-DD, or `none` to clear it." },
+                    "append": { "type": "string", "description": "A note line to add." },
+                }),
+                &["id"],
             )
         },
     },
@@ -1024,6 +1108,10 @@ impl<'a> Server<'a> {
             "update" => self.update(args),
             "migrate_list" => self.migrate_list(args),
             "migrate_mark" => self.migrate_mark(args),
+            "todo_list" => self.todo_list(args),
+            "todo_add" => self.todo_add(args),
+            "todo_done" => self.todo_done(args),
+            "todo_edit" => self.todo_edit(args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -1222,6 +1310,90 @@ impl<'a> Server<'a> {
             &text(args, "reason")?,
             self.env.actor,
         )
+    }
+
+    fn todo_list(&self, args: &Value) -> Result<String> {
+        let word = |key| args.get(key).and_then(Value::as_str);
+        let items = super::todo::list(
+            self.store,
+            word("project"),
+            word("owner").map(str::parse).transpose()?,
+            word("state"),
+        )?;
+        to_text(
+            &items
+                .iter()
+                .map(headwork_core::todo::Todo::line)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn todo_add(&mut self, args: &Value) -> Result<String> {
+        let optional = |key| args.get(key).and_then(Value::as_str);
+        let notes: Vec<String> = match args.get("notes") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .context("`notes` holds lines as strings")
+                })
+                .collect::<Result<_>>()?,
+            Some(_) => bail!("`notes` is a list of lines"),
+        };
+        let request = super::todo::AddRequest {
+            project: text(args, "project")?,
+            text: text(args, "text")?,
+            section: optional("section").map(str::to_owned),
+            owner: optional("owner").map(str::parse).transpose()?,
+            not_before: optional("not_before").map(str::parse).transpose()?,
+            due: optional("due").map(str::parse).transpose()?,
+            notes,
+        };
+        to_text(&super::todo::add(self.store, &self.env, &request)?)
+    }
+
+    fn todo_done(&mut self, args: &Value) -> Result<String> {
+        let note = args.get("note").and_then(Value::as_str);
+        to_text(&super::todo::finish(
+            self.store,
+            &self.env,
+            todo_id(args)?,
+            note,
+            flag(args, "drop"),
+        )?)
+    }
+
+    fn todo_edit(&mut self, args: &Value) -> Result<String> {
+        let optional = |key| args.get(key).and_then(Value::as_str);
+        let date = |key| -> Result<Option<Option<headwork_core::todo::TodoDate>>> {
+            optional(key)
+                .map(|word| {
+                    if word == "none" {
+                        Ok(None)
+                    } else {
+                        Ok(Some(word.parse()?))
+                    }
+                })
+                .transpose()
+        };
+        let edit = headwork_store::TodoEdit {
+            text: optional("text").map(str::to_owned),
+            project: optional("project").map(str::to_owned),
+            section: optional("section").map(|word| (word != "none").then(|| word.to_owned())),
+            owner: optional("owner").map(str::parse).transpose()?,
+            not_before: date("not_before")?,
+            due: date("due")?,
+            append: optional("append").map(str::to_owned),
+            added: None,
+        };
+        to_text(&super::todo::edit(
+            self.store,
+            &self.env,
+            todo_id(args)?,
+            &edit,
+        )?)
     }
 
     fn config_sync(&self, args: &Value) -> Result<String> {
@@ -1497,11 +1669,23 @@ impl<'a> Server<'a> {
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
         };
+        let todo = match args.get("todo") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_i64()
+                    .ok_or_else(|| anyhow!("`todo` is a to-do item's id, an integer"))?,
+            ),
+        };
         reap(self.store, &self.env)?;
-        let result = spawn(self.store, &self.env, &request);
+        let result = super::todo::spawn_linked(self.store, &self.env, &request, todo);
         std::fs::remove_file(&file).ok();
-        let (task, pumped) = result?;
-        to_text(&json!({ "task": task, "queue": pumped }))
+        let spawned = result?;
+        to_text(&json!({
+            "task": spawned.task,
+            "queue": spawned.pumped,
+            "todo_unlinked": spawned.unlinked,
+        }))
     }
 
     fn part_spawn(&mut self, lead: &Task, args: &Value) -> Result<String> {
@@ -1879,6 +2063,12 @@ fn items<T: serde::de::DeserializeOwned>(args: &Value) -> Result<Vec<T>> {
     let items = args.get("items").cloned().unwrap_or_else(|| json!([]));
     serde_json::from_value(items)
         .map_err(|error| anyhow!("`items` does not have the expected shape: {error}"))
+}
+
+fn todo_id(args: &Value) -> Result<i64> {
+    args.get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("`id` is required and must be an integer"))
 }
 
 fn text(args: &Value, key: &str) -> Result<String> {
