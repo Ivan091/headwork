@@ -25,7 +25,7 @@ job() {
 
 job a &
 job b &
-sleep 0.5
+until [ -f "$work/slots/slot-1/owner" ] && [ -f "$work/slots/slot-2/owner" ]; do sleep 0.1; done
 job c &
 wait
 check "the third job waited with a message" "grep -q 'waiting' '$work/c.err'"
@@ -38,6 +38,17 @@ check "every slot is released" "[ -z \"\$(ls -A '$work/slots' 2>/dev/null)\" ]"
 HEADWORK_HEAVY_SLOTS=1 scripts/heavy.sh bash -c "HEADWORK_HEAVY_NO_WAIT=1 scripts/heavy.sh scripts/heavy.sh true" \
     2> "$work/nested.err" && nested=0 || nested=$?
 check "a nested job runs in its parent's slot" "[ '$nested' -eq 0 ] && ! grep -q 'no free slot' '$work/nested.err'"
+
+HEADWORK_HEAVY_SLOTS=1 scripts/heavy.sh bash -c 'exit 7' 2> /dev/null && failing=0 || failing=$?
+check "a failing command keeps its exit code and frees its slot" "[ '$failing' -eq 7 ] && [ -z \"\$(ls -A '$work/slots')\" ]"
+
+bash -c '. scripts/heavy.sh; heavy_hold "hold test"; ls "$HEADWORK_HEAVY_DIR" > "$0"' "$work/held" 2> /dev/null
+check "heavy_hold takes a slot while the script runs" "grep -q slot-1 '$work/held'"
+check "heavy_hold frees the slot when the script exits" "[ -z \"\$(ls -A '$work/slots')\" ]"
+bash -c '. scripts/heavy.sh; heavy_hold "hold test"; exit 3' 2> /dev/null && held_fail=0 || held_fail=$?
+check "heavy_hold frees the slot when the script fails" "[ '$held_fail' -eq 3 ] && [ -z \"\$(ls -A '$work/slots')\" ]"
+bash -c '. scripts/heavy.sh; heavy_hold "outer"; heavy_hold "inner"; ls "$HEADWORK_HEAVY_DIR" > "$0"' "$work/twice" 2> /dev/null
+check "a second heavy_hold in the same script takes no second slot" "[ \"\$(grep -c slot- '$work/twice')\" -eq 1 ]"
 
 check "the default is three slots" "[ \"\$(env -u HEADWORK_HEAVY_SLOTS bash -c '. scripts/heavy.sh; heavy_slots')\" = 3 ]"
 check "a bad slot count falls back to three" "[ \"\$(HEADWORK_HEAVY_SLOTS=x bash -c '. scripts/heavy.sh; heavy_slots')\" = 3 ]"
