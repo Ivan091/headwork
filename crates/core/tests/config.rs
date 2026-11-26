@@ -40,7 +40,11 @@ fn each_host_names_the_variable_that_tells_a_program_its_surface() {
 fn fixture_parses_with_all_three_projects() {
     let config = machine();
     assert_eq!(config.machine.host, HostKind::Wmux, "host");
-    assert_eq!(config.machine.max_workers.get(), 10, "max_workers");
+    assert_eq!(
+        config.machine.max_workers.map(std::num::NonZeroU32::get),
+        Some(10),
+        "max_workers"
+    );
     let names: Vec<_> = config.projects.keys().map(ProjectName::as_str).collect();
     assert_eq!(
         names,
@@ -102,7 +106,7 @@ fn work_repository_is_narrower() {
 #[test]
 fn defaults_fill_a_minimal_config() {
     let config = Config::parse("[machine]\nhost = \"cmux\"\n", "minimal").unwrap();
-    assert_eq!(config.machine.max_workers.get(), 10, "default cap");
+    assert_eq!(config.machine.max_workers, None, "no default cap");
     assert_eq!(config.machine.push, PushMode::Claude, "default push");
     assert_eq!(config.models.default, Model::Sonnet, "default model");
     assert_eq!(config.watch.disk_warn_gb, 15, "default disk warning");
@@ -118,7 +122,11 @@ fn deprecated_keys_load_and_are_named() {
         .replacen("max_workers = 3", "max_children = 2", 1);
     let text = format!("{text}\n[hooks]\nroot_writable = [\"~/old\"]\n");
     let config = Config::parse(&text, "old keys").unwrap();
-    assert_eq!(config.machine.max_workers.get(), 7, "machine.max_children");
+    assert_eq!(
+        config.machine.max_workers.map(std::num::NonZeroU32::get),
+        Some(7),
+        "machine.max_children"
+    );
     assert_eq!(
         config.hooks.orchestrator_writable,
         ["~/old"],
@@ -876,4 +884,41 @@ fn todo_beside_backlog_folds_into_backlog_and_only_different_values_are_refused(
             );
         }
     }
+}
+
+#[test]
+fn cap_keys_lists_every_key_that_still_caps_sessions() {
+    let text = "[machine]
+host = \"wmux\"
+max_children = 3
+idle_overflow = 2
+
+[project.a]
+max_workers = 1
+
+                [project.b]
+main = \"x\"
+
+[leads]
+max_parts = 4
+";
+    assert_eq!(
+        Config::cap_keys(text),
+        vec![
+            "machine.max_children",
+            "machine.idle_overflow",
+            "project.a.max_workers",
+            "leads.max_parts"
+        ],
+        "cap keys"
+    );
+    assert!(
+        Config::cap_keys(
+            "[machine]
+host = \"wmux\"
+"
+        )
+        .is_empty(),
+        "none set"
+    );
 }

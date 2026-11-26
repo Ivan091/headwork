@@ -553,6 +553,8 @@ text_enum!(
         DeadDependency => "dead-dependency",
         /// A session idle at its prompt in `in_review` or `merged` gave up its worker slot.
         IdleSlot => "idle-slot",
+        /// More sessions are live than `[watch] many_sessions`; sessions are not capped, so this only tells.
+        ManySessions => "many-sessions",
         /// A session runs an older rules version than the machine holds.
         RulesStale => "rules-stale",
         /// An ask waits on the user for too long.

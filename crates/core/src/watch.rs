@@ -44,6 +44,12 @@ pub fn retell_after(watch: &WatchConfig, rule: FindingId) -> Option<u64> {
     (hours > 0).then(|| u64::from(hours) * 3600)
 }
 
+/// Whether `live` sessions are more than the `[watch] many_sessions` limit; 0 turns the finding off.
+#[must_use]
+pub fn many_sessions(live: usize, limit: u32) -> bool {
+    limit > 0 && usize::try_from(limit).is_ok_and(|limit| live > limit)
+}
+
 /// Whether a finding silent for `quiet_s` seconds is told again after `after`.
 #[must_use]
 pub const fn retell_due(quiet_s: u64, after: Option<u64>) -> bool {
@@ -310,6 +316,13 @@ impl TickStamp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn many_sessions_needs_more_than_the_limit() {
+        assert!(many_sessions(21, 20), "over the limit");
+        assert!(!many_sessions(20, 20), "at the limit");
+        assert!(!many_sessions(500, 0), "0 is off");
+    }
+
     use super::*;
 
     #[test]

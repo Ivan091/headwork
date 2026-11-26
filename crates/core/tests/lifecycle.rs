@@ -17,7 +17,7 @@ use TaskState as S;
 const FREE: StartFacts = StartFacts {
     live_workers: 2,
     waiting_workers: 0,
-    max_workers: 10,
+    max_workers: Some(10),
     idle_overflow: 4,
     project_live: 1,
     project_cap: Some(3),
@@ -238,6 +238,22 @@ fn a_gone_dependency_has_its_own_refusal() {
         }),
         Refusal::DependencyGone,
         "gone dependency"
+    );
+}
+
+#[test]
+fn start_without_a_machine_cap_never_runs_out_of_slots() {
+    let facts = StartFacts {
+        live_workers: 500,
+        waiting_workers: 500,
+        max_workers: None,
+        idle_overflow: 0,
+        ..FREE
+    };
+    assert_eq!(
+        headwork_core::lifecycle::check_start(&facts),
+        Ok(()),
+        "no cap, no refusal"
     );
 }
 
@@ -746,6 +762,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
     ];
     (
         (0..12_u32, 0..8_u32, 0..4_u32),
+        proptest::option::of(Just(10_u32)),
         0..5_u32,
         proptest::option::of(1..4_u32),
         any::<bool>(),
@@ -757,6 +774,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
         .prop_map(
             |(
                 (live_workers, waiting_workers, idle_overflow),
+                max_workers,
                 project_live,
                 project_cap,
                 main_only_kind_busy,
@@ -767,7 +785,7 @@ fn start_facts() -> impl Strategy<Value = StartFacts> {
             )| StartFacts {
                 live_workers,
                 waiting_workers,
-                max_workers: 10,
+                max_workers,
                 idle_overflow,
                 project_live,
                 project_cap,
@@ -889,8 +907,10 @@ fn guard_held(task: TaskSnapshot, trigger: &Trigger) -> bool {
     match *trigger {
         Trigger::Start(f) => {
             matches!(f.machine, MachineMode::Normal | MachineMode::Resuming)
-                && f.live_workers < f.max_workers
-                && f.live_workers + f.waiting_workers < f.max_workers + f.idle_overflow
+                && f.max_workers.is_none_or(|max| {
+                    f.live_workers < max
+                        && f.live_workers + f.waiting_workers < max + f.idle_overflow
+                })
                 && f.project_cap.is_none_or(|cap| f.project_live < cap)
                 && !f.main_only_kind_busy
                 && f.part_slots

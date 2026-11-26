@@ -240,7 +240,7 @@ Transitions and their guards:
 | Transition | Triggered by | Guard (refused otherwise) |
 |---|---|---|
 | spawn → `queued` | root (MCP `spawn`), user (CLI) | project known and enabled; slug kebab-case and unique among live tasks; kind is main-only ⇔ task runs in main; model in the allowed set; machine mode `normal` |
-| `queued` → `spawning` | tick, or `spawn` directly when free | live children < `max_children` (10); per-project cap; at most one live task per main-only kind per project; `depends_on` task `merged`; for Fable, the Fable ask answered "allow" |
+| `queued` → `spawning` | tick, or `spawn` directly when free | live children < `max_children` only when the machine sets it (no cap by default); per-project cap only when set; at most one live task per main-only kind per project; `depends_on` task `merged`; for Fable, the Fable ask answered "allow" |
 | `spawning` → `working` | `SessionStart` hook with the task's session id | session id matches; launcher alive |
 | `working` ⇄ `needs_user` | `PreToolUse`/`PostToolUse` on AskUserQuestion; `Notification` permission prompt | ask passes the format check (section 3.2) |
 | `working` → `in_review` | child `report status=review`; tick sees an open PR on the task branch | PR url belongs to an allowed repo |

@@ -1386,7 +1386,10 @@ fn board(
         out.write_all(
             render::board(
                 &board,
-                ctx.config.machine.max_workers.get(),
+                ctx.config
+                    .machine
+                    .max_workers
+                    .map(std::num::NonZeroU32::get),
                 &ctx.config.usage,
             )
             .as_bytes(),

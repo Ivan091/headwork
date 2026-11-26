@@ -123,7 +123,7 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
 
 /// The board as text: a header line, then each project with its tasks, sessions and waiting asks.
 #[must_use]
-pub(crate) fn board(board: &Board, max_workers: u32, prices: &UsageConfig) -> String {
+pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfig) -> String {
     let asks = board
         .tasks
         .iter()
@@ -138,10 +138,13 @@ pub(crate) fn board(board: &Board, max_workers: u32, prices: &UsageConfig) -> St
             board.waiting_workers
         )
     };
+    let slots = max_workers.map_or_else(
+        || format!("{} live", board.live_workers),
+        |max| format!("{} of {max} slots", board.live_workers),
+    );
     let mut text = format!(
-        "machine {} · {} of {max_workers} slots{idle} · {asks} {} waiting\n",
+        "machine {} · {slots}{idle} · {asks} {} waiting\n",
         board.machine,
-        board.live_workers,
         if asks == 1 { "ask" } else { "asks" },
     );
     let width = board
@@ -1098,10 +1101,17 @@ mod tests {
             .unwrap();
         let text = super::board(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
         );
         assert!(text.contains("opus   xhigh  "), "{text}");
+        let uncapped = super::board(
+            &store.board(false).unwrap(),
+            None,
+            &headwork_core::usage::UsageConfig::default(),
+        );
+        assert!(uncapped.contains(" live"), "{uncapped}");
+        assert!(!uncapped.contains("slots"), "{uncapped}");
         let log = super::events(
             &store
                 .events(EventFilter {
@@ -1151,7 +1161,7 @@ mod tests {
         shaped(&mut store, &config, "big-review", part);
         let text = super::board(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
         );
         let rows: Vec<&str> = text.lines().filter(|line| line.contains(" #")).collect();
@@ -1218,7 +1228,7 @@ mod tests {
         place("tabbed", None, Some(PlaceKind::Tab));
         let text = super::board(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
         );
         assert!(text.contains("surf-own in its own pane pane-1"), "{text}");
@@ -1259,7 +1269,7 @@ mod tests {
             .unwrap();
         let text = super::board(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
         );
         assert!(
@@ -1283,7 +1293,7 @@ mod tests {
         store.open_ask(&ask, Actor::Hook).unwrap();
         let text = super::board(
             &store.board(false).unwrap(),
-            10,
+            Some(10),
             &headwork_core::usage::UsageConfig::default(),
         );
         let lines: Vec<&str> = text.lines().collect();

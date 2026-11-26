@@ -669,8 +669,11 @@ impl Store {
         Ok(StartFacts {
             live_workers: count(working.clone().count())?,
             waiting_workers: count(live.iter().filter(|other| other.waits()).count())?,
-            max_workers: config.machine.max_workers.get(),
-            idle_overflow: config.machine.idle_overflow,
+            max_workers: config.machine.max_workers.map(std::num::NonZeroU32::get),
+            idle_overflow: config
+                .machine
+                .idle_overflow
+                .unwrap_or(headwork_core::config::DEFAULT_IDLE_OVERFLOW),
             project_live: count(working.filter(|other| other.project == project).count())?,
             project_cap: project_config
                 .and_then(|p| p.max_workers)
