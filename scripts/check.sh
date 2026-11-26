@@ -13,6 +13,10 @@ case "${1:-}" in
     ;;
 esac
 
+# shellcheck source=scripts/heavy.sh
+. scripts/heavy.sh
+heavy_hold "check.sh $([[ "$quick" == true ]] && echo --quick || echo full) in $(basename "$PWD")"
+
 step() { printf '\n== %s\n' "$1"; }
 
 step "cargo fmt --check"
@@ -28,6 +32,9 @@ if [[ "$quick" == false ]]; then
   step "cargo doc"
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 fi
+
+step "heavy gate tests"
+bash scripts/test-heavy.sh
 
 step "untangle tests"
 node dash/untangle.test.js
