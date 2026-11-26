@@ -170,7 +170,7 @@ fn allow_ask(command: &str, user_only: &[String]) -> Result<AllowAsk, GoRefusal>
 /// The user-only patterns the commands of a brief run, in configured order.
 ///
 /// Commands in backticks and in fenced code blocks count. Prose outside them names nothing, so "the user publishes"
-/// is no command, and neither does a command in backticks that the words right before it forbid ([`forbidden`]). A
+/// is no command, and neither does a command in backticks that the words right before it forbid. A
 /// fenced block always counts.
 #[must_use]
 pub fn named_user_only(brief: &str, user_only: &[String]) -> Vec<String> {
