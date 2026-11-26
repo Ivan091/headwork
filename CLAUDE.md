@@ -28,7 +28,7 @@ plugin/                 the Claude Code plugin: hooks.json (each hook calls `hea
 rules/                  built-in orchestrator and worker rules, injected at SessionStart
 flows/                  built-in review flows (TOML graphs) and their node prompts, embedded in the binary
 tests/fixtures/         config fixtures: me-sim, me-studio and a generic work repository
-scripts/check.sh        the quality gate
+scripts/check.sh        the quality gate; holds one of 3 machine-wide CPU slots (scripts/heavy.sh, tests in test-heavy.sh)
 docs/                   design, research, trials, decisions
 ```
 
@@ -478,7 +478,7 @@ attribution, through a pull request, then is merged. Before pushing, run `bash s
 `scripts/check.sh` on Windows and macOS for every pull request (read-only), and a ruleset on `master` refuses a merge
 until both `gate` jobs pass. Before merging, wait for them with `gh pr checks <url> --watch --fail-fast`; on a failure,
 read `gh run view <id> --log-failed`, fix, push and wait again. Every push to `master` is gated, built and published
-as release `v0.1.<run>` with both binaries and `SHA256SUMS` (`.github/workflows/release.yml`, `docs/autoupdate.md`). In
-CI `check.sh` skips the comment ban, whose checker lives in the user config, so `--quick` runs it locally. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
+as release `v0.1.<run>` with both binaries and `SHA256SUMS` (`.github/workflows/release.yml`, `docs/autoupdate.md`). `check.sh` waits for a free slot in `%LOCALAPPDATA%/heavy-slots` (3, `HEADWORK_HEAVY_SLOTS`) and prints who holds them; CI runs it directly
+(`docs/decisions/2026-11-26-check-takes-cpu-slots.md`). CI `check.sh` skips the comment ban, whose checker lives in the user config, so `--quick` runs it locally. The repository is public (MIT); the history before 2026-11-22 is in the private `Ivan091/headwork-archive`,
 and commits use the GitHub noreply address. Use the global `contribute` and `ship` skills; this repository has no ship
 script of its own yet.
