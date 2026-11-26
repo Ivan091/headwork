@@ -88,6 +88,18 @@ wrapping a command itself; token limits are warning only. This entry records how
   neither `CI`, `HEADWORK_GATE_OFF=1`, `HEADWORK_HEAVY_HELD=1` nor a held `cpu` says otherwise; `scripts/heavy.sh` and
   `scripts/test-heavy.sh` are gone.
 
+## Second pull request
+
+- `JobRow` keeps `heavy` (true when gated) and adds `gate`; `NewJob` takes `gate`. `job_status` and `headwork jobs` add
+  `waiting_for`. `job_register` returns the row with a `warning` field when it runs over the gate.
+- `Slots::claim_for` takes a slot for a pid without joining the queue and without the free-slot fairness check against
+  waiters; a registered job is already running, so it cannot wait.
+- The tick reaps stale slots even in shadow mode: it is the same cleanup every waiting gate does.
+- Findings are keyed by slot, pid and epoch (holders) or pid and epoch (waiters), so each clears when that process ends.
+- The digest shows gate findings at once instead of after `[digest] finding_hours`.
+- `heavy-ungated` sees `headwork gate run ... -- <cmd>` and `heavy.sh <cmd>` as one command whose program is the wrapper, so
+  the wrapped command is never inspected; reviewers keep their own rule `reviewer-write`.
+
 ## Not done here
 
 - me-sim's `heavy.sh` becomes a wrapper around `headwork gate run cpu` with its `mkdir` fallback for CI; its renders and scans

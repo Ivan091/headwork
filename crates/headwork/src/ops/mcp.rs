@@ -1586,16 +1586,24 @@ impl<'a> Server<'a> {
     fn board(&mut self, session: &str, role: Role, args: &Value) -> Result<String> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
         super::lost::reconcile(self.store, &self.env)?;
-        let board = to_text(&self.scoped_board(session, role, all)?)?;
-        let gates =
-            super::gate::board_line(self.env.home, &self.env.config.gates).unwrap_or_default();
+        let mut board = serde_json::to_value(self.scoped_board(session, role, all)?)?;
+        if let (Some(line), Some(object)) = (
+            super::gate::board_line(self.env.home, &self.env.config.gates),
+            board.as_object_mut(),
+        ) {
+            object.insert(
+                "gates".to_owned(),
+                Value::String(line.trim_end().to_owned()),
+            );
+        }
+        let board = to_text(&board)?;
         Ok(if role == Role::Orchestrator {
             format!(
-                "{}{gates}{board}",
+                "{}{board}",
                 super::digest::section(self.store, self.env.config)
             )
         } else {
-            format!("{gates}{board}")
+            board
         })
     }
 

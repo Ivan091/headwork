@@ -190,6 +190,17 @@ runs directly, so does everything in CI or with `HEADWORK_GATE_OFF=1`), gives th
 code; it logs `gate-wait`, `gate-acquired` and `gate-released` into an existing `state.db` only. `headwork gate status`
 lists holders and waiters. `[gates]` (machine layer) also takes `dir` (default `%LOCALAPPDATA%/heavy-slots`, else
 `~/.heavy-slots`; `HEADWORK_GATE_DIR` overrides it), `held_long_min` and `starved_min`.
+Jobs take `gate: "cpu" | "gpu"` (`heavy: true` still means `cpu`; `jobs.heavy` holds 0, 1 or 2, `JobRow.gate`): a gated job
+starts as `<HEADWORK_EXE or this program> gate run <class> -- <argv>`, the stored argv stays the original so a resume wraps it
+again, and `job_status` / `headwork jobs` say `waiting_for` / `waiting for cpu` while a waiter file of its pid is live;
+`job_register` takes a free slot for the registered pid (`Slots::claim_for`) or warns that the job runs over the gate. The
+tick stage `gates` (`ops/tick.rs`) reaps stale slots and dead waiters' files (event `gate-reaped`) and keeps the standing
+findings `gate-held-long` (a live `cpu` holder past `held_long_min`) and `gate-starved` (a live waiter past `starved_min`),
+one per holder or waiter, cleared when it ends. `board` prints `Gates: cpu 2/3 (...) · 1 waiting · gpu 0/2` (a `gates` field in the MCP board; only when the
+slot folder exists), `status` ends a task's line with `waiting for cpu` (a lead counts its parts), and the "Needs you" digest
+lists gate findings at once. The guard rule `heavy-ungated` (`core/src/guard/heavy.rs`) denies a worker's ungated cargo
+build, test, clippy or bench and `check.sh`, with the hint `headwork gate run cpu -- <the command>`; it is shadow until
+listed in `[hooks] enforce_rules`.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.

@@ -376,9 +376,14 @@ fn worker_bash_table() {
             true,
             Some(RuleId::WorkerLongJob),
         ),
-        ("cargo test", "sand", true, None),
+        ("headwork gate run cpu -- cargo test", "sand", true, None),
         ("scripts/ship.sh -m 'feat: x'", "sand", false, None),
-        ("cargo build", "master", false, None),
+        (
+            "headwork gate run cpu -- cargo build",
+            "master",
+            false,
+            None,
+        ),
     ];
     for (command, branch, background, expected) in table {
         let call = ToolCall::Bash {
@@ -1655,7 +1660,10 @@ fn a_reviewer_lead_reads_and_writes_only_the_scratchpad() {
     );
     let plain = worker("sand");
     assert_eq!(
-        rule(&check_tool(&plain, &bash("cargo test"))),
+        rule(&check_tool(
+            &plain,
+            &bash("headwork gate run cpu -- cargo test")
+        )),
         None,
         "a plain worker builds"
     );
@@ -1843,4 +1851,102 @@ fn worker_force_push_uses_the_recorded_task_branch() {
             "{command} on {branch:?} for {task_branch:?}"
         );
     }
+}
+
+#[test]
+fn a_worker_runs_heavy_commands_only_inside_a_gate() {
+    let heavy = Some(RuleId::HeavyUngated);
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("cargo build", heavy),
+        ("cargo build --release -p render", heavy),
+        ("cargo test --workspace", heavy),
+        ("cargo clippy --all-targets -- -D warnings", heavy),
+        ("cargo bench", heavy),
+        ("cargo +nightly test", heavy),
+        ("cargo --locked build", heavy),
+        ("RUSTFLAGS=-Dwarnings cargo test", heavy),
+        ("cd crates/core && cargo test", heavy),
+        ("cargo fmt && cargo test", heavy),
+        ("git status; cargo build", heavy),
+        ("cat log | cargo test", heavy),
+        ("time cargo test", heavy),
+        ("env FOO=1 cargo build", heavy),
+        ("bash -c \"cargo test\"", heavy),
+        ("C:/Users/User/.cargo/bin/cargo.exe test", heavy),
+        ("bash scripts/check.sh", heavy),
+        ("bash scripts/check.sh --quick", heavy),
+        ("./scripts/check.sh", heavy),
+        ("scripts/check.sh --quick", heavy),
+        ("sh -x S:/Code/headwork/scripts/check.sh", heavy),
+        ("bash tools/check.sh", heavy),
+        ("headwork gate run cpu -- cargo test", None),
+        (
+            "headwork gate run cpu -- bash scripts/check.sh --quick",
+            None,
+        ),
+        ("headwork.exe gate run gpu -- cargo build", None),
+        (
+            "C:/Users/User/.local/bin/headwork.exe gate run cpu -- cargo test",
+            None,
+        ),
+        ("~/.local/bin/headwork gate run cpu -- cargo clippy", None),
+        (
+            "cd crates/core && headwork gate run cpu -- cargo test",
+            None,
+        ),
+        ("headwork gate run cpu -- cargo test && cargo build", heavy),
+        ("cargo test && headwork gate run cpu -- cargo test", heavy),
+        ("bash scripts/heavy.sh cargo test", None),
+        ("scripts/heavy.sh cargo build --release", None),
+        ("./scripts/heavy.sh bash scripts/check.sh", None),
+        ("cargo run --release -p tool", None),
+        ("cargo fmt", None),
+        ("cargo fmt --check", None),
+        ("cargo doc", None),
+        ("cargo check", None),
+        ("cargo --version", None),
+        ("echo cargo test", None),
+        ("echo \"cargo build\"", None),
+        ("git commit -m \"cargo test\"", None),
+        ("grep -n 'cargo build' README.md", None),
+        ("cat scripts/check.sh", None),
+        ("ls scripts/check.sh", None),
+        ("bash scripts/other.sh", None),
+        ("headwork gate status", None),
+        ("headwork board", None),
+        ("rustc --version", None),
+        ("cargo-test-helper run", None),
+    ];
+    let scope = worker("sand");
+    for (command, expected) in table {
+        let rule = match check_tool(&scope, &bash(command)) {
+            Decision::Allow => None,
+            Decision::Deny(verdict) => Some(verdict.rule),
+        };
+        assert_eq!(rule, *expected, "{command}");
+    }
+}
+
+#[test]
+fn the_heavy_rule_names_the_gate_command_and_leaves_the_orchestrator_and_reviewers_to_their_rules()
+{
+    let verdict = |scope: &Scope| match check_tool(scope, &bash("cargo test")) {
+        Decision::Deny(verdict) => Some((verdict.rule, verdict.reason)),
+        Decision::Allow => None,
+    };
+    let (rule, reason) = verdict(&worker("sand")).unwrap_or((RuleId::UserOnly, String::new()));
+    assert_eq!(rule, RuleId::HeavyUngated);
+    assert!(
+        reason.contains(
+            "heavy work outside a gate: run it as `headwork gate run cpu -- <the command>`"
+        ) && reason.contains("background"),
+        "{reason}"
+    );
+    let reviewer = Scope {
+        reviewer: true,
+        ..worker("sand")
+    };
+    let rule_of = |scope: &Scope| verdict(scope).map(|(rule, _)| rule);
+    assert_eq!(rule_of(&reviewer), Some(RuleId::ReviewerWrite));
+    assert_eq!(rule_of(&orchestrator()), Some(RuleId::OrchestratorBuild));
 }
