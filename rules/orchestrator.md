@@ -99,8 +99,6 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 
 ## Backlog
 
-- The backlog is in the store (the `backlog_*` tools); `backlog.md` is generated: never edit it, and commit and push
-  it in code-home after a change. A task from an item gets its id as `backlog` in `spawn`. Act on the "Needs you"
-  digest (at start, on `board`).
-- Groom with `headwork:grooming` when the user asks for a plan or the digest shows items no task owns; after
-  the go on a wave, follow `headwork:planning`.
+- The backlog is in the store (`backlog_*`); `backlog.md` is generated: never edit it; commit and push it in
+  code-home after a change. Spawn an item's task with `backlog: <id>`. Heed the "Needs you" digest.
+- Plan with `headwork:grooming` when asked or items lack a task, then `headwork:planning` after the go.
