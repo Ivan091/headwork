@@ -332,6 +332,21 @@ pub struct Reaped {
     pub waiter: bool,
 }
 
+/// What one [`Slots::reap`] did: what it took away, and the first removal that failed.
+#[derive(Debug, Default)]
+pub struct Reaping {
+    /// The slots and files taken away.
+    pub reaped: Vec<Reaped>,
+    /// The first removal that failed; the others were still tried.
+    pub error: Option<GateError>,
+}
+
+impl Reaping {
+    fn fail(&mut self, error: GateError) {
+        self.error.get_or_insert(error);
+    }
+}
+
 /// The slot root and how holders are judged alive.
 #[derive(Debug, Clone)]
 pub struct Slots {
@@ -413,13 +428,11 @@ impl Slots {
     ///
     /// A slot is removed only while its folder's `reap.lock` is held and after a second look, with fresh liveness,
     /// still finds it stale; a lock older than [`REAP_LOCK_STALE_S`] seconds is removed first. A lock held by another
-    /// reaper skips the slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GateError::Io`] when a stale slot or file cannot be removed.
-    pub fn reap(&self, class: GateClass) -> Result<Vec<Reaped>, GateError> {
-        let mut reaped = Vec::new();
+    /// reaper skips the slot. A removal that fails does not stop the others: the result lists what was removed and
+    /// keeps the first failure.
+    #[must_use]
+    pub fn reap(&self, class: GateClass) -> Reaping {
+        let mut reaping = Reaping::default();
         let now = epoch_now();
         let dir = self.class_dir(class);
         let mut probe = Probe::new(self.liveness.as_ref());
@@ -433,57 +446,53 @@ impl Slots {
                 .filter(|holder| holder.stale)
                 .collect();
             if !stale.is_empty() {
-                reaped.extend(self.reap_slots(&place, legacy, &stale)?);
+                self.reap_slots(&place, legacy, &stale, &mut reaping);
             }
         }
         for waiter in read_waiters(&dir, now, &mut probe) {
             if waiter.stale {
-                remove_file(&waiter.path)?;
-                reaped.push(Reaped {
-                    path: waiter.path,
-                    owner: waiter.owner,
-                    waiter: true,
-                });
+                match remove_file(&waiter.path) {
+                    Ok(()) => reaping.reaped.push(Reaped {
+                        path: waiter.path,
+                        owner: waiter.owner,
+                        waiter: true,
+                    }),
+                    Err(error) => reaping.fail(error),
+                }
             }
         }
-        remove_old_temps(&dir, now)?;
-        Ok(reaped)
+        remove_old_temps(&dir, now, &mut reaping);
+        reaping
     }
 
-    fn reap_slots(
-        &self,
-        place: &Path,
-        legacy: bool,
-        stale: &[HolderInfo],
-    ) -> Result<Vec<Reaped>, GateError> {
+    fn reap_slots(&self, place: &Path, legacy: bool, stale: &[HolderInfo], reaping: &mut Reaping) {
         let lock = place.join(REAP_LOCK);
         if age_of(&lock, epoch_now()).is_some_and(|age| age > REAP_LOCK_STALE_S) {
             std::fs::remove_dir(&lock).ok();
         }
         if std::fs::create_dir(&lock).is_err() {
-            return Ok(Vec::new());
+            return;
         }
-        let result = self.reap_locked(legacy, stale);
+        self.reap_locked(legacy, stale, reaping);
         std::fs::remove_dir(&lock).ok();
-        result
     }
 
-    fn reap_locked(&self, legacy: bool, stale: &[HolderInfo]) -> Result<Vec<Reaped>, GateError> {
+    fn reap_locked(&self, legacy: bool, stale: &[HolderInfo], reaping: &mut Reaping) {
         let mut probe = Probe::new(self.liveness.as_ref());
         let now = epoch_now();
-        let mut reaped = Vec::new();
         for holder in stale {
             let again = read_slot(&holder.path, holder.slot, legacy, now, &mut probe);
             if again.is_some_and(|again| again.stale) {
-                remove_tree(&holder.path)?;
-                reaped.push(Reaped {
-                    path: holder.path.clone(),
-                    owner: holder.owner.clone(),
-                    waiter: false,
-                });
+                match remove_tree(&holder.path) {
+                    Ok(()) => reaping.reaped.push(Reaped {
+                        path: holder.path.clone(),
+                        owner: holder.owner.clone(),
+                        waiter: false,
+                    }),
+                    Err(error) => reaping.fail(error),
+                }
             }
         }
-        Ok(reaped)
     }
 
     /// Joins a class's queue: writes this process's `wait-<pid>` file (the owner's `pid`), creating the folders.
@@ -534,7 +543,7 @@ impl Slots {
     ) -> Result<Option<u32>, GateError> {
         let dir = self.class_dir(class);
         std::fs::create_dir_all(&dir).map_err(io_error("creating", &dir))?;
-        self.reap(class).ok();
+        drop(self.reap(class));
         let view = self.read(class, count);
         if free_slots(count, view.used()) == 0 {
             return Ok(None);
@@ -599,7 +608,7 @@ impl Ticket {
     ///
     /// Returns [`GateError::Io`] when a slot cannot be made or written.
     pub fn try_take(&mut self, started: &str, epoch: u64) -> Result<Attempt, GateError> {
-        self.slots.reap(self.class).ok();
+        drop(self.slots.reap(self.class));
         let view = self.slots.read(self.class, self.count);
         let ahead = view.waiters_before(&self.owner);
         if !may_take(free_slots(self.count, view.used()), ahead) {
@@ -857,18 +866,21 @@ fn write_atomically(path: &Path, text: &str) -> Result<(), GateError> {
     })
 }
 
-fn remove_old_temps(dir: &Path, now: u64) -> Result<(), GateError> {
+fn remove_old_temps(dir: &Path, now: u64, reaping: &mut Reaping) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+        return;
     };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         let temp = entry.file_name().to_string_lossy().ends_with(TEMP_SUFFIX);
-        if temp && path.is_file() && age_of(&path, now).is_some_and(|age| age > UNOWNED_STALE_S) {
-            remove_file(&path)?;
+        if temp
+            && path.is_file()
+            && age_of(&path, now).is_some_and(|age| age > UNOWNED_STALE_S)
+            && let Err(error) = remove_file(&path)
+        {
+            reaping.fail(error);
         }
     }
-    Ok(())
 }
 
 fn remove_file(path: &Path) -> Result<(), GateError> {
@@ -1147,15 +1159,79 @@ mod tests {
         let slot = write_slot(&dir, 1, &owner(9, 1).render());
         std::fs::create_dir(dir.join(REAP_LOCK)).unwrap();
         assert!(
-            slots.reap(GateClass::Cpu).unwrap().is_empty(),
+            slots.reap(GateClass::Cpu).reaped.is_empty(),
             "another reaper holds the lock"
         );
         assert!(slot.exists(), "the slot stays");
         std::fs::remove_dir(dir.join(REAP_LOCK)).unwrap();
-        let reaped = slots.reap(GateClass::Cpu).unwrap();
+        let reaped = slots.reap(GateClass::Cpu).reaped;
         assert_eq!(reaped.len(), 1, "reaped once the lock is free");
         assert!(!slot.exists(), "the slot is gone");
         assert!(!dir.join(REAP_LOCK).exists(), "the lock is given back");
+    }
+
+    /// Keeps a slot folder from being removed while it lives: a file in it opened without sharing on Windows, the
+    /// folder read only on unix.
+    struct Pinned {
+        #[cfg(windows)]
+        _file: std::fs::File,
+        #[cfg(unix)]
+        dir: PathBuf,
+    }
+
+    impl Pinned {
+        fn new(slot: &Path) -> Self {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let file = std::fs::File::options()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .share_mode(0)
+                    .open(slot.join("pinned"))
+                    .unwrap();
+                Self { _file: file }
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(slot, std::fs::Permissions::from_mode(0o555)).unwrap();
+                Self {
+                    dir: slot.to_path_buf(),
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Pinned {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o755)).ok();
+        }
+    }
+
+    #[test]
+    fn a_removal_that_fails_does_not_stop_the_rest_of_the_reaping() {
+        let fake = Fake::live(&[]);
+        let (_dir, slots) = slots(&fake);
+        let dir = slots.class_dir(GateClass::Cpu);
+        let slot = write_slot(&dir, 1, &owner(9, 1).render());
+        std::fs::write(dir.join("wait-8"), owner(8, 1).render()).unwrap();
+        let pinned = Pinned::new(&slot);
+        let reaping = slots.reap(GateClass::Cpu);
+        drop(pinned);
+        assert!(
+            reaping.error.is_some(),
+            "the pinned slot's failure is kept: {reaping:?}"
+        );
+        assert_eq!(reaping.reaped.len(), 1, "{reaping:?}");
+        assert!(
+            reaping.reaped.first().is_some_and(|gone| gone.waiter),
+            "the dead waiter's file is still taken away: {reaping:?}"
+        );
+        assert!(!dir.join("wait-8").exists(), "its file is gone");
     }
 
     #[test]
@@ -1172,7 +1248,7 @@ mod tests {
             "{view:?}"
         );
         assert!(
-            slots.reap(GateClass::Gpu).unwrap().is_empty(),
+            slots.reap(GateClass::Gpu).reaped.is_empty(),
             "nothing reaped"
         );
     }

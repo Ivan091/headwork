@@ -1134,11 +1134,8 @@ impl<'b> Run<'_, 'b> {
         slots: &headwork_adapters::gate::Slots,
         class: GateClass,
     ) -> Result<()> {
-        let reaped = match slots.reap(class) {
-            Ok(reaped) => reaped,
-            Err(error) => return self.error(&format!("gate:{class}"), None, &error.to_string()),
-        };
-        for gone in reaped {
+        let reaping = slots.reap(class);
+        for gone in reaping.reaped {
             let owner = gone.owner.unwrap_or_default();
             let task = self.known_task(&owner);
             let data = serde_json::json!({
@@ -1153,7 +1150,9 @@ impl<'b> Run<'_, 'b> {
             self.store
                 .append_event(actor, task, None, EVENT_GATE_REAPED, &data)?;
         }
-        Ok(())
+        reaping.error.map_or(Ok(()), |error| {
+            self.error(&format!("gate:{class}"), None, &error.to_string())
+        })
     }
 
     fn known_task(&self, owner: &Owner) -> Option<TaskId> {
