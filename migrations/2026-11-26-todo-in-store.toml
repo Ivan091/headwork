@@ -1,33 +1,34 @@
 id = "2026-11-26-todo-in-store"
 title = "Move the to-do list into the store and generate todo.md from it"
 requires = ["headwork"]
-why = """The to-do list now lives in headwork's store and todo.md is generated from it (docs/todo.md). A machine \
-that keeps the list sets [todo] file, imports the existing file once, and from then on exports it. todo.file is a \
-machine-only key, so it goes in the machine file: ~/.headwork/config.machine.toml when it exists, else \
+why = """The to-do list lives in headwork's store and its file is generated from it. It is now called the backlog \
+(docs/backlog.md; note 2026-11-26-todo-to-backlog covers the rename), so this note uses the backlog names. A machine \
+that keeps the list sets [backlog] file, imports the existing file once, and from then on exports it. backlog.file is \
+a machine-only key, so it goes in the machine file: ~/.headwork/config.machine.toml when it exists, else \
 machines/{machine}/headwork.toml in claude_config. A machine that does not keep the list marks this note skipped."""
-check = "headwork todo list --state all --json | grep -q '\"id\"'"
+check = "headwork backlog list --state all --json | grep -q '\"id\"'"
 
 [[step]]
 kind = "user"
-say = """Add [todo] with file = "<this machine's todo.md, forward slashes>" (on the Windows PC: S:/Code/todo.md) \
-to the machine file: ~/.headwork/config.machine.toml when it exists, then run headwork config sync --no-pull; else \
-machines/{machine}/headwork.toml in claude_config through a pull request (sync-config), then headwork config sync \
-after the merge. Then say go."""
+say = """Add [backlog] with file = "<this machine's list file, forward slashes>" (the existing todo.md; it can move \
+to backlog.md later, docs/backlog.md section 9) to the machine file: ~/.headwork/config.machine.toml when it exists, \
+then run headwork config sync --no-pull; else machines/{machine}/headwork.toml in claude_config through a pull request \
+(sync-config), then headwork config sync after the merge. Then say go."""
 
 [[step]]
 kind = "agent"
-run = "headwork todo import --dry-run"
+run = "headwork backlog import --dry-run"
 
 [[step]]
 kind = "user"
 say = """Read the dry run: the counts, and every unparsed line with its number and reason. Fix those lines in \
-todo.md by hand if they matter, or accept leaving them out (they stay in the file until the first export, and a \
-copy of the file as it was is kept in ~/.headwork/todo-backups). Then say go."""
+the file by hand if they matter, or accept leaving them out (they stay in the file until the first export, and a \
+copy of the file as it was is kept in ~/.headwork/backlog-backups). Then say go."""
 
 [[step]]
 kind = "agent"
-run = "headwork todo import"
+run = "headwork backlog import"
 
 [[step]]
 kind = "confirm"
-run = "headwork todo export"
+run = "headwork backlog export"

@@ -203,9 +203,9 @@ name is (the old tools, like the new ones, by the orchestrator only), and is the
 | Config `[todo]` | `[backlog]` | folded into `[backlog]` before the config is read, so one layer may still say `[todo]` while another says `[backlog]`; a key the two give different values is refused (`todo.<key> and backlog.<key> differ`). `headwork doctor` (check `config-keys`) names each `todo.<key>`; `todo.file` and `todo.leave_pointer` stay machine-only |
 | The folder `<home>/todo-backups` | `<home>/backlog-backups` | left in place: never listed, pruned, moved or deleted; new copies go to the new folder |
 
-Output names have no alias: the spawn result's `todo_unlinked` is `backlog_unlinked`, and events are `backlog-*`. The
-migration note `2026-11-26-todo-in-store` still runs `headwork todo`; the change that removes the aliases rewrites its
-commands to `headwork backlog`.
+The spawn result carries `backlog_unlinked` and, for the same release, the same value as `todo_unlinked`; events are
+`backlog-*` with no alias. The earlier migration note `2026-11-26-todo-in-store` now uses the backlog names and points
+to `2026-11-26-todo-to-backlog`.
 
 ### Moving the file
 
