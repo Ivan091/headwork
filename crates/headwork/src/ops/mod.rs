@@ -39,6 +39,7 @@ pub mod status;
 pub mod tick;
 pub mod tick_lock;
 pub mod title;
+pub mod todo;
 pub mod trust;
 pub mod update;
 pub mod usage;

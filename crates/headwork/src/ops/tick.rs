@@ -196,6 +196,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("update", Run::update)?;
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
+    run.stage("todo", Run::todo)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -340,6 +341,12 @@ impl<'b> Run<'_, 'b> {
     ///
     /// A repository that failed to fetch or read is a `tick-error` finding with the reason. One whose notes could not be
     /// read keeps its standing findings, since it reported no note at all.
+    fn todo(&mut self) -> Result<()> {
+        let env = self.env();
+        let (home, config, actor) = (env.home, env.config, self.actor());
+        super::todo::export(self.store, home, config, None, actor).map(drop)
+    }
+
     fn migrations(&mut self) -> Result<()> {
         let env = self.env();
         let report = super::migrate::report(self.store, env.home, env.config, true)?;
