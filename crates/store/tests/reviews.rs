@@ -178,7 +178,14 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
         };
         ids.extend(
             store
-                .finish_review_node(&review, instance, NodeState::Done, &findings, Actor::Worker)
+                .finish_review_node(
+                    &review,
+                    instance,
+                    NodeState::Done,
+                    &findings,
+                    &[],
+                    Actor::Worker,
+                )
                 .unwrap(),
         );
     }
@@ -201,7 +208,7 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
     {
         store.set_finding_verdict(instance.item, verdict).unwrap();
         store
-            .finish_review_node(&review, instance, NodeState::Done, &[], Actor::Worker)
+            .finish_review_node(&review, instance, NodeState::Done, &[], &[], Actor::Worker)
             .unwrap();
     }
     assert!(
@@ -233,6 +240,11 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
     store
         .resolve_finding(passed[0], Resolution::Open, None, false)
         .unwrap();
+    assert_eq!(
+        store.delivered_findings(task).unwrap(),
+        1,
+        "a delivered finding counts against the task's cap"
+    );
     let refused = store.move_review(
         review.id,
         ReviewTrigger::Resolve,
@@ -278,8 +290,12 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
         .unwrap();
     let counts = store.finding_counts(&review).unwrap();
     assert_eq!(
-        (counts.awaiting_verdict, counts.fixed),
-        (0, 1),
+        (
+            counts.awaiting_verdict,
+            counts.fixed,
+            counts.fixed_important
+        ),
+        (0, 1, 1),
         "{counts:?}"
     );
     let review = store
@@ -324,6 +340,7 @@ fn a_due_round_starts_round_two_with_fresh_nodes() {
             &correctness,
             NodeState::Done,
             &[finding("race")],
+            &[],
             Actor::Worker,
         )
         .unwrap();

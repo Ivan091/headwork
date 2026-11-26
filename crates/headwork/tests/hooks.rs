@@ -3889,14 +3889,48 @@ fn the_orchestrators_board_and_status_tools_start_with_the_digest_and_a_workers_
     assert!(!is_error && !text.contains("Needs you"), "{text}");
 }
 
+fn record_spend(w: &mut World, session: &str, id: &str, tokens: Tokens) {
+    let line = UsageLine {
+        message_id: id.to_owned(),
+        at: "2026-11-26T10:00:00Z".to_owned(),
+        model: "claude-sonnet-4-6".to_owned(),
+        effort: None,
+        speed: None,
+        service_tier: None,
+        cwd: None,
+        tokens,
+    };
+    let tag = w
+        .store
+        .usage_tag(session)
+        .unwrap()
+        .unwrap_or(UsageTag::UNMANAGED);
+    w.store
+        .record_usage(&UsageBatch {
+            path: &format!("{id}.jsonl"),
+            session_id: session,
+            agent_id: None,
+            agent_meta: None,
+            tag,
+            dir: "S:/Code/x",
+            lines: &[line],
+            mark: FileMark {
+                read_to: 1,
+                size: 1,
+                mtime_ms: 1,
+            },
+        })
+        .unwrap();
+}
+
 #[test]
 fn board_and_status_show_a_running_review_under_its_lead() {
     let mut w = world(REVIEWS, false);
-    let _part = started_review(&mut w, 1);
+    let part = started_review(&mut w, 1);
     let summary = w.store.review_summary(w.task.id).unwrap().unwrap();
     assert_eq!(
         summary.to_string(),
-        "review 1 code, level 1, round 1: running, 0 node(s) over, 0 running, 0 finding(s)",
+        "review 1 code, level 1, round 1: running, 0 node(s) over, 0 running, 0 finding(s) · 0 tokens",
         "the board line"
     );
     let board = w.store.board(false).unwrap();
@@ -3910,12 +3944,12 @@ fn board_and_status_show_a_running_review_under_its_lead() {
         Some(summary.id),
         "on the lead's board entry"
     );
-    let part = board
+    let part_entry = board
         .tasks
         .iter()
         .find(|entry| entry.task.kind == "review")
         .unwrap();
-    assert!(part.review.is_none(), "not repeated on the part");
+    assert!(part_entry.review.is_none(), "not repeated on the part");
     let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
     let line = lines.iter().find(|line| line.task == "demo-sand").unwrap();
     assert_eq!(
@@ -4040,4 +4074,340 @@ fn a_reviews_summary_counts_nodes_and_findings_over_its_rounds_and_ends_with_the
         w.store.review_summary(w.task.id).unwrap().is_none(),
         "a cancelled review has no summary"
     );
+
+    let session = w.store.session_of(part.id).unwrap().unwrap().id;
+    record_spend(
+        &mut w,
+        &session,
+        "r1",
+        Tokens {
+            input: 1_000,
+            cache_write_5m: 200_000,
+            cache_read: 5_000_000,
+            output: 50_000,
+            ..Tokens::default()
+        },
+    );
+    let lead_session = w.session.clone();
+    record_spend(
+        &mut w,
+        &lead_session,
+        "l1",
+        Tokens {
+            input: 9_000_000,
+            ..Tokens::default()
+        },
+    );
+    let summary = w.store.review_summary(w.task.id).unwrap().unwrap();
+    assert_eq!(
+        summary.tokens, 251_000,
+        "fresh tokens, cache reads left out"
+    );
+    assert!(
+        summary.to_string().ends_with("0 finding(s) · 251k tokens"),
+        "{summary}"
+    );
+    let board = w.store.board(false).unwrap();
+    let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
+    assert!(
+        lines[0]
+            .line
+            .ends_with(", in review (level 1, 251k review tokens)"),
+        "{}",
+        lines[0].line
+    );
+    assert_eq!(
+        lines[0].review_tokens, 251_000,
+        "the JSON field, the lead's own spend left out"
+    );
+
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "part_drop",
+        &json!({ "name": "review" }),
+    );
+    assert!(!is_error, "{text}");
+    let board = w.store.board(false).unwrap();
+    let lines = headwork::ops::status::lines(&w.store, &board, &w.config.usage).unwrap();
+    assert!(
+        lines[0].line.ends_with(", reviews 251k tokens"),
+        "a finished review's cost stays: {}",
+        lines[0].line
+    );
+}
+
+fn finding_of(severity: &str, summary: &str, line: u32) -> Value {
+    json!({ "file": "change.txt", "line": line, "severity": severity, "summary": summary, "scenario": "it breaks" })
+}
+
+/// Runs a review round to its delivery: each plain node returns its findings in `found` (none when absent), each
+/// verify instance takes the next of `verdicts` (else `confirmed`). Returns the delivery and every `review_node_done`
+/// answer.
+fn run_round(
+    w: &mut World,
+    me: &Identity,
+    found: &[(&str, Value)],
+    verdicts: &[&str],
+) -> (Value, Vec<String>) {
+    let mut verdicts = verdicts.iter();
+    let mut answers = Vec::new();
+    let mut verified = 0;
+    loop {
+        let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+        assert!(!is_error, "{text}");
+        let next = json_of(&text);
+        let nodes = next["nodes"].as_array().unwrap().clone();
+        if nodes.is_empty() {
+            assert!(
+                next["next"].as_str().unwrap().contains("review_deliver"),
+                "{text}"
+            );
+            break;
+        }
+        for node in nodes {
+            let name = node["node"].as_str().unwrap();
+            let item = node["item"].as_i64().unwrap();
+            let args = if item > 0 {
+                verified += 1;
+                let verdict = verdicts.next().copied().unwrap_or("confirmed");
+                json!({ "node": name, "item": item, "verdict": verdict })
+            } else {
+                let findings = found
+                    .iter()
+                    .find(|(node, _)| *node == name)
+                    .map_or_else(|| json!([]), |(_, findings)| findings.clone());
+                json!({ "node": name, "findings": findings })
+            };
+            let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
+            assert!(!is_error, "{text}");
+            answers.push(text);
+        }
+    }
+    let (is_error, text) = w.tool(me.clone(), "review_deliver", &json!({}));
+    assert!(!is_error, "{text}");
+    let mut delivered = json_of(&text);
+    delivered["verified"] = json!(verified);
+    (delivered, answers)
+}
+
+fn ids_of(findings: &Value) -> Vec<i64> {
+    findings
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|finding| finding["id"].as_i64().unwrap())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fix_all(w: &mut World, me: &Identity, ids: &[i64], round: usize) -> Value {
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), format!("fixed {round}")).unwrap();
+    git(&tree, &["commit", "-q", "-am", "fix"]);
+    let items: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "action": "fixed", "note": "fixed" }))
+        .collect();
+    let (is_error, text) = w.tool(
+        worker_identity(w),
+        "review_resolve",
+        &json!({ "items": items }),
+    );
+    assert!(!is_error, "{text}");
+    let verdicts: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "fix": "accepted" }))
+        .collect();
+    let (is_error, text) = w.tool(me.clone(), "review_verdict", &json!({ "items": verdicts }));
+    assert!(!is_error, "{text}");
+    json_of(&text)
+}
+
+#[test]
+fn a_nit_below_the_floor_is_listed_not_delivered_and_gets_no_verifier() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 2);
+    let me = reviewer(&w, &part);
+    let found = [(
+        "design",
+        json!([
+            finding_of("important", "wrong layer", 1),
+            finding_of("nit", "odd name", 2)
+        ]),
+    )];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    assert_eq!(delivered["verified"], 1, "no verify subagent for the nit");
+    let findings = w
+        .store
+        .review_findings(w.store.reviews_of(w.task.id).unwrap()[0].id)
+        .unwrap();
+    let nit = findings
+        .iter()
+        .find(|row| row.summary == "odd name")
+        .unwrap();
+    let important = findings
+        .iter()
+        .find(|row| row.summary == "wrong layer")
+        .unwrap();
+    assert_eq!(
+        ids_of(&delivered["findings"]),
+        [important.id],
+        "{delivered}"
+    );
+    assert_eq!(
+        delivered["listed"],
+        json!([{ "finding": nit, "reason": "below-floor" }]),
+        "{delivered}"
+    );
+    assert_eq!(nit.resolution, None, "the nit never waits on the lead");
+    assert!(
+        delivered["next"]
+            .as_str()
+            .unwrap()
+            .contains("for information"),
+        "{delivered}"
+    );
+}
+
+#[test]
+fn the_round_cap_lists_the_overflow_by_severity_then_verdict_then_number() {
+    let mut w = world(&format!("{REVIEWS}max_round_findings = 2\n"), false);
+    let part = started_review(&mut w, 2);
+    let me = reviewer(&w, &part);
+    let found = [(
+        "design",
+        json!([
+            finding_of("important", "a", 1),
+            finding_of("important", "b", 2),
+            finding_of("doubt", "c", 3),
+            finding_of("important", "d", 4)
+        ]),
+    )];
+    let (delivered, _) = run_round(
+        &mut w,
+        &me,
+        &found,
+        &["plausible", "confirmed", "confirmed", "confirmed"],
+    );
+    let rows = w
+        .store
+        .review_findings(w.store.reviews_of(w.task.id).unwrap()[0].id)
+        .unwrap();
+    let id = |summary: &str| rows.iter().find(|row| row.summary == summary).unwrap().id;
+    assert_eq!(
+        ids_of(&delivered["findings"]),
+        [id("b"), id("d")],
+        "the two confirmed important findings: {delivered}"
+    );
+    let listed: Vec<(i64, &str)> = delivered["listed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["finding"]["id"].as_i64().unwrap(),
+                entry["reason"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [(id("a"), "over-round-cap"), (id("c"), "over-round-cap")],
+        "the plausible important one, then the doubt"
+    );
+}
+
+#[test]
+fn a_finding_repeated_in_round_two_is_dropped() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let found = [(
+        "correctness",
+        json!([finding_of("important", "Off by one", 1)]),
+    )];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    let first = ids_of(&delivered["findings"]);
+    assert_eq!(first.len(), 1, "{delivered}");
+    let after = fix_all(&mut w, &me, &first, 1);
+    assert!(
+        after["next"].as_str().unwrap().contains("Round 2"),
+        "an important fix starts round 2: {after}"
+    );
+
+    let found = [
+        (
+            "correctness",
+            json!([
+                finding_of("important", "off-by-one!", 9),
+                finding_of("important", "a new defect", 5)
+            ]),
+        ),
+        (
+            "tests",
+            json!([finding_of("important", "untested branch", 1)]),
+        ),
+    ];
+    let (delivered, answers) = run_round(&mut w, &me, &found, &[]);
+    let dropped = answers
+        .iter()
+        .find(|text| text.contains("`correctness`"))
+        .unwrap();
+    assert!(
+        dropped.contains("1 dropped as repeats") && dropped.contains(&format!("[{}]", first[0])),
+        "{dropped}"
+    );
+    let rows = w
+        .store
+        .review_findings(w.store.reviews_of(w.task.id).unwrap()[0].id)
+        .unwrap();
+    let second: Vec<&str> = rows
+        .iter()
+        .filter(|row| row.round == 2)
+        .map(|row| row.summary.as_str())
+        .collect();
+    assert_eq!(
+        second,
+        ["a new defect", "untested branch"],
+        "the repeat is not recorded; the same line from another node is"
+    );
+    assert_eq!(ids_of(&delivered["findings"]).len(), 2, "{delivered}");
+    let logged = w
+        .events()
+        .into_iter()
+        .find(|event| {
+            event.kind == "review-node"
+                && event.data["node"] == "correctness"
+                && event.data["round"] == 2
+        })
+        .unwrap();
+    assert_eq!(logged.data["repeats"], json!([first[0]]), "{logged:?}");
+}
+
+#[test]
+fn a_fixed_doubt_alone_does_not_start_a_second_round() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let found = [(
+        "challenge-scope",
+        json!([finding_of("doubt", "smaller change would do", 1)]),
+    )];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    let ids = ids_of(&delivered["findings"]);
+    assert_eq!(ids.len(), 1, "a doubt meets the default floor: {delivered}");
+    let after = fix_all(&mut w, &me, &ids, 1);
+    assert!(
+        after["next"].as_str().unwrap().contains("review_finish"),
+        "{after}"
+    );
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(
+        (review.round, review.state),
+        (1, ReviewState::Rechecking),
+        "level 3 allows two rounds, but only an important fix earns the second"
+    );
+    let (is_error, text) = w.tool(me, "review_finish", &json!({}));
+    assert!(!is_error && text.contains("1 fixed"), "{text}");
 }

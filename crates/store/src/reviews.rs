@@ -6,6 +6,7 @@
 use headwork_core::review::{
     Instance, Level, NodeId, Progress, ReviewFacts, ReviewRefusal, ReviewTrigger,
 };
+use headwork_core::usage::short_count;
 use headwork_core::{Actor, FindingVerdict, NodeState, Resolution, ReviewState, Severity};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
@@ -103,6 +104,8 @@ pub struct FindingCounts {
     pub asked: u32,
     /// Fixed this round (a fix accepted or still awaiting its verdict).
     pub fixed: u32,
+    /// Of those, the important ones: only they make another round due.
+    pub fixed_important: u32,
 }
 
 impl FindingCounts {
@@ -138,13 +141,16 @@ pub struct ReviewSummary {
     pub nodes_running: u32,
     /// Findings so far, over every round up to the current one.
     pub findings: u32,
+    /// The fresh tokens the reviewer lead and its subagents spent: input, cache writes and output, cache reads left
+    /// out.
+    pub tokens: u64,
 }
 
 impl std::fmt::Display for ReviewSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "review {} {}, level {}, round {}: {}, {} node(s) over, {} running, {} finding(s)",
+            "review {} {}, level {}, round {}: {}, {} node(s) over, {} running, {} finding(s) · {} tokens",
             self.id,
             self.flow,
             self.level,
@@ -152,7 +158,8 @@ impl std::fmt::Display for ReviewSummary {
             self.state,
             self.nodes_over,
             self.nodes_running,
-            self.findings
+            self.findings,
+            short_count(self.tokens)
         )
     }
 }
@@ -373,7 +380,27 @@ fn counts_in(conn: &Connection, review: &ReviewRow) -> Result<FindingCounts, Sto
             "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
              AND resolution IN ('fixed', 'fix-accepted')",
         )?,
+        fixed_important: count(
+            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2              AND resolution IN ('fixed', 'fix-accepted') AND severity = 'important'",
+        )?,
     })
+}
+
+/// The fresh tokens (input, cache writes, output) of usage rows, per response and summed by day, whose task matches
+/// `which`, a condition on `task_id` with one parameter.
+fn fresh_tokens_in(conn: &Connection, which: &str, key: i64) -> Result<u64, StoreError> {
+    let sum: i64 = conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM(input + cache_write_5m + cache_write_1h + output), 0) FROM (
+                 SELECT task_id, input, cache_write_5m, cache_write_1h, output FROM usage
+                 UNION ALL
+                 SELECT task_id, input, cache_write_5m, cache_write_1h, output FROM usage_daily
+             ) WHERE {which}"
+        ),
+        params![key],
+        |row| row.get(0),
+    )?;
+    u64::try_from(sum).map_err(|_| StoreError::OutOfRange(sum))
 }
 
 fn node_state_in(
@@ -482,7 +509,39 @@ impl Store {
             findings: count(
                 "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round <= ?2",
             )?,
+            tokens: match review.part_id {
+                Some(part) => fresh_tokens_in(&self.conn, "task_id = ?1", part.0)?,
+                None => 0,
+            },
         }))
+    }
+
+    /// The fresh tokens (input, cache writes, output) every review of a task spent: its reviewer leads' and their
+    /// subagents'.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn review_tokens(&self, task: TaskId) -> Result<u64, StoreError> {
+        fresh_tokens_in(
+            &self.conn,
+            "task_id IN (SELECT part_id FROM reviews WHERE task_id = ?1 AND part_id IS NOT NULL)",
+            task.0,
+        )
+    }
+
+    /// How many findings every review of a task delivered so far: those with a resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn delivered_findings(&self, task: TaskId) -> Result<u32, StoreError> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM review_findings f JOIN reviews r ON r.id = f.review_id              WHERE r.task_id = ?1 AND f.resolution IS NOT NULL",
+            params![task.0],
+            |row| row.get(0),
+        )?;
+        u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
     }
 
     /// Every review of a task, oldest first.
@@ -659,8 +718,9 @@ impl Store {
         Ok(())
     }
 
-    /// Records a node instance's end (`done` or `failed`) with the findings it returned, and logs `review-node`.
-    /// Returns the new findings' ids, in order.
+    /// Records a node instance's end (`done` or `failed`) with the findings it returned, and logs `review-node` with
+    /// `repeats`, the earlier findings it raised again and that were not recorded. Returns the new findings' ids, in
+    /// order.
     ///
     /// # Errors
     ///
@@ -671,6 +731,7 @@ impl Store {
         instance: &Instance,
         state: NodeState,
         findings: &[NewFinding<'_>],
+        repeats: &[i64],
         actor: Actor,
     ) -> Result<Vec<i64>, StoreError> {
         let tx = self.conn.transaction()?;
@@ -727,7 +788,7 @@ impl Store {
             "review-node",
             &serde_json::json!({
                 "review": review.id, "round": review.round, "node": instance.node.as_str(), "item": instance.item,
-                "state": state.as_str(), "findings": ids,
+                "state": state.as_str(), "findings": ids, "repeats": repeats,
             }),
         )?;
         tx.commit()?;
