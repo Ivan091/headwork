@@ -351,6 +351,11 @@ fn session_start(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     }
     let (text, version) = rules_for(store, call)?;
     store.set_rules_seen(&call.session.id, call.session.task_id, version, text.len())?;
+    let text = if call.session.role == Role::Orchestrator {
+        super::digest::after_rules(store, call.env.config, &call.session.id, Actor::Hook, text)
+    } else {
+        text
+    };
     Ok(HookReply::context(HookEvent::SessionStart, &text))
 }
 
@@ -388,6 +393,12 @@ fn prompt(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     }
     if call.session.role == Role::Orchestrator {
         waiting.push_str(&update_notices(call.env.home));
+        waiting.push_str(&super::digest::with_first_prompt(
+            store,
+            call.env.config,
+            &call.session.id,
+            Actor::Hook,
+        ));
     } else if !text.starts_with("<cross-session-message") && !notification {
         waiting.push_str(&context_nudge(store, call)?);
     }

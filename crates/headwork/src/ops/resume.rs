@@ -518,6 +518,7 @@ fn write_summary(
         "a crash or a stop without a park"
     };
     let _ = writeln!(text, "# Resume after {cause}\n");
+    text.push_str(&super::digest::section(store, env.config));
     let _ = writeln!(text, "## Sessions\n");
     if tasks.is_empty() {
         text.push_str("none were parked or interrupted\n");

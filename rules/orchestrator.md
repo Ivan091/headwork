@@ -102,3 +102,4 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 - The to-do list lives in the store: `todo_list`, `todo_add`, `todo_done`, `todo_edit`. Never edit `todo.md` by hand; it
   is regenerated. Commit and push it in code-home after a change.
 - A task that comes from an item gets its id as `todo` in `spawn`.
+- Act on the "Needs you" digest shown at start and on `board`.

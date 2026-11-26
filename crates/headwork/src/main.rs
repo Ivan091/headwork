@@ -213,6 +213,12 @@ enum Command {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`; every live task when absent.
         name: Option<String>,
     },
+    /// Show what waits on the user: asks, to-do items due, migration notes, pull requests, standing findings.
+    Digest {
+        /// Print the digest as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a task's newest recap.
     Recap {
         /// A task, as `<project>-<slug>` or `<project>/<slug>`.
@@ -1040,6 +1046,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Job { .. }
         | Command::Retitle { .. }
         | Command::Recap { .. }
+        | Command::Digest { .. }
         | Command::ShadowReport { .. }
         | Command::Usage { .. }
         | Command::Clean { .. }
@@ -1092,7 +1099,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             writeln!(out, "job {} (`{}`) is over: {reason}", job.id, job.label)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Recap { name } => recap_command(&store, &name, out),
+        Command::Recap { name } => recap_command(&store, ctx.config, &name, out),
+        Command::Digest { json } => digest_command(&store, &ctx, json, out),
         Command::Retitle { name } => retitle_command(&store, &ctx, name.as_deref(), out),
         Command::ShadowReport { since, json } => {
             shadow_command(&store, &ctx, since.as_deref(), json, out)
@@ -1278,15 +1286,41 @@ fn retitle_command(
     })
 }
 
-fn recap_command(store: &Store, name: &str, out: &mut impl Write) -> Result<ExitCode> {
+fn digest_command(
+    store: &Store,
+    ctx: &Ctx<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let digest = headwork::ops::digest::digest(store, ctx.config)?;
+    if json {
+        json_out(out, &digest)?;
+    } else if digest.is_empty() {
+        writeln!(out, "nothing waits on you")?;
+    } else {
+        out.write_all(digest.render().as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn recap_command(
+    store: &Store,
+    config: &Config,
+    name: &str,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
     let task = store
         .find_task(name)?
         .with_context(|| format!("no task named `{name}`"))?;
     match store.latest_recap(task.id)? {
-        Some(recap) => writeln!(
+        Some(recap) => write!(
             out,
-            "{} ({}, {})\n\n{}",
-            task.name, recap.kind, recap.created_at, recap.body
+            "{}{} ({}, {})\n\n{}\n",
+            headwork::ops::digest::section(store, config),
+            task.name,
+            recap.kind,
+            recap.created_at,
+            recap.body
         )?,
         None => writeln!(out, "{} has no recap", task.name)?,
     }
@@ -1338,6 +1372,7 @@ fn board(
     if json {
         json_out(out, &board)?;
     } else {
+        out.write_all(headwork::ops::digest::section(store, ctx.config).as_bytes())?;
         out.write_all(
             render::board(
                 &board,
@@ -1362,6 +1397,7 @@ fn status_command(
     if json {
         json_out(out, &lines)?;
     } else {
+        out.write_all(headwork::ops::digest::section(store, ctx.config).as_bytes())?;
         out.write_all(render::statuses(&lines).as_bytes())?;
     }
     Ok(ExitCode::SUCCESS)

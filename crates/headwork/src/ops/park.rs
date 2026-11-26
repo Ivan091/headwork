@@ -615,6 +615,7 @@ fn finish_orchestrator(
         let body = recap::orchestrator_mechanical(store, &reason).unwrap_or_else(|error| {
             format!("the recap could not be built from the store: {error:#}")
         });
+        let body = format!("{}{body}", super::digest::section(store, env.config));
         store.add_park_recap(
             park,
             &NewRecap {

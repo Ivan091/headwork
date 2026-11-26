@@ -688,3 +688,31 @@ fn every_retired_key_is_still_a_project_field() {
         );
     }
 }
+
+#[test]
+fn digest_defaults_parse_and_a_bad_hour_is_refused() {
+    let base = "[machine]\nhost = \"wmux\"\n";
+    let config = Config::parse(base, "minimal").unwrap();
+    assert_eq!(config.digest.finding_hours, 3, "default finding hours");
+    assert!(config.digest.push, "pushed by default");
+    assert_eq!(config.digest.push_hour, 9, "default hour");
+    let set = format!("{base}\n[digest]\nfinding_hours = 6\npush = false\npush_hour = 18\n");
+    let config = Config::parse(&set, "set").unwrap();
+    assert_eq!(
+        (
+            config.digest.finding_hours,
+            config.digest.push,
+            config.digest.push_hour
+        ),
+        (6, false, 18),
+        "set values"
+    );
+    let bad = format!("{base}\n[digest]\npush_hour = 24\n");
+    assert!(
+        matches!(
+            Config::parse(&bad, "bad").unwrap_err(),
+            ConfigError::DigestHour(24)
+        ),
+        "an hour past 23"
+    );
+}

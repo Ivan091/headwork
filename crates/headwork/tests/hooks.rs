@@ -3820,3 +3820,71 @@ fn the_user_s_review_command_clears_the_plan() {
     );
     assert_eq!(w.store.task(w.task.id).unwrap().review_plan, None);
 }
+
+#[test]
+fn the_orchestrators_session_start_ends_with_the_digest_within_the_hook_limit() {
+    let mut w = world("", false);
+    w.store
+        .add_todo(
+            &digest_todo("Review the invented draft"),
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    w.store
+        .record_session(
+            &NewSession {
+                id: "orch".to_owned(),
+                task_id: None,
+                role: Role::Orchestrator,
+                rc_name: "orchestrator".to_owned(),
+                host: "wmux".to_owned(),
+                host_workspace: None,
+                host_surface: None,
+            },
+            Actor::User,
+        )
+        .unwrap();
+    let worker = context(&w.start());
+    assert!(!worker.contains("Needs you"), "a worker gets no digest");
+    w.session = "orch".to_owned();
+    let text = context(&w.start());
+    assert!(text.len() <= 10_000, "{}", text.len());
+    let prompt = w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "hi" }));
+    let first = prompt.stdout.unwrap_or_default();
+    let at_start = text.contains("Review the invented draft");
+    let at_prompt = first.contains("Review the invented draft");
+    assert!(
+        at_start != at_prompt,
+        "the digest comes with the start when it fits, else with the first prompt, never both: {at_start} {at_prompt}"
+    );
+}
+
+fn digest_todo(text: &str) -> headwork_core::todo::TodoDraft {
+    let mut draft = headwork_core::todo::parse(&format!("## demo\n\n- [ ] For you: {text}\n"))
+        .items
+        .remove(0);
+    draft.state = headwork_core::todo::TodoState::Open;
+    draft
+}
+
+#[test]
+fn the_orchestrators_board_and_status_tools_start_with_the_digest_and_a_workers_board_does_not() {
+    let mut w = world("", false);
+    w.store
+        .add_todo(&digest_todo("Sign the invented form"), Actor::Orchestrator)
+        .unwrap();
+    for tool in ["board", "status"] {
+        let (is_error, text) = w.tool(orchestrator_identity(), tool, &json!({}));
+        assert!(!is_error, "{text}");
+        assert!(
+            text.starts_with("Needs you\n- todo #1: Sign the invented form\n"),
+            "{tool}: {text}"
+        );
+    }
+    let worker = Identity {
+        session: Some(w.session.clone()),
+        role: Some(Role::Worker),
+    };
+    let (is_error, text) = w.tool(worker, "board", &json!({}));
+    assert!(!is_error && !text.contains("Needs you"), "{text}");
+}
