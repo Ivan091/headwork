@@ -272,3 +272,27 @@ fn a_line_split_off_an_item_is_joined_back_and_reported() {
         "reported at the line that was joined"
     );
 }
+
+type Configured<'a> = &'a [(&'a str, &'a str)];
+
+#[test]
+fn a_move_comes_from_the_last_configured_file_only_while_the_target_never_was_one() {
+    use headwork_core::backlog::move_source;
+    let old = ("S:/c/todo.md", "2026-11-26T10:00:00.000Z");
+    let older = ("S:/c/older.md", "2026-11-20T10:00:00.000Z");
+    let target = ("S:/c/backlog.md", "2026-11-26T11:00:00.000Z");
+    let cases: [(Configured<'_>, Option<&str>); 5] = [
+        (&[], None),
+        (&[old], Some("S:/c/todo.md")),
+        (&[older, old], Some("S:/c/todo.md")),
+        (&[old, target], None),
+        (&[target], None),
+    ];
+    for (configured, expected) in cases {
+        assert_eq!(
+            move_source("S:/c/backlog.md", configured),
+            expected,
+            "{configured:?}"
+        );
+    }
+}

@@ -95,6 +95,8 @@ pub struct BacklogFile {
     pub export_hash: Option<String>,
     /// When it was last exported, UTC.
     pub exported_at: Option<String>,
+    /// When it was last exported as the configured `[backlog] file`, UTC; an export to `--file` leaves it alone.
+    pub configured_at: Option<String>,
 }
 
 struct RawBacklogItem {
@@ -621,7 +623,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT imported_at, export_hash, exported_at FROM backlog_files WHERE path = ?1",
+                "SELECT imported_at, export_hash, exported_at, configured_at FROM backlog_files WHERE path = ?1",
                 params![path],
                 |row| {
                     Ok(BacklogFile {
@@ -629,6 +631,7 @@ impl Store {
                         imported_at: row.get(0)?,
                         export_hash: row.get(1)?,
                         exported_at: row.get(2)?,
+                        configured_at: row.get(3)?,
                     })
                 },
             )
@@ -642,7 +645,7 @@ impl Store {
     /// Returns a read error.
     pub fn backlog_files(&self) -> Result<Vec<BacklogFile>, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT path, imported_at, export_hash, exported_at FROM backlog_files
+            "SELECT path, imported_at, export_hash, exported_at, configured_at FROM backlog_files
              ORDER BY coalesce(exported_at, imported_at) DESC, path",
         )?;
         let rows = statement.query_map([], |row| {
@@ -651,12 +654,28 @@ impl Store {
                 imported_at: row.get(1)?,
                 export_hash: row.get(2)?,
                 exported_at: row.get(3)?,
+                configured_at: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Records an export of `hash` to `path` and logs `backlog-exported`.
+    /// Records that `path` now holds the pointer line whose hash is `hash`, so pointing `[backlog] file` back at it later
+    /// overwrites the pointer without taking it for a hand edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_backlog_pointer(&self, path: &str, hash: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE backlog_files SET export_hash = ?2 WHERE path = ?1",
+            params![path, hash],
+        )?;
+        Ok(())
+    }
+
+    /// Records an export of `hash` to `path` and logs `backlog-exported`; `configured` marks it an export of the
+    /// configured `[backlog] file` (`configured_at`).
     ///
     /// # Errors
     ///
@@ -665,15 +684,18 @@ impl Store {
         &mut self,
         path: &str,
         hash: &str,
+        configured: bool,
         actor: Actor,
     ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
             &format!(
-                "INSERT INTO backlog_files (path, export_hash, exported_at) VALUES (?1, ?2, {NOW})
-                 ON CONFLICT (path) DO UPDATE SET export_hash = excluded.export_hash, exported_at = excluded.exported_at"
+                "INSERT INTO backlog_files (path, export_hash, exported_at, configured_at)
+                 VALUES (?1, ?2, {NOW}, CASE WHEN ?3 THEN {NOW} END)
+                 ON CONFLICT (path) DO UPDATE SET export_hash = excluded.export_hash, exported_at = excluded.exported_at,
+                 configured_at = coalesce(excluded.configured_at, backlog_files.configured_at)"
             ),
-            params![path, hash],
+            params![path, hash, configured],
         )?;
         let data = serde_json::json!({ "path": path, "hash": hash });
         insert_event(&tx, actor, None, None, EVENT_BACKLOG_EXPORTED, &data)?;

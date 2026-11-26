@@ -270,7 +270,7 @@ fn the_export_record_keeps_the_last_hash() {
     let (mut store, _) = store();
     assert!(store.backlog_file("p").unwrap().is_none());
     store
-        .record_backlog_export("p", "abc", Actor::Tick)
+        .record_backlog_export("p", "abc", true, Actor::Tick)
         .unwrap();
     let file = store.backlog_file("p").unwrap().unwrap();
     assert_eq!(

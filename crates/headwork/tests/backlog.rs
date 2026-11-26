@@ -749,3 +749,93 @@ fn with_leave_pointer_the_old_file_keeps_one_pointer_line_and_its_text_is_backed
     );
     assert_eq!(m.backups(), kept + 1);
 }
+
+#[test]
+fn an_export_to_another_file_by_name_is_never_a_move() {
+    let m = Machine::new(true);
+    m.ok(&["backlog", "add", "headwork", "an item"]);
+    let preview = m.dir.path().join("preview.md");
+    let written = m.ok(&["backlog", "export", "--file", preview.to_str().unwrap()]);
+    assert!(!written.contains("moved"), "{written}");
+    let configured = std::fs::read_to_string(m.file()).unwrap();
+    m.ok(&["backlog", "add", "headwork", "a second item"]);
+    let after = std::fs::read_to_string(m.file()).unwrap();
+    assert!(after.contains("a second item"), "{after}");
+    assert_ne!(after, configured, "the configured file follows the store");
+    assert!(
+        !m.ok(&["log"]).contains("backlog-moved"),
+        "no move is logged"
+    );
+}
+
+#[test]
+fn a_pointer_that_cannot_be_written_stops_the_move_and_the_next_export_retries_it() {
+    let (m, old) = moved_machine(true);
+    let before = std::fs::read_to_string(&old).unwrap();
+    let blocker = m.home().join("backlog-backups");
+    std::fs::remove_dir_all(&blocker).unwrap();
+    std::fs::write(&blocker, "not a folder").unwrap();
+    let failed = m.run(&["backlog", "export"]);
+    assert!(!failed.status.success(), "the copy fails");
+    assert_eq!(
+        std::fs::read_to_string(&old).unwrap(),
+        before,
+        "the old file is as it was"
+    );
+    assert!(!m.file().exists(), "the new file waits for the move");
+    std::fs::remove_file(&blocker).unwrap();
+    let moved = m.ok(&["backlog", "export"]);
+    assert!(moved.contains("which now points here"), "{moved}");
+    assert_eq!(std::fs::read_to_string(&old).unwrap().lines().count(), 1);
+    assert!(
+        std::fs::read_to_string(m.file()).unwrap().contains("##"),
+        "the new file holds the list"
+    );
+}
+
+#[test]
+fn a_copied_new_file_is_imported_first_and_then_moved_with_the_pointer() {
+    let (m, old) = moved_machine(true);
+    std::fs::copy(&old, m.file()).unwrap();
+    let refused = m.run(&["backlog", "export"]);
+    assert!(
+        !refused.status.success(),
+        "a copy never imported is refused"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stdout).contains("never imported"),
+        "{}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    m.ok(&["backlog", "import"]);
+    let moved = m.ok(&["backlog", "export"]);
+    assert!(moved.contains("which now points here"), "{moved}");
+    assert_eq!(std::fs::read_to_string(&old).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn pointing_back_at_the_old_file_overwrites_the_pointer_without_a_copy() {
+    let (m, old) = moved_machine(true);
+    m.ok(&["backlog", "export"]);
+    let kept = m.backups();
+    let config = m.home().join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[machine]\nhost = \"wmux\"\nmax_workers = 4\n\n[backlog]\nfile = \"{}\"\n",
+            forward(&old)
+        ),
+    )
+    .unwrap();
+    let back = m.ok(&["backlog", "export"]);
+    assert!(!back.contains("a copy is in"), "{back}");
+    assert_eq!(
+        m.backups(),
+        kept,
+        "the pointer is not taken for a hand edit"
+    );
+    assert!(
+        std::fs::read_to_string(&old).unwrap().contains("##"),
+        "the list is back"
+    );
+}

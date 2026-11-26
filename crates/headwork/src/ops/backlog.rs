@@ -412,7 +412,12 @@ fn export_locked(
     let text = backlog::render(&store.backlog_items(&BacklogFilter::default())?);
     let new_hash = hash(&text);
     let record = store.backlog_file(&key)?;
-    let first_use = record.is_none();
+    let configured = file.is_none();
+    let source = if configured {
+        move_source(store, &key)?
+    } else {
+        None
+    };
     let file_exists = path.exists();
     let on_disk_hash = if file_exists {
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -432,9 +437,24 @@ fn export_locked(
         new_hash: &new_hash,
     };
     match backlog::plan_export(&facts) {
-        ExportPlan::Unchanged => Ok(Export::Unchanged),
+        ExportPlan::Unchanged => {
+            let Some(from) = source else {
+                return Ok(Export::Unchanged);
+            };
+            let moved = point_away(home, config, from, &key)?;
+            store.record_backlog_export(&key, &new_hash, configured, actor)?;
+            finish_move(store, &moved, &key, actor)?;
+            Ok(Export::Written {
+                path: key,
+                backup: None,
+                moved: Some(moved),
+            })
+        }
         ExportPlan::NotImported => Ok(Export::NotImported { path: key }),
         ExportPlan::Write { back_up } => {
+            let moved = source
+                .map(|from| point_away(home, config, from, &key))
+                .transpose()?;
             if let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
@@ -460,12 +480,10 @@ fn export_locked(
                 None
             };
             staged.commit()?;
-            store.record_backlog_export(&key, &new_hash, actor)?;
-            let moved = if first_use {
-                move_away(store, home, config, &key, actor)?
-            } else {
-                None
-            };
+            store.record_backlog_export(&key, &new_hash, configured, actor)?;
+            if let Some(moved) = &moved {
+                finish_move(store, moved, &key, actor)?;
+            }
             Ok(Export::Written {
                 path: key,
                 backup,
@@ -475,29 +493,29 @@ fn export_locked(
     }
 }
 
-/// After the first export to `key`: the file used before it (exported, else imported), left in place, and given the
-/// pointer line when `[backlog] leave_pointer` is on and it exists, after a copy of its text goes to the backup folder.
-/// Logs `backlog-moved`; nothing when no other file was used.
-fn move_away(
-    store: &Store,
-    home: &Home,
-    config: &Config,
-    key: &str,
-    actor: Actor,
-) -> Result<Option<Moved>> {
-    let Some(old) = store.backlog_files()?.into_iter().find(|file| {
-        file.path != key && (file.imported_at.is_some() || file.export_hash.is_some())
-    }) else {
-        return Ok(None);
-    };
-    let old_path = PathBuf::from(&old.path);
-    let line = backlog::pointer_line(key);
+/// The file an export of the configured file to `key` moves away from ([`backlog::move_source`]).
+fn move_source(store: &Store, key: &str) -> Result<Option<String>> {
+    let files = store.backlog_files()?;
+    let configured: Vec<(&str, &str)> = files
+        .iter()
+        .filter_map(|file| Some((file.path.as_str(), file.configured_at.as_deref()?)))
+        .collect();
+    Ok(backlog::move_source(key, &configured).map(str::to_owned))
+}
+
+/// The first half of a move to `key`, done before the new file is written or recorded: the file used before is left in
+/// place, and given the pointer line when `[backlog] leave_pointer` is on and it exists, after a copy of its text goes to
+/// the backup folder. A file that already holds the pointer is left as it is, so a move that failed later is retried
+/// without a second copy.
+fn point_away(home: &Home, config: &Config, from: String, key: &str) -> Result<Moved> {
+    let old_path = PathBuf::from(&from);
     let mut moved = Moved {
-        from: old.path,
+        from,
         pointer: false,
         backup: None,
     };
     if config.backlog.leave_pointer && old_path.is_file() {
+        let line = backlog::pointer_line(key);
         let bytes =
             std::fs::read(&old_path).with_context(|| format!("reading {}", old_path.display()))?;
         let text = String::from_utf8_lossy(&bytes);
@@ -509,6 +527,15 @@ fn move_away(
         }
         moved.pointer = true;
     }
+    Ok(moved)
+}
+
+/// The second half of a move, once the new file is recorded: the pointer's hash becomes the old file's last export, so
+/// pointing `[backlog] file` back at it overwrites the pointer without a copy, and `backlog-moved` is logged.
+fn finish_move(store: &Store, moved: &Moved, key: &str, actor: Actor) -> Result<()> {
+    if moved.pointer {
+        store.record_backlog_pointer(&moved.from, &hash(&backlog::pointer_line(key)))?;
+    }
     store.append_event(
         actor,
         None,
@@ -516,7 +543,7 @@ fn move_away(
         EVENT_BACKLOG_MOVED,
         &serde_json::json!({ "from": moved.from, "to": key, "pointer": moved.pointer, "backup": moved.backup }),
     )?;
-    Ok(Some(moved))
+    Ok(())
 }
 
 /// The export that follows a change: a failure comes back as [`Export::Failed`], never as an error, because the change
