@@ -108,6 +108,8 @@ wrapping a command itself; token limits are warning only. This entry records how
 - `claim_for` treats a pid that holds a slot or has a live waiter file as gated already (its gate takes a slot in
   turn), takes a free slot only when the live waiters do not need it (`may_take`), and gives a `cpu` slot back to live
   legacy slots as `try_take` does; otherwise `job_register` warns that the job runs over the gate.
+- `HEADWORK_GATE_HELD` gains the class only when the gate holds a slot or a bypass (CI, off, nested) applies; a command
+  run without a slot because the slot root is unusable leaves nested commands to gate themselves.
 
 ## Not done here
 

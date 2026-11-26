@@ -263,6 +263,25 @@ fn nested_ci_and_off_run_directly() {
 }
 
 #[test]
+fn a_command_run_without_a_slot_is_not_marked_as_holding_one() {
+    let gate = Gate::new(None);
+    let file = gate.slots.path().join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let output = gate
+        .command(&["gate", "run", "cpu", "--", "bash", "-c", HOLDS_CPU])
+        .env("HEADWORK_GATE_DIR", file.join("below"))
+        .output()
+        .unwrap();
+    let err = text(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "nested commands still gate: {err}"
+    );
+    assert!(err.contains("running without a slot"), "{err}");
+}
+
+#[test]
 fn events_go_to_an_existing_store() {
     let gate = Gate::new(Some(MACHINE));
     let board = gate.run(&["board"]);

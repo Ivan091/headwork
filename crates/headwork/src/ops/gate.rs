@@ -89,8 +89,9 @@ pub fn waiting_tasks(home: &Home, gates: &GatesConfig) -> Vec<(i64, GateClass)> 
 ///
 /// Waiting prints `headwork: waiting for cpu (...)` to `err` at once and every [`REPORT_EVERY`]. In CI, with
 /// `HEADWORK_GATE_OFF=1`, or when the process tree already holds `class`, the command runs directly. The command gets
-/// `HEADWORK_GATE_HELD` with `class` added. An interrupt while waiting gives up with [`INTERRUPTED`]; once the command
-/// runs, an interrupt is the command's to handle.
+/// `HEADWORK_GATE_HELD` with `class` added when it holds a slot or runs directly for one of those reasons, never when
+/// it runs without a slot because the slot folder could not be used. An interrupt while waiting gives up with
+/// [`INTERRUPTED`]; once the command runs, an interrupt is the command's to handle.
 ///
 /// # Errors
 ///
@@ -105,8 +106,9 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
     let mut command = Command::new(program_path(program, config.as_ref()));
     command.args(rest);
     let env = gate::env_from_process();
-    command.env(gate::HELD_VAR, env.held_with(class));
+    let held_var = env.held_with(class);
     if env.bypass(class).is_some() {
+        command.env(gate::HELD_VAR, &held_var);
         return run_child(&mut command, err);
     }
     let text = command_text(argv);
@@ -159,6 +161,7 @@ pub fn run(home: &Home, class: GateClass, argv: &[OsString], err: &mut impl Writ
         }
     };
     if let Some(held) = &held {
+        command.env(gate::HELD_VAR, &held_var);
         events.record(
             EVENT_GATE_ACQUIRED,
             serde_json::json!({ "waited_s": waiting.elapsed().as_secs(), "slot": held.slot() }),
