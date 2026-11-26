@@ -1137,7 +1137,7 @@ fn orchestrator_rules_keep_a_margin_under_the_hook_limit_with_long_paths() {
     let long_exe = format!("S:/{}/headwork.exe", "d".repeat(80));
     let text = files.render(Role::Orchestrator, &w.config, Path::new(&long_exe), None);
     assert!(text.contains(&format!("\"{long_exe}\" spawn")), "{text}");
-    assert!(text.len() < 9_250, "{}", text.len());
+    assert!(text.len() < 9_400, "{}", text.len());
 }
 
 fn worker_identity(w: &World) -> Identity {

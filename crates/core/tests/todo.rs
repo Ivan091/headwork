@@ -218,6 +218,14 @@ fn draft() -> impl Strategy<Value = TodoDraft> {
 proptest! {
     #[test]
     fn render_then_parse_keeps_text_state_owner_and_dates(drafts in proptest::collection::vec(draft(), 1..8)) {
+        let drafts: Vec<TodoDraft> = drafts
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut draft)| {
+                draft.text = format!("{} n{index}", draft.text);
+                draft
+            })
+            .collect();
         let written = render(&rows(&drafts));
         let again = parse(&written);
         prop_assert!(again.unparsed.is_empty(), "{:?}\n{}", again.unparsed, written);
