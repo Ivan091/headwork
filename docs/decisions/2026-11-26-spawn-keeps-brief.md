@@ -8,4 +8,5 @@ accepted). The error names the file and offers a new slug, or the file's own pat
 The orchestrator's `answer` tool takes `ask` as optional: omitted, it answers the one ask the tick raised that waits
 (`Store::waiting_tick_asks`, `answer::only_waiting`); none or several is refused, listing the ids.
 
-The allow-ask split into several asks (audit item 13) is left out: it is not tiny and needs its own change.
+The allow-ask split into several asks (audit item 13) is left out: it is not tiny and needs its own change. It came
+later in `2026-11-26-spawn-go-negation-parts-split.md`.
