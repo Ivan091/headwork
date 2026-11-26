@@ -381,7 +381,8 @@ fn counts_in(conn: &Connection, review: &ReviewRow) -> Result<FindingCounts, Sto
              AND resolution IN ('fixed', 'fix-accepted')",
         )?,
         fixed_important: count(
-            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2              AND resolution IN ('fixed', 'fix-accepted') AND severity = 'important'",
+            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
+             AND resolution IN ('fixed', 'fix-accepted') AND severity = 'important'",
         )?,
     })
 }
@@ -537,7 +538,8 @@ impl Store {
     /// Returns a read error.
     pub fn delivered_findings(&self, task: TaskId) -> Result<u32, StoreError> {
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM review_findings f JOIN reviews r ON r.id = f.review_id              WHERE r.task_id = ?1 AND f.resolution IS NOT NULL",
+            "SELECT COUNT(*) FROM review_findings f JOIN reviews r ON r.id = f.review_id \
+             WHERE r.task_id = ?1 AND f.resolution IS NOT NULL",
             params![task.0],
             |row| row.get(0),
         )?;
