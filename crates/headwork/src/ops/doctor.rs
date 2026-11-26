@@ -203,6 +203,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         checks.push(deprecated_keys_check(d));
         if let Ok(config) = &config {
             checks.push(unenforced_keys_check(config));
+            checks.push(idle_slots_check(config));
         }
     }
     let store = store_check(d, &mut checks);
@@ -389,6 +390,36 @@ fn trust_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check 
         )
     };
     Check::ok("trust", detail)
+}
+
+fn idle_slots_check(config: &Config) -> Check {
+    let merged = config.watch.idle_free_merged_min;
+    let review = config.watch.idle_free_review_min;
+    if merged > 0 && review > 0 {
+        return Check::ok(
+            "idle-slots",
+            format!(
+                "idle sessions free their slot after {merged} min in merged, {review} min in review"
+            ),
+        );
+    }
+    let off: Vec<&str> = [
+        (merged, "merged", "idle_free_merged_min"),
+        (review, "review", "idle_free_review_min"),
+    ]
+    .into_iter()
+    .filter(|(minutes, _, _)| *minutes == 0)
+    .map(|(_, _, key)| key)
+    .collect();
+    Check::warn(
+        "idle-slots",
+        format!(
+            "{} is 0: such a session never frees its slot and gets only the stuck finding after stuck_after_min ({} min)",
+            off.join(" and "),
+            config.watch.stuck_after_min
+        ),
+        "set [watch] idle_free_merged_min / idle_free_review_min above 0",
+    )
 }
 
 fn unenforced_keys_check(config: &Config) -> Check {

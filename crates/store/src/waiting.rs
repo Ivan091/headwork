@@ -14,6 +14,9 @@ use crate::{NOW, Store, StoreError};
 /// The event that records a session's waiting mark changing.
 pub const EVENT_SESSION_WAITING: &str = "session-waiting";
 
+/// The event that records a session's idle mark changing.
+pub const EVENT_SESSION_IDLE: &str = "session-idle";
+
 /// The ask kinds the user answers in the session's own dialog, which holds the session still until answered.
 pub(crate) const DIALOG_ASK_KINDS: &str = "('question', 'review', 'permission')";
 
@@ -31,6 +34,19 @@ pub struct WaitingCandidate {
 }
 
 impl Store {
+    /// Whether the session carries the idle mark.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn session_idle_marked(&self, session: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE((SELECT idle_since IS NOT NULL FROM sessions WHERE id = ?1), 0)",
+            params![session],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Whether an ask of the session waits on the user in a dialog.
     ///
     /// # Errors
@@ -84,6 +100,51 @@ impl Store {
                 Some(session),
                 EVENT_SESSION_WAITING,
                 &serde_json::json!({ "waiting": waiting }),
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
+    /// Sets or clears the session's idle mark (it sits idle at its prompt in `in_review` or `merged` and gives up its
+    /// slot), logging `session-idle` when it changes. Returns whether it changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a write error.
+    pub fn set_session_idle(
+        &mut self,
+        session: &str,
+        idle: bool,
+        actor: Actor,
+    ) -> Result<bool, StoreError> {
+        let tx = self.conn.transaction()?;
+        let changed = if idle {
+            tx.execute(
+                &format!(
+                    "UPDATE sessions SET idle_since = {NOW} WHERE id = ?1 AND idle_since IS NULL"
+                ),
+                params![session],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE sessions SET idle_since = NULL WHERE id = ?1 AND idle_since IS NOT NULL",
+                params![session],
+            )?
+        };
+        if changed > 0 {
+            let task: Option<i64> = tx.query_row(
+                "SELECT task_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )?;
+            insert_event(
+                &tx,
+                actor,
+                task.map(TaskId),
+                Some(session),
+                EVENT_SESSION_IDLE,
+                &serde_json::json!({ "idle": idle }),
             )?;
         }
         tx.commit()?;

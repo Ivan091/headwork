@@ -92,6 +92,8 @@ const fn roomy_limits() -> Limits {
         growth: GIB,
         file: 20 * GIB,
         stuck_after: 3600,
+        idle_free_merged: Some(3600),
+        idle_free_review: Some(3600),
         spawn_timeout: 120,
         ask_remind: 7200,
         merged_grace: 600,
@@ -1242,6 +1244,313 @@ fn a_session_with_an_unchanging_screen_is_stuck_on_the_second_look() {
         TaskState::Interrupted,
         "and the task is interrupted"
     );
+}
+
+fn idle_marked(w: &World, session: &str) -> bool {
+    w.store.session_idle_marked(session).unwrap()
+}
+
+fn live_and_waiting(w: &World) -> (u32, u32) {
+    let board = w.store.board(false).unwrap();
+    (board.live_workers, board.waiting_workers)
+}
+
+#[test]
+fn a_merged_session_idle_at_its_prompt_frees_its_slot_for_a_queued_task() {
+    let mut w = world_with(false, 1);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    let queued = spawn_task(&mut w, "snow");
+    assert_eq!(state(&w, &queued), TaskState::Queued, "the project is full");
+    assert_eq!(
+        live_and_waiting(&w),
+        (1, 0),
+        "working as far as the slots go"
+    );
+    let first = run_tick(&mut w);
+    assert!(
+        !rules(&first).contains(&(FindingId::IdleSlot, Status::Standing)),
+        "first look only samples"
+    );
+    assert!(!idle_marked(&w, &session), "not marked yet");
+    let second = run_tick(&mut w);
+    assert!(
+        rules(&second).contains(&(FindingId::IdleSlot, Status::Standing)),
+        "{:?}",
+        second.lines
+    );
+    assert!(idle_marked(&w, &session), "marked idle");
+    assert!(notified(&w, "worker slot is freed"), "{:?}", w.host.calls());
+    assert_ne!(
+        state(&w, &queued),
+        TaskState::Queued,
+        "the queued task took the slot"
+    );
+    assert_eq!(live_and_waiting(&w), (1, 1), "one waiting, one working");
+    assert_eq!(state(&w, &task), TaskState::Merged, "nothing was closed");
+    let findings = count(&w, "finding");
+    run_tick(&mut w);
+    assert_eq!(count(&w, "session-idle"), 1, "marked once");
+    assert_eq!(count(&w, "finding"), findings, "reported once");
+}
+
+#[test]
+fn a_session_that_runs_a_job_or_a_shell_keeps_its_slot() {
+    let mut w = world_with(false, 1);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    let mut child = sleeper();
+    let argv = vec!["train".to_owned()];
+    w.store
+        .register_job(
+            &NewJob {
+                task_id: Some(task.id),
+                session_id: Some(&session),
+                project: "demo",
+                label: "training",
+                park_policy: ParkPolicy::Finish,
+                argv: &argv,
+                cwd: ".",
+                pid: Some(child.id()),
+                identity: headwork_adapters::proc::identify(child.id()).as_ref(),
+                checkpoint_path: None,
+                heavy: false,
+                restart: false,
+                log_path: "train.log",
+            },
+            Actor::Worker,
+        )
+        .unwrap();
+    let mut freed = false;
+    for _ in 0..3 {
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
+    }
+    assert!(!idle_marked(&w, &session), "a job runs");
+    assert!(!freed, "no idle-slot finding");
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let launcher = sleeper();
+    let launcher_pid = launcher.id();
+    w.children.push(launcher);
+    w.store
+        .session_launched(
+            &session,
+            launcher_pid,
+            headwork::ops::waiting::FAKE_CLAUDE,
+            "job",
+        )
+        .unwrap();
+    w.slots.set_shell(true);
+    for _ in 0..3 {
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
+    }
+    assert!(!idle_marked(&w, &session), "a shell runs");
+    assert!(!freed, "no idle-slot finding either");
+}
+
+#[test]
+fn a_review_session_waits_for_its_own_idle_limit() {
+    let mut w = world_with(false, 1);
+    let (task, session) = working(&mut w, "sand");
+    w.git.set("sand", pr(PrState::Open));
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::InReview, "in review");
+    w.limits.idle_free_merged = Some(0);
+    w.limits.idle_free_review = Some(3600);
+    for _ in 0..3 {
+        run_tick(&mut w);
+    }
+    assert!(!idle_marked(&w, &session), "the review limit is longer");
+    w.limits.idle_free_review = Some(0);
+    for _ in 0..2 {
+        run_tick(&mut w);
+    }
+    assert!(
+        idle_marked(&w, &session),
+        "marked once its own limit passed"
+    );
+}
+
+fn idle_merged(w: &mut World, slug: &str) -> (Task, String) {
+    let task = merged(w, slug);
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    run_tick(w);
+    run_tick(w);
+    assert!(idle_marked(w, &session), "marked idle");
+    (task, session)
+}
+
+#[test]
+fn a_state_whose_idle_limit_is_off_gets_the_ordinary_stuck_finding() {
+    for review in [false, true] {
+        let mut w = world();
+        w.limits.stuck_after = 0;
+        w.limits.idle_free_merged = None;
+        w.limits.idle_free_review = None;
+        let session = if review {
+            let (_, session) = working(&mut w, "sand");
+            w.git.set("sand", pr(PrState::Open));
+            run_tick(&mut w);
+            session
+        } else {
+            let task = merged(&mut w, "sand");
+            w.store.session_of(task.id).unwrap().unwrap().id
+        };
+        run_tick(&mut w);
+        let second = run_tick(&mut w);
+        assert!(
+            rules(&second).contains(&(FindingId::Stuck, Status::Standing)),
+            "review {review}: {:?}",
+            second.lines
+        );
+        assert!(!idle_marked(&w, &session), "review {review}: no mark");
+    }
+}
+
+#[test]
+fn a_merged_session_not_yet_past_its_limit_stays_unmarked() {
+    let mut w = world();
+    w.limits.stuck_after = 0;
+    w.limits.idle_free_merged = Some(3600);
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    for _ in 0..3 {
+        run_tick(&mut w);
+    }
+    assert!(!idle_marked(&w, &session), "not past its limit");
+}
+
+#[test]
+fn a_changed_screen_unmarks_an_idle_session() {
+    let mut w = world();
+    let (task, session) = idle_merged(&mut w, "sand");
+    w.host
+        .set_screen(&trust_surface(&w, &task), "something new");
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "the screen moved");
+}
+
+fn set_tool_in_flight(w: &World, session: &str) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        "UPDATE sessions SET tool_in_flight = 'Bash' WHERE id = ?1",
+        [session],
+    )
+    .unwrap();
+}
+
+#[test]
+fn fresh_activity_unmarks_an_idle_session() {
+    let mut w = world();
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(60);
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        "UPDATE sessions SET last_event_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours') WHERE id = ?1",
+        [&session],
+    )
+    .unwrap();
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert!(idle_marked(&w, &session), "marked idle");
+    run_tick(&mut w);
+    assert!(
+        idle_marked(&w, &session),
+        "control: still marked without activity"
+    );
+    w.store.touch_session(&session).unwrap();
+    run_tick(&mut w);
+    assert!(
+        !idle_marked(&w, &session),
+        "a hook event reset its idle age"
+    );
+}
+
+#[test]
+fn a_tool_in_flight_unmarks_an_idle_session() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    set_tool_in_flight(&w, &session);
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "a tool is in flight");
+}
+
+#[test]
+fn a_tool_in_flight_keeps_a_session_past_its_limit_unmarked() {
+    let mut w = world();
+    let task = merged(&mut w, "sand");
+    let session = w.store.session_of(task.id).unwrap().unwrap().id;
+    w.limits.idle_free_merged = Some(0);
+    set_tool_in_flight(&w, &session);
+    let mut freed = false;
+    for _ in 0..2 {
+        freed |= rules(&run_tick(&mut w)).contains(&(FindingId::IdleSlot, Status::Standing));
+    }
+    assert!(!idle_marked(&w, &session), "a tool runs");
+    assert!(!freed, "no idle-slot finding");
+}
+
+#[test]
+fn a_session_whose_limit_turns_off_is_unmarked() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    w.limits.idle_free_merged = None;
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "no limit, no mark");
+}
+
+#[test]
+fn an_unreadable_screen_unmarks_an_idle_session() {
+    let mut w = world();
+    let (task, session) = idle_merged(&mut w, "sand");
+    w.host.fail_screen(&trust_surface(&w, &task));
+    run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "the slot is taken back");
+}
+
+#[test]
+fn an_idle_session_that_becomes_busy_is_unmarked_and_reported_stuck() {
+    let mut w = world();
+    let (_, session) = idle_merged(&mut w, "sand");
+    let launcher = sleeper();
+    let pid = launcher.id();
+    w.children.push(launcher);
+    w.store
+        .session_launched(&session, pid, headwork::ops::waiting::FAKE_CLAUDE, "job")
+        .unwrap();
+    w.slots.set_shell(true);
+    let report = run_tick(&mut w);
+    assert!(!idle_marked(&w, &session), "busy again");
+    assert!(
+        rules(&report).contains(&(FindingId::Stuck, Status::Standing)),
+        "{:?}",
+        report.lines
+    );
+}
+
+#[test]
+fn a_closing_task_with_a_live_idle_session_is_reported_stuck() {
+    let mut w = world();
+    w.limits.stuck_after = 0;
+    let (task, session) = working(&mut w, "sand");
+    w.store
+        .transition(task.id, &Trigger::ForceClose, Actor::Orchestrator)
+        .unwrap();
+    assert_eq!(state(&w, &task), TaskState::Closing, "closing");
+    run_tick(&mut w);
+    let second = run_tick(&mut w);
+    assert!(
+        rules(&second).contains(&(FindingId::Stuck, Status::Standing)),
+        "{:?}",
+        second.lines
+    );
+    assert!(notified(&w, "stuck in closing"), "{:?}", w.host.calls());
+    assert!(!idle_marked(&w, &session), "a closing session is not freed");
 }
 
 #[test]

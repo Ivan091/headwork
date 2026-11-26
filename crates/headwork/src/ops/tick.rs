@@ -1186,65 +1186,144 @@ impl<'b> Run<'_, 'b> {
         if !self.report.host_up {
             return Ok(());
         }
-        for id in self.store.tasks_in(TaskState::Working)? {
-            let Some(session) = self.store.session_of(id)? else {
-                continue;
-            };
-            if session.state != SessionState::Live {
-                continue;
-            }
-            let clock = self.store.session_clock(&session.id)?;
-            let quiet = watch::stuck(clock.idle_age_s, clock.tool_in_flight, None, &self.limits);
-            let Some(surface) = session
-                .host_surface
-                .as_deref()
-                .filter(|_| quiet != Stuck::No)
-            else {
-                self.store.clear_screen_sample(&session.id)?;
-                continue;
-            };
-            let screen = match self
-                .env()
-                .host
-                .read_screen(&SurfaceId(surface.to_owned()), 60)
-            {
-                Ok(screen) => screen,
-                Err(error) => {
-                    self.error(
-                        &format!("stuck-screen:{}", session.id),
-                        Some(id),
-                        &error.to_string(),
-                    )?;
+        let snapshot = std::cell::OnceCell::new();
+        let slots = self.t.slots;
+        let procs = || snapshot.get_or_init(|| slots.processes()).clone();
+        for state in [
+            TaskState::Working,
+            TaskState::InReview,
+            TaskState::Merged,
+            TaskState::Closing,
+        ] {
+            let idle_free = watch::idle_free_after(state, &self.limits);
+            let after = idle_free.unwrap_or(self.limits.stuck_after);
+            for id in self.store.tasks_in(state)? {
+                let Some(session) = self.store.session_of(id)? else {
+                    continue;
+                };
+                if session.state != SessionState::Live {
                     continue;
                 }
-            };
-            let hash = format!("{:016x}", fnv1a(screen.as_bytes()));
-            let unchanged = self
-                .store
-                .screen_sample(&session.id)?
-                .map(|before| before == hash);
-            self.store.set_screen_sample(&session.id, &hash)?;
-            let verdict = watch::stuck(
-                clock.idle_age_s,
-                clock.tool_in_flight,
-                unchanged,
-                &self.limits,
-            );
-            if verdict == Stuck::Yes {
-                let name = self.name(id)?;
-                self.standing(
-                    &format!("stuck:{}", session.id),
-                    FindingId::Stuck,
-                    Some(id),
-                    Status::Standing,
-                    &serde_json::json!({ "idle_s": clock.idle_age_s }),
-                    Some(&format!(
-                        "{name} looks stuck: no activity and an unchanged screen"
-                    )),
+                if idle_free.is_none() {
+                    let actor = self.actor();
+                    self.store.set_session_idle(&session.id, false, actor)?;
+                }
+                let clock = self.store.session_clock(&session.id)?;
+                let quiet = watch::stuck_after(clock.idle_age_s, clock.tool_in_flight, None, after);
+                let Some(surface) = session
+                    .host_surface
+                    .as_deref()
+                    .filter(|_| quiet != Stuck::No)
+                else {
+                    self.store.clear_screen_sample(&session.id)?;
+                    if idle_free.is_some() {
+                        let actor = self.actor();
+                        self.store.set_session_idle(&session.id, false, actor)?;
+                    }
+                    continue;
+                };
+                let screen = match self
+                    .env()
+                    .host
+                    .read_screen(&SurfaceId(surface.to_owned()), 60)
+                {
+                    Ok(screen) => screen,
+                    Err(error) => {
+                        let actor = self.actor();
+                        self.store.set_session_idle(&session.id, false, actor)?;
+                        self.error(
+                            &format!("stuck-screen:{}", session.id),
+                            Some(id),
+                            &error.to_string(),
+                        )?;
+                        continue;
+                    }
+                };
+                let hash = format!("{:016x}", fnv1a(screen.as_bytes()));
+                let unchanged = self
+                    .store
+                    .screen_sample(&session.id)?
+                    .map(|before| before == hash);
+                self.store.set_screen_sample(&session.id, &hash)?;
+                let verdict =
+                    watch::stuck_after(clock.idle_age_s, clock.tool_in_flight, unchanged, after);
+                if verdict != Stuck::Yes {
+                    if unchanged == Some(false) && idle_free.is_some() {
+                        let actor = self.actor();
+                        self.store.set_session_idle(&session.id, false, actor)?;
+                    }
+                    continue;
+                }
+                if idle_free.is_none() {
+                    self.report_stuck(state, id, &session, clock.idle_age_s)?;
+                    continue;
+                }
+                let busy = super::waiting::busy_facts(
+                    self.store,
+                    id,
+                    &session.id,
+                    session.claude_pid,
+                    &procs,
                 )?;
+                if busy.runs_nothing() {
+                    self.free_idle_slot(state, id, &session.id, clock.idle_age_s.unwrap_or(after))?;
+                } else {
+                    let actor = self.actor();
+                    self.store.set_session_idle(&session.id, false, actor)?;
+                    self.report_stuck(state, id, &session, clock.idle_age_s)?;
+                }
             }
         }
+        self.sweep(FindingId::IdleSlot)?;
         self.sweep(FindingId::Stuck)
+    }
+
+    fn report_stuck(
+        &mut self,
+        state: TaskState,
+        id: TaskId,
+        session: &SessionRow,
+        idle_s: Option<u64>,
+    ) -> Result<()> {
+        let name = self.name(id)?;
+        let notice = if state == TaskState::Working {
+            format!("{name} looks stuck: no activity and an unchanged screen")
+        } else {
+            format!("{name} looks stuck in {state}: no activity and an unchanged screen")
+        };
+        self.standing(
+            &format!("stuck:{}", session.id),
+            FindingId::Stuck,
+            Some(id),
+            Status::Standing,
+            &serde_json::json!({ "idle_s": idle_s, "state": state.as_str() }),
+            Some(&notice),
+        )
+        .map(drop)
+    }
+
+    fn free_idle_slot(
+        &mut self,
+        state: TaskState,
+        id: TaskId,
+        session: &str,
+        idle_s: u64,
+    ) -> Result<()> {
+        let name = self.name(id)?;
+        let actor = self.actor();
+        self.store.set_session_idle(session, true, actor)?;
+        self.standing(
+            &format!("idle-slot:{session}"),
+            FindingId::IdleSlot,
+            Some(id),
+            Status::Standing,
+            &serde_json::json!({ "idle_s": idle_s, "state": state.as_str() }),
+            Some(&format!(
+                "{name} has sat idle at its prompt for {} min in {state}: its worker slot is freed; it stays open until it is closed",
+                idle_s / 60
+            )),
+        )
+        .map(drop)
     }
 
     fn asks(&mut self) -> Result<()> {

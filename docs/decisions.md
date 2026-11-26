@@ -165,7 +165,7 @@ and the reason. This log is closed: new decisions go into `docs/decisions/`, one
   SQLite's, like every timestamp.
 - 2026-11-14 Stuck check, two looks: a `working` session quiet for `stuck_after_min` with no tool in flight has its
   screen hashed (FNV-1a, the rules hash's function) and remembered; only an unchanged hash on a later tick makes it
-  `stuck`. The first look never reports. A moving session drops its remembered screen.
+  `stuck`. The first look never reports. A moving session drops its remembered screen. Since 2026-11-26 it also covers `in_review`, `merged` and `closing`: see docs/decisions/2026-11-26-idle-slots-freed.md.
 - 2026-11-14 Stale asks: an `open` ask older than `watch.ask_remind_min` (120) gets a host notification, then another
   every interval until answered (design says one reminder; repeating is cheap and the user is the bottleneck).
 - 2026-11-14 Rules: every tick hashes the rules files through the same loader the hooks use and bumps the version on a

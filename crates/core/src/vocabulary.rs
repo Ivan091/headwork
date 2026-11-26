@@ -551,6 +551,8 @@ text_enum!(
         Stuck => "stuck",
         /// A queued task waits on a dependency that will never be merged.
         DeadDependency => "dead-dependency",
+        /// A session idle at its prompt in `in_review` or `merged` gave up its worker slot.
+        IdleSlot => "idle-slot",
         /// A session runs an older rules version than the machine holds.
         RulesStale => "rules-stale",
         /// An ask waits on the user for too long.

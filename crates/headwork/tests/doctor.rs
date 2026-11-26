@@ -436,6 +436,51 @@ fn an_ignored_config_key_is_flagged() {
     assert_eq!(status(&report, "unenforced-keys"), Status::Warn, "ntfy set");
 }
 
+fn idle_slots_report(install: &Install, edit: &str) -> (Status, String) {
+    let path = install.home.config_path();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen(
+            "stuck_after_min = 30",
+            &format!(
+                "stuck_after_min = 30
+{edit}"
+            ),
+            1,
+        ),
+    )
+    .unwrap();
+    let report = run(install, &FakeProbe::default());
+    (status(&report, "idle-slots"), detail(&report, "idle-slots"))
+}
+
+#[test]
+fn idle_slots_are_ok_by_default_and_warn_when_a_limit_is_off() {
+    let base = install();
+    let clean = run(&base, &FakeProbe::default());
+    assert_eq!(status(&clean, "idle-slots"), Status::Ok, "defaults");
+    assert_eq!(
+        detail(&clean, "idle-slots"),
+        "idle sessions free their slot after 30 min in merged, 60 min in review"
+    );
+    for (edit, keys) in [
+        ("idle_free_merged_min = 0", "idle_free_merged_min is 0"),
+        ("idle_free_review_min = 0", "idle_free_review_min is 0"),
+        (
+            "idle_free_merged_min = 0
+idle_free_review_min = 0",
+            "idle_free_merged_min and idle_free_review_min is 0",
+        ),
+    ] {
+        let fresh = install();
+        let (status, detail) = idle_slots_report(&fresh, edit);
+        assert_eq!(status, Status::Warn, "{edit}");
+        assert!(detail.contains(keys), "{detail}");
+        assert!(detail.contains("stuck_after_min"), "{detail}");
+    }
+}
+
 #[test]
 fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
     let install = install();

@@ -2333,3 +2333,123 @@ fn a_dropped_dependency_is_gone_and_its_refusal_is_logged_once() {
         .count();
     assert_eq!(refusals, 1, "logged on change only");
 }
+
+fn live_session(store: &mut Store, config: &Config, slug: &str, number: u32) -> (Task, String) {
+    let task = create(store, config, "me-sim", slug);
+    store.start_task(config, task.id, Actor::Tick).unwrap();
+    let session = NewSession {
+        id: format!("0b6c1d2e-0000-4000-8000-0000000000{number:02}"),
+        task_id: Some(task.id),
+        role: Role::Worker,
+        rc_name: format!("me-sim-{slug}"),
+        host: "wmux".to_owned(),
+        host_workspace: Some("ws-1".to_owned()),
+        host_surface: Some(format!("surface:{number}")),
+    };
+    store.record_session(&session, Actor::Tick).unwrap();
+    store
+        .set_session_state(&session.id, SessionState::Live, Actor::Hook)
+        .unwrap();
+    store
+        .transition(task.id, &Trigger::SessionStarted(LIVE), Actor::Hook)
+        .unwrap();
+    (task, session.id)
+}
+
+fn workers(store: &Store) -> (u32, u32) {
+    let board = store.board(false).unwrap();
+    (board.live_workers, board.waiting_workers)
+}
+
+#[test]
+fn an_idle_session_in_review_or_merged_frees_its_slot() {
+    let (mut store, config) = store();
+    let (review, review_session) = live_session(&mut store, &config, "sand", 11);
+    let (merged, merged_session) = live_session(&mut store, &config, "snow", 12);
+    for task in [&review, &merged] {
+        store
+            .transition(
+                task.id,
+                &Trigger::ReviewOpened { repo_allowed: true },
+                Actor::Hook,
+            )
+            .unwrap();
+    }
+    store
+        .transition(
+            merged.id,
+            &Trigger::Merged {
+                source: MergeSource::GitHost,
+                policy: MergePolicy::Deliver,
+            },
+            Actor::Tick,
+        )
+        .unwrap();
+    assert_eq!(
+        store.task(review.id).unwrap().state,
+        TaskState::InReview,
+        "review"
+    );
+    assert_eq!(
+        store.task(merged.id).unwrap().state,
+        TaskState::Merged,
+        "merged"
+    );
+    assert_eq!(workers(&store), (2, 0), "both work as far as the slots go");
+    assert!(
+        store
+            .set_session_idle(&review_session, true, Actor::Tick)
+            .unwrap(),
+        "set"
+    );
+    assert_eq!(workers(&store), (1, 1), "the review session waits");
+    assert!(
+        store
+            .set_session_idle(&merged_session, true, Actor::Tick)
+            .unwrap(),
+        "set"
+    );
+    assert_eq!(workers(&store), (0, 2), "both wait");
+    assert!(
+        !store
+            .set_session_idle(&merged_session, true, Actor::Tick)
+            .unwrap(),
+        "idempotent"
+    );
+    assert!(
+        store
+            .set_session_idle(&merged_session, false, Actor::Hook)
+            .unwrap(),
+        "cleared"
+    );
+    assert!(
+        !store
+            .set_session_idle(&merged_session, false, Actor::Hook)
+            .unwrap(),
+        "idempotent"
+    );
+    assert_eq!(workers(&store), (1, 1), "the merged session works again");
+    let logged = store
+        .events(EventFilter {
+            task: None,
+            limit: 1000,
+        })
+        .unwrap()
+        .iter()
+        .filter(|event| event.kind == headwork_store::EVENT_SESSION_IDLE)
+        .count();
+    assert_eq!(logged, 3, "two sets and one clear");
+}
+
+#[test]
+fn an_idle_mark_on_a_working_task_frees_nothing() {
+    let (mut store, config) = store();
+    let (task, session) = live_session(&mut store, &config, "sand", 13);
+    assert_eq!(
+        store.task(task.id).unwrap().state,
+        TaskState::Working,
+        "working"
+    );
+    store.set_session_idle(&session, true, Actor::Tick).unwrap();
+    assert_eq!(workers(&store), (1, 0), "still holds its slot");
+}

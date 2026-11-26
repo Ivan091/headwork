@@ -423,6 +423,7 @@ dependencies = [
  "headwork-adapters",
  "headwork-core",
  "headwork-store",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

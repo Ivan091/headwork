@@ -88,7 +88,11 @@ or a registered job, nor what they started or what started them; Git Bash shells
 blocking. A closing task whose session ended frees its worker slot, and so does a session that waits in its own
 `AskUserQuestion` while running no shell, job, background subagent or part (`core/src/slots.rs`, `ops/waiting.rs`,
 `sessions.waiting_since`): queued tasks may then start until all sessions reach `max_workers` plus `[machine]
-idle_overflow`, and an answered session works again at once, over the cap if need be. Asks the tick raises have no dialog: `headwork
+idle_overflow`, and an answered session works again at once, over the cap if need be. A session idle at its prompt in `in_review` (`[watch] idle_free_review_min`, 60) or `merged` (`idle_free_merged_min`, 30) that runs
+nothing frees its slot the same way after at least that long (the screen is compared over two ticks): `sessions.idle_since`, migration 0025,
+event `session-idle`, standing finding `idle-slot` with a notice. Its next hook call takes the slot back, and the tick never closes it. A limit
+of 0 means that state gets only the ordinary `stuck` finding at `stuck_after_min`. The stuck check also covers `in_review`, `merged` and
+`closing` (live session); a closing session is only reported stuck, never freed. Doctor check `idle-slots` warns when a limit is 0. Asks the tick raises have no dialog: `headwork
 answer` or the orchestrator's `answer` tool answers them by id (`ops/answer.rs`), recording who answered.
 Leads (`docs/leads.md`) start with L1: a task's shape (`core/src/lead.rs`: `Lead`, `Part { parent }`, `Plain`, from
 `tasks.parent_id` and `tasks.lead`, migration 0013), `[leads]` (`enabled`, off for now; `max_parts`; `part_title`), a

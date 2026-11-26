@@ -76,21 +76,51 @@ pub fn facts(
     candidate: Candidate<'_>,
     procs: &dyn Fn() -> Vec<Proc>,
 ) -> Result<WaitFacts> {
-    let mut facts = WaitFacts {
+    let facts = WaitFacts {
         waiting_ask: store.dialog_ask_waits(candidate.session)?,
         ..WaitFacts::default()
     };
     if !facts.waiting_ask {
         return Ok(facts);
     }
-    facts.running_job = super::jobs::has_running_job(store, candidate.task)?;
-    facts.live_part = store.live_parts(candidate.task)? > 0;
-    facts.background_work = store.turn_so_far(candidate.session)?.background;
-    if facts.frees_slot() {
+    let busy = busy_facts(
+        store,
+        candidate.task,
+        candidate.session,
+        candidate.claude_pid,
+        procs,
+    )?;
+    Ok(WaitFacts {
+        waiting_ask: true,
+        ..busy
+    })
+}
+
+/// What a session runs, with `waiting_ask` unset.
+///
+/// It reads the task's jobs and parts, the turn's background work and, when none shows, a shell of its `claude` (through
+/// `procs` only then). A `claude` that cannot be found counts as running a shell.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn busy_facts(
+    store: &Store,
+    task: TaskId,
+    session: &str,
+    claude_pid: Option<u32>,
+    procs: &dyn Fn() -> Vec<Proc>,
+) -> Result<WaitFacts> {
+    let mut facts = WaitFacts {
+        running_job: super::jobs::has_running_job(store, task)?,
+        live_part: store.live_parts(task)? > 0,
+        background_work: store.turn_so_far(session)?.background,
+        ..WaitFacts::default()
+    };
+    if facts.runs_nothing() {
         let procs = procs();
         let own = std::process::id();
-        facts.shell_running = candidate
-            .claude_pid
+        facts.shell_running = claude_pid
             .or_else(|| claude_of(&procs, own))
             .is_none_or(|claude| !busy_shells(&procs, claude, own).is_empty());
     }

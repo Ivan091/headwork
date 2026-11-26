@@ -38,14 +38,16 @@ pub struct WaitFacts {
 }
 
 impl WaitFacts {
+    /// Whether the session runs nothing: no job, live part, background work or shell.
+    #[must_use]
+    pub const fn runs_nothing(self) -> bool {
+        !self.running_job && !self.live_part && !self.background_work && !self.shell_running
+    }
+
     /// Whether the session frees its slot.
     #[must_use]
     pub const fn frees_slot(self) -> bool {
-        self.waiting_ask
-            && !self.running_job
-            && !self.live_part
-            && !self.background_work
-            && !self.shell_running
+        self.waiting_ask && self.runs_nothing()
     }
 }
 
@@ -147,7 +149,9 @@ mod tests {
             },
         ] {
             assert!(!busy.frees_slot(), "{busy:?} keeps its slot");
+            assert!(!busy.runs_nothing(), "{busy:?} runs something");
         }
+        assert!(WaitFacts::default().runs_nothing(), "nothing runs");
     }
 
     #[test]
