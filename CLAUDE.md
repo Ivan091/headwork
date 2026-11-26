@@ -88,8 +88,12 @@ or a registered job, nor what they started or what started them; Git Bash shells
 `ops/close.rs`), and for a dropped task with none: a worktree the remove command refuses is recorded `kept` instead of
 blocking. A closing task whose session ended frees its worker slot, and so does a session that waits in its own
 `AskUserQuestion` while running no shell, job, background subagent or part (`core/src/slots.rs`, `ops/waiting.rs`,
-`sessions.waiting_since`): queued tasks may then start until all sessions reach `max_workers` plus `[machine]
-idle_overflow`, and an answered session works again at once, over the cap if need be. A session idle at its prompt in `in_review` (`[watch] idle_free_review_min`, 60) or `merged` (`idle_free_merged_min`, 30) that runs
+`sessions.waiting_since`): that is information now, because sessions are not capped: `[machine] max_workers`, `idle_overflow`, a project's
+`max_workers` and `[leads] max_parts` are all optional and absent means no cap (`check_start` never refuses with `NoFreeSlot`
+or `OverflowFull` without `max_workers`; with it, `idle_overflow` absent means 4). `doctor` (check `config-keys`) warns while any of
+these keys is set, and the tick raises the standing finding `many-sessions` with a notice while more than `[watch] many_sessions` (20; 0
+is off) sessions are live; it refuses nothing (`docs/decisions/2026-11-26-gates-in-headwork.md`). With a cap set, queued tasks may start until all
+sessions reach `max_workers` plus `idle_overflow`, and an answered session works again at once, over the cap if need be. A session idle at its prompt in `in_review` (`[watch] idle_free_review_min`, 60) or `merged` (`idle_free_merged_min`, 30) that runs
 nothing frees its slot the same way after at least that long (the screen is compared over two ticks): `sessions.idle_since`, migration 0025,
 event `session-idle`, standing finding `idle-slot` with a notice. Its next hook call takes the slot back, and the tick never closes it. A limit
 of 0 means that state gets only the ordinary `stuck` finding at `stuck_after_min`. A standing finding with a notice is told again after `[watch] retell_after_h` hours (6; per kind in `[watch.retell_after_h_by_rule]`; event `finding-told`), `board` and `status` list open findings, and a task the tick failed, interrupted or began closing on its own leaves a `source = "tick"` notice for the orchestrator's next prompt (`docs/decisions/2026-11-26-tick-tells-again.md`). The stuck check also covers `in_review`, `merged` and

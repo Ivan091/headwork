@@ -50,9 +50,10 @@ pub struct StartFacts {
     pub live_workers: u32,
     /// Sessions that wait on the user, run nothing else and so gave up their slot.
     pub waiting_workers: u32,
-    /// The machine's `max_workers`.
-    pub max_workers: u32,
-    /// The machine's `idle_overflow`: how many sessions past `max_workers` waiting ones may leave open.
+    /// The machine's `max_workers`; none means sessions are not capped.
+    pub max_workers: Option<u32>,
+    /// The machine's `idle_overflow`: how many sessions past `max_workers` waiting ones may leave open. Unused
+    /// without `max_workers`.
     pub idle_overflow: u32,
     /// Tasks of the same project that take a slot now.
     pub project_live: u32,
@@ -585,22 +586,22 @@ pub const fn check_start(facts: &StartFacts) -> Result<(), Refusal> {
     if !matches!(facts.machine, MachineMode::Normal | MachineMode::Resuming) {
         return Err(Refusal::MachineMode(facts.machine));
     }
-    if facts.live_workers >= facts.max_workers {
-        return Err(Refusal::NoFreeSlot {
-            max: facts.max_workers,
-        });
-    }
-    if !crate::slots::has_room(
-        facts.live_workers,
-        facts.waiting_workers,
-        facts.max_workers,
-        facts.idle_overflow,
-    ) {
-        return Err(Refusal::OverflowFull {
-            max: facts.max_workers,
-            overflow: facts.idle_overflow,
-            waiting: facts.waiting_workers,
-        });
+    if let Some(max) = facts.max_workers {
+        if facts.live_workers >= max {
+            return Err(Refusal::NoFreeSlot { max });
+        }
+        if !crate::slots::has_room(
+            facts.live_workers,
+            facts.waiting_workers,
+            max,
+            facts.idle_overflow,
+        ) {
+            return Err(Refusal::OverflowFull {
+                max,
+                overflow: facts.idle_overflow,
+                waiting: facts.waiting_workers,
+            });
+        }
     }
     if let Some(cap) = facts.project_cap
         && facts.project_live >= cap

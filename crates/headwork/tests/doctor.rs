@@ -485,7 +485,10 @@ idle_free_review_min = 0",
 fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
     let install = install();
     let clean = run(&install, &FakeProbe::default());
-    assert_eq!(status(&clean, "config-keys"), Status::Ok, "no heavy keys");
+    assert!(
+        !detail(&clean, "config-keys").contains("heavy_slots"),
+        "no heavy keys"
+    );
     let path = install.home.config_path();
     let text = std::fs::read_to_string(&path).unwrap();
     std::fs::write(
@@ -506,6 +509,63 @@ fn heavy_keys_are_flagged_as_not_enforced_under_config_keys() {
         "{}",
         detail(&report, "config-keys")
     );
+}
+
+#[test]
+fn session_cap_keys_are_flagged_under_config_keys_and_absent_ones_are_not() {
+    let install = install();
+    let path = install.home.config_path();
+    let base = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("max_workers"))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    std::fs::write(&path, &base).unwrap();
+    let clean = run(&install, &FakeProbe::default());
+    assert_eq!(status(&clean, "config-keys"), Status::Ok, "no cap keys");
+    std::fs::write(
+        &path,
+        format!(
+            "{base}
+[leads]
+max_parts = 3
+"
+        )
+        .replacen(
+            "[machine]",
+            "[machine]
+max_workers = 5
+idle_overflow = 2",
+            1,
+        )
+        .replacen(
+            "[project.me-sim]",
+            "[project.me-sim]
+max_workers = 2",
+            1,
+        ),
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "config-keys"), Status::Warn, "cap keys set");
+    let text = detail(&report, "config-keys");
+    for key in [
+        "machine.max_workers",
+        "machine.idle_overflow",
+        "project.me-sim.max_workers",
+        "leads.max_parts",
+    ] {
+        assert!(
+            text.contains(&format!(
+                "{key} (sessions are no longer capped; the key still works and can be removed)"
+            )),
+            "{key}: {text}"
+        );
+    }
 }
 
 #[test]

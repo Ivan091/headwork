@@ -189,6 +189,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("disks", Run::disks)?;
     run.stage("runaway", Run::runaway)?;
     run.stage("stuck", Run::stuck)?;
+    run.stage("many_sessions", Run::many_sessions)?;
     run.stage("asks", Run::asks)?;
     run.stage("waiting", Run::waiting)?;
     run.stage("queue", Run::queue)?;
@@ -1349,6 +1350,24 @@ impl<'b> Run<'_, 'b> {
         }
         self.sweep(FindingId::IdleSlot)?;
         self.sweep(FindingId::Stuck)
+    }
+
+    fn many_sessions(&mut self) -> Result<()> {
+        let limit = self.env().config.watch.many_sessions;
+        let live = self.store.live_session_pids()?.len();
+        if watch::many_sessions(live, limit) {
+            self.standing(
+                "many-sessions",
+                FindingId::ManySessions,
+                None,
+                Status::Standing,
+                &serde_json::json!({ "live": live, "limit": limit }),
+                Some(&format!(
+                    "{live} sessions are live, more than the {limit} that [watch] many_sessions tells about; nothing is capped"
+                )),
+            )?;
+        }
+        self.sweep(FindingId::ManySessions)
     }
 
     fn report_stuck(

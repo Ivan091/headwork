@@ -1374,6 +1374,38 @@ fn live_and_waiting(w: &World) -> (u32, u32) {
 }
 
 #[test]
+fn many_live_sessions_raise_a_standing_finding_that_clears_and_refuses_nothing() {
+    let mut w = world_extra(
+        false,
+        10,
+        "
+[watch]
+many_sessions = 1
+",
+    );
+    let (first, _) = working(&mut w, "sand");
+    let quiet = run_tick(&mut w);
+    assert!(
+        !rules(&quiet).contains(&(FindingId::ManySessions, Status::Standing)),
+        "one session is not many"
+    );
+    working(&mut w, "snow");
+    let busy = run_tick(&mut w);
+    assert!(
+        rules(&busy).contains(&(FindingId::ManySessions, Status::Standing)),
+        "{:?}",
+        busy.lines
+    );
+    assert_eq!(count(&w, "tick-error"), 0, "no stage failed");
+    w.store.end_task_sessions(first.id, Actor::Tick).unwrap();
+    let after = run_tick(&mut w);
+    assert!(
+        !rules(&after).contains(&(FindingId::ManySessions, Status::Standing)),
+        "back under the limit"
+    );
+}
+
+#[test]
 fn a_merged_session_idle_at_its_prompt_frees_its_slot_for_a_queued_task() {
     let mut w = world_with(false, 1);
     let task = merged(&mut w, "sand");

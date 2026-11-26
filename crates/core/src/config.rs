@@ -343,13 +343,15 @@ pub struct Config {
 pub struct MachineConfig {
     /// The terminal host.
     pub host: HostKind,
-    /// At most this many worker sessions at once. `max_children` is its deprecated spelling.
-    #[serde(default = "default_max_workers", alias = "max_children")]
-    pub max_workers: NonZeroU32,
+    /// At most this many worker sessions at once; absent means sessions are not capped. `max_children` is its
+    /// deprecated spelling.
+    #[serde(default, alias = "max_children")]
+    pub max_workers: Option<NonZeroU32>,
     /// How many sessions past `max_workers` may stay open while sessions that wait on the user, running nothing else,
-    /// give up their slot (`core::slots`); 0 keeps every waiting session in its slot.
-    #[serde(default = "default_idle_overflow")]
-    pub idle_overflow: u32,
+    /// give up their slot (`core::slots`); 0 keeps every waiting session in its slot. Only read when `max_workers` is
+    /// set; absent then means [`DEFAULT_IDLE_OVERFLOW`].
+    #[serde(default)]
+    pub idle_overflow: Option<u32>,
     /// Sessions start with Remote Control.
     #[serde(default = "yes")]
     pub remote_control: bool,
@@ -395,6 +397,8 @@ pub struct WatchConfig {
     /// Minutes an `in_review` session may sit idle at its prompt (no hook event, no tool in flight, unchanged screen,
     /// nothing running) before it gives up its worker slot; 0 never frees it.
     pub idle_free_review_min: u32,
+    /// More live sessions than this raise the standing finding `many-sessions`; 0 turns it off. It refuses nothing.
+    pub many_sessions: u32,
     /// Seconds a spawning task may take to report `SessionStart` before it counts as failed.
     pub spawn_timeout_s: u32,
     /// Minutes an ask may wait on the user before the next reminder.
@@ -425,6 +429,7 @@ impl Default for WatchConfig {
             stuck_after_min: 30,
             idle_free_merged_min: 30,
             idle_free_review_min: 60,
+            many_sessions: 20,
             spawn_timeout_s: 120,
             ask_remind_min: 120,
             merged_grace_min: 10,
@@ -719,16 +724,8 @@ pub struct ProjectOverlay {
     pub user_only: Vec<String>,
 }
 
-const fn default_max_workers() -> NonZeroU32 {
-    match NonZeroU32::new(10) {
-        Some(ten) => ten,
-        None => NonZeroU32::MIN,
-    }
-}
-
-const fn default_idle_overflow() -> u32 {
-    4
-}
+/// The overflow used when `[machine] max_workers` is set and `idle_overflow` is not.
+pub const DEFAULT_IDLE_OVERFLOW: u32 = 4;
 
 /// The placeholders `[leads] part_title` may use.
 pub const PART_TITLE_PLACEHOLDERS: &[&str] = &["part", "name", "model", "effort"];
@@ -1080,6 +1077,46 @@ impl Config {
                         )
                     }),
             );
+        }
+        found
+    }
+
+    /// The keys that cap sessions and that a configuration still sets (`machine.max_workers`, `machine.idle_overflow`,
+    /// `project.<name>.max_workers`, `leads.max_parts`; the `max_children` spellings count). Sessions are no longer
+    /// capped, so each can be removed. Text that does not parse has none.
+    #[must_use]
+    pub fn cap_keys(text: &str) -> Vec<String> {
+        let Ok(table) = toml::from_str::<toml::Table>(text) else {
+            return Vec::new();
+        };
+        let keys_of = |section: &str| {
+            table
+                .get(section)
+                .and_then(toml::Value::as_table)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut found = Vec::new();
+        let machine = keys_of("machine");
+        for key in ["max_workers", "max_children", "idle_overflow"] {
+            if machine.contains_key(key) {
+                found.push(format!("machine.{key}"));
+            }
+        }
+        if let Some(projects) = table.get("project").and_then(toml::Value::as_table) {
+            for (name, project) in projects {
+                let Some(keys) = project.as_table() else {
+                    continue;
+                };
+                for key in ["max_workers", "max_children"] {
+                    if keys.contains_key(key) {
+                        found.push(format!("project.{name}.{key}"));
+                    }
+                }
+            }
+        }
+        if keys_of("leads").contains_key("max_parts") {
+            found.push("leads.max_parts".to_owned());
         }
         found
     }

@@ -521,7 +521,8 @@ fn deprecated_keys_check(d: &Doctor<'_>) -> Check {
     let text = std::fs::read_to_string(d.home.config_path()).unwrap_or_default();
     let renamed = Config::deprecated_keys(&text);
     let retired = Config::retired_keys(&text);
-    if renamed.is_empty() && retired.is_empty() {
+    let caps = Config::cap_keys(&text);
+    if renamed.is_empty() && retired.is_empty() && caps.is_empty() {
         return Check::ok("config-keys", "no deprecated keys");
     }
     let mut list: Vec<String> = renamed
@@ -532,6 +533,9 @@ fn deprecated_keys_check(d: &Doctor<'_>) -> Check {
         format!(
             "{key} (not enforced; gates take machine-wide slots from %LOCALAPPDATA%/heavy-slots)"
         )
+    }));
+    list.extend(caps.iter().map(|key| {
+        format!("{key} (sessions are no longer capped; the key still works and can be removed)")
     }));
     Check::warn(
         "config-keys",
