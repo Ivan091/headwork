@@ -197,6 +197,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
     run.stage("todo", Run::todo)?;
+    run.stage("digest", Run::digest)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -354,6 +355,17 @@ impl<'b> Run<'_, 'b> {
             | super::todo::Export::Busy
             | super::todo::Export::NotImported { .. } => Ok(()),
         }
+    }
+
+    /// Pushes the "Needs you" digest once a day (`docs/todo.md`) through the host notification the findings use. A host
+    /// that is down sends nothing and logs nothing, so the next tick tries again.
+    fn digest(&mut self) -> Result<()> {
+        if !self.report.host_up {
+            return Ok(());
+        }
+        let env = self.env();
+        let actor = self.actor();
+        super::digest::push_due(self.store, env.config, actor, |text| self.notify(text)).map(drop)
     }
 
     /// Reports migration notes that wait for this machine; fetches each repository's default branch but never runs a step.

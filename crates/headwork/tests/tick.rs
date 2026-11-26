@@ -2641,3 +2641,21 @@ fn a_failing_export_is_a_tick_error_and_the_later_stages_still_run() {
     );
     assert!(report.usage.is_some(), "the stage after it ran");
 }
+
+#[test]
+fn the_tick_pushes_the_digest_once_a_day_when_something_waits_on_the_user() {
+    let mut w = world_extra(false, 10, "\n[digest]\npush_hour = 0\n");
+    run_tick(&mut w);
+    assert!(!notified(&w, "Needs you"), "nothing waits");
+    let mut draft =
+        headwork_core::todo::parse("## demo\n\n- [ ] For you: Read the invented note\n")
+            .items
+            .remove(0);
+    draft.state = headwork_core::todo::TodoState::Open;
+    w.store.add_todo(&draft, Actor::Orchestrator).unwrap();
+    run_tick(&mut w);
+    assert!(notified(&w, "Needs you"), "{:?}", w.host.calls());
+    assert_eq!(count(&w, "digest-pushed"), 1, "logged");
+    run_tick(&mut w);
+    assert_eq!(count(&w, "digest-pushed"), 1, "once a day");
+}

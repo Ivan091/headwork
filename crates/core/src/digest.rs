@@ -116,6 +116,37 @@ impl Digest {
     }
 }
 
+impl Digest {
+    /// The digest as text of at most `room` bytes: whole when it fits, else with fewer lines and a longer "more" line,
+    /// else a one-line count, else nothing.
+    #[must_use]
+    pub fn render_within(&self, room: usize) -> String {
+        let full = self.render();
+        if full.len() <= room {
+            return full;
+        }
+        for keep in (1..self.lines.len()).rev() {
+            let shorter = Self {
+                lines: self.lines.iter().take(keep).cloned().collect(),
+                more: self.more + self.lines.len() - keep,
+            };
+            let text = shorter.render();
+            if text.len() <= room {
+                return text;
+            }
+        }
+        let count = format!(
+            "{HEADER}: {} waiting, run `headwork digest`\n",
+            self.lines.len() + self.more
+        );
+        if count.len() <= room {
+            count
+        } else {
+            String::new()
+        }
+    }
+}
+
 /// `text` cut to `limit` characters on its first line, with `...` when something was cut.
 #[must_use]
 pub fn shorten(text: &str, limit: usize) -> String {
@@ -378,6 +409,26 @@ mod tests {
             text.ends_with("... and 6 more: headwork digest\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_digest_that_does_not_fit_loses_lines_then_becomes_a_count() {
+        let mut facts = facts();
+        facts.todos = (1..=4)
+            .map(|id| todo(id, "Item", TodoOwner::User))
+            .collect();
+        let digest = build(&facts);
+        let full = digest.render();
+        assert_eq!(digest.render_within(full.len()), full, "fits whole");
+        let fewer = digest.render_within(full.len() - 1);
+        assert!(fewer.len() < full.len(), "shorter: {fewer}");
+        assert!(fewer.ends_with("more: headwork digest\n"), "{fewer}");
+        let count = digest.render_within(50);
+        assert_eq!(
+            count, "Needs you: 4 waiting, run `headwork digest`\n",
+            "a count"
+        );
+        assert_eq!(digest.render_within(5), "", "no room");
     }
 
     #[test]

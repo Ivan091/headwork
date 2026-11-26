@@ -1557,16 +1557,28 @@ impl<'a> Server<'a> {
     fn board(&mut self, session: &str, role: Role, args: &Value) -> Result<String> {
         let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
         super::lost::reconcile(self.store, &self.env)?;
-        to_text(&self.scoped_board(session, role, all)?)
+        let board = to_text(&self.scoped_board(session, role, all)?)?;
+        Ok(if role == Role::Orchestrator {
+            format!(
+                "{}{board}",
+                super::digest::section(self.store, self.env.config)
+            )
+        } else {
+            board
+        })
     }
 
     fn status(&mut self, args: &Value) -> Result<String> {
         super::lost::reconcile(self.store, &self.env)?;
-        to_text(&super::status::status(
+        let lines = to_text(&super::status::status(
             self.store,
             flag(args, "all"),
             &self.env.config.usage,
-        )?)
+        )?)?;
+        Ok(format!(
+            "{}{lines}",
+            super::digest::section(self.store, self.env.config)
+        ))
     }
 
     fn usage(&mut self, args: &Value) -> Result<String> {
