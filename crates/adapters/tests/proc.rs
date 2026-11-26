@@ -273,3 +273,15 @@ S   50014   50013   50013      45556  ?         197609 09:16:04 /usr/bin/bash
     assert_eq!(parents.get(&11111), Some(&None), "a parent that ended");
     assert_eq!(parents.len(), 4, "the header is skipped: {parents:?}");
 }
+
+#[test]
+fn git_bash_ps_lists_each_msys_pid() {
+    let text = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+    50013       1   50013      37324  ?         197609 09:16:04 /usr/bin/bash
+S   50014   50013   50013      45556  ?         197609 09:16:04 /usr/bin/bash
+";
+    let pids = headwork_adapters::proc::parse_git_bash_pids(text);
+    assert!(pids.contains(&50013), "a plain line: {pids:?}");
+    assert!(pids.contains(&50014), "a status letter first: {pids:?}");
+    assert_eq!(pids.len(), 2, "the header is skipped: {pids:?}");
+}
