@@ -31,7 +31,7 @@ A note is needed when a machine that only runs `git pull` (and headwork's autoup
 | headwork store migration | no | automatic, backed up (`backups/state-*.db`) |
 | A store migration that needs a data fix by hand | yes | agent |
 | Shared headwork config key added or changed | no | `config sync` carries it |
-| Machine-only config key added, renamed, required | yes | confirm (edit `machines/<m>/headwork.toml`, PR to claude_config) |
+| Machine-only config key added, renamed, required | yes | confirm (edit `~/.headwork/config.machine.toml`, or `machines/<m>/headwork.toml` by PR on a machine that has no local file) |
 | Config key removed or renamed with the old one still read | no | `doctor` `config-keys` warns |
 | Plugin files (`hooks.json`, `.mcp.json`) | yes | agent (restart sessions; park and resume) |
 | Ignored files move (`_local/`) | yes | agent (`scripts/migrate_local.py`) |
@@ -145,7 +145,7 @@ The validator refuses a note that puts a login, secret, `schtasks`, `launchctl`,
 ## 7. How this fits config sync
 
 `config sync` stays the automatic channel for headwork config: shared changes need no note. Notes cover what sync
-cannot: a machine-only key each machine must add to its own `machines/<m>/headwork.toml`, a first `adopt`, a new
+cannot: a machine-only key each machine must add to its own machine file (`~/.headwork/config.machine.toml`, or `machines/<m>/headwork.toml`), a first `adopt`, a new
 secret in `config.local.toml`. A note's step may be `headwork config sync`. `migrate list` runs after `config sync`
 and `update`, so one notice covers both.
 

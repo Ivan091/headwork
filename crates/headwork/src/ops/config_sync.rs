@@ -52,8 +52,10 @@ pub struct Layout {
     pub machine: String,
     /// `<repo>/headwork/config.toml`.
     pub shared_file: PathBuf,
-    /// `<repo>/machines/<machine>/headwork.toml`.
-    pub machine_file: PathBuf,
+    /// `<repo>/machines/<machine>/headwork.toml`, used when [`Layout::local_machine_file`] does not exist.
+    pub repo_machine_file: PathBuf,
+    /// `<home>/config.machine.toml`: the machine part kept on the machine, which replaces the repository's file when it exists.
+    pub local_machine_file: PathBuf,
     /// `<home>/config.local.toml`.
     pub local_file: PathBuf,
 }
@@ -69,11 +71,28 @@ impl Layout {
         }
         Ok(Self {
             shared_file: repo.join("headwork").join("config.toml"),
-            machine_file: repo.join("machines").join(machine).join("headwork.toml"),
+            repo_machine_file: repo.join("machines").join(machine).join("headwork.toml"),
+            local_machine_file: home.machine_config_path(),
             local_file: home.local_config_path(),
             repo,
             machine: machine.to_owned(),
         })
+    }
+
+    /// The machine layer's file, chosen when asked so that a pull that brings the repository's file is seen.
+    #[must_use]
+    pub fn machine_file(&self) -> &Path {
+        if self.local_machine_file.exists() || !self.repo_machine_file.exists() {
+            &self.local_machine_file
+        } else {
+            &self.repo_machine_file
+        }
+    }
+
+    /// Whether both machine files exist, so the local one hides the repository's.
+    #[must_use]
+    pub fn machine_files_shadow(&self) -> bool {
+        self.local_machine_file.exists() && self.repo_machine_file.exists()
     }
 
     /// Reads `sources.toml`; `None` when the machine is not synced.
@@ -192,10 +211,19 @@ pub const fn host_suits(host: HostKind, platform: Platform) -> bool {
 /// Returns the first [`Problem`], naming the file and key.
 pub fn build(home: &Home, layout: &Layout, platform: Platform) -> Result<Candidate, Problem> {
     let shared = read_source(&layout.shared_file)?;
-    let machine = read_source(&layout.machine_file)?;
+    let machine = read_source(layout.machine_file()).map_err(|mut problem| {
+        if !layout.local_machine_file.exists() && !layout.repo_machine_file.exists() {
+            problem.message = format!(
+                "neither {} nor {} exists",
+                slashed(&layout.local_machine_file),
+                slashed(&layout.repo_machine_file)
+            );
+        }
+        problem
+    })?;
     let local = read_optional(&layout.local_file)?;
     let shared_name = slashed(&layout.shared_file);
-    let machine_name = slashed(&layout.machine_file);
+    let machine_name = slashed(layout.machine_file());
     let local_name = slashed(&layout.local_file);
     let merged = merge(
         LayerInput {
@@ -306,7 +334,7 @@ fn git_ok(repo: &Path, args: &[&str]) -> Result<String, String> {
 fn pull(layout: &Layout) -> Result<String, String> {
     let repo = layout.repo.as_path();
     git_ok(repo, &["fetch", "--quiet"])?;
-    for file in [&layout.shared_file, &layout.machine_file] {
+    for file in [&layout.shared_file, &layout.repo_machine_file] {
         restore_if_only_eol_differs(repo, file)?;
     }
     git_ok(repo, &["merge", "--ff-only", "--quiet", "@{upstream}"])
@@ -984,6 +1012,8 @@ pub struct AdoptOptions {
     pub write: bool,
     /// Overwrite existing files.
     pub force: bool,
+    /// Write the machine part into the repository instead of keeping it on this machine.
+    pub machine_in_repo: bool,
 }
 
 /// What `config adopt` found or wrote.
@@ -1131,6 +1161,17 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         .clone()
         .unwrap_or_else(|| home.claude_dir().to_path_buf());
     let layout = Layout::new(home, repo, &options.machine)?;
+    let machine_target = if options.machine_in_repo {
+        if layout.local_machine_file.exists() {
+            bail!(
+                "{} exists and would hide the repository's machine file; move it away first",
+                slashed(&layout.local_machine_file)
+            );
+        }
+        layout.repo_machine_file.clone()
+    } else {
+        layout.machine_file().to_path_buf()
+    };
     let live_path = home.config_path();
     let live_text = std::fs::read_to_string(&live_path)
         .with_context(|| format!("reading {}", live_path.display()))?;
@@ -1140,11 +1181,10 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     let mut parts = Split::default();
     split(&table, &mut Vec::new(), &mut parts);
     let (shared, shared_kept) = kept_or_split(&layout.shared_file, &parts.shared, options.force)?;
-    let (machine, machine_kept) =
-        kept_or_split(&layout.machine_file, &parts.machine, options.force)?;
+    let (machine, machine_kept) = kept_or_split(&machine_target, &parts.machine, options.force)?;
     let local = lf(&render(&parts.local)?);
     let shared_name = slashed(&layout.shared_file);
-    let machine_name = slashed(&layout.machine_file);
+    let machine_name = slashed(&machine_target);
     let local_name = slashed(&layout.local_file);
     let merged = merge(
         LayerInput {
@@ -1169,7 +1209,7 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     if rebuilt != live {
         if shared_kept || machine_kept {
             bail!(
-                "the shared and machine files in the repository do not reproduce this machine's config.toml, nothing was \
+                "the shared and machine files already there do not reproduce this machine's config.toml, nothing was \
                  written; bring config.toml in line with {shared_name} and {machine_name}, or pass --force to replace them"
             );
         }
@@ -1197,7 +1237,7 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         files.push((layout.shared_file.clone(), &shared));
     }
     if !machine_kept {
-        files.push((layout.machine_file.clone(), &machine));
+        files.push((machine_target, &machine));
     }
     if !parts.local.is_empty() {
         files.push((layout.local_file, &local));
