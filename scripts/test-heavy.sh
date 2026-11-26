@@ -67,7 +67,7 @@ mkdir -p "$work/slots/slot-1"
 : > "$work/slots/slot-1/owner"
 HEADWORK_HEAVY_SLOTS=1 scripts/heavy.sh --no-wait true 2> "$work/young.err" && young=0 || young=$?
 check "a young slot with an unwritten owner is not taken over" "[ '$young' -eq 75 ]"
-touch -d '30 seconds ago' "$work/slots/slot-1"
+touch -t "$(date -v-30S +%Y%m%d%H%M.%S 2>/dev/null || date -d '30 seconds ago' +%Y%m%d%H%M.%S)" "$work/slots/slot-1"
 HEADWORK_HEAVY_SLOTS=1 scripts/heavy.sh --no-wait true 2> "$work/old.err" && old=0 || old=$?
 check "an old slot with an unwritten owner is taken over" "[ '$old' -eq 0 ]"
 
