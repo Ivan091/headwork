@@ -281,6 +281,41 @@ pub fn git_bash_parents() -> Option<std::collections::HashMap<u32, Option<u32>>>
     })
 }
 
+/// The Git Bash (MSYS) pids of the running Git Bash processes, as a script's `$$` names itself; `None` when Git Bash's
+/// `ps` cannot be run. Only Windows has such pids: elsewhere a script's pid is the system's.
+#[must_use]
+pub fn git_bash_pids() -> Option<std::collections::HashSet<u32>> {
+    if !cfg!(windows) {
+        return None;
+    }
+    GIT_BASH_PS.iter().find_map(|program| {
+        let output = Command::new(program)
+            .arg("-el")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| parse_git_bash_pids(&String::from_utf8_lossy(&output.stdout)))
+    })
+}
+
+/// The `PID` column of Git Bash's `ps -el`, each line perhaps led by a status letter.
+#[must_use]
+pub fn parse_git_bash_pids(text: &str) -> std::collections::HashSet<u32> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().peekable();
+            if fields.peek()?.parse::<u32>().is_err() {
+                fields.next();
+            }
+            fields.next()?.parse().ok()
+        })
+        .collect()
+}
+
 /// Reads `ps -el` of Git Bash: `PID PPID PGID WINPID TTY UID STIME COMMAND`, a line perhaps led by a status letter.
 #[must_use]
 pub fn parse_git_bash_ps(text: &str) -> std::collections::HashMap<u32, Option<u32>> {

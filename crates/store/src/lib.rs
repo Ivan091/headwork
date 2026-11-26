@@ -70,6 +70,19 @@ pub(crate) const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 /// How long a connection waits for another writer before giving up with `database is locked`.
 pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The local time now as `%Y-%m-%d %H:%M:%S`, by SQLite's own time zone handling, as a gate's owner file records it;
+/// `None` when SQLite fails.
+#[must_use]
+pub fn local_time_now() -> Option<String> {
+    let conn = Connection::open_in_memory().ok()?;
+    conn.query_row(
+        "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')",
+        [],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
 /// Switches the connection's database to WAL, retrying while another connection holds the lock.
 ///
 /// SQLite does not call the busy handler for this switch: when several processes create a new store at once, all but

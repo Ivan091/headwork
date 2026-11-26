@@ -337,6 +337,12 @@ enum Command {
         #[arg(long, hide = true)]
         takeover: bool,
     },
+    /// Machine-wide CPU and GPU gates: run a heavy command holding a slot, or list the slots
+    /// (`docs/decisions/2026-11-26-gates-in-headwork.md`).
+    Gate {
+        #[command(subcommand)]
+        action: GateAction,
+    },
     /// Check the install: binary, config, store, host, gh, claude, plugin, hooks, disk. Exits 1 on a problem.
     Doctor {
         /// The Claude config folder.
@@ -484,6 +490,31 @@ enum JobAction {
         #[arg(long)]
         reason: String,
     },
+}
+
+/// What `gate` does.
+#[derive(Debug, Subcommand)]
+enum GateAction {
+    /// Wait for a slot of the class, run the command holding it, give it back, and exit with the command's code.
+    Run {
+        /// `cpu` or `gpu`.
+        #[arg(value_parser = parse_gate_class)]
+        class: headwork_core::gate::GateClass,
+        /// The command and its arguments, after `--`.
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<std::ffi::OsString>,
+    },
+    /// List each class: count, holders (task, command, age, stale), waiters.
+    Status {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn parse_gate_class(word: &str) -> std::result::Result<headwork_core::gate::GateClass, String> {
+    word.parse()
+        .map_err(|error: headwork_core::UnknownWord| error.to_string())
 }
 
 /// What `flow` does.
@@ -889,6 +920,26 @@ fn main() -> ExitCode {
     }
 }
 
+fn gate_command(action: GateAction, out: &mut impl Write) -> Result<ExitCode> {
+    use headwork::ops::gate;
+    let home = Home::locate()?;
+    match action {
+        GateAction::Run { class, command } => {
+            let code = gate::run(&home, class, &command, &mut io::stderr())?;
+            Ok(ExitCode::from(code))
+        }
+        GateAction::Status { json } => {
+            let status = gate::status(&home);
+            if json {
+                json_out(out, &status)?;
+            } else {
+                gate::write_status(&status, out)?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
 /// Runs as the windowless launcher when this program is `headworkw` ([`headwork::ops::windowless`]).
 fn forward_if_launcher() -> Option<ExitCode> {
     use headwork::ops::windowless;
@@ -970,6 +1021,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             return rule_test(&probe, json, out);
         }
         Command::Doctor { claude_dir, json } => return doctor_command(claude_dir, json, out),
+        Command::Gate { action } => return gate_command(action, out),
         Command::Dash {
             port,
             bind,
@@ -1146,6 +1198,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Finish { .. }
         | Command::Import { .. }
         | Command::Doctor { .. }
+        | Command::Gate { .. }
         | Command::Dash { .. }
         | Command::Flow { .. }
         | Command::Config { .. }

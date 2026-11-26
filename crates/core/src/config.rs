@@ -332,6 +332,9 @@ pub struct Config {
     /// The "Needs you" digest (`docs/backlog.md`).
     #[serde(default)]
     pub digest: DigestConfig,
+    /// The machine-wide CPU and GPU gates (`docs/decisions/2026-11-26-gates-in-headwork.md`).
+    #[serde(default)]
+    pub gates: GatesConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -938,6 +941,48 @@ impl Default for DigestConfig {
             finding_hours: 3,
             push: true,
             push_hour: 9,
+        }
+    }
+}
+
+/// `[gates]`: the machine-wide slots heavy commands hold while they run (`docs/decisions/2026-11-26-gates-in-headwork.md`).
+///
+/// Every key has a default, so a machine needs no change for the gates. The environment `HEADWORK_GATE_DIR` overrides
+/// `dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GatesConfig {
+    /// Slots of the `cpu` class: cargo build, test, clippy and bench, `check.sh`, renders, scans, `git gc`.
+    pub cpu: NonZeroU32,
+    /// Slots of the `gpu` class: training.
+    pub gpu: NonZeroU32,
+    /// The slot root; `%LOCALAPPDATA%/heavy-slots` when absent, else `~/.heavy-slots`. `~` is expanded.
+    pub dir: Option<String>,
+    /// Minutes after which a `cpu` holder counts as held long.
+    pub held_long_min: u32,
+    /// Minutes after which a waiter counts as starved.
+    pub starved_min: u32,
+}
+
+impl GatesConfig {
+    /// The slot count of a class.
+    #[must_use]
+    pub const fn count(&self, class: crate::gate::GateClass) -> NonZeroU32 {
+        match class {
+            crate::gate::GateClass::Cpu => self.cpu,
+            crate::gate::GateClass::Gpu => self.gpu,
+        }
+    }
+}
+
+impl Default for GatesConfig {
+    fn default() -> Self {
+        Self {
+            cpu: crate::gate::default_count(crate::gate::GateClass::Cpu),
+            gpu: crate::gate::default_count(crate::gate::GateClass::Gpu),
+            dir: None,
+            held_long_min: 45,
+            starved_min: 30,
         }
     }
 }

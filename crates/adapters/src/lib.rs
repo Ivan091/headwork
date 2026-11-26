@@ -4,6 +4,7 @@
 //! [`host::fake::FakeHost`] and temporary folders.
 
 pub mod disk;
+pub mod gate;
 pub mod git;
 pub mod host;
 pub mod notes;
