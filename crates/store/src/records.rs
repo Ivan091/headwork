@@ -226,6 +226,8 @@ pub struct BoardTask {
     pub asks: Vec<AskRow>,
     /// Its latest pull request.
     pub pr: Option<PrRow>,
+    /// For a queued task, the task it depends on and that state when that task is gone and never merges.
+    pub dead_dependency: Option<String>,
     /// The tokens it spent (`docs/usage.md`); a lead's include its parts'.
     pub tokens: u64,
     /// The same by the model that spent them, for the estimate.

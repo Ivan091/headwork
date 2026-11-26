@@ -2289,3 +2289,47 @@ fn a_refusal_is_logged_and_counted_on_the_newest_worktree_only() {
         "a kept worktree forgets its failures"
     );
 }
+
+#[test]
+fn a_dropped_dependency_is_gone_and_its_refusal_is_logged_once() {
+    let (mut store, config) = store();
+    let engine = create(&mut store, &config, "me-sim", "engine");
+    let mut scene = request("me-sim", "scene", "scene");
+    scene.depends_on = Some(engine.id);
+    let scene = store
+        .create_task(&config, &scene, Actor::Orchestrator)
+        .unwrap();
+    assert_eq!(
+        store.gone_dependency(&scene).unwrap(),
+        None,
+        "a live dependency is not gone"
+    );
+    store.drop_task(engine.id, Actor::Orchestrator).unwrap();
+    for _ in 0..3 {
+        let refused = store
+            .start_task(&config, scene.id, Actor::Tick)
+            .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                StoreError::Refused {
+                    refusal: Refusal::DependencyGone,
+                    ..
+                }
+            ),
+            "{refused}"
+        );
+    }
+    let gone = store.gone_dependency(&scene).unwrap().unwrap();
+    assert_eq!(gone.id, engine.id, "the gone dependency");
+    let refusals = store
+        .events(EventFilter {
+            task: Some(scene.id),
+            limit: 100,
+        })
+        .unwrap()
+        .iter()
+        .filter(|event| event.kind == "refused")
+        .count();
+    assert_eq!(refusals, 1, "logged on change only");
+}

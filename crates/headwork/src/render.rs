@@ -265,6 +265,12 @@ fn task_line(
     if let Some(pr) = &task.pr {
         let _ = write!(text, " · PR {} {}", pr.state, pr.url);
     }
+    if let Some(gone) = &task.dead_dependency {
+        let _ = write!(
+            text,
+            " · waits on {gone}, which never merges: drop or re-point it"
+        );
+    }
     if task.tokens > 0 {
         let _ = write!(text, " · {} tokens", short_count(task.tokens));
         if let Some(estimate) = headwork::ops::status::estimate(prices, &task.models) {

@@ -549,6 +549,8 @@ text_enum!(
         Runaway => "runaway",
         /// A working session made no move for too long.
         Stuck => "stuck",
+        /// A queued task waits on a dependency that will never be merged.
+        DeadDependency => "dead-dependency",
         /// A session runs an older rules version than the machine holds.
         RulesStale => "rules-stale",
         /// An ask waits on the user for too long.

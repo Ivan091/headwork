@@ -230,11 +230,31 @@ fn log_refusal(
     let data = serde_json::json!({
         "trigger": trigger.name(), "state": task.state, "reason": refusal.to_string(),
     });
-    insert_event(conn, actor, Some(task.id), None, "refused", &data)?;
+    if !(refusal == Refusal::DependencyGone && last_refusal_is(conn, task.id, &data)?) {
+        insert_event(conn, actor, Some(task.id), None, "refused", &data)?;
+    }
     Ok(StoreError::Refused {
         task: task.name.to_string(),
         refusal,
     })
+}
+
+/// Whether the task's newest `refused` event says exactly `data`: a refusal that repeats is not logged again.
+fn last_refusal_is(
+    conn: &Connection,
+    id: TaskId,
+    data: &serde_json::Value,
+) -> Result<bool, StoreError> {
+    let last: Option<String> = conn
+        .query_row(
+            "SELECT data FROM events WHERE task_id = ?1 AND type = 'refused' ORDER BY id DESC LIMIT 1",
+            params![id.0],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(last
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|last| &last == data))
 }
 
 pub(crate) fn load_task(conn: &Connection, id: TaskId) -> Result<Task, StoreError> {
@@ -692,11 +712,43 @@ impl Store {
             params![id.0],
             |row| row.get(0),
         )?;
-        Ok(if merged {
-            Dependency::Merged
+        if merged {
+            return Ok(Dependency::Merged);
+        }
+        Ok(if self.is_gone(id)? {
+            Dependency::Gone
         } else {
             Dependency::Waiting
         })
+    }
+
+    fn is_gone(&self, id: TaskId) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT state IN ('dropped', 'failed')
+                 OR (state IN ('closing', 'closed')
+                     AND NOT EXISTS (SELECT 1 FROM prs WHERE task_id = ?1 AND state = 'open'))
+             FROM tasks WHERE id = ?1",
+            params![id.0],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The task `task` depends on when that task is gone: dropped, failed, or ended with no open pull request left
+    /// and not merged. Such a dependency will never be merged, so the task waits for ever until it is dropped or
+    /// re-pointed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn gone_dependency(&self, task: &Task) -> Result<Option<Task>, StoreError> {
+        let Some(id) = task.depends_on else {
+            return Ok(None);
+        };
+        if self.dependency(Some(id))? == Dependency::Gone {
+            Ok(Some(load_task(&self.conn, id)?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// The ending dependencies (`closing` or `closed`) of queued tasks that the store does not count merged yet: their
@@ -1017,6 +1069,12 @@ impl Store {
                 session: self.session_of(task.id)?,
                 pr: self.latest_pr(task.id)?,
                 asks: task_asks,
+                dead_dependency: if task.state == TaskState::Queued {
+                    self.gone_dependency(&task)?
+                        .map(|gone| format!("{} ({})", gone.name, gone.state.as_str()))
+                } else {
+                    None
+                },
                 task,
             });
         }

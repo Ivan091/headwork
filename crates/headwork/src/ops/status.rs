@@ -23,6 +23,8 @@ pub struct StatusLine {
     pub prs: Vec<String>,
     /// The parts that wait on the user.
     pub asking_parts: Vec<String>,
+    /// For a queued task, the dependency that is gone (name and state): it never merges.
+    pub dead_dependency: Option<String>,
     /// The line as the orchestrator says it.
     pub line: String,
     /// The tokens the task and its parts spent (`docs/usage.md`).
@@ -119,12 +121,20 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             | TaskStatus::Parked
             | TaskStatus::Dropped => format!("{task}: {status}"),
         };
+        let dead_dependency = top.dead_dependency.clone();
+        let line = match &dead_dependency {
+            Some(gone) if status == TaskStatus::Queued => {
+                format!("{line} (waits on {gone}, which never merges: drop or re-point it)")
+            }
+            Some(_) | None => line,
+        };
         let line = format!("{line}{}", flag_tags(&top.task));
         out.push(StatusLine {
             task,
             status,
             prs,
             asking_parts,
+            dead_dependency,
             line,
             tokens: top.tokens,
             estimate: estimate(prices, &top.models),

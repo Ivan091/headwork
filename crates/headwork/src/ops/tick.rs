@@ -111,6 +111,12 @@ pub enum Status {
     Standing,
 }
 
+/// The event that records the user was told a queued task waits on a dependency that is gone.
+const DEAD_DEPENDENCY_TOLD: &str = "dead-dependency-told";
+
+/// Seconds before the user is told again of a task still waiting on a dead dependency.
+const DEAD_DEPENDENCY_RENOTIFY_S: u64 = 24 * 3600;
+
 /// One finding of a tick.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Line {
@@ -186,6 +192,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("asks", Run::asks)?;
     run.stage("waiting", Run::waiting)?;
     run.stage("queue", Run::queue)?;
+    run.stage("dead_dependencies", Run::dead_dependencies)?;
     run.stage("update", Run::update)?;
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
@@ -1297,6 +1304,39 @@ impl<'b> Run<'_, 'b> {
         let actor = self.actor();
         super::waiting::recheck_all(self.store, self.t.slots, actor)?;
         Ok(())
+    }
+
+    /// Tells the user, once a day at most, of each queued task whose dependency is gone and never merges.
+    fn dead_dependencies(&mut self) -> Result<()> {
+        for id in self.store.tasks_in(TaskState::Queued)? {
+            let task = self.store.task(id)?;
+            let Some(gone) = self.store.gone_dependency(&task)? else {
+                continue;
+            };
+            let detail =
+                serde_json::json!({ "depends_on": gone.name.to_string(), "state": gone.state });
+            let is_new = self.standing(
+                &format!("dead-dependency:{}:{}", id.0, gone.id.0),
+                FindingId::DeadDependency,
+                Some(id),
+                Status::Standing,
+                &detail,
+                None,
+            )?;
+            let since = self.store.seconds_since_event(id, DEAD_DEPENDENCY_TOLD)?;
+            if is_new || since.is_none_or(|age| age >= DEAD_DEPENDENCY_RENOTIFY_S) {
+                self.notify(&format!(
+                    "{} waits on {} ({}), which will never merge: drop it or re-point it",
+                    task.name,
+                    gone.name,
+                    gone.state.as_str()
+                ));
+                let actor = self.actor();
+                self.store
+                    .append_event(actor, Some(id), None, DEAD_DEPENDENCY_TOLD, &detail)?;
+            }
+        }
+        self.sweep(FindingId::DeadDependency)
     }
 
     fn queue(&mut self) -> Result<()> {

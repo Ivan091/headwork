@@ -27,6 +27,8 @@ pub enum Dependency {
     Merged,
     /// The dependency exists and is not merged yet.
     Waiting,
+    /// The dependency was dropped, failed, or ended with no pull request left to merge: it will never be merged.
+    Gone,
 }
 
 /// Whether a Fable task may start.
@@ -355,6 +357,11 @@ pub enum Refusal {
     /// The dependency is not merged.
     #[error("the task it depends on is not merged yet")]
     DependencyNotMerged,
+    /// The dependency will never be merged.
+    #[error(
+        "the task it depends on is gone (dropped, failed or closed without a merged pull request): drop this task or re-point it"
+    )]
+    DependencyGone,
     /// The user has not allowed Fable.
     #[error("the user has not allowed Fable for this task")]
     FableNotAllowed,
@@ -610,8 +617,10 @@ pub const fn check_start(facts: &StartFacts) -> Result<(), Refusal> {
     if facts.main_only_kind_busy {
         return Err(Refusal::MainOnlyKindBusy);
     }
-    if matches!(facts.dependency, Dependency::Waiting) {
-        return Err(Refusal::DependencyNotMerged);
+    match facts.dependency {
+        Dependency::Waiting => return Err(Refusal::DependencyNotMerged),
+        Dependency::Gone => return Err(Refusal::DependencyGone),
+        Dependency::None | Dependency::Merged => {}
     }
     if matches!(facts.fable, FableGate::Waiting) {
         return Err(Refusal::FableNotAllowed);

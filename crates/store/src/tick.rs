@@ -199,6 +199,23 @@ impl Store {
         Ok(seconds(age))
     }
 
+    /// Seconds since the task's newest event of this type, or none when it has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn seconds_since_event(&self, task: TaskId, kind: &str) -> Result<Option<u64>, StoreError> {
+        let sql = format!(
+            "SELECT {} FROM events WHERE task_id = ?1 AND type = ?2 ORDER BY id DESC LIMIT 1",
+            age_of("at")
+        );
+        let age: Option<i64> = self
+            .conn
+            .query_row(&sql, params![task.0, kind], |row| row.get(0))
+            .optional()?;
+        Ok(age.map(seconds))
+    }
+
     /// The host surfaces of every session of a task that is not closed.
     ///
     /// # Errors
