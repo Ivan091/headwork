@@ -163,22 +163,7 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
             (None, spent) => format!("{line}, reviews {} tokens", short_count(spent)),
         };
         let line = format!("{line}{}", flag_tags(&top.task));
-        let ids: Vec<_> = std::iter::once(top)
-            .chain(parts.iter().copied())
-            .map(|entry| entry.task.id)
-            .collect();
-        let findings: Vec<String> = board
-            .findings
-            .iter()
-            .filter(|finding| finding.task_id.is_some_and(|id| ids.contains(&id)))
-            .map(|finding| {
-                format!(
-                    "{} (open {})",
-                    finding.rule,
-                    headwork_core::digest::age(finding.open_s)
-                )
-            })
-            .collect();
+        let findings = open_findings(board, top, &parts);
         let line = if findings.is_empty() {
             line
         } else {
@@ -201,6 +186,25 @@ pub fn lines(store: &Store, board: &Board, prices: &UsageConfig) -> Result<Vec<S
         });
     }
     Ok(out)
+}
+
+fn open_findings(board: &Board, top: &BoardTask, parts: &[&BoardTask]) -> Vec<String> {
+    let ids: Vec<_> = std::iter::once(top)
+        .chain(parts.iter().copied())
+        .map(|entry| entry.task.id)
+        .collect();
+    board
+        .findings
+        .iter()
+        .filter(|finding| finding.task_id.is_some_and(|id| ids.contains(&id)))
+        .map(|finding| {
+            format!(
+                "{} (open {})",
+                finding.rule,
+                headwork_core::digest::age(finding.open_s)
+            )
+        })
+        .collect()
 }
 
 /// The tags a task's flags add to its line: ` · silent` and ` · review N planned`.
