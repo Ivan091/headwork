@@ -6,9 +6,8 @@ description: The orchestrator's sprint planning and follow-through, as in scrum.
 # Planning a groomed wave
 
 `headwork:grooming` decides what is done and in which order. This skill gets that work implemented. It starts only
-after the user's go on a groomed wave, from the step lines of the plan note grooming wrote. headwork's orchestrator
-rules own every tool call, flag table and the model ladder; this skill only orders the steps. The worked example is
-`S:/Code/notes/todo-plan-2026-11-26.md` (its wave 1 was spawned by hand).
+after the user's go on a groomed wave, from the step lines of the plan note grooming wrote in the notes folder.
+headwork's orchestrator rules own every tool call, flag table and the model ladder; this skill only orders the steps.
 
 ## 1. Per step: the brief
 
