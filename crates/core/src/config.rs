@@ -315,6 +315,9 @@ pub struct Config {
     /// Reviews on the user's word (`docs/review-flows.md`).
     #[serde(default)]
     pub reviews: ReviewsConfig,
+    /// The to-do list (`docs/todo.md`).
+    #[serde(default)]
+    pub todo: TodoConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -828,6 +831,14 @@ impl Default for UpdateConfig {
             poll_min: 15,
         }
     }
+}
+
+/// `[todo]`: the file the to-do list is exported to (`docs/todo.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TodoConfig {
+    /// The `todo.md` to export to after every change; no export while this is unset. `~` is expanded.
+    pub file: Option<String>,
 }
 
 /// `[dash]`: the agent-graph page (`docs/dashboard.md`) that starts with the orchestrator.

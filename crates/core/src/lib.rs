@@ -20,6 +20,7 @@ pub mod reap;
 pub mod removal;
 pub mod review;
 pub mod slots;
+pub mod todo;
 pub mod update;
 pub mod usage;
 pub mod user_go;
@@ -29,7 +30,7 @@ pub mod watch;
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{
     Config, ConfigError, LayoutConfig, LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay,
-    REVIEW_KIND, ReviewsConfig, SILENT_KIND, UpdateConfig,
+    REVIEW_KIND, ReviewsConfig, SILENT_KIND, TodoConfig, UpdateConfig,
 };
 pub use flags::{DecidedBy, DecisionError, FlagDecision, FlagPrompt, PlanMoment, PlannedReview};
 pub use guard::{Decision, Verdict};
