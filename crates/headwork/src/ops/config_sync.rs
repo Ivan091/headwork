@@ -1107,6 +1107,74 @@ fn split(table: &Table, prefix: &mut Vec<String>, out: &mut Split) {
     }
 }
 
+fn uncovered_leaves(
+    wanted: &Table,
+    kept: &Table,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<(Vec<String>, Value)>,
+) {
+    for (key, value) in wanted {
+        prefix.push(key.clone());
+        match (value, kept.get(key)) {
+            (Value::Table(inner), Some(Value::Table(kept_inner))) => {
+                uncovered_leaves(inner, kept_inner, prefix, out);
+            }
+            (Value::Table(inner), _) => {
+                uncovered_leaves(inner, &Table::new(), prefix, out);
+            }
+            (leaf, Some(existing)) if existing == leaf => {}
+            (leaf, _) => out.push((prefix.clone(), leaf.clone())),
+        }
+        prefix.pop();
+    }
+}
+
+fn extra_paths(kept: &Table, live: &Table, prefix: &mut Vec<String>, out: &mut Vec<String>) {
+    for (key, value) in kept {
+        prefix.push(key.clone());
+        match (value, live.get(key)) {
+            (_, None) => out.push(KeyPath::new(prefix.clone()).to_string()),
+            (Value::Table(inner), Some(Value::Table(live_inner))) => {
+                extra_paths(inner, live_inner, prefix, out);
+            }
+            _ => {}
+        }
+        prefix.pop();
+    }
+}
+
+fn machine_target(layout: &Layout, options: &AdoptOptions) -> Result<PathBuf> {
+    if !options.machine_in_repo {
+        return Ok(layout.machine_file().to_path_buf());
+    }
+    if layout.local_machine_file.exists() {
+        bail!(
+            "{} exists and would hide the repository's machine file; move it away first",
+            slashed(&layout.local_machine_file)
+        );
+    }
+    Ok(layout.repo_machine_file.clone())
+}
+
+fn overlay_kept_shared(shared: &str, file: &Path, live: &Table, parts: &mut Split) -> Result<()> {
+    let kept: Table =
+        toml::from_str(shared).with_context(|| format!("{} is not TOML", file.display()))?;
+    let mut uncovered = Vec::new();
+    uncovered_leaves(&parts.shared, &kept, &mut Vec::new(), &mut uncovered);
+    for (segments, value) in uncovered {
+        insert_path(&mut parts.machine, &segments, value);
+    }
+    let mut extra = Vec::new();
+    extra_paths(&kept, live, &mut Vec::new(), &mut extra);
+    if !extra.is_empty() {
+        parts.machine.insert(
+            "unset".to_owned(),
+            Value::Array(extra.into_iter().map(Value::String).collect()),
+        );
+    }
+    Ok(())
+}
+
 fn render(table: &Table) -> Result<String> {
     Ok(toml::to_string(table)?)
 }
@@ -1150,17 +1218,7 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
         .clone()
         .unwrap_or_else(|| home.claude_dir().to_path_buf());
     let layout = Layout::new(home, repo, &options.machine)?;
-    let machine_target = if options.machine_in_repo {
-        if layout.local_machine_file.exists() {
-            bail!(
-                "{} exists and would hide the repository's machine file; move it away first",
-                slashed(&layout.local_machine_file)
-            );
-        }
-        layout.repo_machine_file.clone()
-    } else {
-        layout.machine_file().to_path_buf()
-    };
+    let machine_target = machine_target(&layout, options)?;
     let live_path = home.config_path();
     let live_text = std::fs::read_to_string(&live_path)
         .with_context(|| format!("reading {}", live_path.display()))?;
@@ -1170,6 +1228,9 @@ pub fn adopt(home: &Home, options: &AdoptOptions, platform: Platform) -> Result<
     let mut parts = Split::default();
     split(&table, &mut Vec::new(), &mut parts);
     let (shared, shared_kept) = kept_or_split(&layout.shared_file, &parts.shared, options.force)?;
+    if shared_kept {
+        overlay_kept_shared(&shared, &layout.shared_file, &table, &mut parts)?;
+    }
     let (machine, machine_kept) = kept_or_split(&machine_target, &parts.machine, options.force)?;
     let local = lf(&render(&parts.local)?);
     let shared_name = slashed(&layout.shared_file);
