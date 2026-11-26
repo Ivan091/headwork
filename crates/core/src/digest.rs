@@ -3,6 +3,8 @@
 //! The builder is pure. The binary gathers the [`Facts`] from the store; ages arrive in seconds and the clock as
 //! [`Facts::today`], so the same facts always give the same digest.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::todo::{Todo, TodoDate, TodoOwner, TodoState};
@@ -110,7 +112,7 @@ impl Digest {
             text.push('\n');
         }
         if self.more > 0 {
-            text.push_str(&format!("... and {} more: headwork digest\n", self.more));
+            let _ = writeln!(text, "... and {} more: headwork digest", self.more);
         }
         text
     }
@@ -207,8 +209,10 @@ fn dated_todos(todos: &[Todo], today: &TodoDate) -> Vec<(TodoDate, i64, String)>
     dated
 }
 
-/// Builds the digest: asks oldest first, to-do items due or started, migration notes, pull requests, findings open
-/// long enough, then the other open items of the user, trimmed to [`MAX_LINES`] with a closing line for the rest.
+/// Builds the digest from `facts`.
+///
+/// Asks come oldest first, then to-do items due or started, migration notes, pull requests, findings open long enough,
+/// and the other open items of the user, trimmed to [`MAX_LINES`] with a closing line for the rest.
 #[must_use]
 pub fn build(facts: &Facts) -> Digest {
     let mut asks: Vec<&AskFact> = facts.asks.iter().collect();

@@ -33,8 +33,10 @@ pub fn digest(store: &Store, config: &Config) -> Result<Digest> {
     }))
 }
 
-/// The digest as text to put on top of another output, with a blank line after it; empty when nothing waits on the
-/// user or when the store cannot be read, since a digest must never keep a hook or a recap from working.
+/// The digest as text to put on top of another output, with a blank line after it.
+///
+/// Empty when nothing waits on the user or when the store cannot be read, since a digest must never keep a hook or a
+/// recap from working.
 #[must_use]
 pub fn section(store: &Store, config: &Config) -> String {
     match digest(store, config) {
@@ -101,8 +103,10 @@ pub fn with_first_prompt(store: &Store, config: &Config, session: &str, actor: A
     format!("\n{}", section(store, config))
 }
 
-/// Pushes the digest through `notify` when it is due: `[digest] push` is on, the local hour is `[digest] push_hour` or
-/// later, the digest holds lines and none was pushed today. Logs `digest-pushed` and returns what was sent.
+/// Pushes the digest through `notify` when it is due, and returns what was sent.
+///
+/// Due means `[digest] push` is on, the local hour is `[digest] push_hour` or later, the digest holds lines and none was
+/// pushed today. Logs `digest-pushed`.
 ///
 /// # Errors
 ///
