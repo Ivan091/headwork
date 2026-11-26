@@ -148,7 +148,7 @@ heavy() {
         no_wait=(--no-wait)
         shift
     fi
-    heavy_acquire "${no_wait[@]}" "$*" || return
+    heavy_acquire ${no_wait[@]+"${no_wait[@]}"} "$*" || return
     local status=0
     "$@" || status=$?
     heavy_release
