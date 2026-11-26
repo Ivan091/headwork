@@ -271,7 +271,7 @@ impl<'b> Run<'_, 'b> {
         if let Some(text) = notice {
             if is_new {
                 self.notify(text);
-            } else if self.retell_due(key, rule)? {
+            } else if self.report.host_up && self.retell_due(key, rule)? {
                 self.notify(&format!("Still open: {text}"));
                 self.store.note_finding_told(key, rule, task, actor)?;
             }

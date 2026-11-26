@@ -380,6 +380,13 @@ fn a_vanished_pane_interrupts_the_task() {
         [(FindingId::PaneLost, Status::Applied)],
         "finding"
     );
+    let notices = UpdateState::load(&w.home).notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].source.as_deref(), Some("tick"), "from the tick");
+    assert!(
+        notices[0].text.contains("demo-sand") && notices[0].text.contains("interrupted"),
+        "{notices:?}"
+    );
 }
 
 #[test]
@@ -707,6 +714,13 @@ fn enforcing_starts_closing_a_merged_task_that_reported() {
         "closing"
     );
     assert_ne!(state(&w, &task), TaskState::Merged, "left merged");
+    let notices = UpdateState::load(&w.home).notices;
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].source.as_deref(), Some("tick"), "from the tick");
+    assert!(
+        notices[0].text.contains("demo-sand") && notices[0].text.contains("closing"),
+        "{notices:?}"
+    );
 }
 
 #[test]
