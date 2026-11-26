@@ -2046,3 +2046,39 @@ fn the_board_line_and_status_show_gate_holders_and_waiting_tasks() {
         find("demo-other").line
     );
 }
+
+#[test]
+fn a_gated_job_whose_pid_already_waits_takes_no_slot() {
+    use headwork::ops::jobs::claim_gate;
+    use headwork_core::gate::{GateClass, Owner};
+
+    let mut w = world("ask");
+    let slots = w.dir.path().join("slots");
+    w.config.gates.dir = Some(slots.display().to_string().replace('\\', "/"));
+    let (sand, session, _) = w.working("sand");
+    let pid = w.sleeper();
+    let mut registration = job("render", ParkPolicy::Rerun, pid, None);
+    registration.gate = Some(GateClass::Cpu);
+    let env = env!(w);
+    let row = register(&mut w.store, &env, &sand, &session, &registration).unwrap();
+    let waiting = Owner {
+        pid,
+        native: true,
+        class: Some(GateClass::Cpu),
+        command: "render".to_owned(),
+        epoch: Some(headwork_adapters::gate::epoch_now()),
+        ..Owner::default()
+    };
+    std::fs::create_dir_all(slots.join("cpu")).unwrap();
+    std::fs::write(
+        slots.join("cpu").join(format!("wait-{pid}")),
+        waiting.render(),
+    )
+    .unwrap();
+    assert_eq!(
+        claim_gate(&env, &sand, &row),
+        None,
+        "its gate takes a slot in turn"
+    );
+    assert!(!slots.join("cpu").join("slot-1").exists(), "no slot taken");
+}

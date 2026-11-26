@@ -524,11 +524,25 @@ impl Slots {
     }
 }
 
+/// What [`Slots::claim_for`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// The slot with this number was taken for the process.
+    Taken(u32),
+    /// The process already holds a slot of the class, or waits for one and takes it in turn.
+    Gated,
+    /// No slot is free for it: the class is full, live waiters came first, or live legacy slots fill it.
+    Busy,
+}
+
 impl Slots {
     /// Takes a free slot of a class for the process `owner.pid` names, without waiting and without joining the queue.
     ///
-    /// Stale slots are reaped first. The slot stays taken after this returns; it ends with its holder, as any slot.
-    /// Returns the slot number, or `None` when no slot is free (or the live waiters ahead need the free ones).
+    /// Stale slots are reaped first. A process that holds a slot of the class or has a live waiter file in it is
+    /// [`Claim::Gated`] already. Waiting stays first come first served: a free slot is taken only when it is not
+    /// needed by the live waiters, who all came before ([`may_take`]). A `cpu` slot is then given back, as by
+    /// [`Ticket::try_take`], when the older holders and the live legacy slots fill the count. The slot stays taken
+    /// after this returns; it ends with its holder, as any slot.
     ///
     /// # Errors
     ///
@@ -541,13 +555,29 @@ impl Slots {
         owner: Owner,
         started: &str,
         epoch: u64,
-    ) -> Result<Option<u32>, GateError> {
+    ) -> Result<Claim, GateError> {
         let dir = self.class_dir(class);
         std::fs::create_dir_all(&dir).map_err(io_error("creating", &dir))?;
         let reap_error = self.reap(class).error;
         let view = self.read(class, count);
-        if free_slots(count, view.used()) == 0 {
-            return reap_error.map_or(Ok(None), Err);
+        let pid = owner.pid;
+        let holds = view
+            .holders
+            .iter()
+            .filter(|holder| !holder.stale)
+            .any(|holder| {
+                holder
+                    .owner
+                    .as_ref()
+                    .is_some_and(|theirs| theirs.pid == pid)
+            });
+        if holds || view.live_waiters().any(|waiter| waiter.pid == pid) {
+            return Ok(Claim::Gated);
+        }
+        let busy = || reap_error.map_or(Ok(Claim::Busy), Err);
+        let waiting = u32::try_from(view.live_waiters().count()).unwrap_or(u32::MAX);
+        if !may_take(free_slots(count, view.used()), waiting) {
+            return busy();
         }
         let ticket = Ticket {
             slots: self.clone(),
@@ -561,11 +591,14 @@ impl Slots {
             wait_file: None,
         };
         let Some(held) = ticket.claim(&view, started, epoch)? else {
-            return reap_error.map_or(Ok(None), Err);
+            return busy();
+        };
+        let Some(held) = ticket.settle(held)? else {
+            return busy();
         };
         let slot = held.slot();
         held.keep();
-        Ok(Some(slot))
+        Ok(Claim::Taken(slot))
     }
 }
 
@@ -1371,6 +1404,98 @@ mod tests {
         assert!(
             ticket.settle(held).unwrap().is_some(),
             "one legacy holder and this one fit in two"
+        );
+    }
+
+    fn claim(slots: &Slots, class: GateClass, n: u32, pid: u32) -> Claim {
+        slots
+            .claim_for(class, count(n), owner(pid, epoch_now()), "t", epoch_now())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_claim_takes_a_free_slot_once_for_a_pid() {
+        let fake = Fake::live(&[5]);
+        let (_dir, slots) = slots(&fake);
+        assert_eq!(
+            claim(&slots, GateClass::Gpu, 2, 5),
+            Claim::Taken(1),
+            "a free slot"
+        );
+        assert_eq!(
+            claim(&slots, GateClass::Gpu, 2, 5),
+            Claim::Gated,
+            "it holds one already"
+        );
+        assert!(
+            !slots.class_dir(GateClass::Gpu).join("slot-2").exists(),
+            "no second slot"
+        );
+    }
+
+    #[test]
+    fn a_claim_leaves_a_waiting_pid_to_its_gate() {
+        let fake = Fake::live(&[5]);
+        let (_dir, slots) = slots(&fake);
+        let _queued = slots
+            .enqueue(GateClass::Cpu, count(2), owner(5, 10))
+            .unwrap();
+        assert_eq!(
+            claim(&slots, GateClass::Cpu, 2, 5),
+            Claim::Gated,
+            "its gate takes a slot in turn"
+        );
+        assert!(
+            !slots.class_dir(GateClass::Cpu).join("slot-1").exists(),
+            "no slot made"
+        );
+    }
+
+    #[test]
+    fn a_claim_never_jumps_the_queue() {
+        let fake = Fake::live(&[1, 2, 3, 5]);
+        let (_dir, slots) = slots(&fake);
+        let mut holder = slots
+            .enqueue(GateClass::Cpu, count(3), owner(1, 10))
+            .unwrap();
+        let _held = take(&mut holder).unwrap();
+        let _first = slots
+            .enqueue(GateClass::Cpu, count(3), owner(2, 20))
+            .unwrap();
+        let _second = slots
+            .enqueue(GateClass::Cpu, count(3), owner(3, 30))
+            .unwrap();
+        assert_eq!(
+            claim(&slots, GateClass::Cpu, 3, 5),
+            Claim::Busy,
+            "two free slots, two waiters ahead"
+        );
+        assert_eq!(
+            claim(&slots, GateClass::Cpu, 4, 5),
+            Claim::Taken(2),
+            "a slot no waiter needs"
+        );
+    }
+
+    #[test]
+    fn live_legacy_slots_filling_the_class_leave_no_claim() {
+        let fake = Fake::live(&[5, 4711, 4712]);
+        let (dir, slots) = slots(&fake);
+        write_slot(dir.path(), 1, "pid=4711\nnative=1\ncommand=render\n");
+        write_slot(dir.path(), 2, "pid=4712\nnative=1\ncommand=render\n");
+        assert_eq!(
+            claim(&slots, GateClass::Cpu, 2, 5),
+            Claim::Busy,
+            "legacy holders fill cpu"
+        );
+        assert!(
+            !slots.class_dir(GateClass::Cpu).join("slot-1").exists(),
+            "no slot made"
+        );
+        assert_eq!(
+            claim(&slots, GateClass::Gpu, 2, 5),
+            Claim::Taken(1),
+            "gpu is free"
         );
     }
 

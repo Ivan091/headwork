@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
+use headwork_adapters::gate::Claim;
 use headwork_adapters::proc::{self, Liveness};
 use headwork_core::config::ParkPolicy;
 use headwork_core::gate::{GateClass, Owner};
@@ -106,8 +107,8 @@ pub fn register(
 
 /// What a registered job's gate came to: a warning when its process holds no slot and none could be taken for it.
 ///
-/// Takes a free slot of the job's class for its pid when the pid holds none; nothing happens for a job without a gate or
-/// a pid.
+/// Takes a free slot of the job's class for its pid when the pid neither holds one nor waits for one (a gate it runs
+/// takes its slot in turn); the queue keeps its order. Nothing happens for a job without a gate or a pid.
 #[must_use]
 pub fn claim_gate(env: &Env<'_>, task: &Task, job: &JobRow) -> Option<String> {
     let (class, pid) = (job.gate?, job.pid?);
@@ -118,14 +119,6 @@ pub fn claim_gate(env: &Env<'_>, task: &Task, job: &JobRow) -> Option<String> {
             job.label
         ));
     };
-    let slots = headwork_adapters::gate::Slots::new(dir);
-    let view = slots.read(class, gates.count(class));
-    let holds = view
-        .live_holders()
-        .any(|holder| holder.owner.as_ref().is_some_and(|owner| owner.pid == pid));
-    if holds {
-        return None;
-    }
     let owner = Owner {
         pid,
         native: true,
@@ -136,7 +129,7 @@ pub fn claim_gate(env: &Env<'_>, task: &Task, job: &JobRow) -> Option<String> {
         command: job.argv.join(" "),
         ..Owner::default()
     };
-    let claimed = slots.claim_for(
+    let claimed = headwork_adapters::gate::Slots::new(dir).claim_for(
         class,
         gates.count(class),
         owner,
@@ -144,9 +137,10 @@ pub fn claim_gate(env: &Env<'_>, task: &Task, job: &JobRow) -> Option<String> {
         headwork_adapters::gate::epoch_now(),
     );
     match claimed {
-        Ok(Some(_)) => None,
-        Ok(None) => Some(format!(
-            "job `{}` runs over the {class} gate: all {} slots are taken and it holds none; start gated jobs with job_start",
+        Ok(Claim::Taken(_) | Claim::Gated) => None,
+        Ok(Claim::Busy) => Some(format!(
+            "job `{}` runs over the {class} gate: none of its {} slots is free for it (taken, or wanted by waiters that \
+             came first) and it holds none; start gated jobs with job_start",
             job.label,
             gates.count(class)
         )),
