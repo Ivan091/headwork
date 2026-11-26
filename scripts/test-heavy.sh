@@ -50,7 +50,8 @@ check "heavy_hold frees the slot when the script fails" "[ '$held_fail' -eq 3 ] 
 bash -c '. scripts/heavy.sh; heavy_hold "outer"; heavy_hold "inner"; ls "$HEADWORK_HEAVY_DIR" > "$0"' "$work/twice" 2> /dev/null
 check "a second heavy_hold in the same script takes no second slot" "[ \"\$(grep -c slot- '$work/twice')\" -eq 1 ]"
 
-HEADWORK_HEAVY_HELD=1 bash -c '. scripts/heavy.sh; heavy_hold "preheld"; ls "$HEADWORK_HEAVY_DIR" 2> /dev/null | grep -c slot- > "$0"; true'     "$work/preheld" 2> /dev/null
+HEADWORK_HEAVY_HELD=1 bash -c '. scripts/heavy.sh; heavy_hold "preheld"; ls "$HEADWORK_HEAVY_DIR" 2> /dev/null | grep -c slot- > "$0"; true' \
+    "$work/preheld" 2> /dev/null
 check "heavy_hold takes no slot when one is already held in the environment" "[ \"\$(cat '$work/preheld')\" -eq 0 ]"
 
 bash -c '. scripts/heavy.sh; heavy_hold "signal test"; : > "$0"; sleep 5 & wait' "$work/ready" 2> /dev/null &
