@@ -1,6 +1,6 @@
 # 2026-11-26: A brief may forbid a user-only command; parts carry their lead's go; allow-asks split
 
-Audit items 7 and 13 (`S:/Code/notes/headwork-general-audit-2026-11-26.md`). The spawn guard (`core/src/user_go.rs`)
+Audit items 7 and 13 of the 2026-11-26 headwork audit. The spawn guard (`core/src/user_go.rs`)
 counted every user-only command in backticks, also in "never run `x`", so a brief could not warn against one.
 
 **Negation is per command, not per line.** A command in backticks names nothing when the text between it and the
