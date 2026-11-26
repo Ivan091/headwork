@@ -84,7 +84,7 @@ Every flow defines its levels; the built-in `code` flow:
 | Models | Sonnet | Opus for correctness and design, Sonnet for the rest | Opus |
 | What counts as a finding | a defect with a concrete failing scenario | defects, plus risks and nits marked `nit` | everything at 2, plus doubts about the approach and the scope |
 | Verify stage | none | one adversarial verifier per finding; only `confirmed` and `plausible` go on | same |
-| Rounds | one; the fixes are re-checked | one; the fixes are re-checked | two: a second full round on the fixed commit |
+| Rounds | one; the fixes are re-checked | one; the fixes are re-checked | two: a second full round on the fixed commit, only after an important fix (section 13) |
 | A dispute | accepted when it gives a reason | accepted only with evidence (a test, a code reference, a doc line) | same as 2, and the reviewer lead argues back once first |
 | A dispute not settled | accepted | goes to the user in one ask | goes to the user in one ask |
 
