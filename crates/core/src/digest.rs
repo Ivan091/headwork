@@ -187,10 +187,10 @@ fn ask_line(ask: &AskFact) -> String {
 fn dated_todos(todos: &[Todo], today: &TodoDate) -> Vec<(TodoDate, i64, String)> {
     let mut dated: Vec<(TodoDate, i64, String)> = todos
         .iter()
-        .filter(|todo| todo.state == TodoState::Open && todo.task.is_none())
+        .filter(|todo| todo.draft.state == TodoState::Open && todo.task.is_none())
         .filter_map(|todo| {
-            let text = shorten(&todo.text, TEXT_LIMIT);
-            match (&todo.due, &todo.not_before) {
+            let text = shorten(&todo.draft.text, TEXT_LIMIT);
+            match (&todo.draft.due, &todo.draft.not_before) {
                 (Some(due), _) if due <= today => Some((
                     due.clone(),
                     todo.id,
@@ -253,21 +253,25 @@ pub fn build(facts: &Facts) -> Digest {
         .todos
         .iter()
         .filter(|todo| {
-            todo.state == TodoState::Open
-                && todo.owner == TodoOwner::User
+            todo.draft.state == TodoState::Open
+                && todo.draft.owner == TodoOwner::User
                 && todo.task.is_none()
                 && !listed.contains(&todo.id)
                 && todo
+                    .draft
                     .not_before
                     .as_ref()
                     .is_none_or(|from| from <= &facts.today)
         })
         .collect();
     rest.sort_by_key(|todo| (todo.position, todo.id));
-    lines.extend(
-        rest.into_iter()
-            .map(|todo| format!("todo #{}: {}", todo.id, shorten(&todo.text, TEXT_LIMIT))),
-    );
+    lines.extend(rest.into_iter().map(|todo| {
+        format!(
+            "todo #{}: {}",
+            todo.id,
+            shorten(&todo.draft.text, TEXT_LIMIT)
+        )
+    }));
     trim(lines)
 }
 
@@ -286,7 +290,8 @@ fn trim(mut lines: Vec<String>) -> Digest {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::todo::LinkedTask;
+    use crate::todo::{LinkedTask, TodoDraft};
+    use crate::vocabulary::TaskState;
 
     fn date(text: &str) -> TodoDate {
         TodoDate::parse(text).unwrap()
@@ -295,19 +300,21 @@ mod tests {
     fn todo(id: i64, text: &str, owner: TodoOwner) -> Todo {
         Todo {
             id,
-            project: "demo".to_owned(),
-            section: None,
-            text: text.to_owned(),
-            notes: Vec::new(),
-            state: TodoState::Open,
-            owner,
-            added: None,
-            not_before: None,
-            due: None,
-            done_on: None,
-            done_note: None,
-            task: None,
             position: id,
+            task: None,
+            draft: TodoDraft {
+                project: "demo".to_owned(),
+                section: None,
+                text: text.to_owned(),
+                notes: Vec::new(),
+                state: TodoState::Open,
+                owner,
+                added: None,
+                not_before: None,
+                due: None,
+                done_on: None,
+                done_note: None,
+            },
         }
     }
 
@@ -347,11 +354,11 @@ mod tests {
             ask(3, None, "Pick one", 3 * 3600 + 5),
         ];
         let mut due = todo(1, "Pay the invoice", TodoOwner::User);
-        due.due = Some(date("2026-11-20"));
+        due.draft.due = Some(date("2026-11-20"));
         let mut from = todo(2, "Start the survey", TodoOwner::Agent);
-        from.not_before = Some(date("2026-11-26"));
+        from.draft.not_before = Some(date("2026-11-26"));
         let mut future = todo(3, "Later thing", TodoOwner::User);
-        future.not_before = Some(date("2026-12-01"));
+        future.draft.not_before = Some(date("2026-12-01"));
         let plain = todo(4, "Review the draft", TodoOwner::User);
         let agent = todo(5, "Agent chore", TodoOwner::Agent);
         facts.todos = vec![plain, future, from, due, agent];
@@ -449,14 +456,14 @@ mod tests {
     fn done_dropped_and_linked_items_are_left_out() {
         let mut facts = facts();
         let mut done = todo(1, "Done one", TodoOwner::User);
-        done.state = TodoState::Done;
+        done.draft.state = TodoState::Done;
         let mut dropped = todo(2, "Dropped one", TodoOwner::User);
-        dropped.state = TodoState::Dropped;
+        dropped.draft.state = TodoState::Dropped;
         let mut linked = todo(3, "Linked one", TodoOwner::User);
         linked.task = Some(LinkedTask {
             id: 1,
             name: "demo-x".into(),
-            state: "working".into(),
+            state: TaskState::Working,
         });
         facts.todos = vec![done, dropped, linked];
         assert!(build(&facts).is_empty(), "nothing open and free");

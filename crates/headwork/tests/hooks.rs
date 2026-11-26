@@ -3877,7 +3877,7 @@ fn the_orchestrators_board_and_status_tools_start_with_the_digest_and_a_workers_
         let (is_error, text) = w.tool(orchestrator_identity(), tool, &json!({}));
         assert!(!is_error, "{text}");
         assert!(
-            text.starts_with("Needs you\n- todo #1: For you: Sign the invented form\n"),
+            text.starts_with("Needs you\n- todo #1: Sign the invented form\n"),
             "{tool}: {text}"
         );
     }
