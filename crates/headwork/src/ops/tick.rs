@@ -349,6 +349,7 @@ impl<'b> Run<'_, 'b> {
             super::todo::Export::Unconfigured
             | super::todo::Export::Unchanged
             | super::todo::Export::Written { .. }
+            | super::todo::Export::Busy
             | super::todo::Export::NotImported { .. } => Ok(()),
         }
     }

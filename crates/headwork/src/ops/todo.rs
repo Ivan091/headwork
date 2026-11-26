@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use headwork_core::todo::{
@@ -54,6 +54,8 @@ pub enum Export {
         /// The file.
         path: String,
     },
+    /// Another export held the lock for longer than this one waited; nothing was written.
+    Busy,
     /// The export failed; the change it followed stands.
     Failed {
         /// Why.
@@ -80,6 +82,7 @@ impl Export {
                     "{path} exists and was never imported: run `headwork todo import` first; nothing exported"
                 )
             }
+            Self::Busy => "another export is running; nothing exported".to_owned(),
             Self::Failed { error } => format!("export failed: {error}"),
         }
     }
@@ -216,14 +219,9 @@ pub fn target(home: &Home, config: &Config, file: Option<&Path>) -> Option<PathB
         .map(|path| absolute(&path))
 }
 
-fn copy_aside(home: &Home, path: &Path) -> Result<PathBuf> {
-    let dir = home.root().join(TODO_BACKUP_DIR);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let copy = dir.join(format!("todo-{:015}.md", millis()));
-    std::fs::copy(path, &copy)
-        .with_context(|| format!("copying {} to {}", path.display(), copy.display()))?;
+fn backup_copies(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut copies: Vec<PathBuf> = Vec::new();
-    for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry
             .with_context(|| format!("reading {}", dir.display()))?
             .path();
@@ -237,11 +235,99 @@ fn copy_aside(home: &Home, path: &Path) -> Result<PathBuf> {
         }
     }
     copies.sort();
+    Ok(copies)
+}
+
+/// A copy of a file edited by hand, and whether this call made it.
+struct Aside {
+    copy: PathBuf,
+    fresh: bool,
+}
+
+/// Copies `path` to the backup folder unless a kept copy already holds the same content (`content_hash`), so a write that
+/// keeps failing makes one copy of a hand edit, not one per attempt.
+fn copy_aside(home: &Home, path: &Path, content_hash: &str) -> Result<Aside> {
+    let dir = home.root().join(TODO_BACKUP_DIR);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut copies = backup_copies(&dir)?;
+    for kept in copies.iter().rev() {
+        let held = std::fs::read(kept)
+            .ok()
+            .map(|bytes| hash(&String::from_utf8_lossy(&bytes)));
+        if held.as_deref() == Some(content_hash) {
+            return Ok(Aside {
+                copy: kept.clone(),
+                fresh: false,
+            });
+        }
+    }
+    let copy = dir.join(format!("todo-{:015}.md", millis()));
+    std::fs::copy(path, &copy)
+        .with_context(|| format!("copying {} to {}", path.display(), copy.display()))?;
+    copies.push(copy.clone());
+    copies.sort();
     let surplus = copies.len().saturating_sub(TODO_BACKUPS_KEPT);
     for old in copies.into_iter().take(surplus) {
         std::fs::remove_file(&old).with_context(|| format!("removing {}", old.display()))?;
     }
-    Ok(copy)
+    Ok(Aside { copy, fresh: true })
+}
+
+/// The export lock file in the home folder.
+pub const EXPORT_LOCK_FILE: &str = "todo-export.lock";
+
+/// How long an export waits for the lock another export holds.
+pub const EXPORT_LOCK_WAIT: Duration = Duration::from_secs(5);
+
+/// How old a lock file must be to count as left behind by a dead export.
+pub const EXPORT_LOCK_STALE: Duration = Duration::from_secs(600);
+
+/// The export lock, held until this value is dropped.
+#[derive(Debug)]
+struct ExportLock {
+    path: PathBuf,
+}
+
+impl Drop for ExportLock {
+    fn drop(&mut self) {
+        drop(std::fs::remove_file(&self.path));
+    }
+}
+
+fn lock_is_stale(path: &Path, stale: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= stale)
+}
+
+/// Takes the export lock: a file created exclusively, so a second export waits up to `wait` and then gets `None`. A lock
+/// file older than `stale` was left by an export that died and is taken over.
+fn take_export_lock(home: &Home, wait: Duration, stale: Duration) -> Result<Option<ExportLock>> {
+    let path = home.root().join(EXPORT_LOCK_FILE);
+    let start = Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_file) => return Ok(Some(ExportLock { path })),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_is_stale(&path, stale) {
+                    drop(std::fs::remove_file(&path));
+                } else if start.elapsed() >= wait {
+                    return Ok(None);
+                } else {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", path.display()));
+            }
+        }
+    }
 }
 
 /// Writes the to-do list to its file when the content changed since the last export.
@@ -260,8 +346,24 @@ pub fn export(
     file: Option<&Path>,
     actor: Actor,
 ) -> Result<Export> {
+    let wait = EXPORT_LOCK_WAIT;
+    let stale = EXPORT_LOCK_STALE;
+    export_locked(store, home, config, file, actor, (wait, stale))
+}
+
+fn export_locked(
+    store: &mut Store,
+    home: &Home,
+    config: &Config,
+    file: Option<&Path>,
+    actor: Actor,
+    (wait, stale): (Duration, Duration),
+) -> Result<Export> {
     let Some(path) = target(home, config, file) else {
         return Ok(Export::Unconfigured);
+    };
+    let Some(_lock) = take_export_lock(home, wait, stale)? else {
+        return Ok(Export::Busy);
     };
     let key = slashed(&path);
     let text = todo::render(&store.todos(&TodoFilter::default())?);
@@ -298,14 +400,17 @@ pub fn export(
             }
             let staged = stage_file(&path, &text)?;
             let backup = if back_up {
-                let copy = slashed(&copy_aside(home, &path)?);
-                store.append_event(
-                    actor,
-                    None,
-                    None,
-                    EVENT_EXPORT_OVERWROTE,
-                    &serde_json::json!({ "path": key, "backup": copy }),
-                )?;
+                let aside = copy_aside(home, &path, on_disk_hash.as_deref().unwrap_or_default())?;
+                let copy = slashed(&aside.copy);
+                if aside.fresh {
+                    store.append_event(
+                        actor,
+                        None,
+                        None,
+                        EVENT_EXPORT_OVERWROTE,
+                        &serde_json::json!({ "path": key, "backup": copy }),
+                    )?;
+                }
                 Some(copy)
             } else {
                 None
@@ -537,6 +642,7 @@ pub fn list(
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test")]
 mod tests {
     use super::*;
 
@@ -559,6 +665,59 @@ mod tests {
         assert_eq!(
             without_verbatim_prefix(PathBuf::from("/x/todo.md")),
             PathBuf::from("/x/todo.md")
+        );
+    }
+
+    fn home_at(dir: &Path) -> Home {
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        Home::at(Some(dir.join("home"))).unwrap()
+    }
+
+    #[test]
+    fn a_hand_edit_is_copied_once_however_often_the_copy_is_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home_at(dir.path());
+        let file = dir.path().join("todo.md");
+        std::fs::write(&file, "edited by hand\n").unwrap();
+        let content = hash("edited by hand\n");
+        let first = copy_aside(&home, &file, &content).unwrap();
+        let second = copy_aside(&home, &file, &content).unwrap();
+        assert!(first.fresh, "the first call copies");
+        assert!(!second.fresh, "the second finds the copy");
+        assert_eq!(first.copy, second.copy);
+        std::fs::write(&file, "edited again\n").unwrap();
+        assert!(
+            copy_aside(&home, &file, &hash("edited again\n"))
+                .unwrap()
+                .fresh
+        );
+    }
+
+    #[test]
+    fn a_held_lock_gives_up_and_a_stale_one_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home_at(dir.path());
+        let held = take_export_lock(&home, Duration::ZERO, EXPORT_LOCK_STALE)
+            .unwrap()
+            .unwrap();
+        assert!(
+            take_export_lock(&home, Duration::from_millis(120), EXPORT_LOCK_STALE)
+                .unwrap()
+                .is_none(),
+            "a live holder makes the second give up"
+        );
+        assert!(
+            take_export_lock(&home, Duration::ZERO, Duration::ZERO)
+                .unwrap()
+                .is_some(),
+            "a lock older than the stale age is taken"
+        );
+        drop(held);
+        assert!(
+            take_export_lock(&home, Duration::ZERO, EXPORT_LOCK_STALE)
+                .unwrap()
+                .is_some(),
+            "a released lock is free"
         );
     }
 }

@@ -603,3 +603,53 @@ fn a_failing_export_after_a_close_is_logged_and_the_close_still_succeeds() {
         kinds(&w)
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn an_export_that_keeps_failing_to_commit_makes_one_copy_and_one_event() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let mut w = world();
+    let env = env!(w);
+    todo::import(&mut w.store, &w.home, &w.config, None, false, Actor::User).unwrap();
+    add_item(&mut w.store, &env, "first");
+    let file = w.dir.path().join("todo.md");
+    std::fs::write(&file, "# To-do\n\nedited by hand\n").unwrap();
+    let _held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&file)
+        .unwrap();
+    let second = AddRequest {
+        project: "demo".to_owned(),
+        text: "second".to_owned(),
+        section: None,
+        owner: None,
+        not_before: None,
+        due: None,
+        notes: Vec::new(),
+    };
+    let change = todo::add(&mut w.store, &env, &second).unwrap();
+    assert!(matches!(change.export, Export::Failed { .. }), "{change:?}");
+    for _ in 0..2 {
+        let failed = todo::export(&mut w.store, &w.home, &w.config, None, Actor::User);
+        assert!(failed.is_err(), "{failed:?}");
+    }
+    let copies = std::fs::read_dir(w.home.root().join("todo-backups"))
+        .unwrap()
+        .filter(|entry| {
+            std::fs::read_to_string(entry.as_ref().unwrap().path())
+                .unwrap()
+                .contains("edited by hand")
+        })
+        .count();
+    assert_eq!(copies, 1);
+    let events = kinds(&w)
+        .iter()
+        .filter(|kind| *kind == "todo-export-overwrote")
+        .count();
+    assert_eq!(
+        events, 2,
+        "one for the original file, one for the hand edit"
+    );
+}
