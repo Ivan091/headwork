@@ -1693,8 +1693,11 @@ impl<'a> Server<'a> {
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
         };
-        let item = match args.get("backlog").or_else(|| args.get("todo")) {
-            None | Some(Value::Null) => None,
+        let item = match ["backlog", "todo"]
+            .iter()
+            .find_map(|key| args.get(*key).filter(|value| !value.is_null()))
+        {
+            None => None,
             Some(value) => Some(
                 value
                     .as_i64()

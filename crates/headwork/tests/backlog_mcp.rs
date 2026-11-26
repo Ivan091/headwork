@@ -292,7 +292,7 @@ fn the_old_todo_tool_names_and_spawn_argument_still_work() {
     );
     let spawned = w.ok(
         "spawn",
-        &json!({ "project": "demo", "slug": "old", "brief": "# Task\n", "todo": added }),
+        &json!({ "project": "demo", "slug": "old", "brief": "# Task\n", "backlog": null, "todo": added }),
     );
     assert_eq!(spawned["task"]["name"], "demo-old");
     assert_eq!(
