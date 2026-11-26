@@ -1,6 +1,6 @@
 id = "2026-11-26-uncap-sessions"
 title = "Agent sessions are not capped"
-since = "v0.1.77"
+since = "2026-11-26"
 requires = ["headwork"]
 why = """Agent sessions are no longer capped (docs/decisions/2026-11-26-gates-in-headwork.md). [machine] max_workers and idle_overflow, a project's max_workers and [leads] max_parts are optional and absent means no cap; a config that still sets them keeps capping sessions, and `headwork doctor` warns under config-keys. Remove them from ~/.headwork/config.machine.toml and the shared config. The tick raises the finding many-sessions above [watch] many_sessions (20) live sessions; it refuses nothing. CPU and GPU work is limited by gates instead: [gates] cpu = 3 and gpu = 2 are defaults and need no key, and me-sim's ME_SIM_HEAVY_SLOTS is retired once me-sim's heavy.sh wraps `headwork gate`."""
 check = "headwork doctor"
