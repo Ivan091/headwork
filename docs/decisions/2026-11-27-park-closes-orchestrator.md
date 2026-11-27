@@ -23,6 +23,8 @@ Choices taken:
 - An orchestrator running outside headwork (restored by wmux with a plain `claude --resume`) has no recorded pids: it
   gets the same `/exit`, counts as gone when the host no longer shows its Claude session, and its pane is closed.
 - `park --keep-orchestrator` (the `park` tool's `keep_orchestrator`) keeps the old behaviour, logged `orchestrator-kept`.
+- The orchestrator learns that the park closes it from the `park` tool's description, not from `rules/orchestrator.md`:
+  those rules sit just under the hook's size margin (`hooks.rs`, 9 400 bytes with long paths).
 - Resume needed no change to open exactly one orchestrator: after a park it opens the session the park recorded, the
   closed session is `ended`, and a pane the host restores for it after the reboot is closed as before. With
   `--keep-orchestrator` and no restart, the running orchestrator is left alone. The park tests check one orchestrator pane
