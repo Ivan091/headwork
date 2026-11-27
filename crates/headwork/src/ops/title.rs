@@ -9,8 +9,8 @@
 
 use anyhow::Result;
 use headwork_adapters::host::SurfaceId;
-use headwork_core::{REVIEW_KIND, TaskShape};
 use headwork_core::lead::part_label;
+use headwork_core::{REVIEW_KIND, TaskShape};
 use headwork_store::{Store, Task};
 use serde::Serialize;
 

@@ -471,7 +471,9 @@ fn the_pane_title_is_a_template_of_name_role_model_and_effort() {
         "default with an effort"
     );
     assert_eq!(
-        default.layout.title_for("headwork-m7", "worker", "sonnet", None),
+        default
+            .layout
+            .title_for("headwork-m7", "worker", "sonnet", None),
         "headwork-m7",
         "default without an effort"
     );

@@ -826,7 +826,14 @@ impl LeadsConfig {
         clippy::literal_string_with_formatting_args,
         reason = "the placeholders are the config template's own, not format arguments"
     )]
-    pub fn title_for(&self, part: &str, name: &str, role: &str, model: &str, effort: Option<&str>) -> String {
+    pub fn title_for(
+        &self,
+        part: &str,
+        name: &str,
+        role: &str,
+        model: &str,
+        effort: Option<&str>,
+    ) -> String {
         self.part_title
             .replace("{part}", part)
             .replace("{name}", name)
