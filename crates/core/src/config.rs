@@ -529,6 +529,10 @@ pub struct HooksConfig {
     /// silent stop. `0` never presumes them there. A push for an ask counts by its own window: sent since the turn's
     /// prompt, at most ten minutes ago.
     pub push_window_secs: u32,
+    /// The stop gate presumes the user in a live chat for this long after their last prompt (or `push_window_secs` if
+    /// that is longer), so a turn another session's message started during the chat is no silent stop. `0` leaves
+    /// the stop gate on `push_window_secs` alone.
+    pub stop_presence_secs: u32,
     /// A sent file counts for a review ask within this many seconds.
     pub file_window_secs: u32,
 }
@@ -555,6 +559,7 @@ impl Default for HooksConfig {
             orchestrator_repos: Vec::new(),
             brief_writable: Vec::new(),
             push_window_secs: 120,
+            stop_presence_secs: 300,
             file_window_secs: 300,
         }
     }
