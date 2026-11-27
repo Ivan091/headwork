@@ -40,7 +40,7 @@ extra. A task the orchestrator spawns gets `lead = 1`; a part gets `lead = 0` an
 - Asks: the lead (and a part) asks with `AskUserQuestion` in its own tab, as today. The blocked state, the push
   notification and the answer stay with that tab. The orchestrator's `inbox` still lists every ask, but its rules say
   "lead `<task>` needs you", never the question.
-- Reviews: the lead sends the file with `SendUserFile` and raises the `Review` ask itself.
+- Reviews: the lead sends the file with `SendUserFile` and raises the `Review` ask itself. Any report or notes file handed to the user goes the same way (`rules/worker.md`, `rules/explorer.md`): the phone and the desktop app over Remote Control cannot open a local path.
 - Reports: a part sends its report to its lead by `SendMessage` (the worker rules name `{parent}`, the lead's address,
   instead of `{orchestrator}`). The lead sends the orchestrator only state changes: started, needs the user, in review
   (with the pull request URLs), finished, failed, each as `report` plus one short `SendMessage` line at the end.

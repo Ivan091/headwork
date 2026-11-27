@@ -7,6 +7,8 @@
 - The report ends with `## Backlog candidates`, a numbered list `N. [project] text (why: finding K)`. Check each candidate
   with `backlog_list` and against the live tasks on `board`; list one already on the backlog or covered by a live task as
   such, and do not offer it.
+- When the report is committed, send it with `SendUserFile` (the phone and desktop app cannot open its path) before the
+  `Backlog` ask, and name the path only as a label.
 - When the report is committed and has candidates, send a `PushNotification`, then ask the user once: an
   `AskUserQuestion` headed `Backlog`, `multiSelect` true, one option per candidate (a short label, the full text in the
   description), strongest first, at most 4 questions of 4 options. List the rest in the report as not offered. A question
