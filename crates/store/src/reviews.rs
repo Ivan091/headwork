@@ -3,6 +3,8 @@
 //! Every state change goes through [`headwork_core::review::apply`]; the store counts the facts its guards read from the
 //! findings, and the caller adds the ones only the flow can tell (the round complete, another round due).
 
+use std::collections::BTreeSet;
+
 use headwork_core::review::{
     Instance, Level, NodeId, Progress, ReviewFacts, ReviewRefusal, ReviewTrigger,
 };
@@ -365,6 +367,11 @@ fn open_review_in(conn: &Connection, task: TaskId) -> Result<Option<ReviewRow>, 
     .transpose()
 }
 
+/// The findings that make another round due and earn their node a rerun in it: important, delivered and fixed (the fix
+/// accepted or still awaiting its verdict). One definition for [`FindingCounts::fixed_important`] and
+/// [`Store::fixed_important_nodes`], so the two never drift.
+const FIXED_IMPORTANT: &str = "resolution IN ('fixed', 'fix-accepted') AND severity = 'important'";
+
 fn count_of(conn: &Connection, review: &ReviewRow, sql: &str) -> Result<u32, StoreError> {
     let n: i64 = conn.query_row(sql, params![review.id, review.round], |row| row.get(0))?;
     u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
@@ -388,10 +395,9 @@ fn counts_in(conn: &Connection, review: &ReviewRow) -> Result<FindingCounts, Sto
             "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
              AND resolution IN ('fixed', 'fix-accepted')",
         )?,
-        fixed_important: count(
-            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
-             AND resolution IN ('fixed', 'fix-accepted') AND severity = 'important'",
-        )?,
+        fixed_important: count(&format!(
+            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 AND {FIXED_IMPORTANT}"
+        ))?,
     })
 }
 
@@ -595,6 +601,30 @@ impl Store {
         let row = review_in(&tx, id)?.ok_or(ReviewError::Unknown(id))?;
         tx.commit()?;
         Ok(row)
+    }
+
+    /// The nodes that had an important finding fixed in one round of a review, by the definition
+    /// [`FindingCounts::fixed_important`] counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or a stored node name this build does not accept.
+    pub fn fixed_important_nodes(
+        &self,
+        review: i64,
+        round: u8,
+    ) -> Result<BTreeSet<NodeId>, StoreError> {
+        let names = self
+            .conn
+            .prepare(&format!(
+                "SELECT DISTINCT node FROM review_findings WHERE review_id = ?1 AND round = ?2 AND {FIXED_IMPORTANT}"
+            ))?
+            .query_map(params![review, round], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        names
+            .iter()
+            .map(|name| NodeId::new(name).map_err(StoreError::from))
+            .collect()
     }
 
     /// How many findings of the review wait on whom, up to its current round.

@@ -124,6 +124,7 @@ id = "correctness"
 prompt = "code/correctness.md"
 from_level = 1
 model = { 1 = "sonnet", 2 = "opus", 3 = "opus" }
+every_round = true                  # runs in every later round too (default false; plain nodes only)
 
 [[node]]
 id = "tests"
@@ -158,6 +159,9 @@ The graph:
   findings once that node is done", not a barrier. That is how the verify stage works, and later flows can use it for
   other per-item steps.
 - `from_level` drops a node below that level; `after` edges to dropped nodes vanish.
+- `every_round = true` (default false) keeps a plain node in every later round. A flow with such a node at the level
+  narrows its later rounds to the fix commits (section 14); a flow without one runs later rounds whole. An `each` node
+  always runs, so `every_round` on one is refused.
 - Each node returns findings in one shape: `file`, `line`, `severity` (`important`, `nit`, `doubt`), `summary`,
   `scenario`; a verify instance returns a `verdict` (`confirmed`, `plausible`, `rejected`) for its one finding, or an
   array `[{id, verdict, evidence}]` covering every finding of its group.
@@ -248,8 +252,8 @@ from; a review never delivers with a ready node).
 | Tool | Who | What |
 |---|---|---|
 | `review_start {}` | implementing lead | takes the `requested` review: refuses with uncommitted changes (`review-dirty`), pins `head_sha` (HEAD) and `base_sha` (merge base with the default branch), makes the review worktree, spawns the part `review` (`review-2` for a later review) of kind `review` with the generated brief |
-| `review_next {}` | reviewer lead | the ready nodes with their full prompts and models, marked `running`; empty when the round waits on nothing |
-| `review_node_done {node, item?, findings[] or verdict or verdicts[]}` | reviewer lead | stores a plain node's findings, or a verify instance's `verdict` (one finding) or `verdicts` (`[{id, verdict}]`, every finding of its `checks` once, none outside); a malformed one is refused with the shape |
+| `review_next {}` | reviewer lead | the ready nodes with their full prompts and models, marked `running`; each with its `item` (0 for a plain node, the smallest finding id of an `each` instance's group) and, for an `each` instance, `checks` (the finding ids it verifies); empty when the round waits on nothing |
+| `review_node_done {node, item?, findings[] or verdict or verdicts[]}` | reviewer lead | stores a plain node's findings, or a verify instance's `verdict` (one finding) or `verdicts` (`[{id, verdict}]`, every finding of its `checks` once, none outside, never both); a malformed one is refused with the shape, and so is a plain node a narrowed round leaves out or an `each` item (also a failed one) that names no group |
 | `review_deliver {summary}` | reviewer lead | refused while a node is ready or running (`review-nodes-open`); returns the findings numbered (confirmed and plausible only after a verify stage, within the floor and the caps of section 13), the `listed` ones (below the floor or over a cap, with the reason) to pass on for information only, and the implementing lead's address, for the reviewer lead to send with `SendMessage` |
 | `review_resolve {items: [{id, fixed or disputed, note}]}` | implementing lead | one entry per open finding; refused while one is missing or the fixes are uncommitted; pins the new `head_sha` and returns the reviewer lead's address, for a `SendMessage` that wakes it |
 | `review_verdict {items: [{id, fix accepted or rejected, dispute accepted or kept}]}` | reviewer lead | the re-check, from fresh subagents; a kept dispute at `unsettled = "ask"` makes the review `asking` |
@@ -375,11 +379,14 @@ diff. Three changes:
   file across nodes (`docs/decisions/2026-11-27-batched-verify.md`). The instance's `item` is the group's smallest
   finding id, `review_next` lists its members as `checks`, and its prompt lists every finding and asks for one verdict
   each, judged on its own. A group of one keeps the one-finding prompt.
-- **Fix-scoped later rounds.** Round 2 (and 3) reviews `round_base_sha..head_sha`: the changed files are that diff's,
-  and every node's prompt says to review only the lines the fix commits changed and the direct callers of what they
-  changed. It runs `correctness`, the plain nodes that reported an `important` finding in the previous round, and every
-  `each` node; the other plain nodes count as complete with no findings. A flow without a `correctness` node runs every
-  node. A review started before migration 0029 has no `reviewed_sha` and keeps whole later rounds.
+- **Fix-scoped later rounds.** In a flow with an `every_round` node at the level (the `code` flow marks
+  `correctness`), a later round runs the `every_round` nodes, the plain nodes that had an `important` finding fixed in
+  the previous round (delivered and fixed, the fix accepted or awaiting its verdict: the same definition that makes the
+  round due, `fixed_important` in the store), and every `each` node; the other plain nodes count as complete with no
+  findings. Only such a narrowed round reviews `round_base_sha..head_sha`: the changed files are that diff's (a failure
+  to read them fails `review_next`), and every node's prompt says to review only the lines the fix commits changed and
+  the direct callers of what they changed. A flow with no `every_round` node (the `plan` flow), and a review started
+  before migration 0029 (no `reviewed_sha`), keep whole later rounds as before.
 
 Level 1 (no verify node, one round) is unchanged, byte for byte.
 

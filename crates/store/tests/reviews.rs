@@ -440,6 +440,23 @@ fn a_due_round_starts_round_two_with_fresh_nodes() {
         (Some("head1"), Some("head2")),
         "round two reviews the fix commits head1..head2"
     );
+    assert_eq!(
+        store
+            .fixed_important_nodes(review.id, 1)
+            .unwrap()
+            .into_iter()
+            .map(|node| node.to_string())
+            .collect::<Vec<_>>(),
+        ["correctness"],
+        "the node whose important finding was fixed in round one"
+    );
+    assert!(
+        store
+            .fixed_important_nodes(review.id, 2)
+            .unwrap()
+            .is_empty(),
+        "nothing fixed in round two yet"
+    );
     assert!(
         store.review_progress(&review).unwrap().instances.is_empty(),
         "round two starts with no node run"

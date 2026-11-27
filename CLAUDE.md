@@ -182,8 +182,8 @@ floor` or over `max_round_findings`/`max_task_findings` for information instead 
 those below the floor), drops a later round's repeats of earlier findings, runs another round only after an important
 fix, and shows each review's fresh tokens on `board` and `status`. Section 14 (migration 0029): an `each` node starts on
 an input's findings once that input is over, verify batches per node (level 2) or per node and file (level 3), and a
-later round reviews only the fix commits (`round_base_sha..head_sha`) with `correctness`, the nodes that found an
-important defect and verify.
+later round of a flow with an `every_round` node reviews only the fix commits (`round_base_sha..head_sha`) with the
+`every_round` nodes, the nodes that had an important finding fixed and verify.
 The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,

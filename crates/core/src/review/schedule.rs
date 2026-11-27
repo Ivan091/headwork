@@ -12,9 +12,6 @@ use super::Level;
 use super::flow::{Each, Flow, Node, NodeId};
 use crate::vocabulary::NodeState;
 
-/// The node every later round runs whatever the previous one found, when the flow has it.
-pub const ANCHOR_NODE: &str = "correctness";
-
 /// One run of a node: a plain node runs once (item 0); an `each` node once per group of its inputs' findings (item =
 /// the smallest finding id of the group).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -49,7 +46,9 @@ impl Progress {
             .copied()
     }
 
-    fn runs(&self, node: &Node) -> bool {
+    /// Whether a node runs this round: every `each` node, and a plain node unless the round is narrowed without it.
+    #[must_use]
+    pub fn runs(&self, node: &Node) -> bool {
         node.fans_out()
             || self
                 .active
@@ -156,24 +155,25 @@ pub fn members(flow: &Flow, level: Level, progress: &Progress, instance: &Instan
         .unwrap_or_default()
 }
 
-/// The plain nodes a later round runs: those that reported an `important` finding in the previous round, plus
-/// [`ANCHOR_NODE`]; `None` (every node) when the flow has no such node.
+/// The plain nodes a narrowed later round runs.
+///
+/// Those marked `every_round`, plus those that had an `important` finding fixed in the previous round (`fixed`); `None`
+/// (every node, the whole round) when no node at the level is marked `every_round`.
 #[must_use]
 pub fn round_scope(
     flow: &Flow,
     level: Level,
-    important: &BTreeSet<NodeId>,
+    fixed: &BTreeSet<NodeId>,
 ) -> Option<BTreeSet<NodeId>> {
-    let anchor = flow
-        .nodes_at(level)
-        .find(|node| node.id.as_str() == ANCHOR_NODE && !node.fans_out())?;
-    let mut active: BTreeSet<NodeId> = flow
-        .nodes_at(level)
-        .filter(|node| !node.fans_out() && important.contains(&node.id))
-        .map(|node| node.id.clone())
-        .collect();
-    active.insert(anchor.id.clone());
-    Some(active)
+    if !flow.nodes_at(level).any(|node| node.every_round) {
+        return None;
+    }
+    Some(
+        flow.nodes_at(level)
+            .filter(|node| !node.fans_out() && (node.every_round || fixed.contains(&node.id)))
+            .map(|node| node.id.clone())
+            .collect(),
+    )
 }
 
 /// Whether every node that runs at the level is complete, so the round may deliver.

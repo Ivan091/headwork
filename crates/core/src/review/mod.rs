@@ -27,7 +27,7 @@ pub use policy::{
 pub use prompt::{
     FINDINGS_SHAPE, FindingText, ReviewTarget, VERDICT_SHAPE, VERDICTS_SHAPE, compose,
 };
-pub use schedule::{ANCHOR_NODE, Instance, Progress, members, ready, round_complete, round_scope};
+pub use schedule::{Instance, Progress, members, ready, round_complete, round_scope};
 pub use state::{
     DisputeCall, ReviewFacts, ReviewRefusal, ReviewTrigger, ReviewerView, apply, round_due,
     settle_dispute,

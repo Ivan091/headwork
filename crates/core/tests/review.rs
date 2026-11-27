@@ -257,11 +257,12 @@ fn flow_with(nodes: &str) -> Result<Flow, FlowError> {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one table of every flow error")]
 fn broken_flows_are_refused_with_the_reason() {
     let node = |id: &str, extra: &str| {
         format!("[[node]]\nid = \"{id}\"\nprompt = \"p.md\"\nmodel = \"sonnet\"\n{extra}\n")
     };
-    let table: [(String, FlowError); 11] = [
+    let table: [(String, FlowError); 12] = [
         (
             node("a", "") + &node("a", ""),
             FlowError::DuplicateNode("a".to_owned()),
@@ -326,6 +327,10 @@ fn broken_flows_are_refused_with_the_reason() {
                 node: "v".to_owned(),
                 key: "4".to_owned(),
             },
+        ),
+        (
+            node("a", "") + &node("v", "after = [\"a\"]\neach = \"node\"\nevery_round = true"),
+            FlowError::EveryRoundEach("v".to_owned()),
         ),
     ];
     for (nodes, want) in table {
@@ -903,20 +908,39 @@ fn an_each_map_picks_the_fan_out_per_level() {
 }
 
 #[test]
-fn a_later_round_runs_the_nodes_that_found_important_defects_plus_correctness() {
+fn a_later_round_runs_the_every_round_nodes_and_those_with_a_fixed_important_finding() {
     let flow = code();
-    let important: BTreeSet<NodeId> = [id("design"), id("verify")].into_iter().collect();
-    let scope = round_scope(&flow, Level::Strict, &important).unwrap();
+    assert!(
+        flow.node("correctness").unwrap().every_round && !flow.node("tests").unwrap().every_round,
+        "the code flow marks correctness only"
+    );
+    let fixed: BTreeSet<NodeId> = [id("design"), id("verify")].into_iter().collect();
+    let scope = round_scope(&flow, Level::Strict, &fixed).unwrap();
     assert_eq!(
         scope,
         [id("correctness"), id("design")].into_iter().collect(),
-        "correctness always, design for its important finding, verify is no plain node"
+        "correctness every round, design for its fixed important finding, verify is no plain node"
     );
     let plan = Flow::parse(include_str!("../../../flows/plan.toml")).unwrap();
     assert_eq!(
-        round_scope(&plan, Level::Strict, &important),
+        round_scope(&plan, Level::Strict, &fixed),
         None,
-        "a flow without correctness runs every node"
+        "a flow with no every_round node keeps whole rounds"
+    );
+    let marked = flow_with(concat!(
+        "[[node]]\nid = \"a\"\nprompt = \"p.md\"\nmodel = \"sonnet\"\n",
+        "[[node]]\nid = \"b\"\nprompt = \"p.md\"\nmodel = \"sonnet\"\nfrom_level = 3\nevery_round = true\n",
+    ))
+    .unwrap();
+    assert_eq!(
+        round_scope(&marked, Level::Standard, &fixed),
+        None,
+        "a marked node that does not run at the level narrows nothing"
+    );
+    assert_eq!(
+        round_scope(&marked, Level::Strict, &BTreeSet::new()),
+        Some(std::iter::once(id("b")).collect()),
+        "only the marked node when nothing was fixed"
     );
     let mut progress = Progress {
         active: Some(scope),

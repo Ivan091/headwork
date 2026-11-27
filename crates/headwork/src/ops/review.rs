@@ -291,8 +291,13 @@ fn level_rules(flow: &Flow, level: Level) -> String {
         Unsettled::Ask => "a dispute you do not accept goes to the user",
     };
     let rounds = if spec.rounds > 1 {
+        let scope = if flow.nodes_at(level).any(|node| node.every_round) {
+            "checks only the fix commits"
+        } else {
+            "runs every node again on the new commit"
+        };
         format!(
-            "up to {} rounds: after an important fix, the next round checks only the fix commits",
+            "up to {} rounds: after an important fix, the next round {scope}",
             spec.rounds
         )
     } else {

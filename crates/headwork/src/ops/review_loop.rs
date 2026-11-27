@@ -216,22 +216,32 @@ fn flow_of(env: &Env<'_>, task: &Task, review: &ReviewRow) -> Result<LoadedFlow>
     load_flow(env.home.root(), &review.flow, &allowed).map_err(anyhow::Error::msg)
 }
 
+/// What the round's nodes review. A round [`round_scope`] narrowed (`narrowed`, its progress has an active set) checks
+/// only the fix commits from the head the round before reviewed, and fails when their changed files cannot be read; any
+/// other round reviews the whole branch, as round 1 does.
 fn target_of(
     env: &Env<'_>,
     part: &Task,
     review: &ReviewRow,
     loaded: &LoadedFlow,
+    narrowed: bool,
 ) -> Result<ReviewTarget> {
     let dir = env.task_dir(part)?;
     let (Some(base), Some(head)) = (review.base_sha.clone(), review.head_sha.clone()) else {
         bail!("review {} has no pinned commits", review.id);
     };
-    let fixes_only = review.round_base_sha.is_some();
-    let base = review.round_base_sha.clone().unwrap_or(base);
-    let changed = env
-        .worktrees(part)?
-        .changed_files(&dir, &base, &head)
-        .unwrap_or_default();
+    let round_base = review.round_base_sha.clone().filter(|_| narrowed);
+    let fixes_only = round_base.is_some();
+    let worktrees = env.worktrees(part)?;
+    let (base, changed) = if let Some(round_base) = round_base {
+        let changed = worktrees.changed_files(&dir, &round_base, &head)?;
+        (round_base, changed)
+    } else {
+        let changed = worktrees
+            .changed_files(&dir, &base, &head)
+            .unwrap_or_default();
+        (base, changed)
+    };
     Ok(ReviewTarget {
         kind: loaded.flow.target(),
         base,
@@ -262,12 +272,8 @@ fn progress_of(
         ids.retain(|id| !light.contains(id));
     }
     if review.round_base_sha.is_some() {
-        let important: BTreeSet<NodeId> = rows
-            .iter()
-            .filter(|row| row.round + 1 == review.round && row.severity == Severity::Important)
-            .filter_map(|row| NodeId::new(&row.node).ok())
-            .collect();
-        progress.active = round_scope(&loaded.flow, review.level, &important);
+        let fixed = store.fixed_important_nodes(review.id, review.round.saturating_sub(1))?;
+        progress.active = round_scope(&loaded.flow, review.level, &fixed);
     }
     Ok(progress)
 }
@@ -327,7 +333,7 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
         .into_iter()
         .take(room)
         .collect();
-    let target = target_of(env, part, &review, &loaded)?;
+    let target = target_of(env, part, &review, &loaded, progress.active.is_some())?;
     let findings = store.review_findings(review.id)?;
     let mut nodes = Vec::with_capacity(take.len());
     for instance in &take {
@@ -398,8 +404,9 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
 ///
 /// # Errors
 ///
-/// Refuses a node the flow does not run at this level, an `each` instance whose verdicts miss a finding of its group or
-/// name one outside it, a plain node without its findings, or a review that is not running.
+/// Refuses a node the flow does not run at this level, a plain node a narrowed round leaves out, an `each` item that
+/// names no group (also when it failed), verdicts that miss a finding of the group, name one outside it or twice, or come
+/// as both `verdict` and `verdicts`, a plain node without its findings, or a review that is not running.
 pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone) -> Result<String> {
     let review = open_of_part(store, part)?;
     if review.state != ReviewState::Running {
@@ -427,6 +434,23 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
         node: NodeId::new(&done.node)?,
         item: done.item,
     };
+    let progress = progress_of(store, env, &loaded, &review)?;
+    if !progress.runs(node) {
+        bail!(
+            "`{}` does not run in round {}: it checks only the fix commits, with the nodes `review_next` hands out",
+            done.node,
+            review.round
+        );
+    }
+    let group = members(&loaded.flow, review.level, &progress, &instance);
+    if node.fans_out() && group.is_empty() {
+        bail!(
+            "`{}` has no instance {} this round: give `item` as `review_next` handed it out (the smallest number of \
+             its `checks`)",
+            done.node,
+            done.item
+        );
+    }
     if let Some(why) = &done.failed {
         store.finish_review_node(&review, &instance, NodeState::Failed, &[], &[], env.actor)?;
         return Ok(format!(
@@ -435,8 +459,6 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
         ));
     }
     if node.fans_out() {
-        let progress = progress_of(store, env, &loaded, &review)?;
-        let group = members(&loaded.flow, review.level, &progress, &instance);
         let verdicts = verdicts_of(&done.node, done, &group)?;
         for (id, verdict) in &verdicts {
             store.set_finding_verdict(*id, *verdict)?;
@@ -484,15 +506,9 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
 /// The verdicts an `each` instance hands back, checked against its group: `verdict` for a group of one, or
 /// `verdicts` naming every finding of the group once and no other.
 fn verdicts_of(node: &str, done: &NodeDone, group: &[i64]) -> Result<Vec<(i64, FindingVerdict)>> {
-    if group.is_empty() {
-        bail!(
-            "`{node}` has no instance {} this round: give `item` as `review_next` handed it out (the smallest number \
-             of its `checks`)",
-            done.item
-        );
-    }
     let given: Vec<(i64, FindingVerdict)> = match (&done.verdicts, done.verdict) {
-        (Some(list), _) => list.iter().map(|item| (item.id, item.verdict)).collect(),
+        (Some(_), Some(_)) => bail!("give `verdict` or `verdicts`, not both"),
+        (Some(list), None) => list.iter().map(|item| (item.id, item.verdict)).collect(),
         (None, Some(verdict)) if group.len() == 1 => vec![(done.item, verdict)],
         (None, _) => bail!(
             "`{node}` instance {} checks finding(s) {group:?}: give `verdicts`, one {{id, verdict}} per finding \
@@ -847,7 +863,7 @@ fn after_recheck(store: &Store, review: ReviewRow) -> Result<Step> {
             Vec::new(),
             None,
             format!(
-                "Round {} checks only the fix commits: call `review_next`.",
+                "Round {} starts on the fixed commit: call `review_next`.",
                 review.round
             ),
         ),

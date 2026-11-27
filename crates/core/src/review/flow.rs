@@ -60,6 +60,9 @@ pub enum FlowError {
     /// An `each` node has no inputs to fan out over.
     #[error("node `{0}`: each needs after, the nodes whose findings it fans out over")]
     EachWithoutAfter(String),
+    /// An `each` node sets `every_round`, which only plain nodes may.
+    #[error("node `{0}`: every_round is for plain nodes; an each node always runs")]
+    EveryRoundEach(String),
     /// A per-level `each` map lacks a level the node runs at.
     #[error("node `{node}`: each names no fan-out for level {level}, at which it runs")]
     EachMissing {
@@ -268,6 +271,8 @@ pub struct Node {
     pub after: After,
     /// How it fans out, if it does.
     pub each: Option<EachChoice>,
+    /// It runs in every round, also a later one narrowed to the fix commits.
+    pub every_round: bool,
 }
 
 impl Node {
@@ -334,6 +339,8 @@ struct RawNode {
     #[serde(default)]
     after: Vec<String>,
     each: Option<RawEach>,
+    #[serde(default)]
+    every_round: bool,
 }
 
 const fn first_level() -> u8 {
@@ -572,6 +579,9 @@ fn build_node(raw: RawNode, ids: &BTreeSet<String>) -> Result<Node, FlowError> {
     if raw.each.is_some() && after == After::Nodes(Vec::new()) {
         return Err(FlowError::EachWithoutAfter(raw.id));
     }
+    if raw.each.is_some() && raw.every_round {
+        return Err(FlowError::EveryRoundEach(raw.id));
+    }
     let each = match raw.each {
         None => None,
         Some(RawEach::One(each)) => Some(EachChoice::One(each)),
@@ -610,6 +620,7 @@ fn build_node(raw: RawNode, ids: &BTreeSet<String>) -> Result<Node, FlowError> {
         model,
         after,
         each,
+        every_round: raw.every_round,
     })
 }
 

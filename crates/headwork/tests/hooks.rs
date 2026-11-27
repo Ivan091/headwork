@@ -4061,6 +4061,16 @@ fn a_level_two_dispute_the_reviewer_keeps_goes_to_the_user_and_their_answer_sett
             { "id": items[1] + 100, "verdict": "rejected" },
         ] }),
         json!({ "node": "verify", "item": items[1], "verdicts": [{ "id": items[1], "verdict": "rejected" }] }),
+        json!({ "node": "verify", "item": item, "verdicts": [
+            { "id": items[0], "verdict": "confirmed" },
+            { "id": items[0], "verdict": "rejected" },
+            { "id": items[1], "verdict": "rejected" },
+        ] }),
+        json!({ "node": "verify", "item": item, "verdict": "confirmed", "verdicts": [
+            { "id": items[0], "verdict": "confirmed" },
+            { "id": items[1], "verdict": "rejected" },
+        ] }),
+        json!({ "node": "verify", "item": items[1], "failed": "the subagent died" }),
     ];
     for args in refused {
         let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
@@ -4938,6 +4948,83 @@ fn round_two_checks_only_the_fix_commits_with_the_nodes_that_found_important_def
             "The change is the diff `{round_one_head}..{fixed_head}`"
         )) && prompt.contains("This round checks only the fix commits"),
         "{prompt}"
+    );
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_node_done",
+        &json!({ "node": "tests", "findings": [] }),
+    );
+    assert!(
+        is_error && text.contains("does not run in round 2"),
+        "a plain node outside the scope is refused: {text}"
+    );
+    for node in &nodes {
+        let (is_error, text) = w.tool(
+            me.clone(),
+            "review_node_done",
+            &json!({ "node": node, "findings": [] }),
+        );
+        assert!(!is_error, "{text}");
+    }
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    assert!(
+        next["nodes"].as_array().unwrap().is_empty()
+            && next["next"].as_str().unwrap().contains("review_deliver"),
+        "no node outside the scope is ever handed out: {text}"
+    );
+}
+
+#[test]
+fn a_flow_without_an_every_round_node_keeps_whole_later_rounds() {
+    let mut w = world(REVIEWS, false);
+    let flows = w.home.root().join("flows");
+    let builtin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../flows");
+    std::fs::create_dir_all(flows.join("code")).unwrap();
+    for entry in std::fs::read_dir(builtin.join("code")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), flows.join("code").join(entry.file_name())).unwrap();
+    }
+    let text = std::fs::read_to_string(builtin.join("code.toml"))
+        .unwrap()
+        .replace("every_round = true\n", "");
+    std::fs::write(flows.join("code.toml"), text).unwrap();
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let base = w
+        .store
+        .reviews_of(w.task.id)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .base_sha
+        .unwrap();
+    let found = [("design", json!([finding_of("important", "wrong layer", 1)]))];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    fix_all(&mut w, &me, &ids_of(&delivered["findings"]), 1);
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.round, 2, "{review:?}");
+    let head = review.head_sha.unwrap();
+    let (is_error, text) = w.tool(me, "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    let nodes: Vec<&str> = next["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        nodes,
+        ["correctness", "tests", "rules", "errors", "design", "docs"],
+        "every analysis node runs again, up to `parallel` at once: {text}"
+    );
+    let prompt = next["nodes"][0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains(&format!("The change is the diff `{base}..{head}`"))
+            && !prompt.contains("fix commits"),
+        "the whole branch, with no scope paragraph: {prompt}"
     );
 }
 
