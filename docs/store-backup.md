@@ -5,7 +5,7 @@ its mirror of the backlog. A tick stage copies the store once a day.
 
 - The stage `store_backup` (`ops/tick.rs`, logic in `ops/store_backup.rs`) makes `<home>/backups/daily-<millis>.db` with
   `VACUUM INTO`, a consistent copy while other processes write the WAL database, never a raw file copy. The copy is written
-  as `daily-<millis>.db.part`, checked (same schema version, `PRAGMA quick_check`) and only then renamed.
+  as `daily-<millis>.db.part`, checked (it opens and has the store's schema version) and only then renamed.
 - It is made when the newest daily copy is 24 hours old or there is none. The newest seven are kept; older ones are deleted.
   The copies a migration takes (`state-<from>-to-<to>-*.db`, `docs/autoupdate.md`) share the folder and are never counted or
   deleted by this stage.

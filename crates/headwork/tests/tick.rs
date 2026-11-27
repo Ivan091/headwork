@@ -3024,3 +3024,43 @@ fn a_waiter_past_the_limit_is_starved_until_it_leaves() {
         "cleared"
     );
 }
+
+fn daily_copies(w: &World) -> Vec<String> {
+    std::fs::read_dir(w.home.root().join("backups"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("daily-"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_tick_copies_the_store_once_a_day_and_stays_quiet_after() {
+    let mut w = world();
+    run_tick(&mut w);
+    assert_eq!(daily_copies(&w).len(), 1, "a copy under the home folder");
+    assert_eq!(count(&w, "store-backup"), 1, "logged");
+    run_tick(&mut w);
+    assert_eq!(daily_copies(&w).len(), 1, "not due again");
+    assert_eq!(count(&w, "store-backup"), 1, "a skip logs nothing");
+    assert_eq!(count(&w, "store-backup-failed"), 0, "no failure");
+}
+
+#[test]
+fn a_failed_copy_is_logged_leaves_no_partial_file_and_becomes_a_tick_error() {
+    let mut w = world();
+    std::fs::write(w.home.root().join("backups"), "a file, not a folder").unwrap();
+    let report = run_tick(&mut w);
+    assert_eq!(count(&w, "store-backup-failed"), 1, "logged");
+    assert_eq!(count(&w, "store-backup"), 0, "nothing made");
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::TickError)
+            .unwrap()
+            .contains(&"tick-error:stage:store_backup".to_owned()),
+        "the finding names the stage"
+    );
+    assert!(report.usage.is_some(), "the stage after it ran");
+}
