@@ -622,10 +622,12 @@ fn status_tag(body: &str) -> Option<Result<(&str, BacklogStatus), String>> {
         return Some(bad());
     };
     let (head, note) = rest.split_once(':').unwrap_or((rest, ""));
-    let (word, return_to) = match head.trim().strip_suffix(FROM_IN_PROGRESS) {
-        Some(word) => (word, ReturnTo::InProgress),
-        None => (head.trim(), ReturnTo::Backlog),
-    };
+    let head = head.trim();
+    let (word, return_to) = head
+        .strip_suffix(FROM_IN_PROGRESS)
+        .map_or((head, ReturnTo::Backlog), |word| {
+            (word, ReturnTo::InProgress)
+        });
     let Ok(reason) = word.trim().parse::<BlockReason>() else {
         return Some(bad());
     };
