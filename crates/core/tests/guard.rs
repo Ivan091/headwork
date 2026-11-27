@@ -2263,6 +2263,10 @@ fn only_a_plain_braced_name_is_one_word_so_commands_inside_an_expansion_are_seen
         "${!x}; git push --force",
         "echo ${x; git push --force",
         "echo ${a:-${b}}; git push --force",
+        "echo ${x:-'}'}; git push --force",
+        "echo ${x:-\"}\"}; git push --force",
+        "echo ${x:-\\}}; git push --force",
+        "echo ${x:-'a}; git push --force",
     ] {
         assert_eq!(rule(hidden), Some(RuleId::WorkerForcePush), "{hidden}");
     }
