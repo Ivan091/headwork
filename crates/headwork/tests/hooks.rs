@@ -670,6 +670,85 @@ fn ask_checks_name_their_rules() {
     );
 }
 
+fn age_pushes(w: &World, seconds: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type = 'tool-used'"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+fn plain_ask() -> Value {
+    ask_input(&["Ship it (Recommended)", "Drop it"], "Ship")
+}
+
+#[test]
+fn a_push_recorded_at_pre_tool_use_just_before_the_ask_counts() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.pre("PushNotification", &json!({ "message": "Ship?" }));
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "same batch");
+    assert!(w.denies().is_empty(), "no deny logged");
+}
+
+#[test]
+fn a_push_of_this_turn_counts_up_to_ten_minutes() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 132);
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "132 s old");
+}
+
+#[test]
+fn a_push_of_an_earlier_turn_or_older_than_ten_minutes_does_not_count() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.post("PushNotification", &json!({}));
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "next" }));
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "pushed in an earlier turn"
+    );
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 601);
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "pushed over ten minutes ago"
+    );
+}
+
+#[test]
+fn an_identical_re_ask_logs_its_would_deny_once() {
+    let mut w = world("push_window_secs = 0", false);
+    w.start();
+    w.pre("AskUserQuestion", &plain_ask());
+    w.pre("AskUserQuestion", &plain_ask());
+    assert_eq!(w.denies().len(), 1, "one would-deny");
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Merge (Recommended)", "Wait"], "Merge"),
+    );
+    assert_eq!(w.denies().len(), 2, "a different ask logs its own");
+}
+
+#[test]
+fn an_enforced_re_ask_is_still_denied() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "first");
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "again");
+    assert_eq!(w.denies().len(), 1, "logged once");
+}
+
 fn open_asks(w: &World) -> usize {
     w.events()
         .iter()

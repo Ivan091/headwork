@@ -1,0 +1,5 @@
+# 2026-11-27: ask-push accepts a push of the same batch or since the turn's prompt
+
+`ask-push` took a `PushNotification` only when the post-tool hook had recorded it within `push_window_secs` (120 s), so a push and an ask sent in one tool batch were judged in the wrong order (the ask is judged at `PreToolUse`, the push was recorded at `PostToolUse`) and a push followed by a long think was refused. The plugin now matches `PushNotification` at `PreToolUse` too and the hook records it there; the ask accepts any push since the turn's starting prompt (a task notification starts no turn) that is at most `PUSH_TURN_WINDOW_SECS` (600) old. `push_window_secs` keeps only its other job, presuming the user at the pane after a prompt.
+
+An identical re-ask (same rule, same input, same session) within 120 s of its deny logs no new `would-deny` or `deny`, so retries stop inflating the shadow report; the decision stays a deny. A session started before this build lacks the new matcher and still records the push at `PostToolUse` only.

@@ -24,7 +24,7 @@ use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::names::kept_text;
 use headwork_core::review::{ParsedCommand, parse_command};
 use headwork_core::{
-    Actor, AskKind, Config, PermissionMode, ReviewState, Role, SessionState, TaskState,
+    Actor, AskKind, Config, PermissionMode, ReviewState, Role, RuleId, SessionState, TaskState,
     is_orchestrator_address,
 };
 use headwork_store::{
@@ -838,6 +838,16 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
     let empty = Value::Null;
     let tool_input = call.input.get("tool_input").unwrap_or(&empty);
+    if tool == "PushNotification" {
+        store.append_event(
+            Actor::Hook,
+            call.session.task_id,
+            Some(&call.session.id),
+            EVENT_TOOL,
+            &tool_used(tool, Some(tool_input)),
+        )?;
+        return Ok(HookReply::default());
+    }
     let decision = if tool == "AskUserQuestion" {
         ask_decision(store, call, tool_input)?
     } else {
@@ -925,6 +935,12 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
     Ok(Some(input))
 }
 
+/// How old a `PushNotification` of the current turn may be and still count for an ask, in seconds.
+pub const PUSH_TURN_WINDOW_SECS: u32 = 600;
+
+/// How long an identical deny of the same rule in a session is not logged again, in seconds.
+pub const REPEAT_DENY_SECS: u32 = 120;
+
 fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Decision> {
     let config = call.env.config;
     let project = call.task.and_then(|task| config.project(task.project()));
@@ -939,10 +955,10 @@ fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<De
             Precondition::NotRequired
         }
         PushMode::Claude
-            if store.used_tool_within(
+            if store.used_tool_this_turn_within(
                 &call.session.id,
                 "PushNotification",
-                config.hooks.push_window_secs,
+                PUSH_TURN_WINDOW_SECS,
             )? =>
         {
             Precondition::Met
@@ -1333,24 +1349,34 @@ fn decide(
         return Ok(HookReply::default());
     };
     let enforce = call.env.config.hooks.enforces(verdict.rule);
-    store.append_event(
-        Actor::Hook,
-        call.session.task_id,
-        Some(&call.session.id),
-        if enforce {
-            EVENT_DENY
-        } else {
-            EVENT_WOULD_DENY
-        },
-        &json!({
-            "hook": event.claude_name(),
-            "tool": tool,
-            "rule": verdict.rule,
-            "reason": verdict.reason,
-            "input": input,
-            "cwd": call.cwd(),
-        }),
-    )?;
+    let rule = json!(verdict.rule);
+    let repeat = verdict.rule == RuleId::AskPush
+        && store.denied_within(
+            &call.session.id,
+            rule.as_str().unwrap_or_default(),
+            input,
+            REPEAT_DENY_SECS,
+        )?;
+    if !repeat {
+        store.append_event(
+            Actor::Hook,
+            call.session.task_id,
+            Some(&call.session.id),
+            if enforce {
+                EVENT_DENY
+            } else {
+                EVENT_WOULD_DENY
+            },
+            &json!({
+                "hook": event.claude_name(),
+                "tool": tool,
+                "rule": verdict.rule,
+                "reason": verdict.reason,
+                "input": input,
+                "cwd": call.cwd(),
+            }),
+        )?;
+    }
     if !enforce {
         return Ok(HookReply::default());
     }

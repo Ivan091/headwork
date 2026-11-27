@@ -502,8 +502,9 @@ pub struct HooksConfig {
     /// Folders where a worker may write the files its brief lists on a `Writes:` line, and commit them in the
     /// repository that holds them, such as a notes folder where audits leave their reports.
     pub brief_writable: Vec<String>,
-    /// A push notification counts for an ask within this many seconds, and a prompt the user typed this recently means
-    /// they are at the pane: an ask needs no push and a plain reply is no silent stop. `0` never presumes them there.
+    /// A prompt the user typed this recently means they are at the pane: an ask needs no push and a plain reply is no
+    /// silent stop. `0` never presumes them there. A push for an ask counts by its own window: sent since the turn's
+    /// prompt, at most ten minutes ago.
     pub push_window_secs: u32,
     /// A sent file counts for a review ask within this many seconds.
     pub file_window_secs: u32,
