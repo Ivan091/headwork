@@ -467,7 +467,10 @@ fn spawn_park_resume_round_trip() {
         "{calls:?}"
     );
     assert_eq!(
-        calls.iter().filter(|c| c.starts_with("send ")).count(),
+        calls
+            .iter()
+            .filter(|c| c.starts_with("send ") && !c.ends_with(" /exit"))
+            .count(),
         1,
         "blocked session not nudged"
     );
@@ -858,7 +861,11 @@ impl World {
             calls.contains(&format!("close-surface {surface}")),
             "its pane is closed: {calls:?}"
         );
-        assert_eq!(self.events_of("exit-asked"), 2, "asked twice");
+        assert_eq!(
+            self.session_events_of(orchestrator, "exit-asked"),
+            3,
+            "the own ladder: /exit, then after Escape, then Ctrl+C twice"
+        );
         assert_eq!(self.events_of("orchestrator-closed"), 1, "logged");
         assert!(dead(pid), "the park ends the orchestrator");
         assert_eq!(
@@ -2274,5 +2281,99 @@ fn the_closer_waits_for_the_park_to_exit_before_it_closes_the_orchestrator() {
         w.host.calls().contains(&format!("close-surface {surface}")),
         "and its pane closed: {:?}",
         w.host.calls()
+    );
+}
+
+impl World {
+    fn session_events_of(&self, session: &str, kind: &str) -> usize {
+        self.store
+            .events(EventFilter {
+                task: None,
+                limit: 500,
+            })
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == kind && event.session_id.as_deref() == Some(session))
+            .count()
+    }
+
+    fn surface_of(&self, task: &Task) -> String {
+        self.store
+            .session_of(task.id)
+            .unwrap()
+            .unwrap()
+            .host_surface
+            .unwrap()
+    }
+}
+
+#[test]
+fn park_climbs_the_exit_ladder_for_every_worker_in_one_pass_before_it_closes_their_panes() {
+    let mut w = world("ask");
+    w.config.watch.exit_grace_s = 3;
+    let (sand, sand_session, sand_pid) = w.working("sand");
+    let (mist, mist_session, mist_pid) = w.working("mist");
+    let (sand_surface, mist_surface) = (w.surface_of(&sand), w.surface_of(&mist));
+    let env = env!(w);
+    let start = Instant::now();
+    let report = park(&mut w.store, &env, quick(200)).unwrap();
+    let took = start.elapsed();
+    assert!(report.safe_to_restart, "{report:?}");
+    let calls = w.host.calls();
+    let ladder_starts = calls.iter().position(|c| c.ends_with(" Escape")).unwrap();
+    let rest = calls.get(ladder_starts..).unwrap();
+    let ladder = [
+        "Escape",
+        "Ctrl('u')",
+        "/exit",
+        "Enter",
+        "Escape",
+        "Ctrl('u')",
+        "/exit",
+        "Enter",
+        "Ctrl('c')",
+        "Ctrl('c')",
+    ];
+    for surface in [&sand_surface, &mist_surface] {
+        let typed: Vec<&str> = rest
+            .iter()
+            .filter_map(|c| {
+                c.strip_prefix(&format!("send-key {surface} "))
+                    .or_else(|| c.strip_prefix(&format!("send {surface} ")))
+            })
+            .collect();
+        assert_eq!(typed, ladder, "{surface}: the outside ladder: {calls:?}");
+    }
+    let at = |call: &str| rest.iter().position(|c| c == call).unwrap();
+    assert!(
+        at(&format!("send-key {mist_surface} Escape")) < at(&format!("send {sand_surface} /exit")),
+        "each input goes into every pane before the next: {calls:?}"
+    );
+    let last_ctrl_c = rest
+        .iter()
+        .rposition(|c| c.ends_with(" Ctrl('c')"))
+        .unwrap();
+    let first_end = rest
+        .iter()
+        .position(|c| c.starts_with("close-") || c.starts_with("kill "))
+        .unwrap();
+    assert!(
+        last_ctrl_c < first_end,
+        "panes close and programs end only after the ladder: {calls:?}"
+    );
+    for session in [&sand_session, &mist_session] {
+        assert_eq!(
+            w.session_events_of(session, "exit-asked"),
+            3,
+            "{session}: every step"
+        );
+    }
+    assert!(
+        dead(sand_pid) && dead(mist_pid),
+        "both ended after the ladder"
+    );
+    assert!(
+        took < Duration::from_secs(18),
+        "one ladder of three 3 s graces for both, not one each: {took:?}"
     );
 }

@@ -11,7 +11,8 @@ use std::process::Command;
 use headwork::home::Home;
 use headwork::ops::Env;
 use headwork::ops::clean::{BranchOutcome, CleanOptions, clean};
-use headwork::ops::close::{close, reap};
+use headwork::ops::close::{CLOSER_ASKS, SelfExit, close, reap, self_exit_after};
+use headwork::ops::exit::{Asked, ExitTarget, ask};
 use headwork::ops::helpers::add as add_helper;
 use headwork::ops::import::{
     Sources, config_section, import, missing_projects, read_transcript, repo_of_remote, worker_name,
@@ -20,6 +21,7 @@ use headwork::ops::spawn::{Outcome, Pumped, SpawnRequest, pump, spawn};
 use headwork_adapters::host::fake::{FAKE_PID_BASE, FakeHost};
 use headwork_adapters::host::{SurfaceId, SurfaceState};
 use headwork_core::config::ParkPolicy;
+use headwork_core::exit::ExitMode;
 use headwork_core::{
     Actor, Config, JobState, Model, PermissionMode, ProjectName, SessionState, Slug, TaskRequest,
     TaskState, Trigger,
@@ -1159,8 +1161,8 @@ fn close_types_exit_and_kills_only_a_claude_that_stays() {
         let asked = kinds.iter().filter(|k| *k == "exit-asked").count();
         assert_eq!(
             asked,
-            if stays { 2 } else { 1 },
-            "{slug}: a claude that stays is asked twice: {kinds:?}"
+            if stays { 3 } else { 1 },
+            "{slug}: a claude that stays climbs all three steps: {kinds:?}"
         );
         assert_eq!(
             kinds.iter().any(|k| k == "exit-ignored"),
@@ -1553,4 +1555,259 @@ fn close_logs_the_tasks_token_total() {
         .unwrap();
     assert_eq!(total.data["total"], 42, "{:?}", total.data);
     assert_eq!(total.data["input"], 40, "{:?}", total.data);
+}
+
+fn exit_target<'a>(surface: &str, gone: impl Fn() -> bool + 'a) -> ExitTarget<'a> {
+    ExitTarget {
+        task: None,
+        session: format!("session-{surface}"),
+        surface: SurfaceId(surface.to_owned()),
+        gone: Box::new(gone),
+    }
+}
+
+fn typed_into(host: &FakeHost, surface: &str) -> Vec<String> {
+    host.calls()
+        .into_iter()
+        .filter_map(|call| {
+            call.strip_prefix(&format!("send-key {surface} "))
+                .or_else(|| call.strip_prefix(&format!("send {surface} ")))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn all_events(store: &Store, kind: &str) -> Vec<serde_json::Value> {
+    store
+        .events(EventFilter {
+            task: None,
+            limit: 500,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == kind)
+        .map(|event| event.data)
+        .collect()
+}
+
+const OUTSIDE_STEP: [&str; 4] = ["Escape", "Ctrl('u')", "/exit", "Enter"];
+const CTRL_C: [&str; 2] = ["Ctrl('c')", "Ctrl('c')"];
+
+fn own_ladder() -> Vec<&'static str> {
+    ["/exit", "Enter"]
+        .iter()
+        .chain(OUTSIDE_STEP.iter())
+        .chain(CTRL_C.iter())
+        .copied()
+        .collect()
+}
+
+#[test]
+fn the_exit_ladder_types_each_modes_steps_and_ends_on_ctrl_c_twice() {
+    let w = world(10);
+    let env = env!(w);
+    let host = &w.host;
+    let stays = exit_target("surf-outside", || false);
+    let outcome = ask(&w.store, &env, ExitMode::Outside, &[stays]).unwrap();
+    assert_eq!(outcome, [Asked::Stayed], "it never leaves");
+    let expected: Vec<&str> = OUTSIDE_STEP
+        .iter()
+        .chain(OUTSIDE_STEP.iter())
+        .chain(CTRL_C.iter())
+        .copied()
+        .collect();
+    assert_eq!(typed_into(host, "surf-outside"), expected, "outside");
+
+    let ctrl_c_twice = || {
+        host.calls()
+            .iter()
+            .filter(|call| *call == "send-key surf-own Ctrl('c')")
+            .count()
+            >= 2
+    };
+    let own = exit_target("surf-own", ctrl_c_twice);
+    let outcome = ask(&w.store, &env, ExitMode::Own, &[own]).unwrap();
+    assert_eq!(outcome, [Asked::Left], "it leaves on the second Ctrl+C");
+    assert_eq!(
+        typed_into(host, "surf-own"),
+        own_ladder(),
+        "own: a plain /exit first, never Escape before it"
+    );
+    let own_steps: Vec<String> = all_events(&w.store, "exit-asked")
+        .iter()
+        .filter(|data| data["mode"] == "own")
+        .map(|data| data["step"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        own_steps,
+        ["exit", "clear-and-exit", "ctrl-c"],
+        "logged steps"
+    );
+    assert_eq!(
+        all_events(&w.store, "exit-ignored").len(),
+        5,
+        "three outside steps and two own steps went unheeded"
+    );
+}
+
+#[test]
+fn the_exit_ladder_asks_several_sessions_in_one_pass_and_stops_for_those_that_left() {
+    let w = world(10);
+    let env = env!(w);
+    let host = &w.host;
+    let quick = exit_target("surf-quick", || {
+        host.calls().contains(&"send surf-quick /exit".to_owned())
+    });
+    let slow = exit_target("surf-slow", || false);
+    let gone = exit_target("surf-gone", || true);
+    let start = std::time::Instant::now();
+    let outcome = ask(&w.store, &env, ExitMode::Outside, &[quick, slow, gone]).unwrap();
+    let took = start.elapsed();
+    assert_eq!(
+        outcome,
+        [Asked::Left, Asked::Stayed, Asked::Left],
+        "outcomes"
+    );
+    assert_eq!(
+        typed_into(host, "surf-quick"),
+        OUTSIDE_STEP,
+        "one step for the session that left"
+    );
+    assert!(
+        typed_into(host, "surf-gone").is_empty(),
+        "nothing for one already gone"
+    );
+    assert_eq!(typed_into(host, "surf-slow").len(), 10, "every step");
+    let calls = host.calls();
+    let at = |call: &str| calls.iter().position(|c| c == call).unwrap();
+    assert!(
+        at("send-key surf-slow Escape") < at("send surf-quick /exit"),
+        "each input goes into every pane before the next: {calls:?}"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(12),
+        "one ladder of three 2 s graces, not one per session: {took:?}"
+    );
+}
+
+#[test]
+fn a_grace_of_zero_asks_nothing() {
+    let mut w = world(10);
+    w.config.watch.exit_grace_s = 0;
+    let env = env!(w);
+    let outcome = ask(
+        &w.store,
+        &env,
+        ExitMode::Own,
+        &[exit_target("surf-off", || false)],
+    )
+    .unwrap();
+    assert_eq!(outcome, [Asked::Stayed], "left for the caller to end");
+    assert!(w.host.calls().is_empty(), "{:?}", w.host.calls());
+}
+
+/// A program that starts and fails at once: the test binary itself, which takes `self-exit` for a test filter and
+/// refuses the flags after it.
+fn harmless_exe() -> PathBuf {
+    std::env::current_exe().unwrap()
+}
+
+#[test]
+fn a_self_close_from_the_cli_hands_the_exit_to_a_detached_closer() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "self", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let surface = session.host_surface.clone().unwrap();
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    w.store
+        .session_launched(&session.id, launcher.id(), claude.id(), "job")
+        .unwrap();
+    let exe = harmless_exe();
+    let env = Env {
+        exe: &exe,
+        ..env!(w)
+    };
+    let report = close(&mut w.store, &env, task.id, Some(&session.id)).unwrap();
+    assert_eq!(report.state, TaskState::Closing, "{report:?}");
+    assert_eq!(report.pending.as_deref(), Some(CLOSER_ASKS), "{report:?}");
+    assert!(report.left_to_launcher(), "its caller runs no queue");
+    assert!(
+        typed_into(&w.host, &surface).is_empty(),
+        "the command types nothing while its own tool call runs: {:?}",
+        w.host.calls()
+    );
+    let closer = all_events(&w.store, "closer");
+    assert_eq!(closer.len(), 1, "{closer:?}");
+    let argv: Vec<&str> = closer[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    let id = task.id.to_string();
+    let after = std::process::id().to_string();
+    assert_eq!(
+        argv.get(..7).unwrap(),
+        [
+            "self-exit",
+            "--task",
+            id.as_str(),
+            "--session",
+            session.id.as_str(),
+            "--after",
+            after.as_str()
+        ],
+        "the closer waits for this process: {argv:?}"
+    );
+    assert!(closer[0]["closer"].is_u64(), "it started: {closer:?}");
+    assert!(
+        claude.try_wait().unwrap().is_none(),
+        "claude is left for the closer to ask"
+    );
+    for child in [&mut launcher, &mut claude] {
+        child.kill().unwrap_or(());
+        child.wait().unwrap();
+    }
+}
+
+fn dead_pid() -> u32 {
+    let mut child = short_lived(0);
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+#[test]
+fn the_detached_closer_climbs_the_own_ladder_and_ends_claude_only_after_it() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "stay", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let surface = session.host_surface.clone().unwrap();
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    w.store
+        .session_launched(&session.id, launcher.id(), claude.id(), "job")
+        .unwrap();
+    let env = env!(w);
+    let early = self_exit_after(&mut w.store, &env, task.id, &session.id, dead_pid()).unwrap();
+    assert_eq!(early, SelfExit::NotClosing, "a working task is not asked");
+    assert!(typed_into(&w.host, &surface).is_empty(), "nothing typed");
+    w.store
+        .transition(task.id, &Trigger::ForceClose, Actor::User)
+        .unwrap();
+    let end = self_exit_after(&mut w.store, &env, task.id, &session.id, dead_pid()).unwrap();
+    assert_eq!(end, SelfExit::Ended, "the sleeper ignores every step");
+    assert_eq!(
+        typed_into(&w.host, &surface),
+        own_ladder(),
+        "the own ladder"
+    );
+    let kinds = event_kinds(&w.store, &task);
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == "exit-ignored").count(),
+        3,
+        "every step was waited out before the kill: {kinds:?}"
+    );
+    assert!(claude.wait().is_ok(), "claude is ended after the ladder");
+    launcher.kill().unwrap_or(());
+    launcher.wait().unwrap();
 }

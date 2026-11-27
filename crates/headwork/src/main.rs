@@ -14,7 +14,9 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use headwork::home::Home;
 use headwork::ops::answer::answer;
 use headwork::ops::clean::{CleanOptions, clean};
-use headwork::ops::close::{CloseReport, close, close_forced, close_own, finish_after, reap};
+use headwork::ops::close::{
+    CloseReport, close, close_forced, close_own, finish_after, reap, self_exit_after,
+};
 use headwork::ops::doctor::{Doctor, SystemProbe, doctor};
 use headwork::ops::effort;
 use headwork::ops::graph::{GraphQuery, Which};
@@ -242,6 +244,23 @@ enum Command {
         /// Wait for this process to end first.
         #[arg(long)]
         wait_pid: u32,
+        /// The headwork home.
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
+    /// The detached closer of a self-close: once the closing command `after` is gone, ask the session to exit (the
+    /// exit ladder), and end its `claude` only when it stays. Every later build must keep accepting it.
+    #[command(hide = true)]
+    SelfExit {
+        /// The task's id.
+        #[arg(long)]
+        task: i64,
+        /// The Claude session id.
+        #[arg(long)]
+        session: String,
+        /// The self-closing command's process, waited for first.
+        #[arg(long)]
+        after: u32,
         /// The headwork home.
         #[arg(long)]
         home: Option<PathBuf>,
@@ -1132,6 +1151,12 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
             wait_pid,
             home,
         } => return finish_command(&Home::at(home)?, TaskId(task), wait_pid),
+        Command::SelfExit {
+            task,
+            session,
+            after,
+            home,
+        } => return self_exit_command(&Home::at(home)?, TaskId(task), &session, after, out),
         Command::Import {
             projects_conf,
             claude_dir,
@@ -1244,6 +1269,7 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::Park { .. }
         | Command::Resume { .. }
         | Command::Finish { .. }
+        | Command::SelfExit { .. }
         | Command::Import { .. }
         | Command::Doctor { .. }
         | Command::Gate { .. }
@@ -1959,7 +1985,7 @@ fn close_command(
             Some(pending) => writeln!(out, "{} {}: {pending}", report.name, report.state)?,
         }
     }
-    Ok(if report.pending.is_none() {
+    Ok(if report.pending.is_none() || report.left_to_launcher() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -1993,6 +2019,20 @@ fn answer_command(
             Some(pending) => writeln!(out, "{} {}: {pending}", close.name, close.state)?,
         },
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn self_exit_command(
+    home: &Home,
+    task: TaskId,
+    session: &str,
+    after: u32,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let end = standalone(home, Actor::Worker, |store, env| {
+        self_exit_after(store, env, task, session, after)
+    })?;
+    writeln!(out, "session {session}: {}", end.as_str())?;
     Ok(ExitCode::SUCCESS)
 }
 

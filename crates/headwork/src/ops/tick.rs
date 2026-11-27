@@ -13,6 +13,7 @@ use anyhow::{Result, bail};
 use headwork_adapters::disk::{Disks, large_files, volume_of};
 use headwork_adapters::git::GitHost;
 use headwork_adapters::host::{Choice, Key, SurfaceId, WorkspaceId};
+use headwork_core::exit::ExitMode;
 use headwork_core::gate::{GateClass, Owner, lasted_minutes};
 use headwork_core::lifecycle::{CloseCause, CloseFacts, MergeSource, PrEnd};
 use headwork_core::watch::{self, DiskLevel, Limits, MergedSession, Runaway, Stuck};
@@ -23,6 +24,7 @@ use headwork_store::{SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
 use super::close::{RemovalMode, finish, removal_status, remove_worktree, surface_present};
+use super::exit::ExitTarget;
 use super::lost::{self, LostCause, RUNNING};
 use super::rules::{self, fnv1a};
 use super::session_procs;
@@ -36,6 +38,10 @@ pub(super) const WORKTREE_TOPIC: &str = "worktree";
 
 /// The topic once its answer was carried out.
 const WORKTREE_DONE: &str = "worktree-handled";
+
+/// How long a session whose `claude` left on the exit ladder gets for its launcher to record the exit before the tick
+/// ends what is left.
+const LAUNCHER_AFTER_EXIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The answer that keeps the worktree.
 pub const KEEP_WORKTREE: &str = "Keep the worktree (Recommended)";
@@ -486,6 +492,18 @@ impl<'b> Run<'_, 'b> {
         }
     }
 
+    /// Climbs the [`ExitMode::Outside`] ladder for a session whose `claude` still runs in a known pane, before the tick
+    /// ends it. Returns whether `claude` left on its own; `false` when there was no one to ask or the host is down.
+    fn exit_claude(&self, id: TaskId, session: &SessionRow) -> Result<bool> {
+        if !self.report.host_up {
+            return Ok(false);
+        }
+        let Some(target) = ExitTarget::of_session(Some(id), session) else {
+            return Ok(false);
+        };
+        Ok(super::exit::ask_one(self.store, self.env(), ExitMode::Outside, &target)?.left())
+    }
+
     fn end_processes(&self, task: Option<TaskId>, session: &SessionRow) -> Result<bool> {
         let ended = session_procs::end_all(session)?;
         ended.log(self.store, self.actor(), task, &session.id)?;
@@ -676,6 +694,11 @@ impl<'b> Run<'_, 'b> {
         shape: TaskShape<TaskId>,
         session: &SessionRow,
     ) -> Result<()> {
+        if self.exit_claude(id, session)?
+            && let Some(launcher) = session.launcher()
+        {
+            super::close::wait_until(LAUNCHER_AFTER_EXIT, || !session_procs::runs(&launcher));
+        }
         self.end_processes(Some(id), session)?;
         if let Some(surface) = session.host_surface.as_deref() {
             let workspace = session
@@ -918,6 +941,7 @@ impl<'b> Run<'_, 'b> {
                 continue;
             }
             if let Some(session) = self.store.session_of(id)?
+                && !self.exit_claude(id, &session)?
                 && let Some(target) = session.claude().or_else(|| session.launcher())
             {
                 match session_procs::end(&[target]) {
@@ -981,6 +1005,10 @@ impl<'b> Run<'_, 'b> {
             }
             let detail = serde_json::json!({ "closing_for_s": age });
             if let Some(session) = session.filter(|_| self.enforce) {
+                if self.exit_claude(id, &session)? {
+                    let detail = serde_json::json!({ "closing_for_s": age, "exited": true });
+                    return self.applied(FindingId::LeftoverProcess, Some(id), detail);
+                }
                 self.end_processes(Some(id), &session)?;
                 return self.applied(FindingId::LeftoverProcess, Some(id), detail);
             }

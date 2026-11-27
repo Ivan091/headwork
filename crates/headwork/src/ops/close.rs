@@ -3,12 +3,13 @@
 //!
 //! The order is the one today's `close-child.sh` learned: everything else first, the pane (or the workspace it leaves
 //! empty) next, ending the program last, because a worker usually closes itself from inside the pane being closed.
-//! Under headwork a close first types `/exit` into the session's pane, so `claude` leaves on its own and archives its
-//! Remote Control session at claude.ai, and ends `claude`'s tree only when it has not left within `[watch]
-//! exit_grace_s`. A self-close's exit takes the calling command with it; the launcher sees
-//! `claude` exit with the task `closing`, starts a detached `headwork finish` that outlives the pane, and closes its
-//! own pane as its last act. `finish` waits for the launcher to be gone, removes the worktree, verifies, and marks the
-//! task `closed`.
+//! Under headwork a close first climbs the exit ladder ([`super::exit`]) in the session's pane, so `claude` leaves on
+//! its own and archives its Remote Control session at claude.ai, and ends `claude`'s tree only when it has not left
+//! after the last step. A self-close from the `headwork close` command runs inside the session's own tool call, so it
+//! hands the ladder to a detached closer (`headwork self-exit`) that starts once the command is gone. When `claude`
+//! exits with the task `closing`, the launcher starts a detached `headwork finish` that outlives the pane, and closes
+//! its own pane as its last act. `finish` waits for the launcher to be gone, removes the worktree, verifies, and marks
+//! the task `closed`.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,10 +17,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_adapters::git::GitHost;
-use headwork_adapters::host::{Key, SurfaceId, TerminalHost, WorkspaceId};
+use headwork_adapters::host::{SurfaceId, TerminalHost, WorkspaceId};
 use headwork_adapters::proc;
 use headwork_adapters::worktree::BranchEnd;
 use headwork_core::config::{REVIEW_KIND, TaskVars, WorktreeCommand};
+use headwork_core::exit::ExitMode;
 use headwork_core::guard::DEFAULT_BRANCHES;
 use headwork_core::lifecycle::{
     CleanupFacts, CloseCause, CloseFacts, CloseGo, FinishFacts, MergeSource, PrEnd, Trigger,
@@ -66,13 +68,33 @@ pub struct CloseReport {
 /// What a self-close reports: the session's launcher finishes the close once `claude` has left.
 pub const LAUNCHER_FINISHES: &str = "the launcher finishes the close";
 
+/// What a self-close from the `headwork close` command reports: a detached closer asks the session to exit once the
+/// command is gone, and the launcher finishes the close.
+pub const CLOSER_ASKS: &str = "a detached closer asks the session to exit once this command ends; the launcher finishes the close";
+
+/// How long the detached closer waits for the self-closing command to be gone before it asks anyway.
+pub const CLOSER_WAIT: Duration = Duration::from_secs(120);
+
+/// How a self-close has its own session asked to exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnExit {
+    /// The `headwork close` command runs inside the session's own tool call, and `/exit` waits behind that call: a
+    /// detached closer climbs the ladder once the command is gone.
+    Detached,
+    /// The caller's answer is already out, as the MCP `done`'s is: the ladder runs here.
+    Here,
+}
+
 impl CloseReport {
     /// Whether the close was left to the session's launcher, which runs in the very session that closed. Its caller is
     /// about to end with `claude` and must start nothing more, such as a queued task, that it could leave half done;
     /// the finisher runs the queue.
     #[must_use]
     pub fn left_to_launcher(&self) -> bool {
-        self.pending.as_deref() == Some(LAUNCHER_FINISHES)
+        matches!(
+            self.pending.as_deref(),
+            Some(LAUNCHER_FINISHES | CLOSER_ASKS)
+        )
     }
 }
 
@@ -141,7 +163,7 @@ fn close_now(
         );
     }
     begin_closing(store, env, id)?;
-    end_closing(store, env, id, own_session)
+    end_closing(store, env, id, own_session, OwnExit::Detached)
 }
 
 /// Closes every part of a lead that is not closing or closed yet, before the lead itself: the orchestrator's close of
@@ -247,7 +269,7 @@ pub fn close_own(
     own_session: Option<&str>,
 ) -> Result<CloseReport> {
     begin_own_close(store, env, git, id)?;
-    end_closing(store, env, id, own_session)
+    end_closing(store, env, id, own_session, OwnExit::Detached)
 }
 
 /// The checked half of [`close_own`]: moves the worker's own task to `closing`, or refuses and leaves it as it was.
@@ -404,6 +426,10 @@ fn own_steps(
 
 /// Ends a `closing` task's session, pane, process tree and worktree, and marks it `closed` once each is verified gone.
 ///
+/// A close from outside the session climbs the [`ExitMode::Outside`] ladder, ends `claude` only when it stays, waits
+/// for the launcher and finishes. A self-close (`own_session` is the task's session) leaves the finish to the launcher:
+/// `own_exit` says whether the [`ExitMode::Own`] ladder runs here or in a detached closer.
+///
 /// # Errors
 ///
 /// Fails when the store fails or the task is not closing.
@@ -412,6 +438,7 @@ pub fn end_closing(
     env: &Env<'_>,
     id: TaskId,
     own_session: Option<&str>,
+    own_exit: OwnExit,
 ) -> Result<CloseReport> {
     let task = store.task(id)?;
     remove_brief(env, &task.brief_path);
@@ -419,31 +446,152 @@ pub fn end_closing(
         && let Some(launcher) = session.launcher().filter(session_procs::runs)
     {
         let target = session.claude().unwrap_or_else(|| launcher.clone());
-        let own = own_session == Some(session.id.as_str());
-        let left = ask_exit(store, env, id, &session, !own)?;
-        if own {
+        if own_session == Some(session.id.as_str()) {
+            let exit = match own_exit {
+                OwnExit::Detached => "detached",
+                OwnExit::Here => "here",
+            };
             store.append_event(
                 env.actor,
                 Some(id),
                 Some(&session.id),
                 "self-close",
-                &serde_json::json!({}),
+                &serde_json::json!({ "exit": exit }),
             )?;
             if pinned(store, &session.id)? {
                 let _logged: Result<()> =
                     start_finisher(store, env, id, &session.id, launcher.pid, "backup-finisher");
             }
-            if !left {
-                session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
-            }
-            return report(store, id, Some(LAUNCHER_FINISHES.to_owned()));
+            let pending = match own_exit {
+                OwnExit::Here => {
+                    if !super::exit::ask_session(store, env, ExitMode::Own, Some(id), &session)? {
+                        session_procs::end(&[target])?.log(
+                            store,
+                            env.actor,
+                            Some(id),
+                            &session.id,
+                        )?;
+                    }
+                    LAUNCHER_FINISHES
+                }
+                OwnExit::Detached => {
+                    if start_closer(store, env, id, &session.id).is_ok() {
+                        CLOSER_ASKS
+                    } else {
+                        session_procs::end(&[target])?.log(
+                            store,
+                            env.actor,
+                            Some(id),
+                            &session.id,
+                        )?;
+                        LAUNCHER_FINISHES
+                    }
+                }
+            };
+            return report(store, id, Some(pending.to_owned()));
         }
-        if !left {
+        if !super::exit::ask_session(store, env, ExitMode::Outside, Some(id), &session)? {
             session_procs::end(&[target])?.log(store, env.actor, Some(id), &session.id)?;
         }
         wait_until(LAUNCHER_GRACE, || !session_procs::runs(&launcher));
     }
     finish_within(store, env, id, FINISHER_WAIT)
+}
+
+/// Starts the detached closer of a self-close from the `headwork close` command: `headwork self-exit`, which waits for
+/// this process to be gone before it climbs the [`ExitMode::Own`] ladder. Logged as `closer`, with the error when it
+/// does not start.
+fn start_closer(store: &Store, env: &Env<'_>, id: TaskId, session: &str) -> Result<()> {
+    let mut closer = Command::new(env.exe);
+    closer
+        .args([
+            "self-exit",
+            "--task",
+            &id.to_string(),
+            "--session",
+            session,
+            "--after",
+            &std::process::id().to_string(),
+            "--home",
+        ])
+        .arg(env.home.root())
+        .current_dir(env.home.root());
+    for var in super::resume::SURFACE_VARS {
+        closer.env_remove(var);
+    }
+    let argv: Vec<String> = closer
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let started = proc::spawn_detached(&mut closer);
+    let data = match &started {
+        Ok((pid, note)) => serde_json::json!({ "closer": pid, "argv": argv, "note": note }),
+        Err(error) => serde_json::json!({ "argv": argv, "error": error.to_string() }),
+    };
+    store.append_event(env.actor, Some(id), Some(session), "closer", &data)?;
+    started?;
+    Ok(())
+}
+
+/// What the detached closer of a self-close did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelfExit {
+    /// The session's launcher was already gone, or the session is unknown: nothing to ask.
+    Gone,
+    /// The task is no longer closing (a later close finished it), so nothing was asked.
+    NotClosing,
+    /// `claude` left on the ladder.
+    Left,
+    /// `claude` stayed through the ladder and was ended.
+    Ended,
+}
+
+impl SelfExit {
+    /// What the closer prints.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gone => "the session was already gone",
+            Self::NotClosing => "the task is no longer closing; nothing asked",
+            Self::Left => "claude left on its own",
+            Self::Ended => "claude stayed through every step and was ended",
+        }
+    }
+}
+
+/// The detached closer of a self-close: once the closing command `after` is gone, the [`ExitMode::Own`] ladder.
+///
+/// It waits up to [`CLOSER_WAIT`] for `after`, climbs the ladder in the session's pane and ends `claude` only when it
+/// stays. It holds no close claim: the launcher's hand-off finishes the close once `claude` has left, as after any
+/// self-close.
+///
+/// # Errors
+///
+/// Fails when the store fails or a process cannot be ended.
+pub fn self_exit_after(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: TaskId,
+    session: &str,
+    after: u32,
+) -> Result<SelfExit> {
+    wait_until(CLOSER_WAIT, || !proc::is_alive(after).unwrap_or(false));
+    let Some((row, _)) = store.session(session)? else {
+        return Ok(SelfExit::Gone);
+    };
+    let Some(launcher) = row.launcher().filter(session_procs::runs) else {
+        return Ok(SelfExit::Gone);
+    };
+    if store.task(id)?.state != TaskState::Closing {
+        return Ok(SelfExit::NotClosing);
+    }
+    let target = row.claude().unwrap_or(launcher);
+    if super::exit::ask_session(store, env, ExitMode::Own, Some(id), &row)? {
+        return Ok(SelfExit::Left);
+    }
+    session_procs::end(&[target])?.log(store, env.actor, Some(id), &row.id)?;
+    Ok(SelfExit::Ended)
 }
 
 fn begin_closing(store: &mut Store, env: &Env<'_>, id: TaskId) -> Result<()> {
@@ -561,6 +709,7 @@ fn finish_claimed(
     let session = store.session_of(id)?;
     let mut pane_gone = true;
     if let Some(session) = &session {
+        super::exit::ask_session(store, env, ExitMode::Outside, Some(id), session)?;
         pane_gone = close_pane(env, task.shape, session)?;
         session_procs::end_all(session)?.log(store, env.actor, Some(id), &session.id)?;
     }
@@ -1073,96 +1222,6 @@ fn pinned(store: &Store, session: &str) -> Result<bool> {
     Ok(store
         .session_event(session, super::reload::EVENT_BUILD)?
         .is_none())
-}
-
-/// What `close` types into a session's pane to have `claude` leave on its own.
-const EXIT_COMMAND: &str = "/exit";
-
-/// How many times `close` asks a session from outside to exit before it ends the process tree.
-const EXIT_ATTEMPTS: u32 = 2;
-
-/// How long `claude` gets to settle after Escape before `/exit` is typed: an interrupted turn needs a moment to stop,
-/// and a key typed right after Escape reads as Alt and that key.
-const INTERRUPT_SETTLE: Duration = Duration::from_secs(1);
-
-/// Asks a session's `claude` to exit by typing `/exit` into its pane, and waits up to `[watch] exit_grace_s` for it to
-/// be gone. Claude Code archives its Remote Control session at claude.ai while it exits, so the session leaves the
-/// Claude app's list; a killed `claude` stays listed. Returns whether it left; when it did not (no pane or pid known,
-/// the host refused the keys, or the grace ran out), the caller ends the process tree.
-///
-/// A close from outside the session (`interrupt`) first presses Escape and clears the input line. `/exit` typed
-/// during a turn waits for the turn to end, and typed into an open `AskUserQuestion` dialog its Enter picks the
-/// highlighted option instead, so Escape ends the turn or dismisses the dialog first; it is asked [`EXIT_ATTEMPTS`]
-/// times. A self-close never interrupts: its own tool call is the turn, and Escape would end the very command that
-/// closes.
-///
-/// # Errors
-///
-/// Fails when the store fails.
-fn ask_exit(
-    store: &Store,
-    env: &Env<'_>,
-    id: TaskId,
-    session: &SessionRow,
-    interrupt: bool,
-) -> Result<bool> {
-    let grace = env.config.watch.exit_grace_s;
-    let (Some(claude), Some(surface)) = (session.claude(), session.host_surface.as_deref()) else {
-        return Ok(false);
-    };
-    if grace == 0 || !session_procs::runs(&claude) {
-        return Ok(false);
-    }
-    let surface = SurfaceId(surface.to_owned());
-    let attempts = if interrupt { EXIT_ATTEMPTS } else { 1 };
-    for attempt in 1..=attempts {
-        if let Err(error) = type_exit(env.host, &surface, interrupt) {
-            store.append_event(
-                env.actor,
-                Some(id),
-                Some(&session.id),
-                "exit-unasked",
-                &serde_json::json!({ "error": error.to_string(), "attempt": attempt }),
-            )?;
-            return Ok(false);
-        }
-        store.append_event(
-            env.actor,
-            Some(id),
-            Some(&session.id),
-            "exit-asked",
-            &serde_json::json!({ "grace_s": grace, "attempt": attempt, "interrupt": interrupt }),
-        )?;
-        let left = wait_until(Duration::from_secs(u64::from(grace)), || {
-            !session_procs::runs(&claude)
-        });
-        if left {
-            return Ok(true);
-        }
-        store.append_event(
-            env.actor,
-            Some(id),
-            Some(&session.id),
-            "exit-ignored",
-            &serde_json::json!({ "grace_s": grace, "attempt": attempt }),
-        )?;
-    }
-    Ok(false)
-}
-
-/// Types `/exit` and Enter into `surface`; with `interrupt`, Escape and Ctrl+U (clear the line) come first.
-pub(super) fn type_exit(
-    host: &dyn TerminalHost,
-    surface: &SurfaceId,
-    interrupt: bool,
-) -> std::result::Result<(), headwork_adapters::host::HostError> {
-    if interrupt {
-        host.send_key(surface, Key::Escape)?;
-        std::thread::sleep(INTERRUPT_SETTLE);
-        host.send_key(surface, Key::Ctrl('u'))?;
-    }
-    host.send_text(surface, EXIT_COMMAND)?;
-    host.send_key(surface, Key::Enter)
 }
 
 /// The detached finisher: waits for `pid` to be gone, records the end of a session its launcher could not record,
