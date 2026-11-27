@@ -13,6 +13,10 @@ use crate::{NOW, Store, StoreError};
 pub const EVENT_PROMPT: &str = "prompt";
 /// The event a `PostToolUse` hook records for a tool the checks count.
 pub const EVENT_TOOL: &str = "tool-used";
+/// The event a `PreToolUse` hook records for a push before it runs; only the ask-push check reads it.
+pub const EVENT_TOOL_PRE: &str = "tool-pre";
+/// How long a push recorded only at `PreToolUse` counts for an ask, in seconds: the same batch of tool calls.
+pub(crate) const PRE_ONLY_GRACE_SECS: u32 = 5;
 /// The event of an ask superseded without an answer; its time is when the ask closed.
 pub(crate) const EVENT_ASK_SUPERSEDED: &str = "ask-superseded";
 /// The event of a deny that blocked.
@@ -217,8 +221,9 @@ impl Store {
         )?)
     }
 
-    /// Whether the session recorded a call of `tool` since the prompt that started the current turn (a task
-    /// notification starts none), no more than `seconds` ago.
+    /// Whether the session completed a call of `tool` since the prompt that started the current turn (a task
+    /// notification starts none), no more than `seconds` ago, or only began one (its `PreToolUse` record) within
+    /// [`PRE_ONLY_GRACE_SECS`].
     ///
     /// # Errors
     ///
@@ -230,13 +235,15 @@ impl Store {
         seconds: u32,
     ) -> Result<bool, StoreError> {
         let since = format!("-{seconds} seconds");
+        let grace = format!("-{PRE_ONLY_GRACE_SECS} seconds");
         Ok(self.conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1 AND type = ?2
+            "SELECT EXISTS (SELECT 1 FROM events WHERE session_id = ?1
+                 AND ((type = ?2 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4))
+                     OR (type = ?6 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?7)))
                  AND json_extract(data, '$.tool') = ?3
-                 AND at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?4)
                  AND id > COALESCE((SELECT MAX(id) FROM events WHERE session_id = ?1 AND type = ?5
                      AND NOT COALESCE(json_extract(data, '$.notification'), 0)), 0))",
-            params![session, EVENT_TOOL, tool, since, EVENT_PROMPT],
+            params![session, EVENT_TOOL, tool, since, EVENT_PROMPT, EVENT_TOOL_PRE, grace],
             |row| row.get(0),
         )?)
     }

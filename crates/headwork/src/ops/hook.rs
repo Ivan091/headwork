@@ -28,7 +28,7 @@ use headwork_core::{
     is_orchestrator_address,
 };
 use headwork_store::{
-    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk,
+    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_TOOL_PRE, EVENT_WOULD_DENY, HookSession, NewAsk,
     ReviewError, Store, StoreError, Task,
 };
 use serde_json::{Value, json};
@@ -843,7 +843,7 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
             Actor::Hook,
             call.session.task_id,
             Some(&call.session.id),
-            EVENT_TOOL,
+            EVENT_TOOL_PRE,
             &tool_used(tool, Some(tool_input)),
         )?;
         return Ok(HookReply::default());

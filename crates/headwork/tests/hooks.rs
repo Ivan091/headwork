@@ -791,7 +791,7 @@ fn age_pushes(w: &World, seconds: u32) {
     let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
     db.execute(
         &format!(
-            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type = 'tool-used'"
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type IN ('tool-used', 'tool-pre')"
         ),
         [],
     )
@@ -810,6 +810,35 @@ fn a_push_recorded_at_pre_tool_use_just_before_the_ask_counts() {
     w.pre("PushNotification", &json!({ "message": "Ship?" }));
     assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "same batch");
     assert!(w.denies().is_empty(), "no deny logged");
+}
+
+fn age_pre_pushes(w: &World, seconds: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type = 'tool-pre'"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_push_seen_only_at_pre_tool_use_counts_only_within_the_grace() {
+    let mut w = world("enforce = true
+push_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.pre("PushNotification", &json!({ "message": "Ship?" }));
+    age_pre_pushes(&w, 0);
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "just before");
+    age_pre_pushes(&w, 60);
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "60 s before");
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 132);
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "completed 132 s before");
+    let tools = w.events().into_iter().filter(|event| event.kind == "tool-used").count();
+    assert_eq!(tools, 1, "one tool-used for one push");
 }
 
 #[test]
