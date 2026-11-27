@@ -1096,13 +1096,18 @@ fn record_self_made_worktrees(store: &mut Store, call: &Call<'_>, tool: &str) ->
         home: Some(slashed(&env.home.expand("~"))),
         temp: Some(slashed(env.temp)),
     };
-    super::helpers::record_self_made(store, &env.ops_env(), task, &call.cwd(), &places, command)?;
+    let made = super::helpers::record_self_made(store, &env.ops_env(), task, &call.cwd(), &places, command);
+    for (dir, error) in made.failed {
+        note(store, call, &json!({ "self-made-worktree": dir, "error": error }))?;
+    }
     Ok(())
 }
 
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
-    record_self_made_worktrees(store, call, tool)?;
+    if let Err(error) = record_self_made_worktrees(store, call, tool) {
+        note(store, call, &json!({ "self-made-worktree": error.to_string() }))?;
+    }
     if starts_background_work(tool, call) {
         store.append_event(
             Actor::Hook,

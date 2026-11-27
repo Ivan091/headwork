@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail, ensure};
 use headwork_core::Slug;
 use headwork_core::config::TaskVars;
-use headwork_core::guard::{Places, worktree_adds};
+use headwork_core::guard::{Places, WorktreeAdd, worktree_adds};
 use headwork_store::{Store, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
@@ -145,16 +145,20 @@ pub fn remove_one(
     Ok(None)
 }
 
+/// What recording the worktrees a worker made itself did.
+#[derive(Debug, Default)]
+pub struct SelfMade {
+    /// The folders recorded.
+    pub recorded: Vec<String>,
+    /// The folders that failed to record, with why.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Records the worktrees a worker's successful Bash `line` made with `git worktree add` as helpers of `task`.
 ///
 /// It records them as [`add`] does for one it makes itself, so they are writable for the task and removed at its
-/// close. Only a folder
-/// that is a linked git worktree now (it holds a `.git` file) and that no task has recorded is taken. Returns the
-/// folders recorded.
-///
-/// # Errors
-///
-/// Fails when the store fails.
+/// close. Only a folder that is a linked git worktree now (it holds a `.git` file) and that no task has recorded is
+/// taken. A folder that fails to record is reported in [`SelfMade::failed`] and the others still go on.
 pub fn record_self_made(
     store: &mut Store,
     env: &Env<'_>,
@@ -162,17 +166,26 @@ pub fn record_self_made(
     cwd: &str,
     places: &Places,
     line: &str,
-) -> Result<Vec<String>> {
-    let mut recorded = Vec::new();
+) -> SelfMade {
+    let mut made = SelfMade::default();
     for added in worktree_adds(line, cwd, places) {
-        let dir = PathBuf::from(&added.dir);
-        if !dir.join(".git").is_file() || taken(store, &dir)? {
-            continue;
+        let outcome = record_one(store, env, task, &added);
+        match outcome {
+            Ok(true) => made.recorded.push(added.dir),
+            Ok(false) => {}
+            Err(error) => made.failed.push((added.dir, error.to_string())),
         }
-        store.record_helper_worktree(task.id, &added.dir, &added.branch, env.actor)?;
-        recorded.push(added.dir);
     }
-    Ok(recorded)
+    made
+}
+
+fn record_one(store: &mut Store, env: &Env<'_>, task: &Task, added: &WorktreeAdd) -> Result<bool> {
+    let dir = PathBuf::from(&added.dir);
+    if !dir.join(".git").is_file() || taken(store, &dir)? {
+        return Ok(false);
+    }
+    store.record_helper_worktree(task.id, &added.dir, &added.branch, env.actor)?;
+    Ok(true)
 }
 
 fn taken(store: &Store, dir: &Path) -> Result<bool> {
