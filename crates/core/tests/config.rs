@@ -739,6 +739,30 @@ nudge_context_k = 0
 }
 
 #[test]
+fn an_exploration_runs_opus_unless_the_config_says_otherwise() {
+    let plain = Config::parse(
+        "[machine]
+host = \"cmux\"
+",
+        "explore",
+    )
+    .unwrap();
+    assert_eq!(plain.models.for_kind("explore"), Model::Opus, "built-in");
+    assert_eq!(plain.models.for_kind("task"), Model::Sonnet);
+    let text = "[machine]
+host = \"cmux\"
+[models.by_kind]
+explore = \"sonnet\"
+";
+    let config = Config::parse(text, "explore").unwrap();
+    assert_eq!(
+        config.models.for_kind("explore"),
+        Model::Sonnet,
+        "configured wins"
+    );
+}
+
+#[test]
 fn a_kind_takes_its_own_default_model() {
     let text = "[machine]\nhost = \"cmux\"\n[models]\ndefault = \"sonnet\"\n[models.by_kind]\ncar-training = \"haiku\"\n";
     let config = Config::parse(text, "kinds").unwrap();

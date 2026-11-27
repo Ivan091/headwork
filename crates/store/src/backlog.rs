@@ -21,6 +21,9 @@ use crate::{NOW, Store, StoreError, Task, TaskId};
 /// The event of a new item.
 pub const EVENT_BACKLOG_ADDED: &str = "backlog-added";
 
+/// The event an exploration's `Backlog` ask leaves: how many candidates the user picked (`{"count": N, "picks": [...]}`).
+pub const EVENT_BACKLOG_PICKED: &str = "backlog-picked";
+
 /// The event of an item done, by hand or by its task closing.
 pub const EVENT_BACKLOG_DONE: &str = "backlog-done";
 
@@ -373,12 +376,56 @@ impl Store {
         draft: &BacklogDraft,
         actor: Actor,
     ) -> Result<BacklogItem, StoreError> {
+        self.add_backlog_item_for(draft, actor, None)
+    }
+
+    /// Adds an item last and logs `backlog-added` for `task`, the exploration that added it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn add_backlog_item_for(
+        &mut self,
+        draft: &BacklogDraft,
+        actor: Actor,
+        task: Option<TaskId>,
+    ) -> Result<BacklogItem, StoreError> {
         let tx = self.conn.transaction()?;
         let id = insert(&tx, draft)?;
         let item = load(&tx, id)?;
-        event(&tx, actor, None, EVENT_BACKLOG_ADDED, &item)?;
+        event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
         tx.commit()?;
         Ok(item)
+    }
+
+    /// How many items `task` may still add: the `count` of its newest `backlog-picked` event minus the `backlog-added`
+    /// events it logged after that event; 0 when it has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn backlog_adds_left(&self, task: TaskId) -> Result<u64, StoreError> {
+        let picked: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT id, data FROM events WHERE task_id = ?1 AND type = ?2 ORDER BY id DESC LIMIT 1",
+                params![task.0, EVENT_BACKLOG_PICKED],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((id, data)) = picked else {
+            return Ok(0);
+        };
+        let count = serde_json::from_str::<serde_json::Value>(&data)?
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let added: i64 = self.conn.query_row(
+            "SELECT count(*) FROM events WHERE task_id = ?1 AND type = ?2 AND id > ?3",
+            params![task.0, EVENT_BACKLOG_ADDED, id],
+            |row| row.get(0),
+        )?;
+        Ok(count.saturating_sub(u64::try_from(added).unwrap_or(0)))
     }
 
     /// Marks an open item done, or dropped with `drop`, today, with a note, and logs `backlog-done` or `backlog-dropped`.

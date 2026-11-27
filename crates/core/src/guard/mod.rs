@@ -256,6 +256,9 @@ pub struct Scope {
     pub orchestrator_repo_excludes: Vec<GuardPath>,
     /// The session is a reviewer lead (a part of kind `review`): it reads, and writes nothing but the scratchpad.
     pub reviewer: bool,
+    /// The session is an explorer (a task of kind `explore`): it changes no tracked file of its folder, and writes only
+    /// the scratchpad and its `Writes:` paths.
+    pub explorer: bool,
 }
 
 impl Scope {
@@ -306,6 +309,28 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
                 format!(
                     "a reviewer lead reads and never edits: {tool} on {path} is outside the scratchpad; findings go \
                      back through `review_node_done`, fixes are the implementing lead's"
+                ),
+            );
+        }
+        return Decision::Allow;
+    }
+    if role == Role::Worker && scope.explorer {
+        let scratch = scope
+            .places
+            .temp
+            .as_deref()
+            .is_some_and(|temp| target.is_within(&GuardPath::new(temp)));
+        if !scratch
+            && !scope
+                .extra_writable
+                .iter()
+                .any(|grant| target.is_within(grant))
+        {
+            return Decision::deny(
+                RuleId::ExploreWrite,
+                format!(
+                    "an explorer reads and never edits the repository: {tool} on {path} is outside the scratchpad and the \
+                     `Writes:` paths of the brief; findings go into the report"
                 ),
             );
         }
@@ -474,6 +499,11 @@ fn check_worker_command(
     {
         return decision;
     }
+    if scope.explorer
+        && let Some(decision) = check_explorer_pr(command)
+    {
+        return decision;
+    }
     if !scope.reviewer
         && let Some(decision) = heavy::check_heavy(command)
     {
@@ -501,6 +531,15 @@ fn check_worker_command(
     }
     let GitLine { sub, args, .. } = line;
     match check_git_outside(scope, command, cwd, &sub, &args) {
+        GitPlace::Own if scope.explorer && is_git_write(&sub, &args) => {
+            return Decision::deny(
+                RuleId::ExploreWrite,
+                format!(
+                    "an explorer changes no repository but the report's: `git {sub}` is outside the paths its brief's \
+                     `Writes:` line grants"
+                ),
+            );
+        }
         GitPlace::Own => {}
         GitPlace::Granted => return Decision::Allow,
         GitPlace::Refused(decision) => return decision,
@@ -526,16 +565,7 @@ fn check_reviewer_command(command: &SimpleCommand) -> Option<Decision> {
         let (sub, args) = git_subcommand(command)?;
         is_git_write(&sub, &args).then(|| format!("`git {sub}`"))
     } else if name == "gh" {
-        let args: Vec<&str> = command.args().iter().map(String::as_str).collect();
-        matches!(
-            args.as_slice(),
-            [
-                "pr",
-                "create" | "merge" | "edit" | "close" | "comment" | "review",
-                ..
-            ]
-        )
-        .then(|| format!("`gh {}`", args.join(" ")))
+        gh_pr_write(command)
     } else {
         BUILD_TOOLS
             .contains(&name.as_str())
@@ -546,6 +576,34 @@ fn check_reviewer_command(command: &SimpleCommand) -> Option<Decision> {
         format!(
             "a reviewer lead reads and never changes the repository: {what} is the implementing lead's; your subagents \
              read the review worktree and you hand their findings back with `review_node_done`"
+        ),
+    ))
+}
+
+/// `gh pr` subcommands that change a pull request, spelled as run, or `None` for a read.
+fn gh_pr_write(command: &SimpleCommand) -> Option<String> {
+    let args: Vec<&str> = command.args().iter().map(String::as_str).collect();
+    matches!(
+        args.as_slice(),
+        [
+            "pr",
+            "create" | "merge" | "edit" | "close" | "comment" | "review",
+            ..
+        ]
+    )
+    .then(|| format!("`gh {}`", args.join(" ")))
+}
+
+/// An explorer's `gh pr` write.
+fn check_explorer_pr(command: &SimpleCommand) -> Option<Decision> {
+    if command.program_name() != "gh" {
+        return None;
+    }
+    let what = gh_pr_write(command)?;
+    Some(Decision::deny(
+        RuleId::ExploreWrite,
+        format!(
+            "an explorer opens and changes no pull request: {what}; its findings go into the report"
         ),
     ))
 }

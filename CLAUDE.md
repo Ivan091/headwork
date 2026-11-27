@@ -167,6 +167,15 @@ R4 surfaces them: `board` prints a lead's open review under it (`Store::review_s
 off), and the built-in `plan` flow (target `files`) reviews plan documents; the event log carries `review-requested`,
 `review-start`, `review-node`, `review-deliver`, `review-resolve`, `review-verdict`, `review-answer`, `review-finish`,
 `review-cancel` and `review-refused`. The planned live trial at each level remains.
+Explorations (`docs/decisions/2026-11-27-explore-kind.md`): kind `explore` (`EXPLORE_KIND`) is for audits and read-only research. Spawn
+refuses a top-level one whose brief has no `Writes:` path under `[hooks] brief_writable` (`explore-no-report`,
+`explore_report_check` in `core/src/guard/grants.rs`), the kind defaults to Opus (`ModelsConfig::for_kind`) and a silent close, and
+the guard rule `explore-write` (shadow unless in `enforce_rules`) keeps it to the scratchpad and its `Writes:` paths. `rules/explorer.md`
+(`ops/rules.rs`) tells it to end its report with `## Backlog candidates` and ask the user one multi-select `AskUserQuestion` headed
+`Backlog`; `ops/explore.rs` records the answer as the event `backlog-picked` (from the `PostToolUse` hook) and lets the explorer, and
+only it, use `EXPLORER_TOOLS` (`backlog_list`, `backlog_add`, `ops/mcp.rs`): an add is refused as `backlog-unasked` once the picks are
+used up, logs `backlog-added` with the task and gets a `Source:` suffix (`Store::backlog_adds_left`). Parts of an explore lead are
+kind `explore` too and report to the lead.
 The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
 floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for
 those below the floor), drops a later round's repeats of earlier findings, runs another round only after an important

@@ -6,18 +6,20 @@
 //!
 //! A spawn with `--allow-ask` commands appends the worker's first action, the `Allow` ask for them, to the brief. A
 //! brief or allow-ask that names a user-only command under a kind that is not main-only is refused before the task
-//! exists (`headwork_core::user_go`).
+//! exists (`headwork_core::user_go`). A brief of kind `explore` without a `Writes:` path under `[hooks] brief_writable` is
+//! refused as `explore-no-report`, unless the task is a part of an exploration.
 
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use headwork_core::config::TaskVars;
+use headwork_core::config::{EXPLORE_KIND, TaskVars};
 use headwork_core::lifecycle::Trigger;
 use headwork_core::user_go::{self, GoFacts};
 use headwork_core::{PermissionMode, Role, TaskName, TaskRequest, TaskShape};
 use headwork_store::{NewSession, NewTask, Store, StoreError, Task, TaskId};
 use serde::Serialize;
 
+use super::explore;
 use super::place::{self, Opening};
 use super::rules::{self, Card};
 use super::{Env, launch, slashed};
@@ -110,6 +112,9 @@ pub fn spawn_shaped(
         ),
         TaskShape::Lead | TaskShape::Plain => None,
     };
+    if new.request.kind == EXPLORE_KIND && !matches!(shape, TaskShape::Part { .. }) {
+        explore::check_report(env, &brief)?;
+    }
     let asks = match env.config.project(&new.request.project) {
         Some(project) => user_go::check_go(&GoFacts {
             project: &new.request.project,

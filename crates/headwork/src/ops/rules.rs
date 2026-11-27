@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::TerminalHost;
-use headwork_core::config::{Delivery, REVIEW_KIND};
+use headwork_core::config::{Delivery, EXPLORE_KIND, REVIEW_KIND};
 use headwork_core::{Config, Platform, Role, TaskShape};
-use headwork_store::{AddedRule, Store, Task};
+use headwork_store::{AddedRule, Store, Task, TaskId};
 
 use super::slashed;
 use crate::home::Home;
@@ -29,6 +29,12 @@ pub const ORCHESTRATOR_RULES: &str = include_str!("../../../../rules/orchestrato
 pub const WORKER_RULES: &str = include_str!("../../../../rules/worker.md");
 /// The built-in `lead.md`, added to a lead's worker rules.
 pub const LEAD_RULES: &str = include_str!("../../../../rules/lead.md");
+/// The built-in `explorer.md`, added to the rules of a task of kind `explore`.
+pub const EXPLORER_RULES: &str = include_str!("../../../../rules/explorer.md");
+
+/// The heading of `explorer.md`'s section for a part of an exploration; the other sections are left out for a part.
+pub const EXPLORER_PART_HEADING: &str = "## You are a part of an exploration";
+
 /// The built-in `reviewer.md`, added to the rules of a part of kind `review`.
 pub const REVIEWER_RULES: &str = include_str!("../../../../rules/reviewer.md");
 
@@ -54,6 +60,7 @@ pub struct RuleFiles {
     worker: String,
     lead: String,
     reviewer: String,
+    explorer: String,
     address: String,
     projects: Vec<(String, String)>,
     added: Vec<AddedRule>,
@@ -103,6 +110,7 @@ impl RuleFiles {
         };
         let lead = read("lead.md")?.unwrap_or_else(|| LEAD_RULES.to_owned());
         let reviewer = read("reviewer.md")?.unwrap_or_else(|| REVIEWER_RULES.to_owned());
+        let explorer = read("explorer.md")?.unwrap_or_else(|| EXPLORER_RULES.to_owned());
         let mut projects = Vec::new();
         for name in config.projects.keys() {
             if let Some(text) = read(&format!("{name}.md"))? {
@@ -110,7 +118,7 @@ impl RuleFiles {
             }
         }
         let mut all = format!(
-            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{lead}\u{0}{reviewer}\u{0}{address}",
+            "{}\u{0}{orchestrator}\u{0}{worker}\u{0}{lead}\u{0}{reviewer}\u{0}{explorer}\u{0}{address}",
             global.as_deref().unwrap_or_default()
         );
         for (name, text) in &projects {
@@ -126,6 +134,7 @@ impl RuleFiles {
             worker,
             lead,
             reviewer,
+            explorer,
             address: address.to_owned(),
             projects,
             added: added.to_vec(),
@@ -182,6 +191,7 @@ impl RuleFiles {
             ("worker.md", self.worker.clone(), false),
             ("lead.md", self.lead.clone(), false),
             ("reviewer.md", self.reviewer.clone(), false),
+            ("explorer.md", self.explorer.clone(), false),
         ];
         let added: Vec<String> = self
             .added
@@ -243,6 +253,9 @@ impl RuleFiles {
                 }
                 if card.is_some_and(|card| card.task.kind == REVIEW_KIND) {
                     parts.push(self.reviewer.clone());
+                }
+                if card.is_some_and(|card| card.task.kind == EXPLORE_KIND) {
+                    parts.push(explorer_rules(&self.explorer, shape));
                 }
                 if let Some(card) = card
                     && let Some((_, text)) = self
@@ -331,6 +344,26 @@ pub fn orchestrator_address(store: &Store, host: &dyn TerminalHost) -> Result<St
 #[must_use]
 pub fn without_closing(text: &str) -> String {
     without_section(text, CLOSING_HEADING)
+}
+
+/// `explorer.md` for a task of kind `explore`: a part gets only its own section, a lead or plain task all the others.
+fn explorer_rules(text: &str, shape: TaskShape<TaskId>) -> String {
+    if matches!(shape, TaskShape::Part { .. }) {
+        let mut out = String::new();
+        let mut keep = false;
+        for line in text.lines() {
+            if line.starts_with("## ") {
+                keep = line.trim_end() == EXPLORER_PART_HEADING;
+            }
+            if keep {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    } else {
+        without_section(text, EXPLORER_PART_HEADING)
+    }
 }
 
 /// Drops the `## ` section headed `heading`, up to the next heading of the same level or the end.

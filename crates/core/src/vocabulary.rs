@@ -150,10 +150,11 @@ text_enum!(
 );
 
 impl CloseMode {
-    /// The mode a task of this kind gets when none is named: a kind `silent` closes silently, as it did before the flag.
+    /// The mode a task of this kind gets when none is named: a kind `silent` closes silently, as it did before the flag,
+    /// and so does a kind `explore`, whose `Backlog` ask is its checkpoint.
     #[must_use]
     pub fn default_for(kind: &str) -> Self {
-        if kind == crate::config::SILENT_KIND {
+        if kind == crate::config::SILENT_KIND || kind == crate::config::EXPLORE_KIND {
             Self::Silent
         } else {
             Self::Confirm
@@ -515,6 +516,9 @@ text_enum!(
         StopPlainQuestion => "stop-plain-question",
         /// A reviewer lead (a part of kind `review`) edits a file outside the scratchpad, or runs a git write or a build.
         ReviewerWrite => "reviewer-write",
+        /// An explorer (a task of kind `explore`) edits a file outside the scratchpad and its `Writes:` paths, or runs a git
+        /// or `gh pr` write.
+        ExploreWrite => "explore-write",
         /// A lead stops while the review the user asked for has not started.
         ReviewUnstarted => "review-unstarted",
         /// A reviewer lead stops while its review has a ready node or a resolution waits on its verdict.

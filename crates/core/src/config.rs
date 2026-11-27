@@ -459,7 +459,8 @@ pub struct ModelsConfig {
     pub allowed: Vec<Model>,
     /// Fable needs the user's approval per task.
     pub fable_needs_user: bool,
-    /// The model of a task kind when a spawn names none (`silent = "sonnet"`); a kind not listed takes `default`.
+    /// The model of a task kind when a spawn names none (`silent = "sonnet"`); a kind not listed takes `default`,
+    /// except `explore`, which takes Opus.
     pub by_kind: BTreeMap<String, Model>,
 }
 
@@ -467,7 +468,14 @@ impl ModelsConfig {
     /// The model a task of `kind` runs when its spawn names none.
     #[must_use]
     pub fn for_kind(&self, kind: &str) -> Model {
-        self.by_kind.get(kind).copied().unwrap_or(self.default)
+        self.by_kind
+            .get(kind)
+            .copied()
+            .unwrap_or(if kind == EXPLORE_KIND {
+                Model::Opus
+            } else {
+                self.default
+            })
     }
 }
 
@@ -766,6 +774,9 @@ pub struct LeadsConfig {
 
 /// The kind of the part that runs a review: the reviewer lead (`docs/review-flows.md`).
 pub const REVIEW_KIND: &str = "review";
+
+/// The kind of an exploration: an audit, a shadow review or read-only research that ends in a report and a `Backlog` ask.
+pub const EXPLORE_KIND: &str = "explore";
 
 /// The flow a review takes when neither the user nor `[reviews] flows` names one.
 pub const DEFAULT_FLOW: &str = "code";

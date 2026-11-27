@@ -19,6 +19,9 @@ Read the code the step touches first: a subagent on Sonnet for anything more tha
 - Tests and checks that must pass, and the delivery (pull request, `Migration:` line, deploy timing where it applies).
 - What not to touch: files other running or queued tasks own, user-only steps.
 - A `Writes: <absolute path>` line per notes file outside the worker's folder.
+- An audit, exploration, shadow review or read-only research is spawned with kind `explore`, and its `Writes:` line names its
+  report under the notes folder (spawn refuses one without). The explorer asks the user which findings go on the backlog
+  and adds the picks itself: do not relay them.
 
 ## 2. Per step: the flags
 

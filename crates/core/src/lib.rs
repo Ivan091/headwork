@@ -33,9 +33,9 @@ pub mod watch;
 
 pub use admission::{AdmissionRefusal, Admitted, TaskRequest, admit};
 pub use config::{
-    BacklogConfig, Config, ConfigError, DigestConfig, GatesConfig, LayoutConfig, LayoutMode,
-    LeadsConfig, ProjectConfig, ProjectOverlay, REVIEW_KIND, ReviewsConfig, SILENT_KIND,
-    UpdateConfig,
+    BacklogConfig, Config, ConfigError, DigestConfig, EXPLORE_KIND, GatesConfig, LayoutConfig,
+    LayoutMode, LeadsConfig, ProjectConfig, ProjectOverlay, REVIEW_KIND, ReviewsConfig,
+    SILENT_KIND, UpdateConfig,
 };
 pub use flags::{DecidedBy, DecisionError, FlagDecision, FlagPrompt, PlanMoment, PlannedReview};
 pub use guard::{Decision, Verdict};

@@ -249,6 +249,36 @@ pub fn brief_grants(brief: &str, roots: &[GuardPath], places: &Places) -> Vec<Gu
     grants
 }
 
+/// The first path on the brief's `Writes:` lines, as written, that [`brief_grants`] would grant under `roots`: the
+/// report file of an exploration.
+#[must_use]
+pub fn brief_report<'a>(brief: &'a str, roots: &[GuardPath], places: &Places) -> Option<&'a str> {
+    brief_writes(brief)
+        .into_iter()
+        .find(|word| !brief_grants(&format!("{WRITES_MARK} {word}"), roots, places).is_empty())
+}
+
+/// The refusal `explore-no-report` for the brief of an exploration (kind `explore`, not a part): it must name at least
+/// one path strictly under `roots` on a `Writes:` line, which is where its report goes.
+///
+/// # Errors
+///
+/// The message to show when the brief names no such path.
+pub fn explore_report_check(
+    brief: &str,
+    roots: &[GuardPath],
+    places: &Places,
+) -> Result<(), String> {
+    if brief_report(brief, roots, places).is_some() {
+        return Ok(());
+    }
+    Err(
+        "explore-no-report: a task of kind `explore` ends in a report and the brief names none; add a line \
+         `Writes: <path under [hooks] brief_writable>` (for example `Writes: S:/Code/notes/<slug>-<date>.md`)"
+            .to_owned(),
+    )
+}
+
 /// How the grants judge a git write in `folder`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GrantedGit {
@@ -453,6 +483,46 @@ mod tests {
         assert!(
             brief_grants(brief, &[], &places()).is_empty(),
             "no roots, no grants"
+        );
+    }
+
+    #[test]
+    fn an_exploration_brief_needs_a_report_path_under_a_root() {
+        let roots = [GuardPath::new("S:/Code/notes")];
+        let table: &[(&str, bool)] = &[
+            (
+                "Explore.
+Writes: S:/Code/notes/x.md",
+                true,
+            ),
+            ("- Writes: `S:/Code/notes/sub/x.md`", true),
+            ("Writes: S:/Code/other/x.md S:/Code/notes/x.md", true),
+            ("Explore, no report.", false),
+            ("Writes: S:/Code/notes", false),
+            ("Writes: S:/Code/other/x.md rel/x.md", false),
+            ("Read S:/Code/notes/x.md", false),
+        ];
+        for (brief, ok) in table {
+            let got = explore_report_check(brief, &roots, &places());
+            assert_eq!(got.is_ok(), *ok, "{brief}");
+            if let Err(message) = got {
+                assert!(
+                    message.contains("explore-no-report") && message.contains("Writes:"),
+                    "{message}"
+                );
+            }
+        }
+        assert_eq!(
+            brief_report(
+                "Writes: S:/Code/other/x.md `S:/Code/notes/x.md`",
+                &roots,
+                &places()
+            ),
+            Some("S:/Code/notes/x.md")
+        );
+        assert!(
+            explore_report_check("Writes: S:/Code/notes/x.md", &[], &places()).is_err(),
+            "no roots"
         );
     }
 

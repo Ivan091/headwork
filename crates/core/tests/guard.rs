@@ -61,6 +61,7 @@ fn worker(branch: &str) -> Scope {
         orchestrator_repos: Vec::new(),
         orchestrator_repo_excludes: Vec::new(),
         reviewer: false,
+        explorer: false,
     }
 }
 
@@ -1649,6 +1650,65 @@ fn the_orchestrator_gains_nothing_from_worker_grants() {
         rule(&check_tool(&scope, &call)),
         Some(RuleId::OrchestratorEdit),
         "only orchestrator_writable counts"
+    );
+}
+
+#[test]
+fn an_explorer_reads_builds_and_writes_only_the_scratchpad_and_its_report() {
+    let scope = Scope {
+        explorer: true,
+        own_delivery: false,
+        extra_writable: vec![GuardPath::new("S:/Code/notes/report.md")],
+        ..worker("HEAD")
+    };
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("git diff abc def", None),
+        ("rg foo src", None),
+        ("gh pr view 3", None),
+        ("git commit -m x", Some(RuleId::ExploreWrite)),
+        ("git push origin x", Some(RuleId::ExploreWrite)),
+        ("git checkout -b x", Some(RuleId::ExploreWrite)),
+        ("gh pr create --title x", Some(RuleId::ExploreWrite)),
+        ("gh pr merge 3", Some(RuleId::ExploreWrite)),
+        ("git -C S:/Code/notes add report.md", None),
+        ("git -C S:/Code/notes commit -m x report.md", None),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
+    }
+    assert_eq!(
+        rule(&check_tool(&scope, &bash("cargo test"))),
+        Some(RuleId::HeavyUngated),
+        "builds stay allowed: only the gate rule speaks"
+    );
+    let edit = |path| ToolCall::Write { tool: "Edit", path };
+    let cases = [
+        (
+            "S:/Code/me-sim/me-sim-sand/src/lib.rs",
+            Some(RuleId::ExploreWrite),
+        ),
+        ("S:/Code/notes/other.md", Some(RuleId::ExploreWrite)),
+        ("S:/Code/notes/report.md", None),
+        ("C:/Users/User/AppData/Local/Temp/claude/x/notes.md", None),
+    ];
+    for (path, want) in cases {
+        assert_eq!(rule(&check_tool(&scope, &edit(path))), want, "{path}");
+    }
+    let plain = Scope {
+        explorer: false,
+        ..scope
+    };
+    assert_eq!(
+        rule(&check_tool(
+            &plain,
+            &edit("S:/Code/me-sim/me-sim-sand/src/lib.rs")
+        )),
+        None,
+        "a plain worker edits its worktree"
     );
 }
 

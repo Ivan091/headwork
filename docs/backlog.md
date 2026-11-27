@@ -122,7 +122,9 @@ as an import reads a line (date groups become the fields, a `For you:` prefix th
 refuse what is left with the reason; the store refuses it too.
 
 The orchestrator has `backlog_list`, `backlog_add`, `backlog_done` and `backlog_edit` with the same filters and fields; each returns
-the item lines and the export outcome. Workers have none of them.
+the item lines and the export outcome. Workers have none of them, except an explorer (a task of kind `explore`, not a part):
+it has `backlog_list` and a narrow `backlog_add` that adds only what the user picked in its `Backlog` ask (`backlog-unasked`
+otherwise), logs `backlog-added` with its task and appends ` Source: <report>, task <name>` (`docs/decisions/2026-11-27-explore-kind.md`).
 
 ## 6. The spawn link
 
