@@ -496,6 +496,8 @@ text_enum!(
         WorkerLongJob => "worker-long-job" | "child-long-job",
         /// A worker runs cargo build, test, clippy or bench, or `check.sh`, outside `headwork gate run` or `heavy.sh`.
         HeavyUngated => "heavy-ungated",
+        /// A worker or an explorer runs a writing `headwork backlog` subcommand (add, done, start, cancel, ...).
+        WorkerBacklogCli => "worker-backlog-cli",
         /// A worker runs an orchestrator command of the headwork CLI (spawn, queue, park, close of another task...).
         WorkerAdmin => "worker-admin" | "child-admin",
         /// A worker runs a git write (commit, push, reset...) against a folder outside its writable folders.

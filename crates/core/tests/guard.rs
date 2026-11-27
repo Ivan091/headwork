@@ -2151,3 +2151,54 @@ fn the_heavy_rule_names_the_gate_command_and_leaves_the_orchestrator_and_reviewe
     assert_eq!(rule_of(&reviewer), Some(RuleId::ReviewerWrite));
     assert_eq!(rule_of(&orchestrator()), Some(RuleId::OrchestratorBuild));
 }
+
+#[test]
+fn a_worker_or_an_explorer_never_writes_the_backlog_through_the_cli() {
+    let denied = Some(RuleId::WorkerBacklogCli);
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("headwork backlog add headwork \"x\"", denied),
+        ("headwork backlog done 3 --note x", denied),
+        ("headwork backlog start 3", denied),
+        ("headwork backlog cancel 3 --reason x", denied),
+        ("headwork backlog block 3 --reason event --note x", denied),
+        ("headwork backlog unblock 3", denied),
+        ("headwork backlog reopen 3", denied),
+        ("headwork backlog edit 3 --text y", denied),
+        ("headwork backlog import --dry-run", denied),
+        ("headwork backlog export", denied),
+        ("headwork todo done 3", denied),
+        (
+            "C:/Users/User/.local/bin/headwork.exe backlog cancel 3",
+            denied,
+        ),
+        ("cargo run -p headwork -- backlog done 3", denied),
+        ("cd x && headwork backlog start 3", denied),
+        ("headwork backlog", None),
+        ("headwork backlog list --status blocked", None),
+        ("headwork backlog --json", None),
+        ("headwork backlog list --project headwork --json", None),
+        ("echo headwork backlog done 3", None),
+        ("headwork board", None),
+    ];
+    let explorer = Scope {
+        explorer: true,
+        ..worker("sand")
+    };
+    for scope in [worker("sand"), explorer] {
+        for (command, expected) in table {
+            let rule = match check_tool(&scope, &bash(command)) {
+                Decision::Allow => None,
+                Decision::Deny(verdict) => Some(verdict.rule),
+            };
+            assert_eq!(rule, *expected, "{command}");
+        }
+    }
+    assert_eq!(
+        check_tool(
+            &orchestrator(),
+            &bash("headwork backlog cancel 3 --reason x")
+        ),
+        Decision::Allow,
+        "the orchestrator's CLI is its own"
+    );
+}

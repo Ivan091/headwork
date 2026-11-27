@@ -5,6 +5,7 @@
 //! for a [`Decision`]. Whether a deny blocks or is only logged (shadow mode) is the caller's business.
 
 pub mod ask;
+mod backlog_cli;
 pub mod grants;
 mod heavy;
 pub mod paths;
@@ -492,6 +493,9 @@ fn check_worker_command(
         return decision;
     }
     if let Some(decision) = check_admin(scope, command) {
+        return decision;
+    }
+    if let Some(decision) = backlog_cli::backlog_command(command) {
         return decision;
     }
     if scope.reviewer
