@@ -79,6 +79,23 @@ fn a_worker_may_add_and_prune_worktrees_in_its_main_checkout_and_nothing_more() 
         ),
         ("cd S:/Code/me-sim/me-sim && git worktree add ../wt-x", None),
         ("git -C S:/Code/me-sim/me-sim worktree prune", None),
+        ("git -C S:/Code/me-sim/me-sim worktree add --detach ../wt-x", None),
+        (
+            "git -C S:/Code/me-sim/me-sim worktree add -f ../wt-x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim worktree add --force ../wt-x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim worktree add -B x ../wt-x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim worktree add -fB x ../wt-x",
+            Some(RuleId::WorkerGitOutside),
+        ),
         (
             "git -C S:/Code/me-sim/me-sim worktree remove ../wt-x",
             Some(RuleId::WorkerGitOutside),

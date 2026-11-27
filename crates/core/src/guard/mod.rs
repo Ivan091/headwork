@@ -659,8 +659,12 @@ fn check_git_outside(
         return GitPlace::Own;
     }
     let fast_forward = sub == "pull" && args.iter().any(|arg| arg == "--ff-only");
-    let worktree_upkeep =
-        sub == "worktree" && matches!(args.first().map(String::as_str), Some("add" | "prune"));
+    let worktree_upkeep = sub == "worktree"
+        && match args.first().map(String::as_str) {
+            Some("add") => !forces_a_branch(&args[1..]),
+            Some("prune") => true,
+            _ => false,
+        };
     if (fast_forward || worktree_upkeep)
         && scope
             .main_checkout
@@ -682,6 +686,28 @@ fn check_git_outside(
         ),
     };
     GitPlace::Refused(Decision::deny(RuleId::WorkerGitOutside, reason))
+}
+
+/// Whether the arguments of a `git worktree add` carry `-f`, `--force` or `-B`, which can reset an existing branch or
+/// take over a folder git holds.
+fn forces_a_branch(args: &[String]) -> bool {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "-b" | "--reason" => {
+                words.next();
+            }
+            "--force" => return true,
+            flag if flag.starts_with("--") => {}
+            flag if flag.starts_with('-') => {
+                if flag.chars().skip(1).any(|letter| matches!(letter, 'f' | 'B')) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Where a worker's git command acts.
