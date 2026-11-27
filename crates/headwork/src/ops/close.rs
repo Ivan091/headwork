@@ -779,10 +779,14 @@ fn record_usage_total(store: &Store, env: &Env<'_>, id: TaskId) {
 }
 
 /// The close trigger of `docs/autoupdate.md`: once a task of `[update] project` is closed, with `[update] enabled`, a
-/// detached `headwork update --wait 30` installs the release its merge produces. A start that fails is logged in
+/// detached `headwork update --wait 30` installs the release its merge produces. A task that never had a session (a
+/// queued task dropped before it started) merged nothing and starts none. A start that fails is logged in
 /// `update-triggered` and never fails the close.
 fn update_after_close(store: &Store, env: &Env<'_>, task: &Task) {
     if !env.config.update.enabled || task.project() != &env.config.update.project {
+        return;
+    }
+    if !matches!(store.session_of(task.id), Ok(Some(_))) {
         return;
     }
     let starter = super::update::Detached {
