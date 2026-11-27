@@ -234,7 +234,7 @@ fn check_heading(field: &'static str, name: &str) -> Result<(), BacklogError> {
 const GOAL_CHARS: usize = 160;
 
 /// The goal line of a brief: its first line with words, without markdown marks, a leading `Goal:`, brackets, and cut to
-/// [`GOAL_CHARS`] characters; `None` for a brief with no words.
+/// 160 characters; `None` for a brief with no words.
 #[must_use]
 pub fn goal_line(brief: &str) -> Option<String> {
     let line = brief
