@@ -126,8 +126,10 @@ fn make(store: &Store, dir: &Path, now_ms: u128) -> Result<PathBuf> {
         let _ignored: std::io::Result<()> = std::fs::remove_file(&partial);
         return Err(error);
     }
-    std::fs::rename(&partial, &target)
-        .with_context(|| format!("renaming to {}", target.display()))?;
+    if let Err(error) = std::fs::rename(&partial, &target) {
+        let _ignored: std::io::Result<()> = std::fs::remove_file(&partial);
+        return Err(error).with_context(|| format!("renaming to {}", target.display()));
+    }
     Ok(target)
 }
 
@@ -235,6 +237,40 @@ mod tests {
             Some(5),
             "age of the newest"
         );
+    }
+
+    #[test]
+    fn a_copy_that_fails_after_it_started_leaves_no_partial_file_and_the_old_copy() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let backups = dir(home.path());
+        std::fs::create_dir_all(&backups).unwrap();
+        let old = backups.join(format!("daily-{DAY_MS}.db"));
+        std::fs::write(&old, "old").unwrap();
+        let now = 3 * DAY_MS;
+        std::fs::create_dir(backups.join(format!("daily-{now}.db"))).unwrap();
+        assert!(make(&store, &backups, now).is_err(), "the rename fails");
+        let left = names(&backups);
+        assert!(
+            !left.iter().any(|name| name.ends_with(PARTIAL)),
+            "no partial file: {left:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&old).unwrap(),
+            "old",
+            "the old copy is intact"
+        );
+    }
+
+    #[test]
+    fn a_copy_with_another_schema_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let copy = home.path().join("copy.db");
+        store.copy_to(&copy).unwrap();
+        let schema = store.schema_version().unwrap();
+        assert!(verify(&copy, schema).is_ok(), "the same schema");
+        assert!(verify(&copy, schema + 1).is_err(), "another schema");
     }
 
     #[test]
