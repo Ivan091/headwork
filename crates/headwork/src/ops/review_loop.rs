@@ -908,7 +908,8 @@ pub fn cancel_open(store: &mut Store, task: &Task, actor: Actor) -> Result<()> {
     Ok(())
 }
 
-/// Whether a reviewer lead may not stop yet: its review has a ready node, or a resolution waits on its verdict.
+/// Whether a reviewer lead may not stop yet: its review has a ready node and a free `[reviews] parallel` slot to run it
+/// in, or a resolution waits on its verdict.
 ///
 /// # Errors
 ///
@@ -920,12 +921,14 @@ pub fn reviewer_busy(store: &Store, env: &Env<'_>, part: &Task) -> Result<bool> 
     match review.state {
         ReviewState::Running => {
             let loaded = flow_of(env, part, &review)?;
-            Ok(!ready(
-                &loaded.flow,
-                review.level,
-                &progress_of(store, env, &review)?,
-            )
-            .is_empty())
+            let progress = progress_of(store, env, &review)?;
+            let running = progress
+                .instances
+                .values()
+                .filter(|state| **state == NodeState::Running)
+                .count();
+            let parallel = usize::try_from(env.config.reviews.parallel.get()).unwrap_or(usize::MAX);
+            Ok(running < parallel && !ready(&loaded.flow, review.level, &progress).is_empty())
         }
         ReviewState::Rechecking => Ok(true),
         ReviewState::Requested

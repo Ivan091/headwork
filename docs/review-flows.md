@@ -254,7 +254,9 @@ Rules:
 - Guard: a `review` task's session writes nowhere but the scratchpad and runs no `git commit`, `push`, `checkout` or
   builds (rule `reviewer-write`); its worktree is read-only to it. The implementing lead's `done` is refused while a
   review is open (`review-open`). The stop rule refuses a reviewer lead's stop while `review_next` would return nodes
-  or a resolution waits on its verdict (`review-unfinished`).
+  (a node is ready and a `[reviews] parallel` slot is free) or a resolution waits on its verdict
+  (`review-unfinished`), unless the lead started background work this turn (its node or re-check subagents) and waits
+  for its notification.
 
 ## 9. The review worktree and placement
 

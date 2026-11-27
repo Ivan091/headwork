@@ -138,7 +138,8 @@ findings a verify stage rejected stay back), `review_verdict` (fix accepted or r
 worktree there). The reviewer lead's ask headed `Dispute` (one question per finding, `Finding <id>:`, options "Keep
 the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` is refused while its review is open
 (`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
-`review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
+`review-unfinished` holds a reviewer lead with ready nodes (and a free `parallel` slot) or answers to re-check, unless it
+waits on its own background subagents; closing either task cancels the
 review.
 R4 surfaces them: `board` prints a lead's open review under it (`Store::review_summary`), `status` ends its line with
 `in review (level N)` (`review requested (level N)` before it starts), `doctor` validates every flow (check `flows`: a broken one fails while reviews are on, warns while

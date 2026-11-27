@@ -1722,7 +1722,7 @@ fn a_reviewer_lead_with_work_left_may_not_stop_unless_it_asks() {
         reported: false,
         keep: false,
         running_job: false,
-        waiting_background: true,
+        waiting_background: false,
         waiting_part: false,
         user_present: false,
         review_requested: false,
@@ -1749,6 +1749,14 @@ fn a_reviewer_lead_with_work_left_may_not_stop_unless_it_asks() {
         }),
         None,
         "nothing left, it may wait"
+    );
+    assert_eq!(
+        stop(StopFacts {
+            waiting_background: true,
+            ..facts
+        }),
+        None,
+        "a lead waiting on its background node or re-check subagents may stop"
     );
 }
 

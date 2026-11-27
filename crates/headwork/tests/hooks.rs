@@ -3539,6 +3539,80 @@ fn node_done(node: &str, extra: &Value) -> Value {
     args
 }
 
+const REVIEWS_TWO_AT_ONCE: &str = "
+[leads]
+enabled = true
+max_parts = 1
+
+[reviews]
+enabled = true
+lead_model = \"haiku\"
+parallel = 2
+";
+
+/// The reviewer lead's would-denies of `review-unfinished`.
+fn review_unfinished(w: &World, part: &Task) -> usize {
+    w.store
+        .events(EventFilter {
+            task: Some(part.id),
+            limit: 200,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "would-deny" && event.data["rule"] == "review-unfinished")
+        .count()
+}
+
+#[test]
+fn a_reviewer_lead_waiting_on_its_nodes_may_stop() {
+    let mut w = world(REVIEWS_TWO_AT_ONCE, false);
+    let part = started_review(&mut w, 1);
+    let me = reviewer(&w, &part);
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        json_of(&text)["nodes"].as_array().unwrap().len(),
+        2,
+        "two slots, two nodes; the third waits for a slot"
+    );
+    w.session = me.session.clone().unwrap();
+    let stop =
+        json!({ "last_assistant_message": "Two nodes are running; the third waits for a slot." });
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        0,
+        "a ready node with no free slot does not hold the lead"
+    );
+
+    let (is_error, text) = w.tool(
+        me,
+        "review_node_done",
+        &node_done("correctness", &json!({ "findings": [] })),
+    );
+    assert!(!is_error, "{text}");
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        1,
+        "a ready node with a free slot holds the lead"
+    );
+
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(
+        HookEvent::PostToolUse,
+        &json!({ "tool_name": "Agent", "tool_input": { "run_in_background": true }, "tool_response": {} }),
+    );
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        1,
+        "a lead that waits on its background node subagents may stop"
+    );
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
