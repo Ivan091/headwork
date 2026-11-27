@@ -193,6 +193,14 @@ impl RawBacklogItem {
     }
 
     fn into_backlog_item(self) -> Result<BacklogItem, StoreError> {
+        let id = self.id;
+        self.parse().map_err(|source| StoreError::BadBacklogRow {
+            id,
+            source: Box::new(source),
+        })
+    }
+
+    fn parse(self) -> Result<BacklogItem, StoreError> {
         let [added, not_before, due, done_on] = self.dates;
         let date = |text: Option<String>| text.map(|text| BacklogDate::parse(&text)).transpose();
         let task = self

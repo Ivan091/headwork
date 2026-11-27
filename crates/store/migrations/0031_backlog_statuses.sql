@@ -17,7 +17,9 @@ CREATE TABLE backlog_items_new (
     task_id INTEGER REFERENCES tasks(id),
     position INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    CHECK ((status = 'blocked') = (blocked_reason IS NOT NULL)),
+    CHECK ((status = 'blocked') = (status_before_block IS NOT NULL))
 );
 
 INSERT INTO backlog_items_new (id, project, section, text, notes, status, owner, added, not_before, due, done_on, done_note,

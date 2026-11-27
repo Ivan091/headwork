@@ -2727,3 +2727,44 @@ fn the_status_migration_maps_each_old_state_and_keeps_ids_and_links() {
     let refused = conn.execute("UPDATE backlog_items SET status = 'open' WHERE id = 10", []);
     assert!(refused.is_err(), "the old word is refused by the CHECK");
 }
+
+#[test]
+fn a_backlog_block_is_all_or_nothing_and_a_bad_row_names_its_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 30);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO backlog_items (id, project, text, state, owner, position, created_at, updated_at)
+             VALUES (10, 'me-sim', 'one', 'open', 'agent', 1, 't', 't');",
+    )
+    .unwrap();
+    drop(conn);
+    drop(Store::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for bad in [
+        "UPDATE backlog_items SET status = 'blocked' WHERE id = 10",
+        "UPDATE backlog_items SET status = 'blocked', blocked_reason = 'event' WHERE id = 10",
+        "UPDATE backlog_items SET blocked_reason = 'event', status_before_block = 'backlog' WHERE id = 10",
+        "UPDATE backlog_items SET status_before_block = 'backlog' WHERE id = 10",
+    ] {
+        assert!(
+            conn.execute(bad, []).is_err(),
+            "a block is all or nothing: {bad}"
+        );
+    }
+    conn.execute(
+        "UPDATE backlog_items SET status = 'blocked', blocked_reason = 'event', status_before_block = 'backlog' WHERE id = 10",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE backlog_items SET done_on = 'someday' WHERE id = 10",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    let error = store.backlog_item(10).unwrap_err().to_string();
+    assert!(error.starts_with("backlog item 10: "), "{error}");
+}
