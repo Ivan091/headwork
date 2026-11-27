@@ -33,12 +33,14 @@
   <button id="legend-toggle" type="button" aria-expanded="false" aria-controls="legend" title="what the colours, shapes, edges and badges mean">legend</button>
   <button id="unfocus" type="button" hidden>show all</button>
   <button id="gates-toggle" type="button" aria-expanded="false" aria-controls="gates" title="the machine-wide cpu and gpu slots">slots</button>
+  <button id="backlog-toggle" type="button" aria-expanded="false" aria-controls="backlog" title="the backlog: open items and what waits on you">backlog</button>
   <span id="status" role="status"></span>
 </header>
 <main>
   <div id="graph"></div>
   <aside id="gates" aria-label="gate slots" hidden></aside>
   <aside id="legend" hidden aria-label="legend"></aside>
+  <aside id="backlog" aria-label="backlog" hidden></aside>
   <aside id="panel" hidden>
     <div class="panel-head">
       <h2 id="panel-title"></h2>

@@ -126,6 +126,8 @@ All `GET`, JSON, read only:
 | `/api/node/<id>` | details for the side panel: state history, last report, recap, tokens by type, prs, asks, findings |
 | `/api/range` | first and last event times, for the slider |
 | `/api/stream` | server-sent events: the same changes as `/api/events`, pushed as they land |
+| `/api/gates` | the cpu and gpu slots, holders and waiters, read from the slot folders |
+| `/api/backlog?state=&project=&owner=` | the backlog items (state `open` by default, `done`, `dropped` or `all`), `waiting`: the ids of the open items that wait on the user by the "Needs you" digest's own rule (`core::digest::waiting_items`), and `today`; the page's read-only backlog drawer polls it every 30 s while open |
 
 **Live:** the page opens `/api/stream`; the server polls the `events` table every second for ids above the last one it
 sent (cheap: the primary key) and pushes the mapped changes. A dropped stream falls back to polling `/api/events`.

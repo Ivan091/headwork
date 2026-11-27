@@ -213,6 +213,47 @@ fn dated_backlog_items(
     dated
 }
 
+fn user_items<'a>(
+    backlog_items: &'a [BacklogItem],
+    today: &BacklogDate,
+    listed: &[i64],
+) -> Vec<&'a BacklogItem> {
+    let mut rest: Vec<&BacklogItem> = backlog_items
+        .iter()
+        .filter(|item| {
+            item.draft.state == BacklogState::Open
+                && item.draft.owner == BacklogOwner::User
+                && item.task.is_none()
+                && !listed.contains(&item.id)
+                && item
+                    .draft
+                    .not_before
+                    .as_ref()
+                    .is_none_or(|from| from <= today)
+        })
+        .collect();
+    rest.sort_by_key(|item| (item.position, item.id));
+    rest
+}
+
+/// The ids of the backlog items that wait on the user, in the digest's order.
+///
+/// Those due or started come first, then the other open items of the user that have no task and are not held back by a
+/// `not_before` date. The digest and the dashboard both use this, so they never disagree.
+#[must_use]
+pub fn waiting_items(backlog_items: &[BacklogItem], today: &BacklogDate) -> Vec<i64> {
+    let mut ids: Vec<i64> = dated_backlog_items(backlog_items, today)
+        .into_iter()
+        .map(|(_, id, _)| id)
+        .collect();
+    let rest: Vec<i64> = user_items(backlog_items, today, &ids)
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    ids.extend(rest);
+    ids
+}
+
 fn is_gate_finding(kind: &str) -> bool {
     [FindingId::GateHeldLong, FindingId::GateStarved]
         .iter()
@@ -260,22 +301,7 @@ pub fn build(facts: &Facts) -> Digest {
             age(finding.open_s)
         )
     }));
-    let mut rest: Vec<&BacklogItem> = facts
-        .backlog_items
-        .iter()
-        .filter(|item| {
-            item.draft.state == BacklogState::Open
-                && item.draft.owner == BacklogOwner::User
-                && item.task.is_none()
-                && !listed.contains(&item.id)
-                && item
-                    .draft
-                    .not_before
-                    .as_ref()
-                    .is_none_or(|from| from <= &facts.today)
-        })
-        .collect();
-    rest.sort_by_key(|item| (item.position, item.id));
+    let rest = user_items(&facts.backlog_items, &facts.today, &listed);
     lines.extend(rest.into_iter().map(|item| {
         format!(
             "backlog #{}: {}",
@@ -510,5 +536,29 @@ mod tests {
         assert_eq!(age(59), "0m", "under a minute");
         assert_eq!(age(7200), "2h", "hours");
         assert_eq!(age(3 * 86_400), "3d", "days");
+    }
+
+    #[test]
+    fn waiting_items_lists_dated_then_the_users_open_items() {
+        let mut due = item(5, "due", BacklogOwner::Agent);
+        due.draft.due = Some(date("2026-11-20"));
+        let mine = item(2, "mine", BacklogOwner::User);
+        let mut later = item(3, "later", BacklogOwner::User);
+        later.draft.not_before = Some(date("2026-12-01"));
+        let mut linked = item(4, "linked", BacklogOwner::User);
+        linked.task = Some(LinkedTask {
+            id: 1,
+            name: "t".to_owned(),
+            state: TaskState::Working,
+        });
+        let mut done = item(6, "done", BacklogOwner::User);
+        done.draft.state = BacklogState::Done;
+        let agent = item(7, "agent", BacklogOwner::Agent);
+        let items = [mine, later, linked, done, agent, due];
+        assert_eq!(
+            waiting_items(&items, &date("2026-11-26")),
+            vec![5, 2],
+            "dated first, then the user's"
+        );
     }
 }

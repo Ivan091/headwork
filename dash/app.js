@@ -1192,6 +1192,234 @@
     }
   });
 
+  const backlogBox = byId("backlog");
+  const backlogToggle = byId("backlog-toggle");
+  const BACKLOG_POLL_MS = 30000;
+  let backlogTimer = null;
+  let backlogBody = null;
+  const backlogFolds = new Map();
+  const backlogFilter = { project: "", owner: "", text: "" };
+
+  function backlogGroup(key, title, count, fallbackOpen) {
+    const group = document.createElement("details");
+    group.open = backlogFolds.has(key) ? backlogFolds.get(key) : fallbackOpen;
+    group.addEventListener("toggle", () => backlogFolds.set(key, group.open));
+    const head = document.createElement("summary");
+    head.append(span(title, "bl-title"), span(String(count), "bl-count"));
+    group.append(head);
+    return group;
+  }
+
+  function backlogRow(item, today, waiting) {
+    const row = document.createElement("div");
+    row.className = "bl-row" + (waiting ? " waiting" : "");
+    row.tabIndex = 0;
+    row.append(span("#" + item.id + " ", "bl-id"), span(item.text, "bl-text"));
+    const chips = document.createElement("div");
+    chips.className = "bl-chips";
+    chips.append(span(item.owner === "user" ? "you" : "agent", "chip owner-" + item.owner));
+    if (item.not_before) {
+      chips.append(span("not before " + item.not_before, "chip" + (item.not_before > today ? " held" : "")));
+    }
+    if (item.due) {
+      chips.append(span("due " + item.due, "chip" + (item.due < today && item.state === "open" ? " overdue" : "")));
+    }
+    if (item.state !== "open") {
+      chips.append(span(item.state + (item.done_on ? " " + item.done_on : ""), "chip"));
+    }
+    if (item.task) {
+      const task = document.createElement("button");
+      task.type = "button";
+      task.className = "chip task state-" + item.task.state;
+      task.textContent = item.task.name + " · " + item.task.state;
+      task.title = "show this task in the graph";
+      task.addEventListener("click", (event) => {
+        event.stopPropagation();
+        select("task:" + item.task.id);
+      });
+      chips.append(task);
+    }
+    row.append(chips);
+    const more = document.createElement("div");
+    more.className = "bl-more";
+    item.notes.forEach((note) => more.append(span(note, "bl-note")));
+    if (item.done_note) {
+      more.append(span(item.done_note, "bl-note"));
+    }
+    row.append(more);
+    const flip = () => row.classList.toggle("open");
+    row.addEventListener("click", flip);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        flip();
+      }
+    });
+    return row;
+  }
+
+  function backlogMatches(item) {
+    if (backlogFilter.project && item.project !== backlogFilter.project) {
+      return false;
+    }
+    if (backlogFilter.owner && item.owner !== backlogFilter.owner) {
+      return false;
+    }
+    const needle = backlogFilter.text.trim().toLowerCase();
+    const hay = "#" + item.id + " " + item.text + " " + item.project + " " + (item.section || "");
+    return !needle || hay.toLowerCase().includes(needle);
+  }
+
+  function backlogSelect(label, value, choices, onChange) {
+    const box = document.createElement("select");
+    box.title = label;
+    choices.forEach(([choice, text]) => {
+      const option = document.createElement("option");
+      option.value = choice;
+      option.textContent = text;
+      box.append(option);
+    });
+    box.value = value;
+    box.addEventListener("change", () => onChange(box.value));
+    return box;
+  }
+
+  function backlogControls(items) {
+    const bar = document.createElement("div");
+    bar.className = "bl-controls";
+    const names = Array.from(new Set(items.map((item) => item.project))).sort();
+    const project = backlogSelect(
+      "project",
+      backlogFilter.project,
+      [["", "every project"]].concat(names.map((name) => [name, name])),
+      (value) => {
+        backlogFilter.project = value;
+        renderBacklog();
+      }
+    );
+    const owner = backlogSelect(
+      "owner",
+      backlogFilter.owner,
+      [["", "any owner"], ["user", "you"], ["agent", "agent"]],
+      (value) => {
+        backlogFilter.owner = value;
+        renderBacklog();
+      }
+    );
+    const find = document.createElement("input");
+    find.type = "search";
+    find.placeholder = "find an item";
+    find.value = backlogFilter.text;
+    find.addEventListener("input", () => {
+      backlogFilter.text = find.value;
+      renderBacklog();
+      const again = backlogBox.querySelector(".bl-controls input");
+      again.focus();
+      again.setSelectionRange(find.value.length, find.value.length);
+    });
+    bar.append(project, owner, find);
+    return bar;
+  }
+
+  function groupByProject(items) {
+    const projects = new Map();
+    items.forEach((item) => {
+      if (!projects.has(item.project)) {
+        projects.set(item.project, new Map());
+      }
+      const sections = projects.get(item.project);
+      const section = item.section || "";
+      if (!sections.has(section)) {
+        sections.set(section, []);
+      }
+      sections.get(section).push(item);
+    });
+    return projects;
+  }
+
+  function renderBacklog() {
+    const body = backlogBody;
+    backlogBox.replaceChildren();
+    if (!body) {
+      return;
+    }
+    const open = body.items.filter((item) => item.state === "open");
+    const head = document.createElement("div");
+    head.className = "bl-head";
+    head.append(span("Backlog", "bl-heading"), span(open.length + " open", "note"));
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "close";
+    close.addEventListener("click", () => backlogToggle.click());
+    head.append(close);
+    backlogBox.append(head, backlogControls(body.items));
+
+    const known = new Map(body.items.map((item) => [item.id, item]));
+    const waiting = body.waiting.map((id) => known.get(id)).filter((item) => item && backlogMatches(item));
+    const waitingGroup = backlogGroup("waiting", "Waiting on you", waiting.length, true);
+    waiting.forEach((item) => waitingGroup.append(backlogRow(item, body.today, true)));
+    if (!waiting.length) {
+      waitingGroup.append(span("nothing waits on you", "note"));
+    }
+    backlogBox.append(waitingGroup);
+
+    const shown = open.filter(backlogMatches);
+    const projects = groupByProject(shown);
+    Array.from(projects.keys()).sort().forEach((name) => {
+      const sections = projects.get(name);
+      const count = Array.from(sections.values()).reduce((sum, list) => sum + list.length, 0);
+      const group = backlogGroup("project:" + name, name, count, true);
+      sections.forEach((list, section) => {
+        if (section) {
+          group.append(span(section, "bl-section"));
+        }
+        list.forEach((item) => group.append(backlogRow(item, body.today, false)));
+      });
+      backlogBox.append(group);
+    });
+    if (!shown.length) {
+      backlogBox.append(span("no open items match", "note"));
+    }
+
+    const history = body.items
+      .filter((item) => item.state !== "open" && backlogMatches(item))
+      .sort((a, b) => (b.done_on || "").localeCompare(a.done_on || "") || b.id - a.id);
+    const past = backlogGroup("history", "History", history.length, false);
+    const fillHistory = () => {
+      if (past.open && !past.querySelector(".bl-row")) {
+        history.forEach((item) => past.append(backlogRow(item, body.today, false)));
+      }
+    };
+    past.addEventListener("toggle", fillHistory);
+    fillHistory();
+    backlogBox.append(past);
+  }
+
+  async function loadBacklog() {
+    try {
+      const response = await fetch("/api/backlog?state=all", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || response.statusText);
+      }
+      backlogBody = body;
+      renderBacklog();
+    } catch (error) {
+      backlogBox.replaceChildren(span("cannot read the backlog: " + error.message, "note"));
+    }
+  }
+
+  backlogToggle.addEventListener("click", () => {
+    backlogBox.hidden = !backlogBox.hidden;
+    backlogToggle.setAttribute("aria-expanded", String(!backlogBox.hidden));
+    backlogToggle.classList.toggle("on", !backlogBox.hidden);
+    clearInterval(backlogTimer);
+    if (!backlogBox.hidden) {
+      loadBacklog();
+      backlogTimer = setInterval(loadBacklog, BACKLOG_POLL_MS);
+    }
+  });
+
   showInstant();
   loadRange().then(load);
   listen();
