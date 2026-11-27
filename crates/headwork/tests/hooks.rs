@@ -833,7 +833,11 @@ fn plain_ask() -> Value {
 
 #[test]
 fn a_push_recorded_at_pre_tool_use_just_before_the_ask_counts() {
-    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    let mut w = world(
+        "enforce = true\npush_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.pre("PushNotification", &json!({ "message": "Ship?" }));
@@ -856,7 +860,8 @@ fn age_pre_pushes(w: &World, seconds: u32) {
 fn a_push_seen_only_at_pre_tool_use_counts_only_within_the_grace() {
     let mut w = world(
         "enforce = true
-push_window_secs = 0",
+push_window_secs = 0
+stop_presence_secs = 0",
         false,
     );
     w.start();
@@ -891,7 +896,11 @@ push_window_secs = 0",
 
 #[test]
 fn a_push_of_this_turn_counts_up_to_ten_minutes() {
-    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    let mut w = world(
+        "enforce = true\npush_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.post("PushNotification", &json!({}));
@@ -901,7 +910,11 @@ fn a_push_of_this_turn_counts_up_to_ten_minutes() {
 
 #[test]
 fn a_push_of_an_earlier_turn_or_older_than_ten_minutes_does_not_count() {
-    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    let mut w = world(
+        "enforce = true\npush_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.post("PushNotification", &json!({}));
@@ -922,7 +935,11 @@ fn a_push_of_an_earlier_turn_or_older_than_ten_minutes_does_not_count() {
 
 #[test]
 fn an_identical_re_ask_logs_its_would_deny_once() {
-    let mut w = world("push_window_secs = 0", false);
+    let mut w = world(
+        "push_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.pre("AskUserQuestion", &plain_ask());
     w.pre("AskUserQuestion", &plain_ask());
@@ -936,7 +953,11 @@ fn an_identical_re_ask_logs_its_would_deny_once() {
 
 #[test]
 fn an_enforced_re_ask_is_still_denied() {
-    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    let mut w = world(
+        "enforce = true\npush_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "first");
     assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "again");
@@ -1150,7 +1171,11 @@ fn the_first_action_ask_of_a_spawn_grants_its_command() {
 
 #[test]
 fn the_stop_gate_wants_an_ask_or_a_report() {
-    let mut w = world("push_window_secs = 0", false);
+    let mut w = world(
+        "push_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.hook(
@@ -1663,7 +1688,11 @@ fn mcp_board_and_inbox_answer_both_roles() {
 
 #[test]
 fn a_blocked_or_done_report_lets_the_stop_gate_through() {
-    let mut w = world("push_window_secs = 0", false);
+    let mut w = world(
+        "push_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     let stop = json!({ "last_assistant_message": "Waiting on the API key." });
@@ -2297,7 +2326,11 @@ fn a_message_to_either_orchestrator_address_reaches_the_live_one() {
 
 #[test]
 fn waiting_on_background_work_lets_the_stop_gate_through() {
-    let mut w = world("push_window_secs = 0", false);
+    let mut w = world(
+        "push_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     let stop = json!({ "last_assistant_message": "Waiting for the build." });
     let post = |w: &mut World, tool: &str, input: &Value, response: &Value| {
@@ -2345,7 +2378,11 @@ fn waiting_on_background_work_lets_the_stop_gate_through() {
 
 #[test]
 fn task_notifications_close_background_work_one_by_one() {
-    let mut w = world("push_window_secs = 0", false);
+    let mut w = world(
+        "push_window_secs = 0
+stop_presence_secs = 0",
+        false,
+    );
     w.start();
     let stop = json!({ "last_assistant_message": "Waiting for the agents." });
     let notice = json!({ "prompt": "<task-notification>
@@ -2375,7 +2412,8 @@ fn task_notifications_close_background_work_one_by_one() {
 #[test]
 fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
     let mut w = world(
-        "enforce_rules = [\"stop-unfinished\"]\npush_window_secs = 0",
+        "enforce_rules = [\"stop-unfinished\"]\npush_window_secs = 0
+stop_presence_secs = 0",
         false,
     );
     w.start();
@@ -2394,6 +2432,59 @@ fn enforce_rules_block_only_the_listed_rule_in_shadow_mode() {
             ("would-deny".to_owned(), "worker-global-skill".to_owned())
         ],
         "events"
+    );
+}
+
+fn age_prompts(w: &World, seconds: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type = 'prompt'"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+fn stop_after_prompt_aged(extra: &str, seconds: u32) -> u8 {
+    let mut w = world(
+        &format!(
+            "enforce_rules = [\"stop-unfinished\"]
+{extra}"
+        ),
+        false,
+    );
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    age_prompts(&w, seconds);
+    w.hook(
+        HookEvent::Stop,
+        &json!({ "last_assistant_message": "Step done." }),
+    )
+    .exit
+}
+
+#[test]
+fn a_live_chat_presumes_the_user_for_the_stop_presence_window() {
+    assert_eq!(
+        stop_after_prompt_aged("", 250),
+        0,
+        "within the default 300 s"
+    );
+    assert_eq!(
+        stop_after_prompt_aged("", 400),
+        2,
+        "past the default window"
+    );
+    assert_eq!(
+        stop_after_prompt_aged("stop_presence_secs = 600", 400),
+        0,
+        "a longer configured window"
+    );
+    assert_eq!(
+        stop_after_prompt_aged("stop_presence_secs = 0", 250),
+        2,
+        "0 leaves the push window alone"
     );
 }
 
@@ -3667,7 +3758,8 @@ fn a_review_command_from_another_session_or_with_reviews_off_does_nothing() {
 #[test]
 fn review_start_needs_the_user_s_request_and_a_clean_tree_then_starts_the_reviewer_lead() {
     let mut w = world(
-        "push_window_secs = 0\n[leads]\nenabled = true\nmax_parts = 1\n\n[reviews]\nenabled = true\nlead_model = \"haiku\"\n",
+        "push_window_secs = 0
+stop_presence_secs = 0\n[leads]\nenabled = true\nmax_parts = 1\n\n[reviews]\nenabled = true\nlead_model = \"haiku\"\n",
         false,
     );
     w.start();

@@ -1390,8 +1390,14 @@ fn stop(store: &Store, call: &Call<'_>) -> Result<HookReply> {
             Some(task) if task.shape.is_lead() => store.live_parts(task.id)? > 0,
             Some(_) | None => false,
         },
-        user_present: store
-            .user_prompted_within(&call.session.id, call.env.config.hooks.push_window_secs)?,
+        user_present: store.user_prompted_within(
+            &call.session.id,
+            call.env
+                .config
+                .hooks
+                .push_window_secs
+                .max(call.env.config.hooks.stop_presence_secs),
+        )?,
         review_requested: match call.task {
             Some(task) if task.shape.is_lead() && call.env.config.reviews.enabled => {
                 store.open_review(task.id)?.is_some_and(|review| {
