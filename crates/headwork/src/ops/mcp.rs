@@ -1600,6 +1600,12 @@ impl<'a> Server<'a> {
                 Value::String(line.trim_end().to_owned()),
             );
         }
+        if let (Ok(count), Some(object)) = (
+            super::leftovers::count(self.store, self.env.config),
+            board.as_object_mut(),
+        ) {
+            object.insert("rc_leftovers".to_owned(), Value::from(count));
+        }
         let board = to_text(&board)?;
         Ok(if role == Role::Orchestrator {
             format!(

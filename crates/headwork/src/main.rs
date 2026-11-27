@@ -385,6 +385,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the Remote Control leftovers: ended sessions that did not leave through `/exit`, which the Claude app may
+    /// still list and only the user can archive there (`docs/decisions/2026-11-27-rc-leftovers.md`).
+    Leftovers {
+        /// List every leftover, not only those of the last `[watch] leftover_days` days.
+        #[arg(long)]
+        all: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<LeftoversAction>,
+    },
     /// The would-deny events the hooks logged in shadow mode, by rule id.
     ShadowReport {
         /// Only events at or after this time: an RFC 3339 date and time, a date `YYYY-MM-DD`, or a span back from now
@@ -498,6 +510,20 @@ enum JobAction {
         /// Why it is over; recorded in the job's note and the event log.
         #[arg(long)]
         reason: String,
+    },
+}
+
+/// What `leftovers` does besides listing.
+#[derive(Debug, Subcommand)]
+enum LeftoversAction {
+    /// Record that you archived leftovers in the Claude app, so they are no longer listed or counted.
+    Clear {
+        /// Remote Control names or session ids.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        names: Vec<String>,
+        /// Clear every leftover, of all time.
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -1130,7 +1156,8 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         | Command::ShadowReport { .. }
         | Command::Usage { .. }
         | Command::Clean { .. }
-        | Command::Reap { .. }) => other,
+        | Command::Reap { .. }
+        | Command::Leftovers { .. }) => other,
     };
     let home = Home::locate()?;
     let config = home.load_config()?;
@@ -1209,6 +1236,9 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         }
         Command::Reap { dry_run, json } => {
             reap_command(&mut store, &ctx, ReapOptions { dry_run }, json, out)
+        }
+        Command::Leftovers { all, json, action } => {
+            leftovers_command(&mut store, &ctx, all, json, action, out)
         }
         Command::Launch { .. }
         | Command::Park { .. }
@@ -1497,6 +1527,7 @@ fn board(
                     .map(std::num::NonZeroU32::get),
                 &ctx.config.usage,
                 headwork::ops::gate::board_line(ctx.home, &ctx.config.gates).as_deref(),
+                headwork::ops::leftovers::count(store, ctx.config).unwrap_or(0),
             )
             .as_bytes(),
         )?;
@@ -2735,6 +2766,33 @@ fn reap_command(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn leftovers_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    all: bool,
+    json: bool,
+    action: Option<LeftoversAction>,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    use headwork::ops::leftovers;
+    if let Some(LeftoversAction::Clear { names, all }) = action {
+        let cleared = leftovers::clear(store, &names, all)?;
+        if json {
+            json_out(out, &serde_json::json!({ "cleared": cleared }))?;
+        } else {
+            writeln!(out, "cleared {cleared} leftovers")?;
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let found = leftovers::list(store, ctx.config, all)?;
+    if json {
+        json_out(out, &found)?;
+    } else {
+        out.write_all(render::leftovers(&found).as_bytes())?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn shadow_command(

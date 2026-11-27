@@ -19,6 +19,7 @@ use headwork::ops::status::StatusLine;
 use headwork::ops::tick::TickReport;
 use headwork::ops::usage::{UsageReport, UsageRow};
 use headwork_core::graph::Graph;
+use headwork_core::leftover::Leftover;
 use headwork_core::names::is_unsafe_char;
 use headwork_core::reap::{Reason as ReapReason, Spare};
 use headwork_core::usage::{UsageConfig, short_count};
@@ -125,7 +126,7 @@ pub(crate) fn pumped(pumped: &[Pumped]) -> String {
 #[cfg(test)]
 #[must_use]
 pub(crate) fn board(board: &Board, max_workers: Option<u32>, prices: &UsageConfig) -> String {
-    board_with(board, max_workers, prices, None)
+    board_with(board, max_workers, prices, None, 0)
 }
 
 /// The board as text: a header line, the `Gates:` line when there is one, then each project with its tasks, sessions and
@@ -136,6 +137,7 @@ pub(crate) fn board_with(
     max_workers: Option<u32>,
     prices: &UsageConfig,
     gates: Option<&str>,
+    leftovers: usize,
 ) -> String {
     let asks = board
         .tasks
@@ -162,6 +164,12 @@ pub(crate) fn board_with(
     );
     if let Some(gates) = gates {
         text.push_str(gates);
+    }
+    if leftovers > 0 {
+        let _ = writeln!(
+            text,
+            "Remote Control leftovers: {leftovers} (headwork leftovers)"
+        );
     }
     let width = board
         .tasks
@@ -985,6 +993,49 @@ pub(crate) fn cleaned(report: &CleanReport) -> String {
     text
 }
 
+/// The Remote Control leftovers as text: a count, then one line each with the Remote Control name, task, role, end time and
+/// reason.
+#[must_use]
+pub(crate) fn leftovers(found: &[Leftover]) -> String {
+    if found.is_empty() {
+        return "no Remote Control leftovers\n".to_owned();
+    }
+    let width = found
+        .iter()
+        .map(|leftover| leftover.rc_name.len())
+        .max()
+        .unwrap_or(0);
+    let task_width = found
+        .iter()
+        .map(|leftover| leftover.task.as_deref().map_or(1, str::len))
+        .max()
+        .unwrap_or(1);
+    let mut text = format!(
+        "{} Remote Control {}: archive them in the Claude app, then run `headwork leftovers clear`\n",
+        found.len(),
+        if found.len() == 1 {
+            "leftover"
+        } else {
+            "leftovers"
+        },
+    );
+    for leftover in found {
+        let _ = writeln!(
+            text,
+            "  {:<width$}  {:<task_width$}  {:<12} {}  {}",
+            leftover.rc_name,
+            leftover.task.as_deref().unwrap_or("-"),
+            leftover.role,
+            leftover
+                .ended_at
+                .get(..16)
+                .map_or_else(|| leftover.ended_at.clone(), |at| at.replace('T', " ")),
+            leftover.reason,
+        );
+    }
+    text
+}
+
 /// What `reap` ended, or would end, and the leftovers it left running.
 #[must_use]
 pub(crate) fn reaped(report: &ReapReport) -> String {
@@ -1323,10 +1374,48 @@ mod tests {
             Some(10),
             &headwork_core::usage::UsageConfig::default(),
             Some("Gates: cpu 0/3 \u{b7} gpu 0/2\n"),
+            0,
         );
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with("machine "), "{text}");
         assert_eq!(lines[1], "Gates: cpu 0/3 \u{b7} gpu 0/2", "{text}");
+    }
+
+    #[test]
+    fn board_counts_remote_control_leftovers_only_when_there_are_some() {
+        let (store, _) = store();
+        let board = store.board(false).unwrap();
+        let prices = headwork_core::usage::UsageConfig::default();
+        let quiet = super::board_with(&board, Some(10), &prices, None, 0);
+        assert!(!quiet.contains("leftovers"), "{quiet}");
+        let loud = super::board_with(&board, Some(10), &prices, None, 3);
+        assert_eq!(
+            loud.lines().nth(1),
+            Some("Remote Control leftovers: 3 (headwork leftovers)"),
+            "{loud}"
+        );
+    }
+
+    #[test]
+    fn leftovers_list_prints_name_task_role_time_and_reason() {
+        let found = [headwork_core::leftover::Leftover {
+            session: "s1".to_owned(),
+            rc_name: "me-sim-a".to_owned(),
+            task: Some("me-sim-a".to_owned()),
+            role: "worker".to_owned(),
+            ended_at: "2026-11-26T10:00:00.000Z".to_owned(),
+            reason: headwork_core::leftover::Reason::EndUnknown,
+        }];
+        let text = super::leftovers(&found);
+        assert!(text.starts_with("1 Remote Control leftover"), "{text}");
+        assert!(text.contains("me-sim-a"), "{text}");
+        assert!(text.contains("2026-11-26 10:00"), "{text}");
+        assert!(text.contains("end unknown"), "{text}");
+        assert_eq!(
+            super::leftovers(&[]),
+            "no Remote Control leftovers\n",
+            "empty"
+        );
     }
 
     #[test]

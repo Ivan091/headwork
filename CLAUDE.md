@@ -79,6 +79,12 @@ branches closed tasks were logged keeping (`branch-kept`) once they landed, and 
 checkout's `HEAD` or its branch's upstream contains it; `clean` fetches that upstream first, and a close fetches it
 before it keeps a branch (`ssh.rs`: batch mode with the user's own `core.sshCommand`). `--gc` runs plain `git gc`
 in a main checkout only when no registered job runs there and no main-only task is live.
+Remote Control leftovers (`docs/decisions/2026-11-27-rc-leftovers.md`; `core/src/leftover.rs`, `store/src/leftovers.rs`,
+`ops/leftovers.rs`): Claude Code archives a Remote Control session in the Claude app only when `claude` exits on `/exit`, and
+offers no command to archive one, so an ended session that did not (an ignored `/exit`, a non-zero exit with no ask, no exit
+code) stays listed there. `headwork leftovers [--all] [--json]` lists them within `[watch] leftover_days` (7; 0 is all time),
+`headwork leftovers clear` records the user's `rc-archived` event after they archived them by hand, `doctor` check
+`rc-leftovers` warns with the count, and `board` (and the MCP board's `rc_leftovers`) shows the count.
 `headwork reap` (`ops/reap.rs`, pure decisions in `core/src/reap.rs`) ends what ended sessions left running (the
 processes their launcher and `claude` started, rebuilt from parent links and start times; on unix also those `launchd`
 adopted that run in the task's worktrees, which `close` ends at once) and, on Windows only, orphaned `tail` and
@@ -233,6 +239,7 @@ cargo run -p headwork -- rule test "<cmd>" [--task N] [--branch B] [--background
 cargo run -p headwork -- tick [--json]                 # reconcile the store with panes, processes, PRs, disks; shadow unless hooks.enforce
 cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
+cargo run -p headwork -- leftovers [--all] [--json] | clear (<rc name or session id>... | --all)   # ended sessions that left no `/exit`, still listed in the Claude app; clear after archiving them there
 cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--state open|done|dropped|all] [--json]   # the backlog kept in the store (docs/backlog.md)
 cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | done <id> [--note N] [--drop] | reopen <id> | edit <id> [...]
 cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file P]   # backlog.md into the store (never deletes) and back out (backs up a hand-edited file)

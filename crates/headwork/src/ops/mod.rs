@@ -20,6 +20,7 @@ pub mod install;
 pub mod jobs;
 pub mod launch;
 pub mod launchd;
+pub mod leftovers;
 pub mod lost;
 pub mod mcp;
 pub mod migrate;

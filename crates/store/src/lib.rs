@@ -9,6 +9,7 @@ mod digest;
 mod error;
 mod graph;
 mod hooks;
+mod leftovers;
 mod migrate;
 mod migrations;
 mod park;
@@ -40,6 +41,7 @@ pub use hooks::{
     EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_USER_ONLY_ALLOWED,
     EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
 };
+pub use leftovers::EVENT_RC_ARCHIVED;
 pub use migrate::{MIGRATIONS, migrate};
 pub use migrations::{EVENT_MIGRATION_APPLIED, EVENT_MIGRATION_SKIPPED, MigrationRow};
 pub use park::{JobRow, NewJob, NewRecap, ParkRow, RecapRow};
