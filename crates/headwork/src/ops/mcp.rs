@@ -745,9 +745,10 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "review_node_done",
         description: "A reviewer lead's tool: hand back one node's result. A plain node gives `findings` (a list of \
-                      {file, line, severity, summary, scenario}; empty when it found nothing); a node that runs once \
-                      per finding gives `item` (the finding's number) and `verdict`; a subagent that failed gives \
-                      `failed` with why.",
+                      {file, line, severity, summary, scenario}; empty when it found nothing); a verify instance gives \
+                      `item` as `review_next` handed it out, and `verdict` when it checked one finding or `verdicts` \
+                      (one {id, verdict} per finding of its `checks`) when it checked several; a subagent that failed \
+                      gives `failed` with why.",
         roles: WORKER,
         schema: || {
             object(
@@ -769,6 +770,18 @@ const TOOLS: &[ToolDef] = &[
                         },
                     },
                     "verdict": { "type": "string", "enum": ["confirmed", "plausible", "rejected"] },
+                    "verdicts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "verdict": { "type": "string", "enum": ["confirmed", "plausible", "rejected"] },
+                                "evidence": { "type": "string" },
+                            },
+                            "required": ["id", "verdict"],
+                        },
+                    },
                     "failed": { "type": "string" },
                 }),
                 &["node"],

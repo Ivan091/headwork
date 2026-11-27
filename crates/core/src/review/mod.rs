@@ -17,15 +17,17 @@ use serde::{Deserialize, Serialize};
 
 pub use command::{NEAR_MISS_HINT, ParsedCommand, ReviewCommand, parse_command};
 pub use flow::{
-    After, DisputeRule, Each, Flow, FlowError, FlowName, LevelSpec, ModelChoice, Node, NodeId,
-    Target, Unsettled,
+    After, DisputeRule, Each, EachChoice, Flow, FlowError, FlowName, LevelSpec, ModelChoice, Node,
+    NodeId, Target, Unsettled,
 };
 pub use policy::{
     Candidate, Limits, ListReason, Seen, Selection, is_repeat, meets_floor, normalize, repeat_of,
     select, weight,
 };
-pub use prompt::{FINDINGS_SHAPE, FindingText, ReviewTarget, VERDICT_SHAPE, compose};
-pub use schedule::{Instance, Progress, ready, round_complete};
+pub use prompt::{
+    FINDINGS_SHAPE, FindingText, ReviewTarget, VERDICT_SHAPE, VERDICTS_SHAPE, compose,
+};
+pub use schedule::{ANCHOR_NODE, Instance, Progress, members, ready, round_complete, round_scope};
 pub use state::{
     DisputeCall, ReviewFacts, ReviewRefusal, ReviewTrigger, ReviewerView, apply, round_due,
     settle_dispute,

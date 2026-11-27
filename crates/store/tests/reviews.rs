@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use headwork_core::review::{
-    Flow, Instance, Level, NodeId, ReviewRefusal, ReviewTrigger, ready, round_complete,
+    Flow, Instance, Level, NodeId, ReviewRefusal, ReviewTrigger, members, ready, round_complete,
 };
 use headwork_core::{
     Actor, Config, FindingVerdict, NodeState, PermissionMode, ProjectName, Resolution, ReviewState,
@@ -135,6 +135,10 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
         Some("head"),
         "the commit under review is pinned"
     );
+    assert_eq!(
+        review.reviewed_sha, None,
+        "only the start (with its part) pins what round 1 reviews; a review without it keeps later rounds whole"
+    );
 
     let first = ready(
         &flow,
@@ -199,18 +203,36 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
             .iter()
             .map(|instance| instance.item)
             .collect::<Vec<_>>(),
-        ids,
-        "one verifier per finding"
+        [ids[0]],
+        "one verifier for correctness's findings at level 2"
     );
-    for (instance, verdict) in verify
+    let progress = store.review_progress(&review).unwrap();
+    assert_eq!(
+        members(&flow, Level::Standard, &progress, &verify[0]),
+        ids,
+        "it checks both"
+    );
+    assert_eq!(
+        progress.files.get(&ids[0]),
+        Some(&Some("src/lib.rs".to_owned())),
+        "the progress knows each finding's file"
+    );
+    for (id, verdict) in ids
         .iter()
         .zip([FindingVerdict::Confirmed, FindingVerdict::Rejected])
     {
-        store.set_finding_verdict(instance.item, verdict).unwrap();
-        store
-            .finish_review_node(&review, instance, NodeState::Done, &[], &[], Actor::Worker)
-            .unwrap();
+        store.set_finding_verdict(*id, verdict).unwrap();
     }
+    store
+        .finish_review_node(
+            &review,
+            &verify[0],
+            NodeState::Done,
+            &[],
+            &[],
+            Actor::Worker,
+        )
+        .unwrap();
     assert!(
         round_complete(
             &flow,
@@ -321,15 +343,38 @@ fn a_level_two_review_runs_its_nodes_verifies_and_finishes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one review walked through two rounds"
+)]
 fn a_due_round_starts_round_two_with_fresh_nodes() {
     let (mut store, task) = store_with_task();
     let review = store
         .request_review(task, "code", Level::Strict, "", Actor::Hook)
         .unwrap();
+    let pinned = store
+        .set_review_target(review.id, Some(task), "base", "head1")
+        .unwrap();
+    assert_eq!(
+        (
+            pinned.reviewed_sha.as_deref(),
+            pinned.round_base_sha.as_deref()
+        ),
+        (Some("head1"), None),
+        "the start pins the head round 1 reviews"
+    );
     store
         .move_review(review.id, ReviewTrigger::Start, false, false, Actor::Worker)
         .unwrap();
     let review = store.review(review.id).unwrap().unwrap();
+    assert_eq!(
+        (
+            review.reviewed_sha.as_deref(),
+            review.round_base_sha.as_deref()
+        ),
+        (Some("head1"), None),
+        "starting is no new round"
+    );
     let correctness = Instance {
         node: NodeId::new("correctness").unwrap(),
         item: 0,
@@ -356,6 +401,17 @@ fn a_due_round_starts_round_two_with_fresh_nodes() {
     store
         .resolve_finding(ids[0], Resolution::Fixed, None, false)
         .unwrap();
+    let resolved = store
+        .set_review_target(review.id, None, "base", "head2")
+        .unwrap();
+    assert_eq!(
+        (
+            resolved.head_sha.as_deref(),
+            resolved.reviewed_sha.as_deref()
+        ),
+        (Some("head2"), Some("head1")),
+        "a resolve moves the head, not what round 1 reviewed"
+    );
     store
         .move_review(
             review.id,
@@ -375,6 +431,14 @@ fn a_due_round_starts_round_two_with_fresh_nodes() {
         (review.state, review.round),
         (ReviewState::Running, 2),
         "round two runs"
+    );
+    assert_eq!(
+        (
+            review.round_base_sha.as_deref(),
+            review.reviewed_sha.as_deref()
+        ),
+        (Some("head1"), Some("head2")),
+        "round two reviews the fix commits head1..head2"
     );
     assert!(
         store.review_progress(&review).unwrap().instances.is_empty(),

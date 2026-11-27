@@ -94,5 +94,5 @@ id = "verify"
 prompt = "code/verify.md"
 from_level = 2
 after = ["*"]
-each = "finding"
+each = { 2 = "node", 3 = "file" }
 model = { 2 = "sonnet", 3 = "opus" }
