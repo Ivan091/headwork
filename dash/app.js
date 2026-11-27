@@ -46,6 +46,11 @@
   const hideDone = byId("hide-done");
 
   let selected = null;
+  let hovered = null;
+  const tip = document.createElement("div");
+  tip.id = "node-tip";
+  tip.hidden = true;
+  document.body.appendChild(tip);
   let focused = null;
   let loading = false;
   let firstLayout = true;
@@ -394,6 +399,7 @@
     });
     refreshProjects(projects);
     filter();
+    syncEdgeLabels();
     if (changed) {
       layout();
     }
@@ -826,13 +832,14 @@
   }
 
   setInterval(ringFrame, RING_FRAME_MS);
-  const tip = document.createElement("div");
-  tip.id = "node-tip";
-  tip.hidden = true;
-  document.body.appendChild(tip);
-  let hovered = null;
-
   function syncEdgeLabels() {
+    if (hovered && cy.getElementById(hovered).empty()) {
+      hovered = null;
+      tip.hidden = true;
+    }
+    if (hovered) {
+      tip.textContent = cy.getElementById(hovered).data("detail");
+    }
     cy.edges().removeClass("show");
     for (const id of [hovered, selected]) {
       if (id && cy.getElementById(id).nonempty()) {
