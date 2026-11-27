@@ -74,6 +74,9 @@ minutes (`core/src/removal.rs`, counts in `worktrees`, migration 0024); any othe
 failure, make the tick ask keep or delete, and nothing is retried until it is answered (the answer clears the counts);
 `close --force` and a user's `headwork clean` try at once (`RemovalMode::Now`), and a close still backing off skips
 its transition (`docs/decisions/2026-11-25-worktree-removal-backoff.md`).
+The `ask-push` rule counts a `PushNotification` recorded at `PreToolUse` (event `tool-pre`) only for a short grace
+(`PRE_ONLY_GRACE_SECS`, 5 s: the same batch of tool calls), a completed one (`tool-used`) when it came since the turn's
+prompt and no more than 600 s ago, and an identical re-ask within 120 s of its deny is not logged again.
 `headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with

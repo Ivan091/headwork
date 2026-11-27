@@ -941,7 +941,7 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
 /// How old a `PushNotification` of the current turn may be and still count for an ask, in seconds.
 pub const PUSH_TURN_WINDOW_SECS: u32 = 600;
 
-/// How long an identical deny of the same rule in a session is not logged again, in seconds.
+/// How long an identical `ask-push` deny in a session is not logged again, in seconds; no other rule is deduplicated.
 pub const REPEAT_DENY_SECS: u32 = 120;
 
 fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Decision> {
@@ -1428,14 +1428,8 @@ fn decide(
         return Ok(HookReply::default());
     };
     let enforce = call.env.config.hooks.enforces(verdict.rule);
-    let rule = json!(verdict.rule);
     let repeat = verdict.rule == RuleId::AskPush
-        && store.denied_within(
-            &call.session.id,
-            rule.as_str().unwrap_or_default(),
-            input,
-            REPEAT_DENY_SECS,
-        )?;
+        && store.denied_within(&call.session.id, verdict.rule.as_str(), input, REPEAT_DENY_SECS)?;
     if !repeat {
         store.append_event(
             Actor::Hook,
