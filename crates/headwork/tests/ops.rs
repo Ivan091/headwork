@@ -1265,6 +1265,10 @@ fn a_part_opens_as_a_tab_of_its_leads_workspace_titled_with_the_part_only() {
 }
 
 #[test]
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "the placeholders are the config template's own, not format arguments"
+)]
 fn the_role_names_the_kind_of_session_in_a_pane_title() {
     let mut w = world_with(
         10,
