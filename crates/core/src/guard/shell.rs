@@ -225,6 +225,7 @@ struct Builder {
     word: String,
     in_word: bool,
     redirect_target: bool,
+    nested: Vec<Vec<String>>,
 }
 
 impl Builder {
@@ -263,8 +264,10 @@ impl Builder {
 
     fn finish(mut self) -> Vec<Vec<String>> {
         self.end_command();
+        let nested = std::mem::take(&mut self.nested);
         self.commands
             .into_iter()
+            .chain(nested)
             .map(|words| {
                 words
                     .into_iter()
@@ -340,11 +343,17 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     out.end_word();
                     out.redirect_target = redirection(&mut chars);
                 }
-                '$' if plain_braced_name(&chars).is_some() => {
+                '$' => {
                     out.push('$');
-                    for _ in 0..plain_braced_name(&chars).unwrap_or_default() {
-                        if let Some(inner) = chars.next() {
-                            out.push(inner);
+                    if let Some(inside) = braced_expansion(&chars) {
+                        for _ in 0..inside.chars().count() + 2 {
+                            chars.next();
+                        }
+                        out.push('{');
+                        inside.chars().for_each(|inner| out.push(inner));
+                        out.push('}');
+                        if !is_plain_name(&inside) {
+                            out.nested.extend(split(&inside));
                         }
                     }
                 }
@@ -357,19 +366,36 @@ fn split(line: &str) -> Vec<Vec<String>> {
     out.finish()
 }
 
-/// The length of a `{name}` right ahead, when its content is a plain variable name (letters, digits, underscore): the
-/// `${name}` it ends is then one word. Anything else (`${x:-$(cmd)}`) is read as before, so `{`, `(` and backticks still
-/// end the command and the commands inside are seen.
-fn plain_braced_name(chars: &Peekable<Chars<'_>>) -> Option<usize> {
-    for (at, c) in chars.clone().enumerate() {
-        match (at, c) {
-            (0, '{') => {}
-            (2.., '}') => return Some(at + 1),
-            (1.., c) if c.is_ascii_alphanumeric() || c == '_' => {}
-            _ => return None,
+/// The text between the braces of a `${...}` right ahead (`chars` stands just after the `$`), read to the matching `}`
+/// with nesting; `None` when no `{` follows or the braces never close.
+///
+/// The expansion stays in the current word: its braces never end the command and a `#` inside never starts a comment.
+/// Unless the text is a plain name, the caller splits it again, so `${x:-$(cmd)}` still shows `cmd` and `${#x}` hides
+/// nothing; an unterminated `${x` is read as before, its `{` ending the command, so it hides nothing either.
+fn braced_expansion(chars: &Peekable<Chars<'_>>) -> Option<String> {
+    let mut ahead = chars.clone();
+    ahead.next_if_eq(&'{')?;
+    let mut depth = 1_usize;
+    let mut inside = String::new();
+    for c in ahead {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(inside);
+                }
+            }
+            _ => {}
         }
+        inside.push(c);
     }
     None
+}
+
+/// A variable name: letters, digits and underscores, at least one.
+fn is_plain_name(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Reads the rest of a redirection operator after its first `>` or `<`: a second `>` or a `|` (`>>`, `>|`), then
@@ -499,6 +525,40 @@ mod tests {
             programs("diff <(git show a) >(tee x) && run &"),
             ["diff", "git show a", "tee x", "run"],
             "process substitutions keep their commands"
+        );
+    }
+
+    #[test]
+    fn braced_expansions_stay_in_their_word_and_their_commands_are_seen() {
+        assert_eq!(
+            programs("echo ${HOME}/x"),
+            ["echo ${HOME}/x"],
+            "a plain name is one word"
+        );
+        assert_eq!(
+            programs("echo ${#x}; git push --force"),
+            ["echo ${#x}", "git push --force"],
+            "a # inside the braces starts no comment"
+        );
+        assert_eq!(
+            programs("${!x}; git push --force"),
+            ["${!x}", "git push --force", "!x"],
+            "an indirect expansion hides nothing"
+        );
+        assert_eq!(
+            programs("echo ${x:-$(git push --force)}"),
+            ["echo ${x:-$(git push --force)}", "x:-$", "git push --force"],
+            "a command inside the default is seen"
+        );
+        assert_eq!(
+            programs("echo ${a:-${b}}; git push --force"),
+            ["echo ${a:-${b}}", "git push --force", "a:-${b}"],
+            "nested braces close at the matching one"
+        );
+        assert_eq!(
+            programs("echo ${x; git push --force"),
+            ["echo", "x", "git push --force"],
+            "an unterminated expansion is read as before"
         );
     }
 

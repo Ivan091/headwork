@@ -2258,4 +2258,12 @@ fn only_a_plain_braced_name_is_one_word_so_commands_inside_an_expansion_are_seen
         Some(RuleId::WorkerBacklogCli)
     );
     assert_eq!(rule("echo ${HOME}/x"), None, "a plain name is one word");
+    for hidden in [
+        "echo ${#x}; git push --force",
+        "${!x}; git push --force",
+        "echo ${x; git push --force",
+        "echo ${a:-${b}}; git push --force",
+    ] {
+        assert_eq!(rule(hidden), Some(RuleId::WorkerForcePush), "{hidden}");
+    }
 }
