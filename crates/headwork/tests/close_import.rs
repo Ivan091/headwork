@@ -576,7 +576,17 @@ fn a_worktree_the_worker_made_with_a_new_branch_goes_with_that_branch_at_close()
     let mut w = world(10);
     let (task, _) = spawn_task(&mut w, "sand", false, false);
     let dir = w.dir.path().join("demo-by-hand");
-    git(&w.main, &["worktree", "add", "-q", "-b", "by-hand", dir.to_str().unwrap()]);
+    git(
+        &w.main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "by-hand",
+            dir.to_str().unwrap(),
+        ],
+    );
     let path = dir.display().to_string().replace('\\', "/");
     w.store
         .record_self_made_worktree(task.id, &path, "by-hand", Actor::Worker)
@@ -585,7 +595,10 @@ fn a_worktree_the_worker_made_with_a_new_branch_goes_with_that_branch_at_close()
     let report = close(&mut w.store, &env, task.id, None).unwrap();
     assert_eq!(report.state, TaskState::Closed, "{report:?}");
     assert!(!dir.exists(), "removed without the project's command");
-    assert!(!branch_exists(&w.main, "by-hand"), "the branch the add made is gone");
+    assert!(
+        !branch_exists(&w.main, "by-hand"),
+        "the branch the add made is gone"
+    );
 }
 
 #[test]
@@ -594,7 +607,10 @@ fn a_detached_worktree_the_worker_made_leaves_every_branch_alone_at_close() {
     let (task, _) = spawn_task(&mut w, "sand", false, false);
     let dir = w.dir.path().join("demo-probe");
     git(&w.main, &["branch", "bystander"]);
-    git(&w.main, &["worktree", "add", "-q", "--detach", dir.to_str().unwrap()]);
+    git(
+        &w.main,
+        &["worktree", "add", "-q", "--detach", dir.to_str().unwrap()],
+    );
     let path = dir.display().to_string().replace('\\', "/");
     w.store
         .record_self_made_worktree(task.id, &path, "", Actor::Worker)
@@ -611,7 +627,10 @@ fn a_self_made_worktree_with_work_stays_at_close() {
     let mut w = world(10);
     let (task, _) = spawn_task(&mut w, "sand", false, false);
     let dir = w.dir.path().join("demo-busy");
-    git(&w.main, &["worktree", "add", "-q", "-b", "busy", dir.to_str().unwrap()]);
+    git(
+        &w.main,
+        &["worktree", "add", "-q", "-b", "busy", dir.to_str().unwrap()],
+    );
     std::fs::write(dir.join("work.txt"), "unsaved").unwrap();
     let path = dir.display().to_string().replace('\\', "/");
     w.store

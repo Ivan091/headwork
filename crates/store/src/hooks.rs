@@ -243,7 +243,15 @@ impl Store {
                  AND json_extract(data, '$.tool') = ?3
                  AND id > COALESCE((SELECT MAX(id) FROM events WHERE session_id = ?1 AND type = ?5
                      AND NOT COALESCE(json_extract(data, '$.notification'), 0)), 0))",
-            params![session, EVENT_TOOL, tool, since, EVENT_PROMPT, EVENT_TOOL_PRE, grace],
+            params![
+                session,
+                EVENT_TOOL,
+                tool,
+                since,
+                EVENT_PROMPT,
+                EVENT_TOOL_PRE,
+                grace
+            ],
             |row| row.get(0),
         )?)
     }

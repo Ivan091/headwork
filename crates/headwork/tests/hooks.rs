@@ -833,19 +833,38 @@ fn age_pre_pushes(w: &World, seconds: u32) {
 
 #[test]
 fn a_push_seen_only_at_pre_tool_use_counts_only_within_the_grace() {
-    let mut w = world("enforce = true
-push_window_secs = 0", false);
+    let mut w = world(
+        "enforce = true
+push_window_secs = 0",
+        false,
+    );
     w.start();
     w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
     w.pre("PushNotification", &json!({ "message": "Ship?" }));
     age_pre_pushes(&w, 0);
-    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "just before");
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        0,
+        "just before"
+    );
     age_pre_pushes(&w, 60);
-    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "60 s before");
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "60 s before"
+    );
     w.post("PushNotification", &json!({}));
     age_pushes(&w, 132);
-    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "completed 132 s before");
-    let tools = w.events().into_iter().filter(|event| event.kind == "tool-used").count();
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        0,
+        "completed 132 s before"
+    );
+    let tools = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "tool-used")
+        .count();
     assert_eq!(tools, 1, "one tool-used for one push");
 }
 

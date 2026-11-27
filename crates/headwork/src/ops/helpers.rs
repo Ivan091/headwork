@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail, ensure};
-use headwork_core::Slug;
 use headwork_adapters::worktree::Worktrees;
+use headwork_core::Slug;
 use headwork_core::config::TaskVars;
 use headwork_core::guard::{Places, WorktreeAdd, worktree_adds};
 use headwork_store::{Store, Task, TaskId, WorktreeRow};

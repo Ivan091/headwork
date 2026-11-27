@@ -699,11 +699,7 @@ fn forces_a_branch(args: &[String]) -> bool {
             }
             "--force" => return true,
             flag if flag.starts_with("--") => {}
-            flag if flag.starts_with('-') => {
-                if flag.chars().skip(1).any(|letter| matches!(letter, 'f' | 'B')) {
-                    return true;
-                }
-            }
+            flag if flag.starts_with('-') && flag.contains(['f', 'B']) => return true,
             _ => {}
         }
     }
