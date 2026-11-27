@@ -101,4 +101,8 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 
 - The backlog is in the store (`backlog_*`); `backlog.md` is generated: never edit it; commit and push it in
   code-home after a change. Spawn an item's task with `backlog: <id>`. Heed the "Needs you" digest.
+- Items have a stored status (backlog, in progress, blocked, done, cancelled): `backlog_start`, `backlog_block`
+  (`decision` or `event`), `backlog_unblock`, `backlog_cancel` (with the user's reason; drop a live task first),
+  `backlog_reopen`. A task finishes its own item; an item `blocked` as `task_lost` waits for a respawn, `spawn` with
+  `backlog: <id>`, on the user's word.
 - Plan with `headwork:grooming` when asked or items lack a task, then `headwork:planning` after the go.
