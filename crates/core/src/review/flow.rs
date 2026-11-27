@@ -60,6 +60,25 @@ pub enum FlowError {
     /// An `each` node has no inputs to fan out over.
     #[error("node `{0}`: each needs after, the nodes whose findings it fans out over")]
     EachWithoutAfter(String),
+    /// An `each` node sets `every_round`, which only plain nodes may.
+    #[error("node `{0}`: every_round is for plain nodes; an each node always runs")]
+    EveryRoundEach(String),
+    /// A per-level `each` map lacks a level the node runs at.
+    #[error("node `{node}`: each names no fan-out for level {level}, at which it runs")]
+    EachMissing {
+        /// The node.
+        node: String,
+        /// The level.
+        level: Level,
+    },
+    /// An `each` map key is not a level.
+    #[error("node `{node}`: each key `{key}` is not 1, 2 or 3")]
+    EachKey {
+        /// The node.
+        node: String,
+        /// The key found.
+        key: String,
+    },
     /// A per-level model map lacks a level the node runs at.
     #[error("node `{node}`: model names no model for level {level}, at which it runs")]
     ModelMissing {
@@ -197,12 +216,26 @@ pub struct LevelSpec {
     pub argue_back: bool,
 }
 
-/// How a node fans out.
+/// How a node fans out over the findings of its inputs, each group formed from one completed input node's findings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Each {
-    /// One subagent per finding of its inputs; each returns a verdict on its finding.
+    /// One subagent per finding; each returns a verdict on its finding.
     Finding,
+    /// One subagent per input node, checking all that node's findings.
+    Node,
+    /// One subagent per input node and file, checking that node's findings in that file; findings that name no file
+    /// form one group per node.
+    File,
+}
+
+/// How a node fans out at each level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum EachChoice {
+    /// The same at every level.
+    One(Each),
+    /// One per level.
+    PerLevel(BTreeMap<Level, Each>),
 }
 
 /// The nodes a node waits for.
@@ -237,7 +270,9 @@ pub struct Node {
     /// What it waits for.
     pub after: After,
     /// How it fans out, if it does.
-    pub each: Option<Each>,
+    pub each: Option<EachChoice>,
+    /// It runs in every round, also a later one narrowed to the fix commits.
+    pub every_round: bool,
 }
 
 impl Node {
@@ -245,6 +280,21 @@ impl Node {
     #[must_use]
     pub fn runs_at(&self, level: Level) -> bool {
         self.from_level <= level
+    }
+
+    /// How it fans out at a level, if it does; validation makes sure a per-level map names every level it runs at.
+    #[must_use]
+    pub fn each_at(&self, level: Level) -> Option<Each> {
+        match self.each.as_ref()? {
+            EachChoice::One(each) => Some(*each),
+            EachChoice::PerLevel(map) => map.get(&level).copied(),
+        }
+    }
+
+    /// Whether it fans out over its inputs' findings instead of running once.
+    #[must_use]
+    pub const fn fans_out(&self) -> bool {
+        self.each.is_some()
     }
 
     /// Its model at a level; validation makes sure every level it runs at has one.
@@ -288,11 +338,20 @@ struct RawNode {
     model: RawModel,
     #[serde(default)]
     after: Vec<String>,
-    each: Option<Each>,
+    each: Option<RawEach>,
+    #[serde(default)]
+    every_round: bool,
 }
 
 const fn first_level() -> u8 {
     1
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawEach {
+    One(Each),
+    PerLevel(BTreeMap<String, Each>),
 }
 
 #[derive(Deserialize)]
@@ -308,7 +367,7 @@ impl Flow {
     /// # Errors
     ///
     /// Returns the first [`FlowError`] found: a parse error, a bad name, missing levels, duplicate or unknown nodes,
-    /// a cycle, an `each` without inputs, or a model map that misses a level the node runs at.
+    /// a cycle, an `each` without inputs, or a model or `each` map that misses a level the node runs at.
     pub fn parse(text: &str) -> Result<Self, FlowError> {
         let raw: RawFlow =
             toml::from_str(text).map_err(|error| FlowError::Parse(error.to_string()))?;
@@ -520,32 +579,39 @@ fn build_node(raw: RawNode, ids: &BTreeSet<String>) -> Result<Node, FlowError> {
     if raw.each.is_some() && after == After::Nodes(Vec::new()) {
         return Err(FlowError::EachWithoutAfter(raw.id));
     }
+    if raw.each.is_some() && raw.every_round {
+        return Err(FlowError::EveryRoundEach(raw.id));
+    }
+    let each = match raw.each {
+        None => None,
+        Some(RawEach::One(each)) => Some(EachChoice::One(each)),
+        Some(RawEach::PerLevel(map)) => Some(EachChoice::PerLevel(per_level(
+            map,
+            from_level,
+            |key| FlowError::EachKey {
+                node: raw.id.clone(),
+                key,
+            },
+            |level| FlowError::EachMissing {
+                node: raw.id.clone(),
+                level,
+            },
+        )?)),
+    };
     let model = match raw.model {
         RawModel::One(model) => ModelChoice::One(model),
-        RawModel::PerLevel(map) => {
-            let mut models = BTreeMap::new();
-            for (key, model) in map {
-                let level = key
-                    .parse::<u8>()
-                    .ok()
-                    .and_then(Level::from_number)
-                    .ok_or_else(|| FlowError::ModelKey {
-                        node: raw.id.clone(),
-                        key: key.clone(),
-                    })?;
-                models.insert(level, model);
-            }
-            if let Some(level) = Level::ALL
-                .into_iter()
-                .find(|level| *level >= from_level && !models.contains_key(level))
-            {
-                return Err(FlowError::ModelMissing {
-                    node: raw.id,
-                    level,
-                });
-            }
-            ModelChoice::PerLevel(models)
-        }
+        RawModel::PerLevel(map) => ModelChoice::PerLevel(per_level(
+            map,
+            from_level,
+            |key| FlowError::ModelKey {
+                node: raw.id.clone(),
+                key,
+            },
+            |level| FlowError::ModelMissing {
+                node: raw.id.clone(),
+                level,
+            },
+        )?),
     };
     Ok(Node {
         id,
@@ -553,6 +619,32 @@ fn build_node(raw: RawNode, ids: &BTreeSet<String>) -> Result<Node, FlowError> {
         from_level,
         model,
         after,
-        each: raw.each,
+        each,
+        every_round: raw.every_round,
     })
+}
+
+/// A per-level map keyed by level numbers, refused when a key is not a level or a level from `from_level` on is missing.
+fn per_level<T>(
+    map: BTreeMap<String, T>,
+    from_level: Level,
+    bad_key: impl Fn(String) -> FlowError,
+    missing: impl Fn(Level) -> FlowError,
+) -> Result<BTreeMap<Level, T>, FlowError> {
+    let mut values = BTreeMap::new();
+    for (key, value) in map {
+        let level = key
+            .parse::<u8>()
+            .ok()
+            .and_then(Level::from_number)
+            .ok_or_else(|| bad_key(key.clone()))?;
+        values.insert(level, value);
+    }
+    if let Some(level) = Level::ALL
+        .into_iter()
+        .find(|level| *level >= from_level && !values.contains_key(level))
+    {
+        return Err(missing(level));
+    }
+    Ok(values)
 }

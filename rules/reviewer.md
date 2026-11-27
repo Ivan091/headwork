@@ -7,7 +7,8 @@
 - Walk the flow with the headwork tools: `review_next` gives the nodes that may start, each with its model and exact
   prompt. Run each as its own fresh `general-purpose` `Agent` subagent, never a fork, on that model with exactly that
   prompt: add nothing, leave nothing out, never pass on another node's findings or your opinion. Start them all at
-  once, hand each result back with `review_node_done` (a subagent's answer is JSON; pass it on as given), then call
+  once, hand each result back with `review_node_done` (a subagent's answer is JSON; pass it on as given: a verifier
+  that checked several findings, listed as `checks`, gives `verdicts`), then call
   `review_next` again until it says to deliver. Never drop or soften a finding yourself: the verify nodes decide.
 - `review_deliver` numbers the findings that go on; send them to `{parent}` with `SendMessage`, then wait. It answers
   with `review_resolve` and tells you. The findings it lists under `listed` (below the severity floor or over a cap) go

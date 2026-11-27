@@ -4,13 +4,14 @@
 //! lead's fixes and disputes, and finishes; the implementing lead resolves every finding. headwork stores each step, so
 //! the order holds and a park loses nothing.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use anyhow::{Result, bail};
 use headwork_core::review::{
-    Candidate, DisputeCall, Each, FindingText, Instance, Limits, ListReason, NodeId, Progress,
-    ReviewTarget, ReviewTrigger, ReviewerView, Seen, compose, meets_floor, ready, repeat_of,
-    round_complete, round_due, select, settle_dispute,
+    Candidate, DisputeCall, FindingText, Instance, Limits, ListReason, NodeId, Progress,
+    ReviewTarget, ReviewTrigger, ReviewerView, Seen, compose, meets_floor, members, ready,
+    repeat_of, round_complete, round_due, round_scope, select, settle_dispute,
 };
 use headwork_core::{Actor, FindingVerdict, NodeState, Resolution, ReviewState, Severity};
 use headwork_store::{FindingRow, NewFinding, ReviewRow, Store, Task};
@@ -33,8 +34,11 @@ pub const DROP_OPTION: &str = "Drop it";
 pub struct NodeToRun {
     /// The node.
     pub node: String,
-    /// 0, or the finding an `each` node checks.
+    /// 0, or the smallest finding number of the group an `each` node checks.
     pub item: i64,
+    /// The findings an `each` node checks, by number; empty for a plain node.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<i64>,
     /// The model to run it on.
     pub model: String,
     /// The prompt, to pass as it is.
@@ -76,18 +80,30 @@ pub struct FindingIn {
 pub struct NodeDone {
     /// The node.
     pub node: String,
-    /// The finding an `each` node checked; 0 or absent for a plain node.
+    /// The item of an `each` node's instance (its smallest finding number); 0 or absent for a plain node.
     #[serde(default)]
     pub item: i64,
     /// A plain node's findings; an empty list when it found nothing.
     #[serde(default)]
     pub findings: Option<Vec<FindingIn>>,
-    /// An `each` node's verdict.
+    /// An `each` node's verdict on its one finding.
     #[serde(default)]
     pub verdict: Option<FindingVerdict>,
+    /// An `each` node's verdicts on the several findings of its group, one per finding.
+    #[serde(default)]
+    pub verdicts: Option<Vec<VerdictIn>>,
     /// Why the subagent failed, when it did; the round goes on without it.
     #[serde(default)]
     pub failed: Option<String>,
+}
+
+/// A verify subagent's verdict on one finding of its group.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct VerdictIn {
+    /// The finding's number.
+    pub id: i64,
+    /// `confirmed`, `plausible` or `rejected`.
+    pub verdict: FindingVerdict,
 }
 
 /// The implementing lead's answer to one finding.
@@ -200,41 +216,64 @@ fn flow_of(env: &Env<'_>, task: &Task, review: &ReviewRow) -> Result<LoadedFlow>
     load_flow(env.home.root(), &review.flow, &allowed).map_err(anyhow::Error::msg)
 }
 
+/// What the round's nodes review. A round [`round_scope`] narrowed (`narrowed`, its progress has an active set) checks
+/// only the fix commits from the head the round before reviewed, and fails when their changed files cannot be read; any
+/// other round reviews the whole branch, as round 1 does.
 fn target_of(
     env: &Env<'_>,
     part: &Task,
     review: &ReviewRow,
     loaded: &LoadedFlow,
+    narrowed: bool,
 ) -> Result<ReviewTarget> {
     let dir = env.task_dir(part)?;
     let (Some(base), Some(head)) = (review.base_sha.clone(), review.head_sha.clone()) else {
         bail!("review {} has no pinned commits", review.id);
     };
-    let changed = env
-        .worktrees(part)?
-        .changed_files(&dir, &base, &head)
-        .unwrap_or_default();
+    let round_base = review.round_base_sha.clone().filter(|_| narrowed);
+    let fixes_only = round_base.is_some();
+    let worktrees = env.worktrees(part)?;
+    let (base, changed) = if let Some(round_base) = round_base {
+        let changed = worktrees.changed_files(&dir, &round_base, &head)?;
+        (round_base, changed)
+    } else {
+        let changed = worktrees
+            .changed_files(&dir, &base, &head)
+            .unwrap_or_default();
+        (base, changed)
+    };
     Ok(ReviewTarget {
         kind: loaded.flow.target(),
         base,
         head,
         worktree: slashed(&dir),
         changed,
+        fixes_only,
     })
 }
 
-/// The round's progress with the findings below `[reviews] floor` taken out, so no verify node runs on them.
-fn progress_of(store: &Store, env: &Env<'_>, review: &ReviewRow) -> Result<Progress> {
+/// The round's progress with the findings below `[reviews] floor` taken out, so no verify node runs on them; a later
+/// round that checks only the fix commits runs only the plain nodes [`round_scope`] names.
+fn progress_of(
+    store: &Store,
+    env: &Env<'_>,
+    loaded: &LoadedFlow,
+    review: &ReviewRow,
+) -> Result<Progress> {
     let mut progress = store.review_progress(review)?;
     let floor = env.config.reviews.floor;
-    let light: Vec<i64> = store
-        .review_findings(review.id)?
-        .into_iter()
+    let rows = store.review_findings(review.id)?;
+    let light: Vec<i64> = rows
+        .iter()
         .filter(|row| row.round == review.round && !meets_floor(row.severity, floor))
         .map(|row| row.id)
         .collect();
     for ids in progress.findings.values_mut() {
         ids.retain(|id| !light.contains(id));
+    }
+    if review.round_base_sha.is_some() {
+        let fixed = store.fixed_important_nodes(review.id, review.round.saturating_sub(1))?;
+        progress.active = round_scope(&loaded.flow, review.level, &fixed);
     }
     Ok(progress)
 }
@@ -243,7 +282,7 @@ fn complete(store: &Store, env: &Env<'_>, loaded: &LoadedFlow, review: &ReviewRo
     Ok(round_complete(
         &loaded.flow,
         review.level,
-        &progress_of(store, env, review)?,
+        &progress_of(store, env, loaded, review)?,
     ))
 }
 
@@ -281,7 +320,7 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
     }
     let loaded = flow_of(env, part, &review)?;
     let level = review.level;
-    let progress = progress_of(store, env, &review)?;
+    let progress = progress_of(store, env, &loaded, &review)?;
     let running = progress
         .instances
         .values()
@@ -294,16 +333,17 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
         .into_iter()
         .take(room)
         .collect();
-    let target = target_of(env, part, &review, &loaded)?;
+    let target = target_of(env, part, &review, &loaded, progress.active.is_some())?;
     let findings = store.review_findings(review.id)?;
     let mut nodes = Vec::with_capacity(take.len());
     for instance in &take {
         let Some(node) = loaded.flow.node(instance.node.as_str()) else {
             continue;
         };
-        let finding = findings
+        let checks = members(&loaded.flow, level, &progress, instance);
+        let texts: Vec<FindingText> = findings
             .iter()
-            .find(|row| row.id == instance.item)
+            .filter(|row| checks.contains(&row.id))
             .map(|row| FindingText {
                 id: row.id,
                 node: row.node.clone(),
@@ -311,11 +351,13 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
                 severity: row.severity.to_string(),
                 summary: row.summary.clone(),
                 scenario: row.scenario.clone(),
-            });
+            })
+            .collect();
         let prompt = loaded.prompt(node).map_err(anyhow::Error::msg)?;
         nodes.push(NodeToRun {
             node: node.id.to_string(),
             item: instance.item,
+            checks,
             model: node.model_at(level).map_or_else(
                 || env.config.models.default.to_string(),
                 |model| model.to_string(),
@@ -327,12 +369,12 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
                 loaded.flow.level(level),
                 &target,
                 &review.focus,
-                finding.as_ref(),
+                &texts,
             ),
         });
     }
     store.take_review_nodes(&review, &take)?;
-    let after = progress_of(store, env, &review)?;
+    let after = progress_of(store, env, &loaded, &review)?;
     let now_running = after
         .instances
         .values()
@@ -362,8 +404,9 @@ pub fn next(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Next> {
 ///
 /// # Errors
 ///
-/// Refuses a node the flow does not run at this level, an `each` node without its finding or verdict, a plain node
-/// without its findings, or a review that is not running.
+/// Refuses a node the flow does not run at this level, a plain node a narrowed round leaves out, an `each` item that
+/// names no group (also when it failed), verdicts that miss a finding of the group, name one outside it or twice, or come
+/// as both `verdict` and `verdicts`, a plain node without its findings, or a review that is not running.
 pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone) -> Result<String> {
     let review = open_of_part(store, part)?;
     if review.state != ReviewState::Running {
@@ -391,6 +434,23 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
         node: NodeId::new(&done.node)?,
         item: done.item,
     };
+    let progress = progress_of(store, env, &loaded, &review)?;
+    if !progress.runs(node) {
+        bail!(
+            "`{}` does not run in round {}: it checks only the fix commits, with the nodes `review_next` hands out",
+            done.node,
+            review.round
+        );
+    }
+    let group = members(&loaded.flow, review.level, &progress, &instance);
+    if node.fans_out() && group.is_empty() {
+        bail!(
+            "`{}` has no instance {} this round: give `item` as `review_next` handed it out (the smallest number of \
+             its `checks`)",
+            done.node,
+            done.item
+        );
+    }
     if let Some(why) = &done.failed {
         store.finish_review_node(&review, &instance, NodeState::Failed, &[], &[], env.actor)?;
         return Ok(format!(
@@ -398,26 +458,20 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
             done.node
         ));
     }
-    if node.each == Some(Each::Finding) {
-        let Some(verdict) = done.verdict else {
-            bail!(
-                "`{}` runs once per finding: give `item` (the finding's number) and `verdict`",
-                done.node
-            );
-        };
-        let checked = done.item;
-        if !store
-            .review_findings(review.id)?
-            .iter()
-            .any(|row| row.round == review.round && row.id == checked)
-        {
-            bail!("finding {} is not a finding of this round", done.item);
+    if node.fans_out() {
+        let verdicts = verdicts_of(&done.node, done, &group)?;
+        for (id, verdict) in &verdicts {
+            store.set_finding_verdict(*id, *verdict)?;
         }
-        store.set_finding_verdict(done.item, verdict)?;
         store.finish_review_node(&review, &instance, NodeState::Done, &[], &[], env.actor)?;
+        let said: Vec<String> = verdicts
+            .iter()
+            .map(|(id, verdict)| format!("{id} {verdict}"))
+            .collect();
         return Ok(format!(
-            "verdict on finding {} recorded: {verdict}",
-            done.item
+            "`{}` recorded with verdicts on finding(s): {}",
+            done.node,
+            said.join(", ")
         ));
     }
     let Some(findings) = &done.findings else {
@@ -447,6 +501,42 @@ pub fn node_done(store: &mut Store, env: &Env<'_>, part: &Task, done: &NodeDone)
         );
     }
     Ok(text)
+}
+
+/// The verdicts an `each` instance hands back, checked against its group: `verdict` for a group of one, or
+/// `verdicts` naming every finding of the group once and no other.
+fn verdicts_of(node: &str, done: &NodeDone, group: &[i64]) -> Result<Vec<(i64, FindingVerdict)>> {
+    let given: Vec<(i64, FindingVerdict)> = match (&done.verdicts, done.verdict) {
+        (Some(_), Some(_)) => bail!("give `verdict` or `verdicts`, not both"),
+        (Some(list), None) => list.iter().map(|item| (item.id, item.verdict)).collect(),
+        (None, Some(verdict)) if group.len() == 1 => vec![(done.item, verdict)],
+        (None, _) => bail!(
+            "`{node}` instance {} checks finding(s) {group:?}: give `verdicts`, one {{id, verdict}} per finding \
+             (`verdict` alone serves a single finding)",
+            done.item
+        ),
+    };
+    let mut seen = BTreeSet::new();
+    for (id, _) in &given {
+        if !group.contains(id) {
+            bail!(
+                "finding {id} is not checked by `{node}` instance {}; it checks {group:?}",
+                done.item
+            );
+        }
+        if !seen.insert(*id) {
+            bail!("finding {id} has two verdicts; give one per finding");
+        }
+    }
+    let missing: Vec<i64> = group
+        .iter()
+        .copied()
+        .filter(|id| !seen.contains(id))
+        .collect();
+    if !missing.is_empty() {
+        bail!("give a verdict on every finding of the instance; missing: {missing:?}");
+    }
+    Ok(given)
 }
 
 /// A node's findings split into the new ones and the earlier rounds' findings the rest repeat, by number.
@@ -773,7 +863,7 @@ fn after_recheck(store: &Store, review: ReviewRow) -> Result<Step> {
             Vec::new(),
             None,
             format!(
-                "Round {} runs every node again on the fixed commit: call `review_next`.",
+                "Round {} starts on the fixed commit: call `review_next`.",
                 review.round
             ),
         ),
@@ -921,7 +1011,7 @@ pub fn reviewer_busy(store: &Store, env: &Env<'_>, part: &Task) -> Result<bool> 
     match review.state {
         ReviewState::Running => {
             let loaded = flow_of(env, part, &review)?;
-            let progress = progress_of(store, env, &review)?;
+            let progress = progress_of(store, env, &loaded, &review)?;
             let running = progress
                 .instances
                 .values()

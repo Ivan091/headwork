@@ -3998,6 +3998,10 @@ fn a_level_one_review_runs_its_nodes_delivers_rechecks_the_fix_and_finishes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one level-2 review walked through a batched verify and a dispute"
+)]
 fn a_level_two_dispute_the_reviewer_keeps_goes_to_the_user_and_their_answer_settles_it() {
     let mut w = world(REVIEWS, false);
     let part = started_review(&mut w, 2);
@@ -4029,25 +4033,55 @@ fn a_level_two_dispute_the_reviewer_keeps_goes_to_the_user_and_their_answer_sett
     }
     let (_, text) = w.tool(me.clone(), "review_next", &json!({}));
     let verify = json_of(&text);
-    let items: Vec<i64> = verify["nodes"]
+    let nodes = verify["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "one verifier for design's findings: {text}");
+    let item = nodes[0]["item"].as_i64().unwrap();
+    let items: Vec<i64> = nodes[0]["checks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|node| node["item"].as_i64().unwrap())
+        .map(|id| id.as_i64().unwrap())
         .collect();
-    assert_eq!(items.len(), 2, "one verifier per finding: {text}");
-    assert!(
-        verify["nodes"][0]["prompt"]
-            .as_str()
-            .unwrap()
-            .contains("wrong layer"),
-        "the verifier sees its finding"
+    assert_eq!(
+        (items.len(), items[0]),
+        (2, item),
+        "it checks both, keyed by the first: {text}"
     );
-    for (item, verdict) in items.iter().zip(["confirmed", "rejected"]) {
-        let args = json!({ "node": "verify", "item": item, "verdict": verdict });
+    let prompt = nodes[0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains("wrong layer") && prompt.contains("not a bug"),
+        "the verifier sees both findings"
+    );
+    let refused = [
+        json!({ "node": "verify", "item": item, "verdict": "confirmed" }),
+        json!({ "node": "verify", "item": item, "verdicts": [{ "id": items[0], "verdict": "confirmed" }] }),
+        json!({ "node": "verify", "item": item, "verdicts": [
+            { "id": items[0], "verdict": "confirmed" },
+            { "id": items[1], "verdict": "rejected" },
+            { "id": items[1] + 100, "verdict": "rejected" },
+        ] }),
+        json!({ "node": "verify", "item": items[1], "verdicts": [{ "id": items[1], "verdict": "rejected" }] }),
+        json!({ "node": "verify", "item": item, "verdicts": [
+            { "id": items[0], "verdict": "confirmed" },
+            { "id": items[0], "verdict": "rejected" },
+            { "id": items[1], "verdict": "rejected" },
+        ] }),
+        json!({ "node": "verify", "item": item, "verdict": "confirmed", "verdicts": [
+            { "id": items[0], "verdict": "confirmed" },
+            { "id": items[1], "verdict": "rejected" },
+        ] }),
+        json!({ "node": "verify", "item": items[1], "failed": "the subagent died" }),
+    ];
+    for args in refused {
         let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
-        assert!(!is_error, "{text}");
+        assert!(is_error, "refused: {args} -> {text}");
     }
+    let args = json!({ "node": "verify", "item": item, "verdicts": [
+        { "id": items[0], "verdict": "confirmed", "evidence": "line 1 shows it" },
+        { "id": items[1], "verdict": "rejected", "evidence": "no" },
+    ] });
+    let (is_error, text) = w.tool(me.clone(), "review_node_done", &args);
+    assert!(!is_error, "{text}");
     let (_, text) = w.tool(me.clone(), "review_deliver", &json!({}));
     let delivered = json_of(&text);
     assert_eq!(
@@ -4573,8 +4607,8 @@ fn finding_of(severity: &str, summary: &str, line: u32) -> Value {
 }
 
 /// Runs a review round to its delivery: each plain node returns its findings in `found` (none when absent), each
-/// verify instance takes the next of `verdicts` (else `confirmed`). Returns the delivery and every `review_node_done`
-/// answer.
+/// finding a verify instance checks takes the next of `verdicts` (else `confirmed`). Returns the delivery, with the
+/// number of findings verified, and every `review_node_done` answer.
 fn run_round(
     w: &mut World,
     me: &Identity,
@@ -4600,9 +4634,22 @@ fn run_round(
             let name = node["node"].as_str().unwrap();
             let item = node["item"].as_i64().unwrap();
             let args = if item > 0 {
-                verified += 1;
-                let verdict = verdicts.next().copied().unwrap_or("confirmed");
-                json!({ "node": name, "item": item, "verdict": verdict })
+                let checks: Vec<i64> = node["checks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|id| id.as_i64().unwrap())
+                    .collect();
+                verified += checks.len();
+                let mut given: Vec<Value> = checks
+                    .iter()
+                    .map(|id| json!({ "id": id, "verdict": verdicts.next().copied().unwrap_or("confirmed") }))
+                    .collect();
+                if given.len() == 1 {
+                    json!({ "node": name, "item": item, "verdict": given.remove(0)["verdict"] })
+                } else {
+                    json!({ "node": name, "item": item, "verdicts": given })
+                }
             } else {
                 let findings = found
                     .iter()
@@ -4755,13 +4802,19 @@ fn a_finding_repeated_in_round_two_is_dropped() {
     let mut w = world(REVIEWS, false);
     let part = started_review(&mut w, 3);
     let me = reviewer(&w, &part);
-    let found = [(
-        "correctness",
-        json!([finding_of("important", "Off by one", 1)]),
-    )];
+    let found = [
+        (
+            "correctness",
+            json!([finding_of("important", "Off by one", 1)]),
+        ),
+        (
+            "tests",
+            json!([finding_of("important", "no test for the edge", 7)]),
+        ),
+    ];
     let (delivered, _) = run_round(&mut w, &me, &found, &[]);
     let first = ids_of(&delivered["findings"]);
-    assert_eq!(first.len(), 1, "{delivered}");
+    assert_eq!(first.len(), 2, "{delivered}");
     let after = fix_all(&mut w, &me, &first, 1);
     assert!(
         after["next"].as_str().unwrap().contains("Round 2"),
@@ -4842,6 +4895,137 @@ fn a_fixed_doubt_alone_does_not_start_a_second_round() {
     );
     let (is_error, text) = w.tool(me, "review_finish", &json!({}));
     assert!(!is_error && text.contains("1 fixed"), "{text}");
+}
+
+#[test]
+fn round_two_checks_only_the_fix_commits_with_the_nodes_that_found_important_defects() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let pinned = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    let round_one_head = pinned.head_sha.clone().unwrap();
+    assert_eq!(
+        pinned.reviewed_sha.as_deref(),
+        Some(round_one_head.as_str()),
+        "review_start pins what round 1 reviews"
+    );
+    let found = [
+        ("design", json!([finding_of("important", "wrong layer", 1)])),
+        ("docs", json!([finding_of("nit", "typo", 2)])),
+    ];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    let ids = ids_of(&delivered["findings"]);
+    fix_all(&mut w, &me, &ids, 1);
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.round, 2, "{review:?}");
+    let fixed_head = review.head_sha.clone().unwrap();
+    assert_ne!(fixed_head, round_one_head, "the fix moved the head");
+    assert_eq!(
+        (
+            review.round_base_sha.as_deref(),
+            review.reviewed_sha.as_deref()
+        ),
+        (Some(round_one_head.as_str()), Some(fixed_head.as_str())),
+        "round 2 reviews round 1's head to the fixed head"
+    );
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    let nodes: Vec<&str> = next["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        nodes,
+        ["correctness", "design"],
+        "correctness, and design for its important finding; docs' nit earns no rerun"
+    );
+    let prompt = next["nodes"][0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains(&format!(
+            "The change is the diff `{round_one_head}..{fixed_head}`"
+        )) && prompt.contains("This round checks only the fix commits"),
+        "{prompt}"
+    );
+    let (is_error, text) = w.tool(
+        me.clone(),
+        "review_node_done",
+        &json!({ "node": "tests", "findings": [] }),
+    );
+    assert!(
+        is_error && text.contains("does not run in round 2"),
+        "a plain node outside the scope is refused: {text}"
+    );
+    for node in &nodes {
+        let (is_error, text) = w.tool(
+            me.clone(),
+            "review_node_done",
+            &json!({ "node": node, "findings": [] }),
+        );
+        assert!(!is_error, "{text}");
+    }
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    assert!(
+        next["nodes"].as_array().unwrap().is_empty()
+            && next["next"].as_str().unwrap().contains("review_deliver"),
+        "no node outside the scope is ever handed out: {text}"
+    );
+}
+
+#[test]
+fn a_flow_without_an_every_round_node_keeps_whole_later_rounds() {
+    let mut w = world(REVIEWS, false);
+    let flows = w.home.root().join("flows");
+    let builtin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../flows");
+    std::fs::create_dir_all(flows.join("code")).unwrap();
+    for entry in std::fs::read_dir(builtin.join("code")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), flows.join("code").join(entry.file_name())).unwrap();
+    }
+    let text = std::fs::read_to_string(builtin.join("code.toml"))
+        .unwrap()
+        .replace("every_round = true\n", "");
+    std::fs::write(flows.join("code.toml"), text).unwrap();
+    let part = started_review(&mut w, 3);
+    let me = reviewer(&w, &part);
+    let base = w
+        .store
+        .reviews_of(w.task.id)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .base_sha
+        .unwrap();
+    let found = [("design", json!([finding_of("important", "wrong layer", 1)]))];
+    let (delivered, _) = run_round(&mut w, &me, &found, &[]);
+    fix_all(&mut w, &me, &ids_of(&delivered["findings"]), 1);
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(review.round, 2, "{review:?}");
+    let head = review.head_sha.unwrap();
+    let (is_error, text) = w.tool(me, "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    let next = json_of(&text);
+    let nodes: Vec<&str> = next["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        nodes,
+        ["correctness", "tests", "rules", "errors", "design", "docs"],
+        "every analysis node runs again, up to `parallel` at once: {text}"
+    );
+    let prompt = next["nodes"][0]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains(&format!("The change is the diff `{base}..{head}`"))
+            && !prompt.contains("fix commits"),
+        "the whole branch, with no scope paragraph: {prompt}"
+    );
 }
 
 fn hooks_sleeper() -> std::process::Child {

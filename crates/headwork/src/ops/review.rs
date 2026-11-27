@@ -106,6 +106,7 @@ pub fn start(store: &mut Store, env: &Env<'_>, lead: &Task) -> Result<Started> {
         head: head.clone(),
         worktree: path_text.clone(),
         changed,
+        fixes_only: false,
     };
     let result = spawn_reviewer(store, env, lead, &review, &loaded, &target, slug);
     let (part, queue) = match result {
@@ -255,8 +256,17 @@ pub fn brief(
         if !inputs.is_empty() {
             let _ = write!(text, ", after {}", inputs.join(", "));
         }
-        if node.each == Some(Each::Finding) {
-            let _ = write!(text, ", once per finding of its inputs");
+        match node.each_at(level) {
+            Some(Each::Finding) => {
+                let _ = write!(text, ", once per finding of its inputs");
+            }
+            Some(Each::Node) => {
+                let _ = write!(text, ", once per node of its inputs");
+            }
+            Some(Each::File) => {
+                let _ = write!(text, ", once per file of its inputs (per node)");
+            }
+            None => {}
         }
     }
     let _ = writeln!(text, "\n\nStart with `review_next`.");
@@ -281,8 +291,13 @@ fn level_rules(flow: &Flow, level: Level) -> String {
         Unsettled::Ask => "a dispute you do not accept goes to the user",
     };
     let rounds = if spec.rounds > 1 {
+        let scope = if flow.nodes_at(level).any(|node| node.every_round) {
+            "checks only the fix commits"
+        } else {
+            "runs every node again on the new commit"
+        };
         format!(
-            "{} full rounds: after the fixes, run every node again on the new commit",
+            "up to {} rounds: after an important fix, the next round {scope}",
             spec.rounds
         )
     } else {

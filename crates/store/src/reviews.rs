@@ -3,6 +3,8 @@
 //! Every state change goes through [`headwork_core::review::apply`]; the store counts the facts its guards read from the
 //! findings, and the caller adds the ones only the flow can tell (the round complete, another round due).
 
+use std::collections::BTreeSet;
+
 use headwork_core::review::{
     Instance, Level, NodeId, Progress, ReviewFacts, ReviewRefusal, ReviewTrigger,
 };
@@ -37,6 +39,11 @@ pub struct ReviewRow {
     pub base_sha: Option<String>,
     /// The commit under review.
     pub head_sha: Option<String>,
+    /// The head the current round's nodes review: pinned at start, moved to `head_sha` when a new round starts.
+    pub reviewed_sha: Option<String>,
+    /// The head the previous round reviewed, where a later round's diff starts; `None` in round 1, and in a later
+    /// round of a review started before migration 0029 (that round reviews the whole branch).
+    pub round_base_sha: Option<String>,
     /// The round, from 1.
     pub round: u8,
     /// Where it is.
@@ -198,7 +205,8 @@ impl From<rusqlite::Error> for ReviewError {
     }
 }
 
-const REVIEW_COLUMNS: &str = "id, task_id, part_id, flow, level, focus, base_sha, head_sha, round, state, requested_at, finished_at";
+const REVIEW_COLUMNS: &str = "id, task_id, part_id, flow, level, focus, base_sha, head_sha, round, state, requested_at, finished_at, \
+     reviewed_sha, round_base_sha";
 
 type RawReview = (
     i64,
@@ -207,7 +215,7 @@ type RawReview = (
     String,
     i64,
     String,
-    (Option<String>, Option<String>),
+    [Option<String>; 4],
     i64,
     String,
     String,
@@ -222,7 +230,7 @@ fn read_review(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawReview> {
         row.get(3)?,
         row.get(4)?,
         row.get(5)?,
-        (row.get(6)?, row.get(7)?),
+        [row.get(6)?, row.get(7)?, row.get(12)?, row.get(13)?],
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
@@ -242,7 +250,7 @@ fn into_review(raw: RawReview) -> Result<ReviewRow, StoreError> {
         flow,
         level,
         focus,
-        (base_sha, head_sha),
+        [base_sha, head_sha, reviewed_sha, round_base_sha],
         round,
         state,
         requested_at,
@@ -257,6 +265,8 @@ fn into_review(raw: RawReview) -> Result<ReviewRow, StoreError> {
         focus,
         base_sha,
         head_sha,
+        reviewed_sha,
+        round_base_sha,
         round: small(round)?,
         state: state.parse()?,
         requested_at,
@@ -357,6 +367,11 @@ fn open_review_in(conn: &Connection, task: TaskId) -> Result<Option<ReviewRow>, 
     .transpose()
 }
 
+/// The findings that make another round due and earn their node a rerun in it: important, delivered and fixed (the fix
+/// accepted or still awaiting its verdict). One definition for [`FindingCounts::fixed_important`] and
+/// [`Store::fixed_important_nodes`], so the two never drift.
+const FIXED_IMPORTANT: &str = "resolution IN ('fixed', 'fix-accepted') AND severity = 'important'";
+
 fn count_of(conn: &Connection, review: &ReviewRow, sql: &str) -> Result<u32, StoreError> {
     let n: i64 = conn.query_row(sql, params![review.id, review.round], |row| row.get(0))?;
     u32::try_from(n).map_err(|_| StoreError::OutOfRange(n))
@@ -380,10 +395,9 @@ fn counts_in(conn: &Connection, review: &ReviewRow) -> Result<FindingCounts, Sto
             "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
              AND resolution IN ('fixed', 'fix-accepted')",
         )?,
-        fixed_important: count(
-            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 \
-             AND resolution IN ('fixed', 'fix-accepted') AND severity = 'important'",
-        )?,
+        fixed_important: count(&format!(
+            "SELECT COUNT(*) FROM review_findings WHERE review_id = ?1 AND round = ?2 AND {FIXED_IMPORTANT}"
+        ))?,
     })
 }
 
@@ -562,7 +576,8 @@ impl Store {
         raws.into_iter().map(into_review).collect()
     }
 
-    /// Records the part that runs the review and the commits it covers.
+    /// Records the part that runs the review and the commits it covers. With `part` (the start) the head is also the
+    /// one round 1 reviews (`reviewed_sha`); without it (a resolve) only `head_sha` moves, and the next round takes it.
     ///
     /// # Errors
     ///
@@ -576,7 +591,8 @@ impl Store {
     ) -> Result<ReviewRow, ReviewError> {
         let tx = self.conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE reviews SET part_id = COALESCE(?2, part_id), base_sha = ?3, head_sha = ?4 WHERE id = ?1",
+            "UPDATE reviews SET part_id = COALESCE(?2, part_id), base_sha = ?3, head_sha = ?4, \
+             reviewed_sha = CASE WHEN ?2 IS NULL THEN reviewed_sha ELSE ?4 END WHERE id = ?1",
             params![id, part.map(|task| task.0), base_sha, head_sha],
         )?;
         if changed == 0 {
@@ -585,6 +601,30 @@ impl Store {
         let row = review_in(&tx, id)?.ok_or(ReviewError::Unknown(id))?;
         tx.commit()?;
         Ok(row)
+    }
+
+    /// The nodes that had an important finding fixed in one round of a review, by the definition
+    /// [`FindingCounts::fixed_important`] counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or a stored node name this build does not accept.
+    pub fn fixed_important_nodes(
+        &self,
+        review: i64,
+        round: u8,
+    ) -> Result<BTreeSet<NodeId>, StoreError> {
+        let names = self
+            .conn
+            .prepare(&format!(
+                "SELECT DISTINCT node FROM review_findings WHERE review_id = ?1 AND round = ?2 AND {FIXED_IMPORTANT}"
+            ))?
+            .query_map(params![review, round], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        names
+            .iter()
+            .map(|name| NodeId::new(name).map_err(StoreError::from))
+            .collect()
     }
 
     /// How many findings of the review wait on whom, up to its current round.
@@ -599,7 +639,8 @@ impl Store {
     /// Moves a review through its state machine and logs `review-<trigger>`.
     ///
     /// `round_complete` and `round_due` are the facts only the flow can tell; the finding counts are read here, in the
-    /// same transaction. A step from `rechecking` or `asking` back to `running` starts the next round.
+    /// same transaction. A step from `rechecking` or `asking` back to `running` starts the next round: its diff starts
+    /// at the head the round before reviewed (`round_base_sha`) and it reviews the current `head_sha`.
     ///
     /// # Errors
     ///
@@ -634,6 +675,8 @@ impl Store {
         tx.execute(
             &format!(
                 "UPDATE reviews SET state = ?2, round = round + ?3, \
+                 round_base_sha = CASE WHEN ?3 = 1 THEN reviewed_sha ELSE round_base_sha END, \
+                 reviewed_sha = CASE WHEN ?3 = 1 AND reviewed_sha IS NOT NULL THEN head_sha ELSE reviewed_sha END, \
                  finished_at = CASE WHEN ?2 IN ('done', 'cancelled') THEN {NOW} ELSE finished_at END WHERE id = ?1"
             ),
             params![id, to.as_str(), i64::from(next_round)],
@@ -656,7 +699,8 @@ impl Store {
         Ok(row)
     }
 
-    /// What the review's current round has run: every node instance and the findings of each node.
+    /// What the review's current round has run: every node instance, the findings of each node and the file each names.
+    /// Every plain node is active; the caller narrows a later round.
     ///
     /// # Errors
     ///
@@ -684,14 +728,19 @@ impl Store {
         }
         let findings = self
             .conn
-            .prepare("SELECT node, id FROM review_findings WHERE review_id = ?1 AND round = ?2 ORDER BY id")?
+            .prepare("SELECT node, id, file FROM review_findings WHERE review_id = ?1 AND round = ?2 ORDER BY id")?
             .query_map(params![review.id, review.round], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        for (node, finding) in findings {
+        for (node, finding, file) in findings {
             let node = NodeId::new(&node)?;
             progress.findings.entry(node).or_default().push(finding);
+            progress.files.insert(finding, file);
         }
         Ok(progress)
     }

@@ -31,6 +31,7 @@ argue_back = true
 
 [[node]]
 id = "correctness"
+every_round = true
 prompt = "code/correctness.md"
 from_level = 1
 model = { 1 = "sonnet", 2 = "opus", 3 = "opus" }
@@ -94,5 +95,5 @@ id = "verify"
 prompt = "code/verify.md"
 from_level = 2
 after = ["*"]
-each = "finding"
+each = { 2 = "node", 3 = "file" }
 model = { 2 = "sonnet", 3 = "opus" }
