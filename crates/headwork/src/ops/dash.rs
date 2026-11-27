@@ -112,6 +112,8 @@ pub enum Route {
     },
     /// The span of the event log: `/api/range`.
     Range,
+    /// The gate slots of each class, holders and waiters: `/api/gates`.
+    Gates,
     /// Server-sent events: a `change` naming the newest event id whenever the log grows: `/api/stream`.
     Stream,
     /// Anything else.
@@ -201,6 +203,9 @@ pub fn route(method: &str, url: &str, host: Option<&str>, port: u16) -> Route {
     }
     if path == "/api/range" {
         return Route::Range;
+    }
+    if path == "/api/gates" {
+        return Route::Gates;
     }
     if path == "/api/stream" {
         return Route::Stream;
@@ -368,6 +373,14 @@ pub fn answer(db: &Path, route: &Route) -> Answer {
         Route::Range => match Store::open_read_only(db).and_then(|store| store.event_range()) {
             Ok(range) => Answer::json(200, &range),
             Err(error) => Answer::error(500, &error.to_string()),
+        },
+        Route::Gates => match db
+            .parent()
+            .map(|root| crate::home::Home::at(Some(root.to_path_buf())))
+        {
+            Some(Ok(home)) => Answer::json(200, &super::gate::status(&home)),
+            Some(Err(error)) => Answer::error(500, &format!("{error:#}")),
+            None => Answer::error(500, "the store has no home folder"),
         },
         Route::Stream => Answer::error(500, "the stream is served by its own thread"),
         Route::Node(id) => match node_details(db, id) {
@@ -963,6 +976,7 @@ mod tests {
     fn live_and_replay_routes_take_their_queries() {
         let table = [
             ("/api/range", Route::Range),
+            ("/api/gates", Route::Gates),
             ("/api/stream", Route::Stream),
             (
                 "/api/events",
@@ -1081,5 +1095,16 @@ mod tests {
         let events = answer(&db, &Route::Events { since: 0, limit: 5 });
         let parsed: serde_json::Value = serde_json::from_slice(&events.body).unwrap();
         assert!(parsed.is_array(), "a list: {parsed}");
+    }
+
+    #[test]
+    fn the_gates_answer_is_json_even_without_a_gate_folder() {
+        let dir = std::env::temp_dir().join(format!("hw-dash-gates-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let reply = answer(&dir.join("state.db"), &Route::Gates);
+        assert_eq!(reply.status, 200, "gates");
+        let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert!(body.get("classes").is_some(), "classes field");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

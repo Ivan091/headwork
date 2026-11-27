@@ -1041,6 +1041,85 @@
     status.title = String(error);
   }
 
+  const gatesBox = byId("gates");
+  const gatesToggle = byId("gates-toggle");
+  let gatesTimer = null;
+
+  function span(text, className) {
+    const node = document.createElement("span");
+    node.textContent = text;
+    if (className) {
+      node.className = className;
+    }
+    return node;
+  }
+
+  function age(seconds) {
+    if (seconds < 90) {
+      return seconds + " s";
+    }
+    if (seconds < 5400) {
+      return Math.round(seconds / 60) + " min";
+    }
+    return (seconds / 3600).toFixed(1) + " h";
+  }
+
+  function gateRow(who, command, seconds, stale) {
+    const row = document.createElement("div");
+    row.className = "gate-row" + (stale ? " stale" : "");
+    row.append(span(who || "(no owner)", "who"), span(age(seconds), "age"), span(command, "cmd"));
+    row.title = command;
+    return row;
+  }
+
+  function renderGates(body) {
+    gatesBox.replaceChildren();
+    if (!body.dir) {
+      gatesBox.append(span("no gate folder yet", "note"));
+      return;
+    }
+    body.classes.forEach((cls) => {
+      const head = document.createElement("h3");
+      head.textContent = cls.class + ": " + cls.used + " of " + cls.count + " slots";
+      gatesBox.append(head);
+      cls.holders.forEach((holder) => {
+        const who = (holder.legacy ? "legacy " : "") + "slot " + holder.slot + " " + (holder.task || "");
+        gatesBox.append(gateRow(who.trim(), holder.command, holder.age_s, holder.stale));
+      });
+      const waiters = cls.waiters.filter((waiter) => !waiter.stale);
+      if (waiters.length) {
+        gatesBox.append(span(waiters.length + " waiting", "note"));
+      }
+      waiters.forEach((waiter) => {
+        gatesBox.append(gateRow(waiter.task || "pid " + waiter.pid, waiter.command, waiter.age_s, false));
+      });
+    });
+  }
+
+  async function loadGates() {
+    try {
+      const response = await fetch("/api/gates", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || response.statusText);
+      }
+      renderGates(body);
+    } catch (error) {
+      gatesBox.replaceChildren(span("cannot read the slots: " + error.message, "note"));
+    }
+  }
+
+  gatesToggle.addEventListener("click", () => {
+    gatesBox.hidden = !gatesBox.hidden;
+    gatesToggle.setAttribute("aria-expanded", String(!gatesBox.hidden));
+    gatesToggle.classList.toggle("on", !gatesBox.hidden);
+    clearInterval(gatesTimer);
+    if (!gatesBox.hidden) {
+      loadGates();
+      gatesTimer = setInterval(loadGates, 5000);
+    }
+  });
+
   showInstant();
   loadRange().then(load);
   listen();
