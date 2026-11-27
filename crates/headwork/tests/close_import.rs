@@ -572,7 +572,7 @@ fn helper_worktrees_are_made_beside_the_task_and_removed_with_it() {
 }
 
 #[test]
-fn a_worktree_the_worker_made_with_a_new_branch_goes_with_that_branch_at_close() {
+fn a_worktree_the_worker_made_with_a_new_branch_goes_and_leaves_its_branch_at_close() {
     let mut w = world(10);
     let (task, _) = spawn_task(&mut w, "sand", false, false);
     let dir = w.dir.path().join("demo-by-hand");
@@ -596,8 +596,8 @@ fn a_worktree_the_worker_made_with_a_new_branch_goes_with_that_branch_at_close()
     assert_eq!(report.state, TaskState::Closed, "{report:?}");
     assert!(!dir.exists(), "removed without the project's command");
     assert!(
-        !branch_exists(&w.main, "by-hand"),
-        "the branch the add made is gone"
+        branch_exists(&w.main, "by-hand"),
+        "a self-made worktree's branch is never deleted: the line cannot show which add made it"
     );
 }
 

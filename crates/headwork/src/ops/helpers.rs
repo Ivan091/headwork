@@ -159,7 +159,9 @@ pub struct SelfMade {
 }
 
 /// Removes a worktree its worker made itself, never with the project's remove command: plain `git worktree remove`
-/// takes it only when it holds no changes. The branch goes only when the add created it, and only while it is empty.
+/// takes it only when it holds no changes. Its branch is never deleted: a Bash line cannot show which branch its add
+/// created (a failed `-b` followed by an add of an existing branch, a `-B` over an existing one), so the branch stays
+/// for the user or `headwork clean`.
 fn remove_self_made(
     store: &mut Store,
     task: &Task,
@@ -174,9 +176,6 @@ fn remove_self_made(
         ));
     }
     store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
-    if !helper.branch.is_empty() {
-        drop(worktrees.delete_empty_branch(&helper.branch));
-    }
     Ok(None)
 }
 
@@ -216,11 +215,11 @@ fn record_one(store: &mut Store, env: &Env<'_>, task: &Task, added: &WorktreeAdd
     if !dir.join(".git").is_file() || taken(store, &dir)? {
         return Ok(false);
     }
-    let current = env.worktrees(task)?.current_branch(&dir)?;
-    let owned = current
-        .filter(|name| added.creates_branch && *name == added.branch)
+    let current = env
+        .worktrees(task)?
+        .current_branch(&dir)?
         .unwrap_or_default();
-    store.record_self_made_worktree(task.id, &added.dir, &owned, env.actor)?;
+    store.record_self_made_worktree(task.id, &added.dir, &current, env.actor)?;
     Ok(true)
 }
 
