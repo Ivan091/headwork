@@ -70,7 +70,11 @@ lead's stop while a requested review has not started.
 A review starts only from a `requested` row: `review_start` is refused without one (`review-unrequested`). The row comes
 from the user's word or from a plan: since 2026-11-23 the orchestrator or a lead may plan a level per task at spawn
 (`review`, with `decided_by` and a reason), and headwork requests it at the lead's first pull request report or at its
-`done` (`review-planned`), exactly as the user's command would. The user's words win: `review N` replaces the plan and
+`done` (`review-planned`), exactly as the user's command would, and starts it at once (`StartMode::Auto`): the committed
+`HEAD` is pinned even while the lead's tree is dirty (it may still be fixing CI), the report's `note` says the part
+started and tells the lead to keep working and wait for the findings, and `done` is refused with a note that the review
+runs and `done` waits for it. When the start fails, the note falls back to "call `review_start`" with the reason. The
+lead's own `review_start` keeps the `review-dirty` refusal The user's words win: `review N` replaces the plan and
 `no review` clears it. A part's tab and the orchestrator's do not take the command;
 a later `review N` while one runs is refused with the running one's state (`review-running`).
 
@@ -388,7 +392,14 @@ diff. Three changes:
   the direct callers of what they changed. A flow with no `every_round` node (the `plan` flow), and a review started
   before migration 0029 (no `reviewed_sha`), keep whole later rounds as before.
 
-Level 1 (no verify node, one round) is unchanged, byte for byte.
+Level 1 (no verify node, one round) is unchanged, byte for byte, unless commits land while it runs.
+
+- **Late commits.** Migration 0030 adds `reviews.late_commits`. At `review_deliver` headwork reads the implementing
+  lead's `HEAD`; when it differs from the review's `head_sha`, the flag is set and the delivery says one more round
+  follows. `round_due` then also holds for `late && round <= rounds`, so commits that landed during a round get exactly
+  one more fix-scoped round (`round_base_sha..head_sha`) even at level 1, and a new round clears the flag. With no
+  findings the lead answers `review_resolve` with no items, which moves the head, and the reviewer's empty
+  `review_verdict` starts that round (`docs/decisions/2026-11-27-review-auto-start.md`).
 
 ## Deferred
 

@@ -142,7 +142,8 @@ it in step with the folder), overridden or added by `<home>/flows/<name>.toml`, 
 R2 starts reviews: `[reviews]` (`enabled`, off for now; `lead_model`; `flows` by task kind; `parallel`; `floor`,
 `max_round_findings`, `max_task_findings`), the
 `UserPromptSubmit` hook's trigger in a lead's tab (`review_trigger` in `ops/hook.rs`: the user's own prompt only, a
-`requested` review and a line telling the lead to call `review_start`; a near miss, an unknown flow or a review already
+`requested` review and a line telling the lead to call `review_start` (a planned review starts by itself at the lead's
+`report` with status `review` or at its `done`, `StartMode::Auto`, on the committed `HEAD` even with a dirty tree); a near miss, an unknown flow or a review already
 open get a line and no review), the lead tool `review_start` (`ops/review.rs`: refused without a request
 `review-unrequested` or with uncommitted changes `review-dirty`; pins HEAD and the merge base with the default branch,
 makes a detached worktree at the part's `worktree_path` with `git worktree add --detach`, starts the part
@@ -183,7 +184,9 @@ those below the floor), drops a later round's repeats of earlier findings, runs 
 fix, and shows each review's fresh tokens on `board` and `status`. Section 14 (migration 0029): an `each` node starts on
 an input's findings once that input is over, verify batches per node (level 2) or per node and file (level 3), and a
 later round of a flow with an `every_round` node reviews only the fix commits (`round_base_sha..head_sha`) with the
-`every_round` nodes, the nodes that had an important finding fixed and verify.
+`every_round` nodes, the nodes that had an important finding fixed and verify. Migration 0030: commits that land in the
+lead's folder while a round runs are flagged at delivery (`reviews.late_commits`) and earn exactly one more fix-scoped
+round (`round_due`'s `late` case).
 The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,
