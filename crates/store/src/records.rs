@@ -298,4 +298,6 @@ pub struct WorktreeRow {
     pub branch: String,
     /// `present`, `removing`, `removed` or `kept`.
     pub state: String,
+    /// The worker made it itself with `git worktree add`; its branch is empty unless that command created it.
+    pub self_made: bool,
 }

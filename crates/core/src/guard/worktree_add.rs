@@ -12,6 +12,8 @@ pub struct WorktreeAdd {
     pub dir: String,
     /// The branch it checks out: `-b` or `-B`, else the commit-ish, else the folder's name.
     pub branch: String,
+    /// The command creates that branch (`-b` or `-B`), so the worktree owns it.
+    pub creates_branch: bool,
 }
 
 /// The worktrees the `git worktree add` commands of `line` make, run from `cwd`.
@@ -57,12 +59,16 @@ fn added_by(command: &SimpleCommand, cwd: &str, places: &Places) -> Option<Workt
     }
     let folder = git_folder(command, cwd, places)?;
     let mut branch = None;
+    let mut creates_branch = false;
     let mut positional = Vec::new();
     let mut detached = false;
     let mut words = args.iter().skip(1);
     while let Some(word) = words.next() {
         match word.as_str() {
-            "-b" | "-B" => branch = Some(words.next()?.clone()),
+            "-b" | "-B" => {
+                branch = Some(words.next()?.clone());
+                creates_branch = true;
+            }
             "--reason" => {
                 words.next();
             }
@@ -87,7 +93,11 @@ fn added_by(command: &SimpleCommand, cwd: &str, places: &Places) -> Option<Workt
                 .map(|commit| (*commit).to_owned())
         })
         .or_else(named)?;
-    Some(WorktreeAdd { dir, branch })
+    Some(WorktreeAdd {
+        dir,
+        branch,
+        creates_branch,
+    })
 }
 
 fn git_folder(command: &SimpleCommand, cwd: &str, places: &Places) -> Option<String> {
@@ -199,6 +209,20 @@ mod tests {
         ] {
             assert!(made(line, cwd).is_empty(), "{line}");
         }
+    }
+
+    #[test]
+    fn only_b_and_capital_b_create_the_branch() {
+        let creates = |line: &str| {
+            worktree_adds(line, "S:/Code/x/x", &places())
+                .into_iter()
+                .map(|added| added.creates_branch)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(creates("git worktree add -b feat ../a"), [true]);
+        assert_eq!(creates("git worktree add -B feat ../a"), [true]);
+        assert_eq!(creates("git worktree add ../a feat"), [false]);
+        assert_eq!(creates("git worktree add --detach ../a"), [false]);
     }
 
     #[test]

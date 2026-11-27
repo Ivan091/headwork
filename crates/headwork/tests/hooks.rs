@@ -614,8 +614,8 @@ fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
         .collect();
     assert_eq!(
         recorded,
-        ["publish-all", "wt-timing-probe"],
-        "only fresh real worktrees, none twice"
+        ["publish-all", ""],
+        "only fresh real worktrees, none twice, the detached one with no branch"
     );
 
     let before = w.denies().len();

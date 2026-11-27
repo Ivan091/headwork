@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail, ensure};
 use headwork_core::Slug;
+use headwork_adapters::worktree::Worktrees;
 use headwork_core::config::TaskVars;
 use headwork_core::guard::{Places, WorktreeAdd, worktree_adds};
 use headwork_store::{Store, Task, TaskId, WorktreeRow};
@@ -131,6 +132,9 @@ pub fn remove_one(
         worktree: &helper.path,
     };
     let worktrees = env.worktrees(task)?;
+    if helper.self_made {
+        return remove_self_made(store, task, helper, &worktrees, env);
+    }
     let error = match worktrees.remove(&env.project(task)?.worktree_remove, &vars) {
         Ok(()) if !dir.exists() => None,
         Ok(()) => Some("the remove command left the folder in place".to_owned()),
@@ -152,6 +156,28 @@ pub struct SelfMade {
     pub recorded: Vec<String>,
     /// The folders that failed to record, with why.
     pub failed: Vec<(String, String)>,
+}
+
+/// Removes a worktree its worker made itself, never with the project's remove command: plain `git worktree remove`
+/// takes it only when it holds no changes. The branch goes only when the add created it, and only while it is empty.
+fn remove_self_made(
+    store: &mut Store,
+    task: &Task,
+    helper: &WorktreeRow,
+    worktrees: &Worktrees,
+    env: &Env<'_>,
+) -> Result<Option<String>> {
+    let dir = PathBuf::from(&helper.path);
+    if !worktrees.remove_plain(&helper.path)? || dir.exists() {
+        return Ok(Some(
+            "a worktree the worker made itself is removed only when it holds no work".to_owned(),
+        ));
+    }
+    store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
+    if !helper.branch.is_empty() {
+        drop(worktrees.delete_empty_branch(&helper.branch));
+    }
+    Ok(None)
 }
 
 /// Records the worktrees a worker's successful Bash `line` made with `git worktree add` as helpers of `task`.
@@ -189,7 +215,11 @@ fn record_one(store: &mut Store, env: &Env<'_>, task: &Task, added: &WorktreeAdd
     if !dir.join(".git").is_file() || taken(store, &dir)? {
         return Ok(false);
     }
-    store.record_helper_worktree(task.id, &added.dir, &added.branch, env.actor)?;
+    let current = env.worktrees(task)?.current_branch(&dir)?;
+    let owned = current
+        .filter(|name| added.creates_branch && *name == added.branch)
+        .unwrap_or_default();
+    store.record_self_made_worktree(task.id, &added.dir, &owned, env.actor)?;
     Ok(true)
 }
 
