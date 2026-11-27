@@ -630,7 +630,7 @@ pub fn import(
 /// Fails when a field cannot be written to the file (empty, several lines, a project that starts with `#`, Done or
 /// Dropped) or the store fails.
 pub fn add(store: &mut Store, env: &Env<'_>, request: &AddRequest) -> Result<Change> {
-    add_for(store, env, request, None)
+    add_for(store, env, request, backlog_actor(env.actor), None)
 }
 
 /// [`add`] for an exploration: the `backlog-added` event carries `task`.
@@ -642,6 +642,7 @@ pub fn add_for(
     store: &mut Store,
     env: &Env<'_>,
     request: &AddRequest,
+    mover: BacklogActor,
     task: Option<TaskId>,
 ) -> Result<Change> {
     let found = backlog::normalize(request.text.trim());
@@ -661,11 +662,6 @@ pub fn add_for(
         due: request.due.clone().or(found.due),
         done_on: None,
         done_note: None,
-    };
-    let mover = if task.is_some() {
-        BacklogActor::Explorer
-    } else {
-        backlog_actor(env.actor)
     };
     let item = store.add_backlog_item_for(&draft, env.actor, mover, task)?;
     Ok(changed(store, env, &[item]))

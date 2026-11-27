@@ -180,6 +180,12 @@ pub fn add(
     task: &Task,
     mut request: AddRequest,
 ) -> Result<Change> {
+    if !is_explorer(task) {
+        bail!(
+            "only an exploration (a task of kind `{EXPLORE_KIND}`, not a part) adds backlog items; task {} is not one",
+            task.name
+        );
+    }
     let (picked, added) = store.backlog_pick_counts(task.id)?;
     if adds_left(picked, added) == 0 {
         bail!(
@@ -192,7 +198,13 @@ pub fn add(
         report_path(env, task).as_deref(),
         &task.name.to_string(),
     );
-    add_for(store, env, &request, Some(task.id))
+    add_for(
+        store,
+        env,
+        &request,
+        headwork_core::backlog::BacklogActor::Explorer,
+        Some(task.id),
+    )
 }
 
 fn has_source(text: &str) -> bool {
