@@ -630,7 +630,13 @@ fn leads_refuse_unknown_keys_zero_parts_and_bad_titles() {
             "{title}: {error}"
         );
     }
-    for title in ["{part}", "{name}", "{model} {effort}", "plain"] {
+    for title in [
+        "{part}",
+        "{name}",
+        "{model} {effort}",
+        "{role} {part}",
+        "plain",
+    ] {
         let text = format!("[machine]\nhost = \"cmux\"\n\n[leads]\npart_title = \"{title}\"\n");
         assert!(Config::parse(&text, "leads").is_ok(), "{title} is fine");
     }

@@ -1265,6 +1265,40 @@ fn a_part_opens_as_a_tab_of_its_leads_workspace_titled_with_the_part_only() {
 }
 
 #[test]
+fn the_role_names_the_kind_of_session_in_a_pane_title() {
+    let mut w = world_with(
+        10,
+        "builtin",
+        "
+[leads]
+enabled = true
+part_title = \"{role}:{part}\"
+",
+    );
+    w.config.layout.title = "{role}:{name}".to_owned();
+    let (lead, _) = w.spawn("plan", false);
+    let part = w.part(&lead, "build");
+    let mut reviewer = w.part(&lead, "check");
+    reviewer.kind = "review".to_owned();
+    let mut plain = lead.clone();
+    plain.shape = TaskShape::Plain;
+    let titles: Vec<String> = [&lead, &part, &reviewer, &plain]
+        .iter()
+        .map(|task| headwork::ops::title::title_of(&w.store, &env(&w), task).unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "lead:demo-plan",
+            "part:build",
+            "reviewer:check",
+            "worker:demo-plan"
+        ],
+        "lead, part, reviewer and plain worker"
+    );
+}
+
+#[test]
 fn part_title_follows_its_template_and_retitle_covers_part_tabs() {
     let mut w = world_with(
         10,

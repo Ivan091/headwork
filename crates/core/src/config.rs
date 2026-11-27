@@ -732,7 +732,7 @@ pub struct ProjectOverlay {
 pub const DEFAULT_IDLE_OVERFLOW: u32 = 4;
 
 /// The placeholders `[leads] part_title` may use.
-pub const PART_TITLE_PLACEHOLDERS: &[&str] = &["part", "name", "model", "effort"];
+pub const PART_TITLE_PLACEHOLDERS: &[&str] = &["part", "name", "role", "model", "effort"];
 
 /// The default `[leads] part_title`.
 pub const DEFAULT_PART_TITLE: &str = "{part}";
