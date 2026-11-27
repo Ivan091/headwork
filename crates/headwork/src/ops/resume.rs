@@ -21,13 +21,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use headwork_adapters::host::{Target, TerminalHost};
+use headwork_adapters::host::{SurfaceId, Target, TerminalHost};
 use headwork_core::config::{CrashResume, ParkPolicy};
+use headwork_core::exit::ExitMode;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{JobState, MachineMode, PermissionMode, PlaceKind, RecapKind, Role, TaskState};
 use headwork_store::{NewSession, Place, SessionRow, Store, Task};
 use serde::Serialize;
 
+use super::exit::ExitTarget;
 use super::place::{self, Opening};
 use super::{Env, jobs, park, spawn};
 
@@ -858,6 +860,11 @@ fn resumed_sessions(store: &Store, orchestrator: Option<&str>) -> Result<Vec<Str
 
 /// Closes the panes the host restored by itself for sessions that are about to be resumed here, so no conversation
 /// runs twice. After a reboot wmux reopens each Claude pane with a plain `claude --resume <id>`.
+///
+/// That `claude` runs outside headwork, so no pid of it is known: every restored pane first gets the
+/// [`ExitMode::Outside`] ladder in one pass, and its `claude` counts as gone once the host no longer shows the session
+/// in that pane (a host that stops answering counts as showing it). Only then are the panes closed, which ends a
+/// `claude` that stayed.
 fn close_restored_panes(store: &Store, env: &Env<'_>, orchestrator: Option<&str>) -> Result<()> {
     let ids = resumed_sessions(store, orchestrator)?;
     let states = match env.host.surface_states() {
@@ -873,21 +880,48 @@ fn close_restored_panes(store: &Store, env: &Env<'_>, orchestrator: Option<&str>
             return Ok(());
         }
     };
-    for state in states {
-        let Some(session) = state.session_id.filter(|id| ids.contains(id)) else {
-            continue;
-        };
-        let closed = env.host.close_surface(&state.surface);
+    let restored: Vec<(String, SurfaceId)> = states
+        .into_iter()
+        .filter_map(|state| {
+            state
+                .session_id
+                .filter(|id| ids.contains(id))
+                .map(|id| (id, state.surface))
+        })
+        .collect();
+    let targets: Vec<ExitTarget<'_>> = restored
+        .iter()
+        .map(|(session, surface)| ExitTarget {
+            task: None,
+            session: session.clone(),
+            surface: surface.clone(),
+            gone: Box::new(move || !shows(env, surface, session)),
+        })
+        .collect();
+    let asked = super::exit::ask(store, env, ExitMode::Outside, &targets)?;
+    for ((session, surface), outcome) in restored.iter().zip(asked) {
+        let closed = env.host.close_surface(surface);
         store.append_event(
             env.actor,
             None,
-            Some(&session),
+            Some(session),
             "restored-pane-closed",
             &serde_json::json!({
-                "surface": state.surface,
+                "surface": surface,
+                "exited": outcome.left(),
                 "error": closed.err().map(|error| error.to_string()),
             }),
         )?;
     }
     Ok(())
+}
+
+/// Whether the host still shows the Claude session `session` in `surface`; a host that does not answer counts as
+/// showing it.
+fn shows(env: &Env<'_>, surface: &SurfaceId, session: &str) -> bool {
+    env.host.surface_states().map_or(true, |states| {
+        states
+            .iter()
+            .any(|state| &state.surface == surface && state.session_id.as_deref() == Some(session))
+    })
 }

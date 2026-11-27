@@ -17,7 +17,9 @@ use headwork_core::{
 use headwork_store::{Board, NewPr, NewRecap, Store, StoreError, Task, TaskId};
 use serde_json::{Value, json};
 
-use super::close::{begin_own_close, close, close_dropped_part, close_forced, end_closing};
+use super::close::{
+    OwnExit, begin_own_close, close, close_dropped_part, close_forced, end_closing,
+};
 use super::jobs::{self, Registration};
 use super::review_loop;
 use super::rules;
@@ -996,6 +998,7 @@ impl<'a> Server<'a> {
             &self.env,
             task.id,
             self.identity.session.as_deref(),
+            OwnExit::Here,
         )?;
         if !report.left_to_launcher() {
             pump(self.store, &self.env)?;

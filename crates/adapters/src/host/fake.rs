@@ -23,6 +23,9 @@ struct State {
     screens: Vec<(SurfaceId, String)>,
     unreadable: Vec<SurfaceId>,
     stray_splits: bool,
+    leave_on_exit: Vec<SurfaceId>,
+    states_fail_once_typed: bool,
+    typed: bool,
 }
 
 impl State {
@@ -212,6 +215,18 @@ impl FakeHost {
     /// surface it is run from: the new pane then belongs to a workspace no one listed.
     pub fn stray_splits(&self) {
         self.state.borrow_mut().stray_splits = true;
+    }
+
+    /// Makes the Claude session in `surface` leave when `/exit` is typed into it: its surface state goes away, as the
+    /// host's does once a restored `claude` exits.
+    pub fn leave_on_exit(&self, surface: &SurfaceId) {
+        self.state.borrow_mut().leave_on_exit.push(surface.clone());
+    }
+
+    /// Makes `surface_states` fail once anything has been typed into any surface, as a host that stops answering in the
+    /// middle of an exit ladder.
+    pub fn fail_states_once_typed(&self) {
+        self.state.borrow_mut().states_fail_once_typed = true;
     }
 
     fn record(&self, call: String) {
@@ -430,7 +445,14 @@ impl TerminalHost for FakeHost {
     }
 
     fn surface_states(&self) -> Result<Vec<SurfaceState>, HostError> {
-        Ok(self.state.borrow().states.clone())
+        let state = self.state.borrow();
+        if state.states_fail_once_typed && state.typed {
+            return Err(HostError::Failed {
+                command: "agent-state".to_owned(),
+                message: "the host does not answer".to_owned(),
+            });
+        }
+        Ok(state.states.clone())
     }
 
     fn read_screen(&self, surface: &SurfaceId, lines: u32) -> Result<String, HostError> {
@@ -453,11 +475,17 @@ impl TerminalHost for FakeHost {
 
     fn send_text(&self, surface: &SurfaceId, text: &str) -> Result<(), HostError> {
         self.record(format!("send {surface} {text}"));
+        let mut state = self.state.borrow_mut();
+        state.typed = true;
+        if text == "/exit" && state.leave_on_exit.contains(surface) {
+            state.states.retain(|s| &s.surface != surface);
+        }
         Ok(())
     }
 
     fn send_key(&self, surface: &SurfaceId, key: Key) -> Result<(), HostError> {
         self.record(format!("send-key {surface} {key:?}"));
+        self.state.borrow_mut().typed = true;
         Ok(())
     }
 

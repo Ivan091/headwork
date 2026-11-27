@@ -632,3 +632,42 @@ fn park_close_orchestrator_runs_only_the_closer_and_needs_after() {
     assert!(!output.status.success(), "the closer needs --after");
     assert!(stderr(&output).contains("--after"), "{}", stderr(&output));
 }
+
+#[test]
+fn self_exit_is_a_hidden_closer_that_every_build_accepts() {
+    let home = home_with_fixture();
+    let help = stdout(&headwork(home.path(), &["--help"]));
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("self-exit")),
+        "hidden: {help}"
+    );
+    let mut finished = Command::new(env!("CARGO_BIN_EXE_headwork"))
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let gone = finished.id().to_string();
+    finished.wait().unwrap();
+    let output = headwork(
+        home.path(),
+        &[
+            "self-exit",
+            "--task",
+            "1",
+            "--session",
+            "nobody",
+            "--after",
+            &gone,
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        stdout(&output).trim(),
+        "session nobody: the session was already gone",
+        "an unknown session has nothing to ask"
+    );
+    let output = headwork(home.path(), &["self-exit", "--task", "1", "--session", "x"]);
+    assert!(!output.status.success(), "the closer needs --after");
+}

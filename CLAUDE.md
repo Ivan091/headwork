@@ -40,11 +40,19 @@ job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and fo
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
-`core/src/watch.rs`, its memory in migration 0004). `close` types `/exit` into a session's pane and waits up to
-`[watch] exit_grace_s` before it kills `claude`, so Claude Code archives the Remote Control session and it leaves the
-Claude app's list (`docs/decisions.md`, 2026-11-22). A close from outside the session presses Escape and Ctrl+U first
-(an open `AskUserQuestion` dialog would take the Enter as an answer, and a running turn would hold `/exit` back) and
-asks twice; a self-close never interrupts its own tool call, and its caller runs no queue (the finisher does). A close
+`core/src/watch.rs`, its memory in migration 0004). Every path that ends a live `claude` climbs the exit ladder first
+and kills only after its last step, so Claude Code archives the Remote Control session and it leaves the Claude app's
+list (`docs/decisions/2026-11-27-exit-every-end-path.md`): the steps are `core/src/exit.rs`, the typing and waiting
+`ops/exit.rs` (several sessions in one pass), each step waits up to `[watch] exit_grace_s` (0 asks nothing). From
+outside (`close`, the tick's spawn timeout, merged grace and leftover processes, park's workers, resume's restored panes,
+a `finish` that meets a live `claude`): Escape, Ctrl+U and `/exit` twice, then Ctrl+C twice (an open `AskUserQuestion`
+dialog would take a bare Enter as an answer, and a running turn would hold `/exit` back). The session's own (`done`
+after its answer is out, the detached closer, the orchestrator at the end of a park): a plain `/exit` first, then the
+same. A self-close through `headwork close <own name>` runs inside its own Bash call, so it only moves the task to
+closing and starts a detached `headwork self-exit --task <id> --session <id> --after <its pid>` (hidden; every build
+keeps accepting it) that waits for the command to be gone, climbs the ladder and ends `claude` only if it stays; the
+launcher's hand-off finishes the close as before, and the command exits 0. Its caller runs no queue (the finisher
+does). Events: `exit-asked` (`attempt`, `step`, `mode`), `exit-ignored`, `exit-unasked`, `closer`. A close
 that finds the claim held waits up to two minutes for that finisher and reports how it ended. A closed task's waiting
 asks are superseded, at close and by the tick. A running task whose session ended or whose launcher is gone
 becomes `interrupted` through `ops/lost.rs`, called by the `SessionEnd` hook, `board` and the tick alike.
@@ -356,8 +364,9 @@ See `docs/decisions.md` (2026-11-18, folder trust).
 ### Restart: park, then resume
 
 Before restarting the computer, tell the orchestrator "park" (its MCP tool starts it), or run `headwork park` by hand: it waits
-up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, then
-closes the panes and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
+up to `--deadline` seconds (default 300) for each session's recap and each `checkpoint` job's next checkpoint, asks
+every worker to exit in one pass of the outside exit ladder (so the park takes one ladder however many workers run),
+then closes the panes, ends what stayed and prints "safe to restart". After the restart start wmux and run `headwork resume`; the panes come
 back as new Claude sessions with an empty context (resume never continues the old conversation; the recap carries what
 the session knew: its own, or a mechanical one from the store, and after a crash the handoff file is built at resume),
 with the same names and Remote Control, the permission mode each was last in (its transcript's last `permissionMode`,
@@ -374,8 +383,8 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 The orchestrator (started with `headwork orchestrator`, which records the pane it runs in) is parked and resumed too:
 park takes the recap it wrote in the turn that started the park, else asks it for one in its pane and waits (event
 `orchestrator-asked`, or `orchestrator-unasked` with the reason), and closes it as its very last step, after every worker:
-`/exit` typed into its pane (plainly, then after Escape), up to `[watch] exit_grace_s` each, then its processes ended and
-its pane closed, so Claude Code archives its Remote Control session (`ParkedOrchestrator.end`, events `exit-asked`,
+the own exit ladder in its pane (plainly, then after Escape, then Ctrl+C twice), up to `[watch] exit_grace_s` each, then
+its processes ended and its pane closed, so Claude Code archives its Remote Control session (`ParkedOrchestrator.end`, events `exit-asked`,
 `orchestrator-closed`). A park that runs inside the orchestrator (in its pane, or under its `claude`, as the `park` tool's
 run does) hands that step to a detached `headwork park --close-orchestrator <id> --after <pid>` that waits for the park to
 exit first; `park --keep-orchestrator` (tool argument `keep_orchestrator`) leaves it for the restart. Resume opens a new orchestrator session in an `orchestrator` workspace in the folder it ran in, with

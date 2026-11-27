@@ -8,6 +8,7 @@ pub mod clean;
 pub mod config;
 pub mod config_layers;
 pub mod digest;
+pub mod exit;
 pub mod flags;
 pub mod gate;
 pub mod graph;

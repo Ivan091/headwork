@@ -11,12 +11,14 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use headwork_adapters::host::{Key, SurfaceId};
 use headwork_core::config::ParkPolicy;
+use headwork_core::exit::ExitMode;
 use headwork_core::lifecycle::{ParkedFacts, Trigger};
 use headwork_core::{JobState, MachineMode, RecapKind, SessionState, TaskShape, TaskState};
 use headwork_store::{JobRow, NewRecap, SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
-use super::close::{close_pane, type_exit, wait_until};
+use super::close::{close_pane, wait_until};
+use super::exit::ExitTarget;
 use super::{Env, jobs, recap};
 
 /// What a session is told when a park begins.
@@ -208,6 +210,7 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
     }
 
     force_jobs(store, env, &mut parked_jobs)?;
+    exit_sessions(store, env, &targets)?;
     let mut sessions = Vec::new();
     for target in &targets {
         sessions.push(finish_session(store, env, record.id, target)?);
@@ -230,6 +233,23 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
         jobs: parked_jobs,
         safe_to_restart: safe,
     })
+}
+
+/// Asks every worker whose `claude` still runs to exit, in one pass of the [`ExitMode::Outside`] ladder: each step is
+/// typed into every pane, then the grace is waited for all, so the park takes one ladder however many workers there
+/// are. A worker that stays is ended by [`stop_session`].
+fn exit_sessions(store: &Store, env: &Env<'_>, targets: &[Target]) -> Result<()> {
+    let asked: Vec<ExitTarget<'static>> = targets
+        .iter()
+        .filter_map(|target| {
+            target
+                .session
+                .as_ref()
+                .and_then(|session| ExitTarget::of_session(Some(target.task.id), session))
+        })
+        .collect();
+    super::exit::ask(store, env, ExitMode::Outside, &asked)?;
+    Ok(())
 }
 
 fn target_alive(target: &Target) -> bool {
@@ -793,9 +813,9 @@ pub fn close_orchestrator_after(
 
 /// Closes the orchestrator session `id` so Claude Code archives its Remote Control session.
 ///
-/// It types `/exit` into its pane and waits up to `[watch] exit_grace_s` for it to leave, once plainly, so a running
-/// turn ends first, then after Escape and a cleared line, so an open dialog does not take the Enter; then it ends what
-/// is left of it and closes its pane. One running outside headwork has no recorded processes: it counts as gone when
+/// It climbs the [`ExitMode::Own`] ladder in its pane (a plain `/exit` first, so the turn that wrote its recap ends
+/// first; then after Escape and a cleared line, so an open dialog does not take the Enter; then Ctrl+C twice), and
+/// then ends what is left of it and closes its pane. One running outside headwork has no recorded processes: it counts as gone when
 /// the host no longer shows its Claude session, and closing its pane ends it.
 ///
 /// # Errors
@@ -824,7 +844,18 @@ pub fn close_orchestrator(store: &mut Store, env: &Env<'_>, id: &str) -> Result<
         }
     };
     let left = match &surface {
-        Some(surface) => ask_exit(store, env, id, surface, &gone)?,
+        Some(surface) => super::exit::ask_one(
+            store,
+            env,
+            ExitMode::Own,
+            &ExitTarget {
+                task: None,
+                session: id.to_owned(),
+                surface: surface.clone(),
+                gone: Box::new(&gone),
+            },
+        )?
+        .left(),
         None => false,
     };
     let mut problem = None;
@@ -878,51 +909,6 @@ fn unmanaged_surface(env: &Env<'_>, id: &str) -> Option<SurfaceId> {
         .into_iter()
         .find(|state| state.session_id.as_deref() == Some(id))
         .map(|state| state.surface)
-}
-
-/// Types `/exit` into the orchestrator's `surface`, first plainly and then interrupting, each time waiting up to
-/// `[watch] exit_grace_s` for `gone`. Returns whether it left; a grace of 0 asks nothing.
-fn ask_exit(
-    store: &Store,
-    env: &Env<'_>,
-    id: &str,
-    surface: &SurfaceId,
-    gone: &dyn Fn() -> bool,
-) -> Result<bool> {
-    let grace = env.config.watch.exit_grace_s;
-    if grace == 0 {
-        return Ok(false);
-    }
-    for (attempt, interrupt) in [(1_u32, false), (2, true)] {
-        if let Err(error) = type_exit(env.host, surface, interrupt) {
-            store.append_event(
-                env.actor,
-                None,
-                Some(id),
-                "exit-unasked",
-                &serde_json::json!({ "error": error.to_string(), "attempt": attempt }),
-            )?;
-            return Ok(false);
-        }
-        store.append_event(
-            env.actor,
-            None,
-            Some(id),
-            "exit-asked",
-            &serde_json::json!({ "grace_s": grace, "attempt": attempt, "interrupt": interrupt }),
-        )?;
-        if wait_until(Duration::from_secs(u64::from(grace)), gone) {
-            return Ok(true);
-        }
-        store.append_event(
-            env.actor,
-            None,
-            Some(id),
-            "exit-ignored",
-            &serde_json::json!({ "grace_s": grace, "attempt": attempt }),
-        )?;
-    }
-    Ok(false)
 }
 
 fn log_closed(store: &Store, env: &Env<'_>, id: &str, end: &OrchestratorEnd) -> Result<()> {

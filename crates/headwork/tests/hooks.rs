@@ -4838,3 +4838,86 @@ fn a_fixed_doubt_alone_does_not_start_a_second_round() {
     let (is_error, text) = w.tool(me, "review_finish", &json!({}));
     assert!(!is_error && text.contains("1 fixed"), "{text}");
 }
+
+fn hooks_sleeper() -> std::process::Child {
+    if cfg!(windows) {
+        Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("sleep").arg("60").spawn().unwrap()
+    }
+}
+
+#[test]
+fn done_climbs_the_own_ladder_in_process_and_ends_a_claude_that_stays() {
+    let mut w = world("", false);
+    w.config.watch.exit_grace_s = 1;
+    w.start();
+    let (mut launcher, mut claude) = (hooks_sleeper(), hooks_sleeper());
+    w.store
+        .session_launched(&w.session, launcher.id(), claude.id(), "job")
+        .unwrap();
+    w.post("SendMessage", &json!({}));
+    let surface = w
+        .store
+        .session_of(w.task.id)
+        .unwrap()
+        .unwrap()
+        .host_surface
+        .unwrap();
+    let identity = worker_identity(&w);
+    let mut server = w.server(identity);
+    let message = json!({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": { "name": "done", "arguments": { "summary": "built it" } },
+    });
+    let reply = server.handle(&message).unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    server.finish_pending().unwrap();
+    let typed: Vec<String> = w
+        .host
+        .calls()
+        .into_iter()
+        .filter_map(|call| {
+            call.strip_prefix(&format!("send-key {surface} "))
+                .or_else(|| call.strip_prefix(&format!("send {surface} ")))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        typed,
+        [
+            "/exit",
+            "Enter",
+            "Escape",
+            "Ctrl('u')",
+            "/exit",
+            "Enter",
+            "Ctrl('c')",
+            "Ctrl('c')"
+        ],
+        "the own ladder, a plain /exit first"
+    );
+    let self_close: Vec<Value> = w
+        .store
+        .events(EventFilter {
+            task: Some(w.task.id),
+            limit: 500,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "self-close")
+        .map(|event| event.data)
+        .collect();
+    assert_eq!(self_close, [json!({ "exit": "here" })], "logged");
+    assert!(claude.wait().is_ok(), "the claude that stayed is ended");
+    assert!(
+        launcher.try_wait().unwrap().is_none(),
+        "the launcher is left to hand the close off"
+    );
+    launcher.kill().unwrap_or(());
+    launcher.wait().unwrap();
+}
