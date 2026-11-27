@@ -1485,3 +1485,27 @@ fn brackets_are_refused_only_in_block_notes_and_reasons_need_one_line() {
         Err(MoveRefusal::MultiLine("reason"))
     );
 }
+
+#[test]
+fn a_generated_unlink_note_is_paren_checked_like_a_done_note() {
+    let unlink = |note: &'static str| {
+        transition(
+            Some(&BacklogStatus::Done),
+            &Target::Unlink,
+            A::Headwork,
+            &MoveFacts {
+                reason: Some(note),
+                ..PLAIN
+            },
+        )
+        .map(|step| step.kind)
+    };
+    assert_eq!(
+        unlink("task t merged https://x/pull/1, https://x/pull/2"),
+        Ok(MoveKind::Unlink)
+    );
+    assert_eq!(
+        unlink("task t merged https://x/wiki/a_(b"),
+        Err(MoveRefusal::Parentheses("note"))
+    );
+}

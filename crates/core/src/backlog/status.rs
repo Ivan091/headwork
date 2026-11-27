@@ -536,7 +536,7 @@ pub fn transition(
         }
     }
     one_line("reason", facts.reason)?;
-    if *to == Target::Done {
+    if matches!(to, Target::Done | Target::Unlink) {
         balanced("note", facts.reason)?;
     }
     decide(from, to, actor, facts).map(with_effects)
