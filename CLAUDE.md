@@ -237,7 +237,7 @@ cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--st
 cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | done <id> [--note N] [--drop] | reopen <id> | edit <id> [...]
 cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file P]   # backlog.md into the store (never deletes) and back out (backs up a hand-edited file)
 cargo run -p headwork -- digest [--json]   # "Needs you": asks, backlog items due, migration notes, waiting pull requests, old findings (docs/backlog.md, section 8)
-cargo run -p headwork -- park [--deadline S]   # recaps, jobs stopped at checkpoints, panes closed: safe to restart
+cargo run -p headwork -- park [--deadline S] [--keep-orchestrator]   # recaps, jobs stopped at checkpoints, panes closed, the orchestrator last: safe to restart
 cargo run -p headwork -- resume [--logon] [--wait S]   # after the restart: panes back with their recaps, jobs restarted
 cargo run -p headwork -- gate run cpu|gpu -- <cmd...>   # wait for a machine-wide slot, run the command holding it, exit with its code
 cargo run -p headwork -- gate status [--json]   # each gate class: count, holders (task, command, age, stale), waiters
@@ -357,14 +357,19 @@ schtasks /Create /SC ONLOGON /DELAY 0001:00 /TN "headwork resume" /TR "\"S:\Code
 
 The orchestrator (started with `headwork orchestrator`, which records the pane it runs in) is parked and resumed too:
 park takes the recap it wrote in the turn that started the park, else asks it for one in its pane and waits (event
-`orchestrator-asked`, or `orchestrator-unasked` with the reason), and leaves it running (the restart ends it), and resume opens a new orchestrator session in an `orchestrator` workspace in the folder it ran in, with
+`orchestrator-asked`, or `orchestrator-unasked` with the reason), and closes it as its very last step, after every worker:
+`/exit` typed into its pane (plainly, then after Escape), up to `[watch] exit_grace_s` each, then its processes ended and
+its pane closed, so Claude Code archives its Remote Control session (`ParkedOrchestrator.end`, events `exit-asked`,
+`orchestrator-closed`). A park that runs inside the orchestrator (in its pane, or under its `claude`, as the `park` tool's
+run does) hands that step to a detached `headwork park --close-orchestrator <id> --after <pid>` that waits for the park to
+exit first; `park --keep-orchestrator` (tool argument `keep_orchestrator`) leaves it for the restart. Resume opens a new orchestrator session in an `orchestrator` workspace in the folder it ran in, with
 its recorded name and the recap in the summary (a mechanical one from the board and the log when it wrote none), at logon too and after a crash. An orchestrator that still runs is left
 alone. An orchestrator conversation the store knows that runs outside headwork (wmux reopens Claude panes after a reboot
 with a plain `claude --resume <id>`, so the store saw it end) is found by its session id in the host's surface states:
 park records it with a mechanical recap (it has no `recap` tool), and resume, after a park or a crash, closes that pane
 and opens a new session under headwork from the mechanical recap. A `headwork resume` started inside a pane it is about to close (such an
 orchestrator running it through Bash) goes on as a detached process. See `docs/decisions.md` (2026-11-14, the root
-parks and resumes; 2026-11-21, an orchestrator running outside headwork).
+parks and resumes; 2026-11-21, an orchestrator running outside headwork) and `docs/decisions/2026-11-27-park-closes-orchestrator.md`.
 
 ### Migration on this machine (step 0)
 

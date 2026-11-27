@@ -855,8 +855,10 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "park",
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
-                      panes close. It runs in the background; read `board` for the machine mode. Write your own \
-                      recap first, in the same turn: the park takes it as yours; without one it asks you for it.",
+                      panes close, and last it closes you (`/exit`, so your Remote Control session is archived) \
+                      unless `keep_orchestrator`; the resume opens a new orchestrator from your recap. It runs in the \
+                      background; read `board` for the machine mode. Write your own recap first, in the same turn: the \
+                      park takes it as yours; without one it asks you for it.",
         roles: ORCHESTRATOR,
         schema: || {
             object(
@@ -864,6 +866,10 @@ const TOOLS: &[ToolDef] = &[
                     "deadline_s": {
                         "type": "integer",
                         "description": "Seconds to wait for recaps and checkpoints; 300 when absent.",
+                    },
+                    "keep_orchestrator": {
+                        "type": "boolean",
+                        "description": "Leave this orchestrator session running for the restart to end; false when absent.",
                     },
                 }),
                 &[],
@@ -1525,6 +1531,13 @@ impl<'a> Server<'a> {
             && let Some(seconds) = args.get("deadline_s").and_then(Value::as_u64)
         {
             process.args(["--deadline", &seconds.to_string()]);
+        }
+        if command == "park" && args.get("keep_orchestrator").and_then(Value::as_bool) == Some(true)
+        {
+            process.arg("--keep-orchestrator");
+        }
+        for var in super::resume::SURFACE_VARS {
+            process.env_remove(var);
         }
         process
             .arg("--home")

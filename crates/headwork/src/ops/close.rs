@@ -1151,7 +1151,7 @@ fn ask_exit(
 }
 
 /// Types `/exit` and Enter into `surface`; with `interrupt`, Escape and Ctrl+U (clear the line) come first.
-fn type_exit(
+pub(super) fn type_exit(
     host: &dyn TerminalHost,
     surface: &SurfaceId,
     interrupt: bool,

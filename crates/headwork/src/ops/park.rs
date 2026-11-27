@@ -16,7 +16,7 @@ use headwork_core::{JobState, MachineMode, RecapKind, SessionState, TaskShape, T
 use headwork_store::{JobRow, NewRecap, SessionRow, Store, Task, TaskId};
 use serde::Serialize;
 
-use super::close::{close_pane, wait_until};
+use super::close::{close_pane, type_exit, wait_until};
 use super::{Env, jobs, recap};
 
 /// What a session is told when a park begins.
@@ -28,8 +28,8 @@ pub const PARK_PROMPT: &str = "headwork: the machine is about to restart. Reach 
     standing constraints and wishes from this conversation. Register any long process with `job_register`. Do not \
     start new work.";
 
-/// What the orchestrator is told when a park begins. It keeps running; the restart ends it and the resume opens a new
-/// orchestrator session.
+/// What the orchestrator is told when a park begins. The park closes it as its last step (unless `--keep-orchestrator`),
+/// and the resume opens a new orchestrator session.
 pub const ORCHESTRATOR_PARK_PROMPT: &str = "headwork: the machine is about to restart. Call the headwork `recap` tool once. \
     After the restart a new orchestrator session with an empty context takes over from your recap, the board and the \
     log alone, so write it to continue from without this conversation: what the user asked for and what became of each \
@@ -43,6 +43,8 @@ pub struct ParkOptions {
     pub deadline: Duration,
     /// How often to look.
     pub poll: Duration,
+    /// Leave the orchestrator running for the restart to end, instead of closing it as the park's last step.
+    pub keep_orchestrator: bool,
 }
 
 impl Default for ParkOptions {
@@ -50,6 +52,7 @@ impl Default for ParkOptions {
         Self {
             deadline: Duration::from_secs(300),
             poll: Duration::from_secs(2),
+            keep_orchestrator: false,
         }
     }
 }
@@ -103,6 +106,33 @@ pub struct ParkedOrchestrator {
     pub recap: RecapSource,
     /// Why it could not be asked for its recap, when it could not.
     pub problem: Option<String>,
+    /// What became of it at the end of the park.
+    pub end: OrchestratorEnd,
+}
+
+/// What became of the orchestrator at the end of a park.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "how")]
+pub enum OrchestratorEnd {
+    /// `--keep-orchestrator`: it runs on until the restart ends it.
+    Kept,
+    /// It no longer ran.
+    Gone,
+    /// It left on `/exit`, so Claude Code archived its Remote Control session.
+    Exited,
+    /// It did not leave on `/exit` within the grace, so its processes or its pane were ended.
+    Ended,
+    /// The park runs inside the orchestrator (its pane, or a process it started), so a detached `headwork park
+    /// --close-orchestrator` closes it once the park has exited.
+    Detached {
+        /// The closer's process id.
+        pid: u32,
+    },
+    /// It could not be closed.
+    Failed {
+        /// Why.
+        problem: String,
+    },
 }
 
 /// What a park did.
@@ -112,7 +142,7 @@ pub struct ParkReport {
     pub park: i64,
     /// The sessions, in the order they were parked.
     pub sessions: Vec<ParkedSession>,
-    /// The orchestrator session, when one was running; it is left running.
+    /// The orchestrator session, when one was running; closed last unless kept.
     pub orchestrator: Option<ParkedOrchestrator>,
     /// The jobs.
     pub jobs: Vec<ParkedJob>,
@@ -182,12 +212,17 @@ pub fn park(store: &mut Store, env: &Env<'_>, opts: ParkOptions) -> Result<ParkR
     for target in &targets {
         sessions.push(finish_session(store, env, record.id, target)?);
     }
-    let orchestrator = orchestrator
+    let mut parked_orchestrator = orchestrator
+        .as_ref()
         .map(|orchestrator| finish_orchestrator(store, env, record.id, orchestrator))
         .transpose()?;
     let safe =
         sessions.iter().all(|s| s.problem.is_none()) && parked_jobs.iter().all(|j| !j.left_running);
     store.finish_park(record.id, env.actor)?;
+    if let (Some(target), Some(parked)) = (&orchestrator, &mut parked_orchestrator) {
+        parked.end = end_orchestrator(store, env, target, opts.keep_orchestrator)?;
+    }
+    let orchestrator = parked_orchestrator;
     Ok(ParkReport {
         park: record.id,
         sessions,
@@ -471,8 +506,8 @@ struct OrchestratorTarget {
     problem: Option<String>,
 }
 
-/// Records the running orchestrator session on the park and asks it for its recap. It is not stopped: the orchestrator may be the
-/// session that asked for the park, and it tells the user when it is safe to restart.
+/// Records the running orchestrator session on the park and asks it for its recap. It is not stopped here: it is
+/// closed as the park's very last step ([`end_orchestrator`]), after every worker.
 ///
 /// A recap it wrote in the turn that started the park (the `park` tool asks for one first) is that recap, and it is
 /// not asked again. Otherwise it gets the park notice in its pane; when that cannot be done, the reason is logged
@@ -594,7 +629,7 @@ fn finish_orchestrator(
     store: &mut Store,
     env: &Env<'_>,
     park: i64,
-    orchestrator: OrchestratorTarget,
+    orchestrator: &OrchestratorTarget,
 ) -> Result<ParkedOrchestrator> {
     let recap = if store
         .orchestrator_park_recap(park, &orchestrator.session.id)?
@@ -629,8 +664,269 @@ fn finish_orchestrator(
         RecapSource::Mechanical
     };
     Ok(ParkedOrchestrator {
-        session: orchestrator.session.id,
+        session: orchestrator.session.id.clone(),
         recap,
-        problem: orchestrator.problem,
+        problem: orchestrator.problem.clone(),
+        end: OrchestratorEnd::Kept,
     })
+}
+
+/// The park's very last step: closes the orchestrator so Claude Code archives its Remote Control session, unless
+/// `keep` says to leave it for the restart. When the park runs inside the orchestrator (in its pane, or as a process
+/// its `claude` started, such as the `park` tool's detached run), closing it here would end the park halfway, so a
+/// detached `headwork park --close-orchestrator` does it once this process has exited.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+fn end_orchestrator(
+    store: &mut Store,
+    env: &Env<'_>,
+    target: &OrchestratorTarget,
+    keep: bool,
+) -> Result<OrchestratorEnd> {
+    let id = &target.session.id;
+    if keep {
+        store.append_event(
+            env.actor,
+            None,
+            Some(id),
+            "orchestrator-kept",
+            &serde_json::json!({ "reason": "--keep-orchestrator" }),
+        )?;
+        return Ok(OrchestratorEnd::Kept);
+    }
+    if !runs_inside(env, &target.session) {
+        return close_orchestrator(store, env, id);
+    }
+    match start_closer(env, id) {
+        Ok(pid) => {
+            store.append_event(
+                env.actor,
+                None,
+                Some(id),
+                "detached",
+                &serde_json::json!({
+                    "command": "park --close-orchestrator",
+                    "pid": pid,
+                    "reason": "the park runs inside the orchestrator it closes",
+                }),
+            )?;
+            Ok(OrchestratorEnd::Detached { pid })
+        }
+        Err(error) => {
+            let end = OrchestratorEnd::Failed {
+                problem: format!("the detached closer did not start: {error}"),
+            };
+            log_closed(store, env, id, &end)?;
+            Ok(end)
+        }
+    }
+}
+
+/// Whether this process runs inside the orchestrator `session`: in its surface, or under one of its processes, so
+/// ending the orchestrator would end it too.
+fn runs_inside(env: &Env<'_>, session: &SessionRow) -> bool {
+    let own_surface = super::resume::SURFACE_VARS
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|value| !value.is_empty()));
+    if let Some(own) = own_surface
+        && orchestrator_surface(env, session).is_some_and(|surface| surface.as_str() == own)
+    {
+        return true;
+    }
+    let roots: Vec<u32> = session
+        .processes()
+        .iter()
+        .map(|record| record.pid)
+        .collect();
+    if roots.is_empty() {
+        return false;
+    }
+    let (procs, _) = headwork_adapters::proc::snapshot();
+    headwork_core::reap::descends_from(&procs, std::process::id(), &roots)
+}
+
+/// Starts `headwork park --close-orchestrator <session> --after <this pid>` detached and outside any surface.
+fn start_closer(env: &Env<'_>, session: &str) -> Result<u32> {
+    let mut process = std::process::Command::new(env.exe);
+    process
+        .args(["park", "--close-orchestrator", session, "--after"])
+        .arg(std::process::id().to_string())
+        .arg("--home")
+        .arg(env.home.root())
+        .current_dir(env.home.root());
+    for var in super::resume::SURFACE_VARS {
+        process.env_remove(var);
+    }
+    let (pid, _) = headwork_adapters::proc::spawn_detached(&mut process)?;
+    Ok(pid)
+}
+
+/// How long the detached closer waits for the park that started it to exit.
+pub const CLOSER_WAIT: Duration = Duration::from_secs(120);
+
+/// The detached closer: closes the orchestrator `session` once the park process `after` is gone.
+///
+/// It waits up to [`CLOSER_WAIT`] first, because while the park runs, ending the orchestrator's process tree would
+/// reach this process through it.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn close_orchestrator_after(
+    store: &mut Store,
+    env: &Env<'_>,
+    session: &str,
+    after: u32,
+) -> Result<OrchestratorEnd> {
+    wait_until(CLOSER_WAIT, || {
+        !headwork_adapters::proc::is_alive(after).unwrap_or(false)
+    });
+    close_orchestrator(store, env, session)
+}
+
+/// Closes the orchestrator session `id` so Claude Code archives its Remote Control session.
+///
+/// It types `/exit` into its pane and waits up to `[watch] exit_grace_s` for it to leave, once plainly, so a running
+/// turn ends first, then after Escape and a cleared line, so an open dialog does not take the Enter; then it ends what
+/// is left of it and closes its pane. One running outside headwork has no recorded processes: it counts as gone when
+/// the host no longer shows its Claude session, and closing its pane ends it.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn close_orchestrator(store: &mut Store, env: &Env<'_>, id: &str) -> Result<OrchestratorEnd> {
+    let Some((session, _)) = store.session(id)? else {
+        return Ok(OrchestratorEnd::Gone);
+    };
+    let managed = session_alive(&session);
+    let surface = if managed {
+        orchestrator_surface(env, &session)
+    } else {
+        unmanaged_surface(env, id)
+    };
+    if !managed && surface.is_none() {
+        log_closed(store, env, id, &OrchestratorEnd::Gone)?;
+        return Ok(OrchestratorEnd::Gone);
+    }
+    let records = session.processes();
+    let gone = || {
+        if managed {
+            !records.iter().any(super::session_procs::runs)
+        } else {
+            unmanaged_surface(env, id).is_none()
+        }
+    };
+    let left = match &surface {
+        Some(surface) => ask_exit(store, env, id, surface, &gone)?,
+        None => false,
+    };
+    let mut problem = None;
+    if !left && managed {
+        super::session_procs::end(&records)?.log(store, env.actor, None, id)?;
+        if !wait_until(Duration::from_secs(10), &gone) {
+            problem = Some("processes of the orchestrator are still alive".to_owned());
+        }
+    }
+    if let Some(surface) = &surface
+        && surface_shown(env, surface)
+        && let Err(error) = env.host.close_surface(surface)
+    {
+        problem.get_or_insert_with(|| format!("its pane did not close: {error}"));
+    }
+    if managed {
+        store.set_session_state(id, SessionState::Ended, env.actor)?;
+    }
+    let end = match problem {
+        Some(problem) => OrchestratorEnd::Failed { problem },
+        None if left => OrchestratorEnd::Exited,
+        None => OrchestratorEnd::Ended,
+    };
+    log_closed(store, env, id, &end)?;
+    Ok(end)
+}
+
+/// Whether the host still shows `surface` in any workspace or pane; a host that does not answer counts as showing it.
+fn surface_shown(env: &Env<'_>, surface: &SurfaceId) -> bool {
+    let Ok(workspaces) = env.host.workspaces() else {
+        return true;
+    };
+    let in_workspace = workspaces.iter().any(|workspace| {
+        env.host
+            .surfaces(&workspace.id)
+            .map_or(true, |surfaces| surfaces.contains(surface))
+    });
+    in_workspace
+        || env.host.panes().map_or(true, |panes| {
+            panes
+                .iter()
+                .any(|pane| &pane.surface == surface && pane.running)
+        })
+}
+
+/// The surface where the host shows the Claude session `id`, for an orchestrator running outside headwork.
+fn unmanaged_surface(env: &Env<'_>, id: &str) -> Option<SurfaceId> {
+    env.host
+        .surface_states()
+        .ok()?
+        .into_iter()
+        .find(|state| state.session_id.as_deref() == Some(id))
+        .map(|state| state.surface)
+}
+
+/// Types `/exit` into the orchestrator's `surface`, first plainly and then interrupting, each time waiting up to
+/// `[watch] exit_grace_s` for `gone`. Returns whether it left; a grace of 0 asks nothing.
+fn ask_exit(
+    store: &Store,
+    env: &Env<'_>,
+    id: &str,
+    surface: &SurfaceId,
+    gone: &dyn Fn() -> bool,
+) -> Result<bool> {
+    let grace = env.config.watch.exit_grace_s;
+    if grace == 0 {
+        return Ok(false);
+    }
+    for (attempt, interrupt) in [(1_u32, false), (2, true)] {
+        if let Err(error) = type_exit(env.host, surface, interrupt) {
+            store.append_event(
+                env.actor,
+                None,
+                Some(id),
+                "exit-unasked",
+                &serde_json::json!({ "error": error.to_string(), "attempt": attempt }),
+            )?;
+            return Ok(false);
+        }
+        store.append_event(
+            env.actor,
+            None,
+            Some(id),
+            "exit-asked",
+            &serde_json::json!({ "grace_s": grace, "attempt": attempt, "interrupt": interrupt }),
+        )?;
+        if wait_until(Duration::from_secs(u64::from(grace)), gone) {
+            return Ok(true);
+        }
+        store.append_event(
+            env.actor,
+            None,
+            Some(id),
+            "exit-ignored",
+            &serde_json::json!({ "grace_s": grace, "attempt": attempt }),
+        )?;
+    }
+    Ok(false)
+}
+
+fn log_closed(store: &Store, env: &Env<'_>, id: &str, end: &OrchestratorEnd) -> Result<()> {
+    store.append_event(
+        env.actor,
+        None,
+        Some(id),
+        "orchestrator-closed",
+        &serde_json::to_value(end)?,
+    )?;
+    Ok(())
 }

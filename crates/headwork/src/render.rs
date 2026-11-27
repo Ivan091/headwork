@@ -7,7 +7,7 @@ use headwork::ops::doctor::{DoctorReport, Status};
 use headwork::ops::flows::{FlowReport, Origin as FlowOrigin};
 use headwork::ops::import::ImportReport;
 use headwork::ops::install::InstallReport;
-use headwork::ops::park::{ParkReport, RecapSource};
+use headwork::ops::park::{OrchestratorEnd, ParkReport, RecapSource};
 use headwork::ops::reap::{Outcome as ReapOutcome, ReapReport};
 use headwork::ops::reload::{self, Freshness, SessionBuild};
 use headwork::ops::resume::{ResumeReport, TaskOutcome};
@@ -510,8 +510,9 @@ pub(crate) fn parked(report: &ParkReport) -> String {
         };
         let _ = writeln!(
             text,
-            "  orchestrator {} left running ({recap}); the resume brings it back",
-            orchestrator.session
+            "  orchestrator {} {} ({recap}); the resume brings it back",
+            orchestrator.session,
+            orchestrator_end(&orchestrator.end)
         );
         if let Some(problem) = &orchestrator.problem {
             let _ = writeln!(text, "    note: {problem}");
@@ -529,6 +530,19 @@ pub(crate) fn parked(report: &ParkReport) -> String {
         "NOT safe to restart: see the problems and jobs left running above\n"
     });
     text
+}
+
+/// What became of the orchestrator at the end of a park, as words.
+#[must_use]
+pub(crate) fn orchestrator_end(end: &OrchestratorEnd) -> String {
+    match end {
+        OrchestratorEnd::Kept => "left running".to_owned(),
+        OrchestratorEnd::Gone => "no longer running".to_owned(),
+        OrchestratorEnd::Exited => "closed on /exit".to_owned(),
+        OrchestratorEnd::Ended => "ended after it ignored /exit".to_owned(),
+        OrchestratorEnd::Detached { pid } => format!("closing once the park exits (pid {pid})"),
+        OrchestratorEnd::Failed { problem } => format!("not closed: {problem}"),
+    }
 }
 
 /// What a resume did.
