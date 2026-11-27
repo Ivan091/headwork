@@ -5,6 +5,7 @@
 //! explorer add as many items as were picked, each with a `Source:` suffix naming its report.
 
 use anyhow::{Result, anyhow, bail};
+use headwork_core::backlog::adds_left;
 use headwork_core::guard::grants::{brief_report, explore_report_check};
 use headwork_core::guard::{GuardPath, Places};
 use headwork_core::{Actor, EXPLORE_KIND, TaskShape};
@@ -89,11 +90,7 @@ pub fn picked_labels(asked: &Value, answers: Option<&Value>) -> Option<Vec<Strin
         else {
             continue;
         };
-        picks.extend(
-            options
-                .into_iter()
-                .filter(|label| !is_decline(label) && names_label(answer, label)),
-        );
+        picks.extend(named_options(answer, options));
     }
     found.then_some(picks)
 }
@@ -104,15 +101,44 @@ fn is_decline(label: &str) -> bool {
         .any(|decline| decline.eq_ignore_ascii_case(label.trim()))
 }
 
-fn names_label(answer: &str, label: &str) -> bool {
-    if label.is_empty() {
-        return false;
+const CONSUMED: char = '\u{1}';
+
+fn named_options(answer: &str, options: Vec<String>) -> Vec<String> {
+    let mut longest_first: Vec<usize> = (0..options.len()).collect();
+    longest_first
+        .sort_by_key(|&index| std::cmp::Reverse(options.get(index).map_or(0, String::len)));
+    let mut rest = answer.to_owned();
+    let mut named = vec![false; options.len()];
+    for index in longest_first {
+        let Some(label) = options.get(index) else {
+            continue;
+        };
+        if let Some(span) = bounded_match(&rest, label) {
+            rest.replace_range(span, &CONSUMED.to_string());
+            if let Some(slot) = named.get_mut(index) {
+                *slot = true;
+            }
+        }
     }
-    answer.match_indices(label).any(|(start, _)| {
+    options
+        .into_iter()
+        .zip(named)
+        .filter(|(label, named)| *named && !is_decline(label))
+        .map(|(label, _)| label)
+        .collect()
+}
+
+fn bounded_match(answer: &str, label: &str) -> Option<std::ops::Range<usize>> {
+    if label.is_empty() {
+        return None;
+    }
+    answer.match_indices(label).find_map(|(start, _)| {
+        let end = start + label.len();
         let before = answer.get(..start).unwrap_or_default();
-        let after = answer.get(start + label.len()..).unwrap_or_default();
-        (before.is_empty() || before.ends_with(", "))
-            && (after.is_empty() || after.starts_with(", "))
+        let after = answer.get(end..).unwrap_or_default();
+        ((before.is_empty() || before.ends_with(", "))
+            && (after.is_empty() || after.starts_with(", ")))
+        .then_some(start..end)
     })
 }
 
@@ -154,7 +180,8 @@ pub fn add(
     task: &Task,
     mut request: AddRequest,
 ) -> Result<Change> {
-    if store.backlog_adds_left(task.id)? == 0 {
+    let (picked, added) = store.backlog_pick_counts(task.id)?;
+    if adds_left(picked, added) == 0 {
         bail!(
             "{UNASKED}: ask the user with one AskUserQuestion headed `{BACKLOG_HEADER}` first and add only what they \
              picked; no pick is left to add"
@@ -168,10 +195,17 @@ pub fn add(
     add_for(store, env, &request, Some(task.id))
 }
 
+fn has_source(text: &str) -> bool {
+    text.match_indices("Source:").any(|(start, _)| {
+        text.get(..start)
+            .is_none_or(|before| before.is_empty() || before.ends_with(char::is_whitespace))
+    })
+}
+
 /// `text` with ` Source: <report>, task <name>` appended unless it has a `Source:` already.
 #[must_use]
 pub fn with_source(text: &str, report: Option<&str>, task: &str) -> String {
-    if text.to_ascii_lowercase().contains("source:") {
+    if has_source(text) {
         return text.to_owned();
     }
     let place = report.map_or_else(
@@ -256,6 +290,33 @@ mod tests {
     }
 
     #[test]
+    fn a_label_inside_a_longer_picked_label_is_not_counted() {
+        let ask = json!({ "questions": [{
+            "question": "Q?", "header": "Backlog", "multiSelect": true,
+            "options": [
+                { "label": "Fix y" }, { "label": "Fix y, then z" }, { "label": "z" },
+                { "label": "then z" }, { "label": "Skip it" }
+            ]
+        }] });
+        let table: &[(&str, &[&str])] = &[
+            ("Fix y, then z", &["Fix y, then z"]),
+            ("Fix y", &["Fix y"]),
+            ("Fix y, z", &["Fix y", "z"]),
+            ("Fix y, then z, z", &["Fix y, then z", "z"]),
+            ("Fix y, Fix y, then z", &["Fix y", "Fix y, then z"]),
+            ("then z, Skip it", &["then z"]),
+            ("Fix y, then", &["Fix y"]),
+        ];
+        for (answer, want) in table {
+            let mut got = picked_labels(&ask, Some(&json!({ "Q?": answer }))).unwrap_or_default();
+            got.sort();
+            let mut want: Vec<String> = want.iter().map(|label| (*label).to_owned()).collect();
+            want.sort();
+            assert_eq!(got, want, "{answer}");
+        }
+    }
+
+    #[test]
     fn only_questions_headed_backlog_count() {
         let guard = || Some(vec!["Guard x".to_owned()]);
         assert_eq!(
@@ -300,6 +361,14 @@ mod tests {
                 "t"
             ),
             "Guard x. Source: notes/o.md"
+        );
+        assert_eq!(
+            with_source("Guard x. See the open-source: no.", None, "t"),
+            "Guard x. See the open-source: no. Source: task t"
+        );
+        assert_eq!(
+            with_source("Guard x.\nSource: a", None, "t"),
+            "Guard x.\nSource: a"
         );
         assert_eq!(
             with_source("Guard x.", None, "t"),

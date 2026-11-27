@@ -465,17 +465,28 @@ pub struct ModelsConfig {
 }
 
 impl ModelsConfig {
-    /// The model a task of `kind` runs when its spawn names none.
+    /// The model a task of `kind` runs when its spawn names none: the configured one, else Opus for `explore` when it is
+    /// allowed, else `default`.
     #[must_use]
     pub fn for_kind(&self, kind: &str) -> Model {
-        self.by_kind
-            .get(kind)
-            .copied()
-            .unwrap_or(if kind == EXPLORE_KIND {
-                Model::Opus
-            } else {
-                self.default
-            })
+        if let Some(model) = self.by_kind.get(kind) {
+            return *model;
+        }
+        if kind == EXPLORE_KIND && self.allows(Model::Opus) {
+            return Model::Opus;
+        }
+        self.default
+    }
+
+    /// The model the parts of a lead of `lead_kind` run when their spawn names none: Sonnet for the parts of an
+    /// exploration when it is allowed; `None` leaves the ordinary default.
+    #[must_use]
+    pub fn for_part(&self, lead_kind: &str) -> Option<Model> {
+        (lead_kind == EXPLORE_KIND && self.allows(Model::Sonnet)).then_some(Model::Sonnet)
+    }
+
+    fn allows(&self, model: Model) -> bool {
+        self.allowed.is_empty() || self.allowed.contains(&model)
     }
 }
 

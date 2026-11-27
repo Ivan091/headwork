@@ -518,10 +518,14 @@ fn an_item_that_cannot_be_written_to_the_file_is_refused() {
 }
 
 #[test]
-fn adds_left_count_the_newest_pick_minus_the_adds_after_it() {
+fn pick_counts_are_the_newest_pick_and_the_adds_after_it() {
     let (mut store, config) = store();
     let task = task(&mut store, &config, "explore");
-    assert_eq!(store.backlog_adds_left(task.id).unwrap(), 0, "no pick yet");
+    let left = |store: &Store, id| {
+        let (picked, added) = store.backlog_pick_counts(id).unwrap();
+        headwork_core::backlog::adds_left(picked, added)
+    };
+    assert_eq!(left(&store, task.id), 0, "no pick yet");
     let pick = |store: &Store, count: u64| {
         store
             .append_event(
@@ -537,24 +541,20 @@ fn adds_left_count_the_newest_pick_minus_the_adds_after_it() {
         .add_backlog_item_for(&draft("before the pick"), Actor::Worker, Some(task.id))
         .unwrap();
     pick(&store, 2);
-    assert_eq!(store.backlog_adds_left(task.id).unwrap(), 2);
+    assert_eq!(left(&store, task.id), 2);
     store
         .add_backlog_item_for(&draft("first"), Actor::Worker, Some(task.id))
         .unwrap();
     store
         .add_backlog_item(&draft("another task's"), Actor::Orchestrator)
         .unwrap();
-    assert_eq!(store.backlog_adds_left(task.id).unwrap(), 1);
+    assert_eq!(left(&store, task.id), 1);
     store
         .add_backlog_item_for(&draft("second"), Actor::Worker, Some(task.id))
         .unwrap();
-    assert_eq!(store.backlog_adds_left(task.id).unwrap(), 0);
+    assert_eq!(left(&store, task.id), 0);
     pick(&store, 1);
-    assert_eq!(
-        store.backlog_adds_left(task.id).unwrap(),
-        1,
-        "a later pick replaces the count"
-    );
+    assert_eq!(left(&store, task.id), 1, "a later pick replaces the count");
     pick(&store, 0);
-    assert_eq!(store.backlog_adds_left(task.id).unwrap(), 0);
+    assert_eq!(left(&store, task.id), 0);
 }

@@ -1125,6 +1125,13 @@ pub fn pointer_line(new_path: &str) -> String {
     )
 }
 
+/// How many items an exploration may still add: the `picked` count of its newest `Backlog` answer minus the `added`
+/// items it logged since, never below 0.
+#[must_use]
+pub const fn adds_left(picked: u64, added: u64) -> u64 {
+    picked.saturating_sub(added)
+}
+
 #[cfg(test)]
 #[expect(
     clippy::unwrap_used,
@@ -1565,5 +1572,16 @@ mod tests {
             written.find("item 25").unwrap_or(0) < written.find("item 24").unwrap_or(0),
             "newest first"
         );
+    }
+
+    #[test]
+    fn adds_left_never_go_below_zero() {
+        for (picked, added, want) in [(0, 0, 0), (2, 0, 2), (2, 1, 1), (2, 2, 0), (1, 5, 0)] {
+            assert_eq!(
+                adds_left(picked, added),
+                want,
+                "{picked} picked, {added} added"
+            );
+        }
     }
 }

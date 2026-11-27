@@ -415,7 +415,7 @@ const TOOLS: &[ToolDef] = &[
         name: "backlog_add",
         description: concat!(
             "Add an item to the backlog list, last, and export `backlog.md`. Never edit `backlog.md` by hand. Text that starts with ",
-            "`For you` is the user's. Commit and push the regenerated file afterwards.",
+            "`For you` is the user's. Committing and pushing the regenerated file is the orchestrator's job; an explorer does not.",
         ),
         roles: BOTH,
         schema: || {
@@ -1028,13 +1028,13 @@ impl<'a> Server<'a> {
         };
         let lead = self.is_lead();
         let reviewer = self.is_reviewer();
-        let explorer = role == Role::Orchestrator || self.is_explorer();
+        let sees_backlog = role == Role::Orchestrator || self.is_explorer();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
             .filter(|tool| lead || !LEAD_TOOLS.contains(&tool.name))
             .filter(|tool| reviewer || !REVIEWER_TOOLS.contains(&tool.name))
-            .filter(|tool| explorer || !EXPLORER_TOOLS.contains(&tool.name))
+            .filter(|tool| sees_backlog || !EXPLORER_TOOLS.contains(&tool.name))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -1796,7 +1796,6 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .map(str::parse)
             .transpose()?;
-        let flags = spawn_flags(args, "task", "flag_reason")?;
         let opus_reason = match model {
             Some(Model::Opus) => Some(
                 text(args, "reason")
@@ -1822,7 +1821,8 @@ impl<'a> Server<'a> {
                  run it yourself after the user's `Allow`, or leave it out of the part's brief"
             );
         }
-        let (kind, in_main, model) = part_kind(lead, carries_go, model);
+        let (kind, in_main, model) = part_kind(lead, carries_go, model, &self.env.config.models);
+        let flags = spawn_flags(args, &kind, "flag_reason")?;
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -2162,19 +2162,22 @@ fn items<T: serde::de::DeserializeOwned>(args: &Value) -> Result<Vec<T>> {
 }
 
 /// The kind, main-checkout flag and model of a part: a part of an exploration explores too, on Sonnet unless told otherwise.
-fn part_kind(lead: &Task, carries_go: bool, model: Option<Model>) -> (String, bool, Option<Model>) {
-    let explores = lead.kind == headwork_core::EXPLORE_KIND;
-    let kind = if carries_go || explores {
+fn part_kind(
+    lead: &Task,
+    carries_go: bool,
+    model: Option<Model>,
+    models: &headwork_core::config::ModelsConfig,
+) -> (String, bool, Option<Model>) {
+    let kind = if carries_go || lead.kind == headwork_core::EXPLORE_KIND {
         lead.kind.clone()
     } else {
         "task".to_owned()
     };
-    let model = if explores {
-        model.or(Some(Model::Sonnet))
-    } else {
-        model
-    };
-    (kind, carries_go, model)
+    (
+        kind,
+        carries_go,
+        model.or_else(|| models.for_part(&lead.kind)),
+    )
 }
 
 fn backlog_id(args: &Value) -> Result<i64> {

@@ -14,8 +14,8 @@ use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{
-    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles,
-    WORKER_RULES, platform_words,
+    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, EXPLORER_PART_HEADING, ORCHESTRATOR_RULES,
+    PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES, platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::update::{Notice, UpdateState};
@@ -5048,6 +5048,11 @@ fn a_part_of_an_exploration_gets_no_backlog_tools() {
     let part = part_named(&w, "sand-scan");
     assert_eq!(part.kind, "explore", "a part of an exploration explores");
     assert_eq!(
+        part.close,
+        CloseMode::Silent,
+        "an explore part closes silently"
+    );
+    assert_eq!(
         part.model,
         Model::Sonnet,
         "a part runs on Sonnet unless told otherwise"
@@ -5154,5 +5159,29 @@ fn explorer_rules_reach_an_exploration_and_no_one_else() {
         text.contains("## You explore: a report, then the Backlog ask")
             && !text.contains("You are a part of an exploration"),
         "{text}"
+    );
+}
+
+#[test]
+fn a_part_of_an_exploration_gets_only_the_part_section_of_the_explorer_rules() {
+    let mut w = explore_world();
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "scan", "brief": "Scan the thing." }),
+    );
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-scan");
+    w.session = w.store.session_of(part.id).unwrap().unwrap().id;
+    let text = context(&w.start());
+    assert!(text.contains(EXPLORER_PART_HEADING), "{text}");
+    assert!(!text.contains("You explore: a report"), "{text}");
+    assert!(!text.contains("`## Backlog candidates`"), "{text}");
+    assert!(!text.contains("with `backlog_add`"), "{text}");
+    let section = EXPLORER_PART_HEADING;
+    let body = text.split(section).nth(1).unwrap_or_default();
+    assert!(
+        body.trim().len() > 40,
+        "the part section is not empty: {body}"
     );
 }

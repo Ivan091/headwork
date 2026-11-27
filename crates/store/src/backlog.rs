@@ -398,13 +398,13 @@ impl Store {
         Ok(item)
     }
 
-    /// How many items `task` may still add: the `count` of its newest `backlog-picked` event minus the `backlog-added`
-    /// events it logged after that event; 0 when it has none.
+    /// The `count` of the newest `backlog-picked` event of `task` and the number of `backlog-added` events it logged
+    /// after that event; `(0, 0)` when it has no pick.
     ///
     /// # Errors
     ///
     /// Returns a read error.
-    pub fn backlog_adds_left(&self, task: TaskId) -> Result<u64, StoreError> {
+    pub fn backlog_pick_counts(&self, task: TaskId) -> Result<(u64, u64), StoreError> {
         let picked: Option<(i64, String)> = self
             .conn
             .query_row(
@@ -414,7 +414,7 @@ impl Store {
             )
             .optional()?;
         let Some((id, data)) = picked else {
-            return Ok(0);
+            return Ok((0, 0));
         };
         let count = serde_json::from_str::<serde_json::Value>(&data)?
             .get("count")
@@ -425,7 +425,7 @@ impl Store {
             params![task.0, EVENT_BACKLOG_ADDED, id],
             |row| row.get(0),
         )?;
-        Ok(count.saturating_sub(u64::try_from(added).unwrap_or(0)))
+        Ok((count, u64::try_from(added).unwrap_or(0)))
     }
 
     /// Marks an open item done, or dropped with `drop`, today, with a note, and logs `backlog-done` or `backlog-dropped`.

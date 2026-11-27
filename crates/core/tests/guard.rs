@@ -1670,8 +1670,28 @@ fn an_explorer_reads_builds_and_writes_only_the_scratchpad_and_its_report() {
         ("git checkout -b x", Some(RuleId::ExploreWrite)),
         ("gh pr create --title x", Some(RuleId::ExploreWrite)),
         ("gh pr merge 3", Some(RuleId::ExploreWrite)),
+        ("gh pr edit 3 --title x", Some(RuleId::ExploreWrite)),
+        ("gh pr close 3", Some(RuleId::ExploreWrite)),
+        ("gh pr comment 3 --body x", Some(RuleId::ExploreWrite)),
+        ("gh pr review 3 --approve", Some(RuleId::ExploreWrite)),
+        ("git stash", Some(RuleId::ExploreWrite)),
+        ("git stash push -m x", Some(RuleId::ExploreWrite)),
+        ("git stash list", None),
+        ("git worktree add ../x", Some(RuleId::ExploreWrite)),
+        ("git worktree list", None),
+        ("git branch -D x", Some(RuleId::ExploreWrite)),
+        ("git branch x", Some(RuleId::ExploreWrite)),
+        ("git branch --list", None),
+        ("git tag x", Some(RuleId::ExploreWrite)),
+        ("git tag -l", None),
+        ("git reset --hard", Some(RuleId::ExploreWrite)),
+        ("git rebase main", Some(RuleId::ExploreWrite)),
+        ("git merge main", Some(RuleId::ExploreWrite)),
+        ("git pull", Some(RuleId::ExploreWrite)),
+        ("git cherry-pick abc", Some(RuleId::ExploreWrite)),
         ("git -C S:/Code/notes add report.md", None),
         ("git -C S:/Code/notes commit -m x report.md", None),
+        ("git -C S:/Code/notes pull --ff-only", None),
     ];
     for (command, want) in table {
         assert_eq!(
@@ -1710,6 +1730,28 @@ fn an_explorer_reads_builds_and_writes_only_the_scratchpad_and_its_report() {
         None,
         "a plain worker edits its worktree"
     );
+}
+
+#[test]
+fn explore_write_does_not_see_shell_writes_inside_the_folder() {
+    let scope = Scope {
+        explorer: true,
+        own_delivery: false,
+        ..worker("HEAD")
+    };
+    for command in [
+        "echo x > src/lib.rs",
+        "sed -i s/a/b/ src/lib.rs",
+        "tee src/lib.rs",
+        "cp a.rs src/lib.rs",
+        "mv a.rs src/lib.rs",
+    ] {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            None,
+            "a known limit, left to the explorer rules: {command}"
+        );
+    }
 }
 
 #[test]
