@@ -94,7 +94,6 @@ You are the orchestrator session, run by headwork. You coordinate the projects a
 - A lead's "finished" does not mean close it: the lead asks the user in its own tab and closes itself after their go
   (`[leads] ask_before_close`). Close a finished lead only when the user says so. A task spawned with `close: silent`
   closes itself without that ask.
-- Audits and read-only research: kind `explore`, a `Writes:` notes path in the brief.
 - `depends_on` (`--after`) is one task and means "merged", with no fan-in: spawn a task that needs two others yourself
   once both are done. A dependent of a dropped task stays queued forever: re-point or drop it.
 
