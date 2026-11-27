@@ -211,6 +211,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("backlog", Run::backlog)?;
     run.stage("store_backup", Run::store_backup)?;
     run.stage("digest", Run::digest)?;
+    run.stage("push_outbox", Run::push_outbox)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
     run.sweep(FindingId::TickHung)?;
@@ -419,6 +420,43 @@ impl<'b> Run<'_, 'b> {
         let env = self.env();
         let actor = self.actor();
         super::digest::push_due(self.store, env.config, actor, |text| self.notify(text)).map(drop)
+    }
+
+    /// Pushes each new line of me-studio's push outbox (`[machine] push_outbox`, `docs/video-flow.md`) to the phone: the
+    /// host notification and a notice the orchestrator's next prompt carries, which it pushes with `PushNotification`. The
+    /// cursor is the id of the last line sent, kept as the event `push-outbox-sent`; it moves after each line, so a failure
+    /// resends only the lines not yet sent. A missing file is quiet; a host that is down sends nothing and moves nothing.
+    fn push_outbox(&mut self) -> Result<()> {
+        let env = self.env();
+        let Some(path) = env.config.machine.push_outbox.as_deref() else {
+            return Ok(());
+        };
+        if env.config.machine.push == headwork_core::config::PushMode::None || !self.report.host_up
+        {
+            return Ok(());
+        }
+        let content = match std::fs::read(path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => bail!("the push outbox {path} cannot be read: {error}"),
+        };
+        let last = self
+            .store
+            .last_event_id_field(headwork_core::video_flow::EVENT_OUTBOX_SENT)?;
+        let actor = self.actor();
+        for entry in headwork_core::video_flow::new_entries(&content, last.as_deref()) {
+            let text = entry.text();
+            self.notify(&text);
+            self.tell_orchestrator(format!("Push to the user's phone: {text}"))?;
+            self.store.append_event(
+                actor,
+                None,
+                None,
+                headwork_core::video_flow::EVENT_OUTBOX_SENT,
+                &serde_json::json!({ "id": entry.id, "project": entry.project, "kind": entry.kind, "streak": entry.streak }),
+            )?;
+        }
+        Ok(())
     }
 
     /// Reports migration notes that wait for this machine; fetches each repository's default branch but never runs a step.

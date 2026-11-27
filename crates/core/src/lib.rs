@@ -28,6 +28,7 @@ pub mod slots;
 pub mod update;
 pub mod usage;
 pub mod user_go;
+pub mod video_flow;
 pub mod vocabulary;
 pub mod watch;
 

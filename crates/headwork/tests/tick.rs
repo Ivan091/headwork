@@ -3238,3 +3238,59 @@ fn a_merged_grace_climbs_the_ladder_before_it_ends_claude() {
     assert_eq!(count(&w, "exit-ignored"), 3, "each step waited out first");
     assert!(wait_dead(claude), "ended after the ladder");
 }
+
+fn outbox_line(id: &str) -> String {
+    let head = format!(
+        "{{\"id\":\"{id}\",\"at\":\"t\",\"project\":\"-\",\"kind\":\"runs_failing\",\"streak\":2,"
+    );
+    format!(
+        "{head}\"title\":\"Hourly runs failing\",\"message\":\"{id}\"}}
+"
+    )
+}
+
+fn pushed(w: &World) -> usize {
+    w.host
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("notify Hourly runs failing"))
+        .count()
+}
+
+#[test]
+fn the_tick_pushes_each_outbox_line_once_and_waits_for_a_partial_one() {
+    let mut w = world_with(false, 4);
+    let outbox = w.dir.path().join("studio-push-outbox.jsonl");
+    w.config.machine.push_outbox = Some(outbox.display().to_string());
+    run_tick(&mut w);
+    assert_eq!(pushed(&w), 0, "no file, no push");
+    std::fs::write(
+        &outbox,
+        format!("{}{}", outbox_line("a"), "{\"id\":\"b\",\"ti"),
+    )
+    .unwrap();
+    run_tick(&mut w);
+    assert_eq!(pushed(&w), 1, "the complete line only");
+    run_tick(&mut w);
+    assert_eq!(pushed(&w), 1, "a repeated read sends nothing");
+    std::fs::write(
+        &outbox,
+        format!(
+            "{}{}{}",
+            outbox_line("a"),
+            outbox_line("b"),
+            outbox_line("c")
+        ),
+    )
+    .unwrap();
+    run_tick(&mut w);
+    assert_eq!(pushed(&w), 3, "b and c are new, a is not sent again");
+    assert_eq!(
+        w.store
+            .last_event_id_field("push-outbox-sent")
+            .unwrap()
+            .as_deref(),
+        Some("c"),
+        "the cursor is the last id sent"
+    );
+}
