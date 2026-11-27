@@ -40,6 +40,7 @@ pub mod session_procs;
 pub mod shadow;
 pub mod spawn;
 pub mod status;
+pub mod store_backup;
 pub mod tick;
 pub mod tick_lock;
 pub mod title;

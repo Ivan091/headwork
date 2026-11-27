@@ -923,3 +923,28 @@ fn an_unreadable_flows_folder_is_a_problem_not_a_pass() {
         detail(&report, "flows")
     );
 }
+
+#[test]
+fn a_stale_daily_store_copy_is_a_warning_and_a_fresh_one_is_fine() {
+    use headwork::ops::store_backup::{dir, now_ms};
+    let install = install();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "store-backup"), Status::Ok, "none yet");
+    let backups = dir(install.home.root());
+    std::fs::create_dir_all(&backups).unwrap();
+    let three_days_ms = 3 * 24 * 3600 * 1000;
+    std::fs::write(
+        backups.join(format!("daily-{}.db", now_ms() - three_days_ms)),
+        "",
+    )
+    .unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(
+        status(&report, "store-backup"),
+        Status::Warn,
+        "three days old"
+    );
+    std::fs::write(backups.join(format!("daily-{}.db", now_ms())), "").unwrap();
+    let report = run(&install, &FakeProbe::default());
+    assert_eq!(status(&report, "store-backup"), Status::Ok, "fresh");
+}
