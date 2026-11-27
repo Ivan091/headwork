@@ -319,10 +319,18 @@ fn hooks_record_the_permission_mode_the_session_is_in() {
 
 #[test]
 fn the_built_in_rules_send_reports_with_send_user_file() {
-    for rules in [WORKER_RULES, EXPLORER_RULES] {
-        assert!(rules.contains("`SendUserFile`"), "{rules}");
-        assert!(rules.contains("path"), "{rules}");
-    }
+    assert!(
+        WORKER_RULES.contains("cannot open a local path"),
+        "{WORKER_RULES}"
+    );
+    assert!(
+        WORKER_RULES.contains("Never answer with only a path"),
+        "{WORKER_RULES}"
+    );
+    assert!(
+        EXPLORER_RULES.contains("send it with `SendUserFile`"),
+        "{EXPLORER_RULES}"
+    );
 }
 
 #[test]
