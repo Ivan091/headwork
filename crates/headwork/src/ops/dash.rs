@@ -1098,13 +1098,49 @@ mod tests {
     }
 
     #[test]
-    fn the_gates_answer_is_json_even_without_a_gate_folder() {
-        let dir = std::env::temp_dir().join(format!("hw-dash-gates-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let reply = answer(&dir.join("state.db"), &Route::Gates);
+    fn the_gates_answer_lists_holders_and_waiters_of_a_fixture_folder() {
+        let home = std::env::temp_dir().join(format!("hw-dash-gates-{}", std::process::id()));
+        let slots = home.join("slots");
+        let slot = slots.join("cpu").join("slot-1");
+        std::fs::create_dir_all(&slot).unwrap();
+        let pid = std::process::id();
+        let owner = format!(
+            "pid={pid}\nnative=1\nclass=cpu\ntask=demo\ncommand=cargo test\nepoch={}\n",
+            headwork_adapters::gate::epoch_now()
+        );
+        std::fs::write(slot.join("owner"), &owner).unwrap();
+        std::fs::write(slots.join("cpu").join(format!("wait-{pid}")), &owner).unwrap();
+        let dir = slots.to_string_lossy().replace(char::from(92), "/");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
+        let base = std::fs::read_to_string(fixture).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!("{base}\n[gates]\ndir = \"{dir}\"\n"),
+        )
+        .unwrap();
+        let reply = answer(&home.join("state.db"), &Route::Gates);
         assert_eq!(reply.status, 200, "gates");
         let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
-        assert!(body.get("classes").is_some(), "classes field");
-        std::fs::remove_dir_all(&dir).unwrap();
+        let cpu = body["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|class| class["class"] == "cpu")
+            .unwrap();
+        assert_eq!(cpu["used"], 1, "used");
+        assert!(cpu["count"].as_u64().unwrap() >= 1, "count");
+        let holder = &cpu["holders"][0];
+        assert_eq!(holder["task"], "demo", "holder task");
+        assert_eq!(holder["command"], "cargo test", "holder command");
+        assert_eq!(holder["slot"], 1, "holder slot");
+        assert!(
+            holder["age_s"].is_u64() && holder["stale"] == false && holder["legacy"] == false,
+            "holder fields"
+        );
+        let waiter = &cpu["waiters"][0];
+        assert_eq!(waiter["task"], "demo", "waiter task");
+        assert!(waiter["age_s"].is_u64(), "waiter age");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
