@@ -29,9 +29,9 @@ use headwork_core::{Actor, MachineMode};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 
 pub use backlog::{
-    BacklogEdit, BacklogFile, BacklogFilter, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE,
+    BacklogEdit, BacklogFile, BacklogFilter, BacklogMove, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE,
     EVENT_BACKLOG_DROPPED, EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED,
-    EVENT_BACKLOG_PICKED, ImportCounts,
+    EVENT_BACKLOG_MOVE_REFUSED, EVENT_BACKLOG_MOVED, EVENT_BACKLOG_PICKED, ImportCounts,
 };
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use digest::EVENT_DIGEST_PUSHED;

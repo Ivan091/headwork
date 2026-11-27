@@ -225,6 +225,7 @@ struct Builder {
     word: String,
     in_word: bool,
     redirect_target: bool,
+    nested: Vec<Vec<String>>,
 }
 
 impl Builder {
@@ -263,8 +264,10 @@ impl Builder {
 
     fn finish(mut self) -> Vec<Vec<String>> {
         self.end_command();
+        let nested = std::mem::take(&mut self.nested);
         self.commands
             .into_iter()
+            .chain(nested)
             .map(|words| {
                 words
                     .into_iter()
@@ -340,6 +343,31 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     out.end_word();
                     out.redirect_target = redirection(&mut chars);
                 }
+                '$' => {
+                    out.push('$');
+                    match braced_expansion(&chars) {
+                        Braced::No => {}
+                        Braced::Closed(inside) => {
+                            for _ in 0..inside.chars().count() + 2 {
+                                chars.next();
+                            }
+                            out.push('{');
+                            inside.chars().for_each(|inner| out.push(inner));
+                            out.push('}');
+                            if !is_plain_name(&inside) {
+                                out.nested.extend(split(&inside));
+                            }
+                        }
+                        Braced::Unclosed => {
+                            let rest: String = chars
+                                .by_ref()
+                                .filter(|c| !matches!(c, '\'' | '"'))
+                                .collect();
+                            out.end_command();
+                            out.nested.extend(split(&rest));
+                        }
+                    }
+                }
                 ';' | '&' | '|' | '(' | ')' | '`' | '{' | '}' => out.end_command(),
                 c if c.is_whitespace() => out.end_word(),
                 c => out.push(c),
@@ -347,6 +375,125 @@ fn split(line: &str) -> Vec<Vec<String>> {
         }
     }
     out.finish()
+}
+
+/// What follows a `$`: no braces, a `${...}` that closes (the text between its braces), or one that never closes.
+#[derive(Debug, PartialEq, Eq)]
+enum Braced {
+    /// No `{` follows.
+    No,
+    /// The braces close; the text between them.
+    Closed(String),
+    /// The braces, or a quote inside them, never close.
+    Unclosed,
+}
+
+/// Reads a `${...}` right ahead (`chars` stands just after the `$`) to its matching `}`, with the main reader's quoting:
+/// a single quote runs to the next `'`, a double quote to the next unescaped `"` (with `$(...)` and backticks inside it
+/// read whole), and a backslash escapes the next character, so a quoted or escaped `}` closes nothing.
+///
+/// The expansion stays in the current word: its braces never end the command and a `#` inside never starts a comment.
+/// Unless the text is a plain name, the caller splits it again, so `${x:-$(cmd)}` still shows `cmd` and `${#x}` hides
+/// nothing. When it never closes, the caller reads the rest of the line as words with every quote character dropped, so
+/// a quote opened inside the braces cannot hide what follows.
+fn braced_expansion(chars: &Peekable<Chars<'_>>) -> Braced {
+    let mut ahead = chars.clone();
+    if ahead.next_if_eq(&'{').is_none() {
+        return Braced::No;
+    }
+    let mut depth = 1_usize;
+    let mut inside = String::new();
+    while let Some(c) = ahead.next() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Braced::Closed(inside);
+                }
+            }
+            '\\' => {
+                inside.push(c);
+                let Some(next) = ahead.next() else {
+                    return Braced::Unclosed;
+                };
+                inside.push(next);
+                continue;
+            }
+            '\'' | '"' | '`' => {
+                inside.push(c);
+                if !read_quoted(&mut ahead, c, &mut inside) {
+                    return Braced::Unclosed;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        inside.push(c);
+    }
+    Braced::Unclosed
+}
+
+/// Reads to the end of a quote opened by `quote` (`'`, `"` or a backtick), pushing what it reads; `false` when it never
+/// ends. Inside double quotes a backslash escapes the next character and `$(...)` and backticks are read whole.
+fn read_quoted(ahead: &mut Peekable<Chars<'_>>, quote: char, inside: &mut String) -> bool {
+    while let Some(c) = ahead.next() {
+        inside.push(c);
+        if c == quote {
+            return true;
+        }
+        if quote == '\'' {
+            continue;
+        }
+        match c {
+            '\\' => match ahead.next() {
+                Some(next) => inside.push(next),
+                None => return false,
+            },
+            '`' if quote == '"' && !read_quoted(ahead, '`', inside) => return false,
+            '$' if quote == '"'
+                && ahead.peek() == Some(&'(')
+                && !read_substitution(ahead, inside) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Reads a `$(...)` from its `(` to the matching `)`, with quotes inside read whole; `false` when it never closes.
+fn read_substitution(ahead: &mut Peekable<Chars<'_>>, inside: &mut String) -> bool {
+    let mut depth = 0_usize;
+    while let Some(c) = ahead.next() {
+        inside.push(c);
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            '\'' | '"' | '`' => {
+                if !read_quoted(ahead, c, inside) {
+                    return false;
+                }
+            }
+            '\\' => match ahead.next() {
+                Some(next) => inside.push(next),
+                None => return false,
+            },
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A variable name: letters, digits and underscores, at least one.
+fn is_plain_name(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Reads the rest of a redirection operator after its first `>` or `<`: a second `>` or a `|` (`>>`, `>|`), then
@@ -476,6 +623,64 @@ mod tests {
             programs("diff <(git show a) >(tee x) && run &"),
             ["diff", "git show a", "tee x", "run"],
             "process substitutions keep their commands"
+        );
+    }
+
+    #[test]
+    fn quotes_and_escapes_inside_braces_close_nothing_and_hide_nothing() {
+        for line in [
+            "echo ${x:-'}'}; git push --force",
+            "echo ${x:-\"}\"}; git push --force",
+            "echo ${x:-\\}}; git push --force",
+            "echo ${x:-'a}; git push --force",
+            "echo ${x:-\"$(echo \")\")\"}; git push --force",
+        ] {
+            let found = programs(line);
+            assert!(
+                found.iter().any(|command| command == "git push --force"),
+                "{line}: {found:?}"
+            );
+        }
+        assert_eq!(
+            programs("echo ${x:-'}'}; git push --force")
+                .first()
+                .map(String::as_str),
+            Some("echo ${x:-'}'}"),
+            "the expansion, quoted brace and all, stays in the word as written"
+        );
+    }
+
+    #[test]
+    fn braced_expansions_stay_in_their_word_and_their_commands_are_seen() {
+        assert_eq!(
+            programs("echo ${HOME}/x"),
+            ["echo ${HOME}/x"],
+            "a plain name is one word"
+        );
+        assert_eq!(
+            programs("echo ${#x}; git push --force"),
+            ["echo ${#x}", "git push --force"],
+            "a # inside the braces starts no comment"
+        );
+        assert_eq!(
+            programs("${!x}; git push --force"),
+            ["${!x}", "git push --force", "!x"],
+            "an indirect expansion hides nothing"
+        );
+        assert_eq!(
+            programs("echo ${x:-$(git push --force)}"),
+            ["echo ${x:-$(git push --force)}", "x:-$", "git push --force"],
+            "a command inside the default is seen"
+        );
+        assert_eq!(
+            programs("echo ${a:-${b}}; git push --force"),
+            ["echo ${a:-${b}}", "git push --force", "a:-${b}"],
+            "nested braces close at the matching one"
+        );
+        assert_eq!(
+            programs("echo ${x; git push --force"),
+            ["echo", "x", "git push --force"],
+            "an unterminated expansion is read as before"
         );
     }
 

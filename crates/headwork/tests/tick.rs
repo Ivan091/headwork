@@ -2801,7 +2801,7 @@ fn the_tick_pushes_the_digest_once_a_day_when_something_waits_on_the_user() {
         headwork_core::backlog::parse("## demo\n\n- [ ] For you: Read the invented note\n")
             .items
             .remove(0);
-    draft.state = headwork_core::backlog::BacklogState::Open;
+    draft.status = headwork_core::backlog::BacklogStatus::Backlog;
     w.store
         .add_backlog_item(&draft, Actor::Orchestrator)
         .unwrap();

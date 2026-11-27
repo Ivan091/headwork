@@ -2151,3 +2151,123 @@ fn the_heavy_rule_names_the_gate_command_and_leaves_the_orchestrator_and_reviewe
     assert_eq!(rule_of(&reviewer), Some(RuleId::ReviewerWrite));
     assert_eq!(rule_of(&orchestrator()), Some(RuleId::OrchestratorBuild));
 }
+
+#[test]
+fn a_worker_or_an_explorer_never_writes_the_backlog_through_the_cli() {
+    let denied = Some(RuleId::WorkerBacklogCli);
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("headwork backlog add headwork \"x\"", denied),
+        ("headwork backlog done 3 --note x", denied),
+        ("headwork backlog start 3", denied),
+        ("headwork backlog cancel 3 --reason x", denied),
+        ("headwork backlog block 3 --reason event --note x", denied),
+        ("headwork backlog unblock 3", denied),
+        ("headwork backlog reopen 3", denied),
+        ("headwork backlog edit 3 --text y", denied),
+        ("headwork backlog import --dry-run", denied),
+        ("headwork backlog export", denied),
+        ("headwork todo done 3", denied),
+        (
+            "C:/Users/User/.local/bin/headwork.exe backlog cancel 3",
+            denied,
+        ),
+        ("cargo run -p headwork -- backlog done 3", denied),
+        ("headwork.exe backlog done 3", denied),
+        ("headworkw backlog start 3", denied),
+        (
+            "headworkw.exe backlog block 3 --reason event --note x",
+            denied,
+        ),
+        ("~/.local/bin/headwork.exe backlog reopen 3", denied),
+        ("~/.local/bin/headworkw.exe backlog cancel 3", denied),
+        (
+            "C:/Users/User/.local/bin/headworkw.exe backlog edit 3 --text y",
+            denied,
+        ),
+        ("~/.local/bin/headwork.exe backlog list", None),
+        ("headworkw.exe backlog list --json", None),
+        ("env -u HEADWORK_ROLE headwork backlog done 3", denied),
+        ("HEADWORK_ROLE= headwork backlog done 3", denied),
+        ("HEADWORK_ROLE=x headwork backlog cancel 3", denied),
+        ("headwork backlog --project x done 3", denied),
+        ("headwork backlog --owner user cancel 3", denied),
+        ("headwork backlog --status all reopen 3", denied),
+        ("headwork backlog --status=all done 3", denied),
+        ("headwork backlog --json --state open start 3", denied),
+        ("headwork backlog frobnicate 3", denied),
+        ("headwork backlog --project x", None),
+        ("headwork backlog --status=all --owner user --json", None),
+        ("headwork backlog --project x list --status blocked", None),
+        ("bash -c \"headwork backlog done 3\"", denied),
+        ("echo $(headwork backlog done 3)", denied),
+        ("\"$HEADWORK_EXE\" backlog done 3", denied),
+        ("$HEADWORK_EXE backlog done 3", denied),
+        ("${HEADWORK_EXE} backlog done 3", denied),
+        ("\"${HEADWORK_EXE}\" backlog cancel 3", denied),
+        ("\"$HEADWORK_EXE\" backlog list", None),
+        ("xargs headwork backlog done 3", None),
+        ("${x:-$(headwork backlog done 3)}", denied),
+        ("echo ${x:-$(headwork backlog done 3)}", denied),
+        ("cd x && headwork backlog start 3", denied),
+        ("headwork backlog", None),
+        ("headwork backlog list --status blocked", None),
+        ("headwork backlog --json", None),
+        ("headwork backlog list --project headwork --json", None),
+        ("echo headwork backlog done 3", None),
+        ("headwork board", None),
+    ];
+    let explorer = Scope {
+        explorer: true,
+        ..worker("sand")
+    };
+    for scope in [worker("sand"), explorer] {
+        for (command, expected) in table {
+            let rule = match check_tool(&scope, &bash(command)) {
+                Decision::Allow => None,
+                Decision::Deny(verdict) => Some(verdict.rule),
+            };
+            assert_eq!(rule, *expected, "{command}");
+        }
+    }
+    assert_eq!(
+        check_tool(
+            &orchestrator(),
+            &bash("headwork backlog cancel 3 --reason x")
+        ),
+        Decision::Allow,
+        "the orchestrator's CLI is its own"
+    );
+}
+
+#[test]
+fn only_a_plain_braced_name_is_one_word_so_commands_inside_an_expansion_are_seen() {
+    let rule = |command: &str| match check_tool(&worker("sand"), &bash(command)) {
+        Decision::Allow => None,
+        Decision::Deny(verdict) => Some(verdict.rule),
+    };
+    assert_eq!(
+        rule("echo ${x:-$(git push --force)}"),
+        Some(RuleId::WorkerForcePush)
+    );
+    assert_eq!(
+        rule("${x:-$(headwork backlog done 3)}"),
+        Some(RuleId::WorkerBacklogCli)
+    );
+    assert_eq!(
+        rule("${HEADWORK_EXE} backlog done 3"),
+        Some(RuleId::WorkerBacklogCli)
+    );
+    assert_eq!(rule("echo ${HOME}/x"), None, "a plain name is one word");
+    for hidden in [
+        "echo ${#x}; git push --force",
+        "${!x}; git push --force",
+        "echo ${x; git push --force",
+        "echo ${a:-${b}}; git push --force",
+        "echo ${x:-'}'}; git push --force",
+        "echo ${x:-\"}\"}; git push --force",
+        "echo ${x:-\\}}; git push --force",
+        "echo ${x:-'a}; git push --force",
+    ] {
+        assert_eq!(rule(hidden), Some(RuleId::WorkerForcePush), "{hidden}");
+    }
+}

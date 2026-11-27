@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::FindingId;
-use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, BacklogState};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, LinkedTask};
 
 /// The header of a digest that holds lines.
 pub const HEADER: &str = "Needs you";
@@ -191,7 +191,9 @@ fn dated_backlog_items(
 ) -> Vec<(BacklogDate, i64, String)> {
     let mut dated: Vec<(BacklogDate, i64, String)> = backlog_items
         .iter()
-        .filter(|item| item.draft.state == BacklogState::Open && item.task.is_none())
+        .filter(|item| {
+            item.draft.status.is_open() && !item.task.as_ref().is_some_and(LinkedTask::is_live)
+        })
         .filter_map(|item| {
             let text = shorten(&item.draft.text, TEXT_LIMIT);
             match (&item.draft.due, &item.draft.not_before) {
@@ -221,9 +223,9 @@ fn user_items<'a>(
     let mut rest: Vec<&BacklogItem> = backlog_items
         .iter()
         .filter(|item| {
-            item.draft.state == BacklogState::Open
+            item.draft.status.is_open()
                 && item.draft.owner == BacklogOwner::User
-                && item.task.is_none()
+                && !item.task.as_ref().is_some_and(LinkedTask::is_live)
                 && !listed.contains(&item.id)
                 && item
                     .draft
@@ -238,7 +240,7 @@ fn user_items<'a>(
 
 /// The ids of the backlog items that wait on the user, in the digest's order.
 ///
-/// Those due or started come first, then the other open items of the user that have no task and are not held back by a
+/// Those due or started come first, then the other open items of the user that no live task holds and are not held back by a
 /// `not_before` date. The digest and the dashboard both use this, so they never disagree.
 #[must_use]
 pub fn waiting_items(backlog_items: &[BacklogItem], today: &BacklogDate) -> Vec<i64> {
@@ -327,6 +329,7 @@ fn trim(mut lines: Vec<String>) -> Digest {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::backlog::BacklogStatus;
     use crate::backlog::{BacklogDraft, LinkedTask};
     use crate::vocabulary::TaskState;
 
@@ -344,7 +347,7 @@ mod tests {
                 section: None,
                 text: text.to_owned(),
                 notes: Vec::new(),
-                state: BacklogState::Open,
+                status: BacklogStatus::Backlog,
                 owner,
                 added: None,
                 not_before: None,
@@ -514,9 +517,9 @@ mod tests {
     fn done_dropped_and_linked_items_are_left_out() {
         let mut facts = facts();
         let mut done = item(1, "Done one", BacklogOwner::User);
-        done.draft.state = BacklogState::Done;
+        done.draft.status = BacklogStatus::Done;
         let mut dropped = item(2, "Dropped one", BacklogOwner::User);
-        dropped.draft.state = BacklogState::Dropped;
+        dropped.draft.status = BacklogStatus::Cancelled;
         let mut linked = item(3, "Linked one", BacklogOwner::User);
         linked.task = Some(LinkedTask {
             id: 1,
@@ -525,6 +528,25 @@ mod tests {
         });
         facts.backlog_items = vec![done, dropped, linked];
         assert!(build(&facts).is_empty(), "nothing open and free");
+    }
+
+    #[test]
+    fn an_item_whose_linked_task_is_over_waits_again() {
+        let mut facts = facts();
+        let mut lost = item(1, "Lost one", BacklogOwner::User);
+        lost.task = Some(LinkedTask {
+            id: 1,
+            name: "demo-x".into(),
+            state: TaskState::Dropped,
+        });
+        facts.backlog_items = vec![lost];
+        let digest = build(&facts);
+        assert_eq!(
+            digest.lines.len(),
+            1,
+            "a dead link frees the item: {digest:?}"
+        );
+        assert_eq!(waiting_items(&facts.backlog_items, &facts.today), [1]);
     }
 
     #[test]
@@ -552,7 +574,7 @@ mod tests {
             state: TaskState::Working,
         });
         let mut done = item(6, "done", BacklogOwner::User);
-        done.draft.state = BacklogState::Done;
+        done.draft.status = BacklogStatus::Done;
         let agent = item(7, "agent", BacklogOwner::Agent);
         let items = [mine, later, linked, done, agent, due];
         assert_eq!(

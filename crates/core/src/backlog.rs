@@ -12,7 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::vocabulary::text_enum;
 use crate::{TaskState, UnknownWord};
 
-/// The project of items that sit outside every `##` heading, and of the Done and Dropped sections.
+mod status;
+
+pub use status::{
+    BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,
+    LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,
+    on_linked_end, on_task_end, transition,
+};
+
+/// The project of items that sit outside every `##` heading, and of the Done and Cancelled (or Dropped) sections.
 pub const GENERAL: &str = "general";
 
 /// How many done items the export keeps under its Done heading.
@@ -123,18 +131,6 @@ impl From<BacklogDate> for String {
 }
 
 text_enum!(
-    /// Where an item stands.
-    BacklogState, "backlog state" {
-        /// Still to do.
-        Open => "open",
-        /// Finished.
-        Done => "done",
-        /// Given up; kept in the store, never exported.
-        Dropped => "dropped",
-    }
-);
-
-text_enum!(
     /// Who has to act on an item.
     BacklogOwner, "backlog owner" {
         /// The user: it is something only they can do or decide.
@@ -155,8 +151,9 @@ pub struct BacklogDraft {
     pub text: String,
     /// The indented sub-bullets, one per line.
     pub notes: Vec<String>,
-    /// Where it stands.
-    pub state: BacklogState,
+    /// Where it stands, with its block when blocked.
+    #[serde(flatten)]
+    pub status: BacklogStatus,
     /// Who has to act.
     pub owner: BacklogOwner,
     /// The day it was added.
@@ -165,9 +162,9 @@ pub struct BacklogDraft {
     pub not_before: Option<BacklogDate>,
     /// The day it is due.
     pub due: Option<BacklogDate>,
-    /// The day it was done or dropped.
+    /// The day it was done or cancelled.
     pub done_on: Option<BacklogDate>,
-    /// What was said when it was done or dropped.
+    /// What was said when it was done or cancelled.
     pub done_note: Option<String>,
 }
 
@@ -178,7 +175,7 @@ impl BacklogDraft {
     ///
     /// Returns [`BacklogError::Invalid`] naming the field: a text that is empty, runs over several lines or starts with
     /// `For you:` (the owner says that); a project that is empty, runs over several lines, starts with `#` or whose first
-    /// word is Done or Dropped (those headings hold finished items); a section that is empty, runs over several lines or
+    /// word is Done, Cancelled or Dropped (those headings hold finished items); a section that is empty, runs over several lines or
     /// starts with `#`; a note that is empty or runs over several lines.
     pub fn validate(&self) -> Result<(), BacklogError> {
         if self.text.trim().is_empty() {
@@ -200,10 +197,10 @@ impl BacklogDraft {
             .next()
             .unwrap_or_default()
             .to_lowercase();
-        if matches!(first.as_str(), "done" | "dropped") {
+        if matches!(first.as_str(), "done" | "dropped" | "cancelled") {
             return Err(invalid(
                 "project",
-                "must not start with Done or Dropped: those headings hold finished items",
+                "must not start with Done, Cancelled or Dropped: those headings hold finished items",
             ));
         }
         if let Some(section) = &self.section {
@@ -250,6 +247,17 @@ pub struct LinkedTask {
     pub state: TaskState,
 }
 
+impl LinkedTask {
+    /// Whether the task still lives: any state but closed, dropped and failed.
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        !matches!(
+            self.state,
+            TaskState::Closed | TaskState::Dropped | TaskState::Failed
+        )
+    }
+}
+
 /// An item as the store holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BacklogItem {
@@ -274,8 +282,8 @@ impl BacklogItem {
             |section| format!("{}/{section}", draft.project),
         );
         let mut facts = vec![draft.owner.to_string()];
-        if draft.state != BacklogState::Open {
-            facts.push(draft.state.to_string());
+        if draft.status != BacklogStatus::Backlog {
+            facts.push(draft.status.to_string());
         }
         for (label, date) in [
             ("added", &draft.added),
@@ -317,6 +325,9 @@ pub struct Parsed {
     pub items: Vec<BacklogDraft>,
     /// The lines left out.
     pub unparsed: Vec<Unparsed>,
+    /// The lines taken with a warning: an item whose status tag cannot be read, imported in the backlog with the tag
+    /// kept in its text.
+    pub warnings: Vec<Unparsed>,
 }
 
 /// The text after a leading `For you:` or `For you (...):` when it has one; an item written so is the user's.
@@ -533,7 +544,7 @@ fn linked_task_group(inside: &[char]) -> bool {
 struct Closing {
     on: Option<BacklogDate>,
     note: Option<String>,
-    dropped: bool,
+    cancelled: bool,
 }
 
 fn closing_group(inside: &[char]) -> Option<Closing> {
@@ -548,7 +559,10 @@ fn closing_group(inside: &[char]) -> Option<Closing> {
         .iter()
         .collect::<String>()
         .to_lowercase();
-    if !matches!(word.as_str(), "done" | "dropped" | "superseded") {
+    if !matches!(
+        word.as_str(),
+        "done" | "dropped" | "cancelled" | "superseded"
+    ) {
         return None;
     }
     let rest = inside.get(start + word_len..)?;
@@ -570,12 +584,76 @@ fn closing_group(inside: &[char]) -> Option<Closing> {
     Some(Closing {
         on: on.or_else(|| first_date(rest)),
         note: (!note.is_empty()).then_some(note),
-        dropped: word != "done",
+        cancelled: word != "done",
     })
+}
+
+const IN_PROGRESS: &str = "in progress";
+const BLOCKED: &str = "blocked";
+
+/// How a block whose unblock returns to in progress says so in its tag.
+const FROM_IN_PROGRESS: &str = ", from in progress";
+
+/// The status tag at the end of an open item's line and the text before it: `[in progress]`, `[in progress: task <name>
+/// <state>]` (the task part is ignored), `[blocked: <reason>]`, `[blocked: <reason>: <note>]`, and either blocked form
+/// with `, from in progress` after the reason when an unblock returns the item to in progress (else to the backlog).
+///
+/// Only `[in progress]`, `[in progress: ...]` and `[blocked: ...]` count as tags, so `Collect [in progress reports]` is
+/// plain text. `None` when the line ends in no tag; `Some(Err)` names why a tag of those shapes cannot be read.
+fn status_tag(body: &str) -> Option<Result<(&str, BacklogStatus), String>> {
+    let inner_end = body.strip_suffix(']')?.len();
+    let start = [
+        format!("[{IN_PROGRESS}]"),
+        format!("[{IN_PROGRESS}:"),
+        format!("[{BLOCKED}:"),
+    ]
+    .iter()
+    .filter_map(|marker| body.rfind(marker.as_str()))
+    .max()?;
+    let before = body.get(..start)?;
+    if !before.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let inside = body.get(start + 1..inner_end)?;
+    let bad = || Err(format!("a status tag that cannot be read: `[{inside}]`"));
+    if inside == IN_PROGRESS
+        || inside
+            .strip_prefix(IN_PROGRESS)
+            .is_some_and(|rest| rest.starts_with(": task "))
+    {
+        return Some(Ok((before.trim_end(), BacklogStatus::InProgress)));
+    }
+    let Some(rest) = inside
+        .strip_prefix(BLOCKED)
+        .and_then(|rest| rest.strip_prefix(':'))
+    else {
+        return Some(bad());
+    };
+    let (head, note) = rest.split_once(':').unwrap_or((rest, ""));
+    let head = head.trim();
+    let (word, return_to) = head
+        .strip_suffix(FROM_IN_PROGRESS)
+        .map_or((head, ReturnTo::Backlog), |word| {
+            (word, ReturnTo::InProgress)
+        });
+    let Ok(reason) = word.trim().parse::<BlockReason>() else {
+        return Some(bad());
+    };
+    let note = note.trim();
+    Some(Ok((
+        before.trim_end(),
+        BacklogStatus::Blocked(Block {
+            reason,
+            note: (!note.is_empty()).then(|| note.to_owned()),
+            before: return_to,
+        }),
+    )))
 }
 
 struct Body {
     text: String,
+    status: Option<BacklogStatus>,
+    bad_tag: Option<String>,
     added: Option<BacklogDate>,
     not_before: Option<BacklogDate>,
     due: Option<BacklogDate>,
@@ -583,7 +661,13 @@ struct Body {
 }
 
 fn read_body(body: &str, closed: bool) -> Body {
-    let mut chars: Vec<char> = body.trim().chars().collect();
+    let trimmed = body.trim();
+    let (body, status, bad_tag) = match status_tag(trimmed).filter(|_| !closed) {
+        Some(Ok((rest, tagged))) => (rest, Some(tagged), None),
+        Some(Err(why)) => (trimmed, None, Some(why)),
+        None => (trimmed, None, None),
+    };
+    let mut chars: Vec<char> = body.chars().collect();
     if let Some(group) = trailing_group(&chars)
         && linked_task_group(inner(&chars, group))
     {
@@ -623,6 +707,8 @@ fn read_body(body: &str, closed: bool) -> Body {
     let text: String = kept.into_iter().collect();
     Body {
         text: text.trim().to_owned(),
+        status,
+        bad_tag,
         added,
         not_before,
         due,
@@ -634,7 +720,7 @@ fn read_body(body: &str, closed: bool) -> Body {
 enum Area {
     Projects,
     Done,
-    Dropped,
+    Cancelled,
 }
 
 enum Mark {
@@ -648,7 +734,7 @@ fn heading_area(name: &str) -> Area {
     let word = lower.split_whitespace().next().unwrap_or_default();
     match word {
         "done" => Area::Done,
-        "dropped" => Area::Dropped,
+        "dropped" | "cancelled" => Area::Cancelled,
         _ => Area::Projects,
     }
 }
@@ -672,6 +758,7 @@ fn mark_of(rest: &str) -> (Mark, &str) {
 struct Reader {
     items: Vec<BacklogDraft>,
     unparsed: Vec<Unparsed>,
+    warnings: Vec<Unparsed>,
     project: String,
     section: Option<String>,
     area: Area,
@@ -703,29 +790,42 @@ impl Reader {
     fn item(&mut self, line_no: usize, line: &str, rest: &str) {
         let (mark, body) = mark_of(rest);
         let body = body.trim();
-        let state = match (self.area, &mark) {
-            (Area::Done, _) | (Area::Projects, Mark::Checked) => Some(BacklogState::Done),
-            (Area::Dropped, _) => Some(BacklogState::Dropped),
-            (Area::Projects, Mark::Open) => Some(BacklogState::Open),
+        let status = match (self.area, &mark) {
+            (Area::Done, _) | (Area::Projects, Mark::Checked) => Some(BacklogStatus::Done),
+            (Area::Cancelled, _) => Some(BacklogStatus::Cancelled),
+            (Area::Projects, Mark::Open) => Some(BacklogStatus::Backlog),
             (Area::Projects, Mark::Plain) => None,
         };
         if body.is_empty() {
             self.skip(line_no, line, "an item with no text");
             return;
         }
-        let Some(mut state) = state else {
+        let Some(mut status) = status else {
             self.skip(
                 line_no,
                 line,
-                "an item with no checkbox outside the Done and Dropped sections",
+                "an item with no checkbox outside the Done and Cancelled sections",
             );
             return;
         };
-        let read = read_body(body, state != BacklogState::Open);
+        let read = read_body(body, status != BacklogStatus::Backlog);
+        if let Some(why) = &read.bad_tag {
+            self.warnings.push(Unparsed {
+                line_no,
+                line: line.to_owned(),
+                reason: format!("{why}; imported in the backlog with the tag kept in its text"),
+            });
+        }
         if self.area == Area::Projects
-            && read.closing.as_ref().is_some_and(|closing| closing.dropped)
+            && read
+                .closing
+                .as_ref()
+                .is_some_and(|closing| closing.cancelled)
         {
-            state = BacklogState::Dropped;
+            status = BacklogStatus::Cancelled;
+        }
+        if let Some(tagged) = read.status {
+            status = tagged;
         }
         let (owner, text) = match for_you_rest(&read.text) {
             Some(rest) => (BacklogOwner::User, rest.to_owned()),
@@ -739,7 +839,7 @@ impl Reader {
             section: self.section.clone(),
             text,
             notes: Vec::new(),
-            state,
+            status,
             owner,
             added: read.added,
             not_before: read.not_before,
@@ -856,6 +956,7 @@ pub fn parse(text: &str) -> Parsed {
     let mut reader = Reader {
         items: Vec::new(),
         unparsed: Vec::new(),
+        warnings: Vec::new(),
         project: GENERAL.to_owned(),
         section: None,
         area: Area::Projects,
@@ -873,6 +974,7 @@ pub fn parse(text: &str) -> Parsed {
     Parsed {
         items: reader.items,
         unparsed,
+        warnings: reader.warnings,
     }
 }
 
@@ -915,8 +1017,33 @@ fn item_line(item: &BacklogItem, done: bool) -> String {
             (None, None) => "done".to_owned(),
         };
         append(&mut line, format_args!(" ({closing})"));
-    } else if let Some(task) = &item.task {
-        append(&mut line, format_args!(" (task {})", task.name));
+    } else {
+        match (&draft.status, &item.task) {
+            (BacklogStatus::InProgress, Some(task)) => append(
+                &mut line,
+                format_args!(" [{IN_PROGRESS}: task {} {}]", task.name, task.state),
+            ),
+            (BacklogStatus::InProgress, None) => {
+                append(&mut line, format_args!(" [{IN_PROGRESS}]"));
+            }
+            (BacklogStatus::Blocked(block), _) => {
+                let from = match block.before {
+                    ReturnTo::InProgress => FROM_IN_PROGRESS,
+                    ReturnTo::Backlog => "",
+                };
+                match &block.note {
+                    Some(note) => append(
+                        &mut line,
+                        format_args!(" [{BLOCKED}: {}{from}: {note}]", block.reason),
+                    ),
+                    None => append(
+                        &mut line,
+                        format_args!(" [{BLOCKED}: {}{from}]", block.reason),
+                    ),
+                }
+            }
+            _ => {}
+        }
     }
     for note in &draft.notes {
         append(&mut line, format_args!("\n  - {note}"));
@@ -924,13 +1051,13 @@ fn item_line(item: &BacklogItem, done: bool) -> String {
     line
 }
 
-/// The `backlog.md` the export writes: open items by project and section, then the [`DONE_KEPT`] most recent done items.
-/// Dropped items are left out.
+/// The `backlog.md` the export writes: open items by project and section, each one in progress or blocked with its status
+/// tag, then the [`DONE_KEPT`] most recent done items. Cancelled items are left out.
 #[must_use]
 pub fn render(backlog_items: &[BacklogItem]) -> String {
     let mut open: Vec<&BacklogItem> = backlog_items
         .iter()
-        .filter(|item| item.draft.state == BacklogState::Open)
+        .filter(|item| item.draft.status.is_open())
         .collect();
     open.sort_by_key(|item| item.position);
     let mut order: Vec<&str> = Vec::new();
@@ -979,7 +1106,7 @@ pub fn render(backlog_items: &[BacklogItem]) -> String {
     }
     let mut done: Vec<&BacklogItem> = backlog_items
         .iter()
-        .filter(|item| item.draft.state == BacklogState::Done)
+        .filter(|item| item.draft.status == BacklogStatus::Done)
         .collect();
     done.sort_by(|a, b| {
         let key = |item: &BacklogItem| {
@@ -1000,50 +1127,6 @@ pub fn render(backlog_items: &[BacklogItem]) -> String {
         }
     }
     out
-}
-
-/// What the end of a task does to the open item linked to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BacklogEffect {
-    /// The item is done today with this note, and the link ends.
-    Finish {
-        /// `task <name>`, and `merged <url>, <url>` after it when the task had merged pull requests.
-        note: String,
-    },
-    /// The link ends and the item stays open.
-    Unlink,
-}
-
-/// What a task that moves to `state` does to its linked open item.
-///
-/// A closed task finishes it, a dropped or failed one frees it, any other state leaves it alone. `merged_urls` are the
-/// task's merged pull requests, oldest first.
-#[must_use]
-pub fn on_task_end(
-    state: TaskState,
-    merged_urls: &[String],
-    task_name: &str,
-) -> Option<BacklogEffect> {
-    match state {
-        TaskState::Closed => Some(BacklogEffect::Finish {
-            note: if merged_urls.is_empty() {
-                format!("task {task_name}")
-            } else {
-                format!("task {task_name} merged {}", merged_urls.join(", "))
-            },
-        }),
-        TaskState::Dropped | TaskState::Failed => Some(BacklogEffect::Unlink),
-        TaskState::Queued
-        | TaskState::Spawning
-        | TaskState::Working
-        | TaskState::NeedsUser
-        | TaskState::InReview
-        | TaskState::Merged
-        | TaskState::Closing
-        | TaskState::Interrupted
-        | TaskState::Parking
-        | TaskState::Parked => None,
-    }
 }
 
 /// What the export knows when it decides whether to write the file.
@@ -1188,7 +1271,7 @@ mod tests {
         let item =
             one("- [ ] Engine: fix it (not before 2026-12-01) (by 2026-12-24) (added 2026-11-02)");
         assert_eq!(item.text, "Engine: fix it");
-        assert_eq!(item.state, BacklogState::Open);
+        assert_eq!(item.status, BacklogStatus::Backlog);
         assert_eq!(item.not_before, Some(date("2026-12-01")));
         assert_eq!(item.due, Some(date("2026-12-24")));
         assert_eq!(item.added, Some(date("2026-11-02")));
@@ -1207,7 +1290,7 @@ mod tests {
             "- [x] Add the check (added 2026-11-16) (done 2026-11-16, me-sim PR #403; not yet run)",
         );
         assert_eq!(item.text, "Add the check");
-        assert_eq!(item.state, BacklogState::Done);
+        assert_eq!(item.status, BacklogStatus::Done);
         assert_eq!(item.done_on, Some(date("2026-11-16")));
         assert_eq!(
             item.done_note.as_deref(),
@@ -1222,10 +1305,10 @@ mod tests {
         let item = one("- [x] Task (done)");
         assert_eq!((item.done_on, item.done_note), (None, None));
         let item = one("- [x] Old idea (dropped 2026-11-16: not needed)");
-        assert_eq!(item.state, BacklogState::Dropped);
+        assert_eq!(item.status, BacklogStatus::Cancelled);
         let item = one("- [ ] Still open (done 2026-11-16: part one)");
         assert_eq!(item.text, "Still open (done 2026-11-16: part one)");
-        assert_eq!(item.state, BacklogState::Open);
+        assert_eq!(item.status, BacklogStatus::Backlog);
     }
 
     #[test]
@@ -1248,21 +1331,27 @@ mod tests {
         );
         let parsed = parse(text);
         assert!(parsed.unparsed.is_empty(), "{:?}", parsed.unparsed);
-        let names: Vec<(&str, Option<&str>, BacklogState)> = parsed
+        let names: Vec<(&str, Option<&str>, ItemStatus)> = parsed
             .items
             .iter()
-            .map(|item| (item.project.as_str(), item.section.as_deref(), item.state))
+            .map(|item| {
+                (
+                    item.project.as_str(),
+                    item.section.as_deref(),
+                    item.status.kind(),
+                )
+            })
             .collect();
         assert_eq!(
             names,
             [
-                ("general", None, BacklogState::Open),
-                ("me-sim", None, BacklogState::Open),
-                ("me-sim", Some("Audit"), BacklogState::Open),
-                ("headwork", None, BacklogState::Open),
-                ("general", None, BacklogState::Done),
-                ("general", None, BacklogState::Dropped),
-                ("general", None, BacklogState::Dropped),
+                ("general", None, ItemStatus::Backlog),
+                ("me-sim", None, ItemStatus::Backlog),
+                ("me-sim", Some("Audit"), ItemStatus::Backlog),
+                ("headwork", None, ItemStatus::Backlog),
+                ("general", None, ItemStatus::Done),
+                ("general", None, ItemStatus::Cancelled),
+                ("general", None, ItemStatus::Cancelled),
             ]
         );
         assert_eq!(
@@ -1348,7 +1437,7 @@ mod tests {
         assert_eq!(second.items.len(), first.items.len(), "{written}");
         for (before, after) in first.items.iter().zip(&second.items) {
             assert_eq!(before.text, after.text, "text");
-            assert_eq!(before.state, after.state, "state of {}", before.text);
+            assert_eq!(before.status, after.status, "status of {}", before.text);
             assert_eq!(before.owner, after.owner, "owner of {}", before.text);
             assert_eq!(
                 (
@@ -1382,11 +1471,14 @@ mod tests {
             });
         }
         if let Some(second) = rows.get_mut(1) {
-            second.draft.state = BacklogState::Dropped;
+            second.draft.status = BacklogStatus::Cancelled;
+        }
+        if let Some(first) = rows.first_mut() {
+            first.draft.status = BacklogStatus::InProgress;
         }
         let written = render(&rows);
         assert!(
-            written.contains("- [ ] Linked item (task headwork-linked)\n"),
+            written.contains("- [ ] Linked item [in progress: task headwork-linked working]\n"),
             "{written}"
         );
         assert!(!written.contains("Gone"), "{written}");
@@ -1405,6 +1497,141 @@ mod tests {
         assert_eq!(
             plain.items.first().map(|item| item.text.as_str()),
             Some("Look at the (task force)")
+        );
+    }
+
+    #[test]
+    fn a_done_note_with_brackets_and_paired_parentheses_survives_the_round_trip() {
+        let mut done = row(1, &one("- [ ] Shipped (added 2026-11-02)"));
+        done.draft.status = BacklogStatus::Done;
+        done.draft.done_on = Some(date("2026-11-20"));
+        done.draft.done_note = Some("fixed in [#123] (see #12)".to_owned());
+        let written = render(std::slice::from_ref(&done));
+        let back = parse(&written).items.remove(0);
+        assert_eq!(
+            (back.text.as_str(), back.done_note.as_deref()),
+            ("Shipped", Some("fixed in [#123] (see #12)")),
+            "{written}"
+        );
+        done.draft.done_note = Some("fixed :)".to_owned());
+        let broken = parse(&render(&[done])).items.remove(0);
+        assert_ne!(
+            broken.done_note.as_deref(),
+            Some("fixed :)"),
+            "an unpaired parenthesis cannot round-trip, which is why the guard refuses it"
+        );
+    }
+
+    #[test]
+    fn a_tag_that_cannot_be_read_leaves_plain_text_and_a_warning() {
+        for (odd, text) in [
+            ("- [ ] Odd [blocked: nonsense]", "Odd [blocked: nonsense]"),
+            (
+                "- [ ] Odd [blocked: event, from somewhere]",
+                "Odd [blocked: event, from somewhere]",
+            ),
+            (
+                "- [ ] Odd [in progress: for days]",
+                "Odd [in progress: for days]",
+            ),
+        ] {
+            let parsed = parse(&format!("## p\n\n{odd}\n"));
+            assert!(parsed.unparsed.is_empty(), "{odd}: {:?}", parsed.unparsed);
+            let item = parsed.items.first();
+            assert_eq!(
+                item.map(|item| (item.text.as_str(), item.status.clone())),
+                Some((text, BacklogStatus::Backlog)),
+                "{odd}: taken as plain text"
+            );
+            assert!(
+                parsed
+                    .warnings
+                    .first()
+                    .is_some_and(|line| line.line_no == 3 && line.reason.contains("status tag")),
+                "{odd}: {:?}",
+                parsed.warnings
+            );
+        }
+        let plain = parse("## p\n\n- [ ] Collect [in progress reports]\n");
+        assert!(plain.warnings.is_empty(), "{:?}", plain.warnings);
+        assert_eq!(
+            plain.items.first().map(|item| item.text.as_str()),
+            Some("Collect [in progress reports]"),
+            "only the three tag shapes count"
+        );
+    }
+
+    #[test]
+    fn status_tags_are_written_and_read_back() {
+        let lost = BacklogStatus::Blocked(Block {
+            reason: BlockReason::TaskLost,
+            note: Some("task headwork-old dropped".to_owned()),
+            before: ReturnTo::InProgress,
+        });
+        let waiting = BacklogStatus::Blocked(Block {
+            reason: BlockReason::Decision,
+            note: None,
+            before: ReturnTo::Backlog,
+        });
+        let mut rows: Vec<BacklogItem> = ["Plain", "Running", "Started", "Lost", "Waiting", "Gone"]
+            .iter()
+            .zip(1..)
+            .map(|(text, id)| row(id, &one(&format!("- [ ] {text} (added 2026-11-02)"))))
+            .collect();
+        rows[1].draft.status = BacklogStatus::InProgress;
+        rows[1].task = Some(LinkedTask {
+            id: 9,
+            name: "headwork-run".to_owned(),
+            state: TaskState::InReview,
+        });
+        rows[2].draft.status = BacklogStatus::InProgress;
+        rows[3].draft.status = lost.clone();
+        rows[4].draft.status = waiting.clone();
+        rows[5].draft.status = BacklogStatus::Cancelled;
+        let written = render(&rows);
+        for line in [
+            "- [ ] Plain (added 2026-11-02)\n",
+            "- [ ] Running (added 2026-11-02) [in progress: task headwork-run in_review]\n",
+            "- [ ] Started (added 2026-11-02) [in progress]\n",
+            "- [ ] Lost (added 2026-11-02) [blocked: task_lost, from in progress: task headwork-old dropped]\n",
+            "- [ ] Waiting (added 2026-11-02) [blocked: decision]\n",
+        ] {
+            assert!(written.contains(line), "{line}in\n{written}");
+        }
+        assert!(!written.contains("Gone"), "a cancelled item is not written");
+        let back: Vec<(String, BacklogStatus)> = parse(&written)
+            .items
+            .into_iter()
+            .map(|item| (item.text, item.status))
+            .collect();
+        assert_eq!(
+            back,
+            [
+                ("Plain".to_owned(), BacklogStatus::Backlog),
+                ("Running".to_owned(), BacklogStatus::InProgress),
+                ("Started".to_owned(), BacklogStatus::InProgress),
+                ("Lost".to_owned(), lost),
+                ("Waiting".to_owned(), waiting),
+            ]
+        );
+        assert_eq!(
+            one("- [ ] Read [the docs]").text,
+            "Read [the docs]",
+            "a bracket that is no tag stays in the text"
+        );
+        let event = one("- [ ] Wait [blocked: event, from in progress: the 2.0 release: soon]");
+        assert_eq!(
+            event.status,
+            BacklogStatus::Blocked(Block {
+                reason: BlockReason::Event,
+                note: Some("the 2.0 release: soon".to_owned()),
+                before: ReturnTo::InProgress,
+            }),
+            "the note may hold a colon"
+        );
+        assert_eq!(
+            one("- [x] Old (cancelled 2026-11-20: not wanted)").status,
+            BacklogStatus::Cancelled
         );
     }
 
@@ -1445,8 +1672,8 @@ mod tests {
             bad(|d| d.project = "# x".to_owned()),
             "the project must not start with `#`"
         );
-        assert!(bad(|d| d.project = "Done soon".to_owned()).contains("Done or Dropped"));
-        assert!(bad(|d| d.project = "dropped".to_owned()).contains("Done or Dropped"));
+        assert!(bad(|d| d.project = "Done soon".to_owned()).contains("Done, Cancelled or Dropped"));
+        assert!(bad(|d| d.project = "dropped".to_owned()).contains("Done, Cancelled or Dropped"));
         assert_eq!(
             bad(|d| d.section = Some("#x".to_owned())),
             "the section must not start with `#`"
@@ -1480,33 +1707,6 @@ mod tests {
         let lines: Vec<usize> = parsed.unparsed.iter().map(|u| u.line_no).collect();
         assert_eq!(lines, [1, 2, 3]);
         assert_eq!(parsed.items.len(), 1);
-    }
-
-    #[test]
-    fn a_task_end_finishes_or_frees_the_item_by_table() {
-        let urls = ["u/1".to_owned(), "u/2".to_owned()];
-        let finish = |note: &str| {
-            Some(BacklogEffect::Finish {
-                note: note.to_owned(),
-            })
-        };
-        let cases = [
-            (TaskState::Closed, &[][..], finish("task t")),
-            (
-                TaskState::Closed,
-                &urls[..],
-                finish("task t merged u/1, u/2"),
-            ),
-            (TaskState::Dropped, &[][..], Some(BacklogEffect::Unlink)),
-            (TaskState::Failed, &urls[..], Some(BacklogEffect::Unlink)),
-            (TaskState::Working, &[][..], None),
-            (TaskState::Merged, &urls[..], None),
-            (TaskState::Closing, &[][..], None),
-            (TaskState::Interrupted, &[][..], None),
-        ];
-        for (state, merged, want) in cases {
-            assert_eq!(on_task_end(state, merged, "t"), want, "{state}");
-        }
     }
 
     #[test]

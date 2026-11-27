@@ -10,11 +10,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use headwork_core::backlog::{
-    self, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogState, ExportFacts,
-    ExportPlan, Unparsed, clean_note,
+    self, BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus,
+    BlockReason, ExportFacts, ExportPlan, ItemStatus, Target, Unparsed, clean_note,
 };
 use headwork_core::{Actor, Config};
-use headwork_store::{BacklogEdit, BacklogFilter, ImportCounts, Store, Task, TaskId};
+use headwork_store::{BacklogEdit, BacklogFilter, BacklogMove, ImportCounts, Store, Task, TaskId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -25,9 +25,11 @@ use crate::home::Home;
 /// The event an export logs when it replaced a file edited by hand since the last export; it names the copy.
 pub const EVENT_EXPORT_OVERWROTE: &str = "backlog-export-overwrote";
 
-/// The event an export logs when it wrote a file used for the first time while another file was used before; it names
-/// both and whether the old one got the pointer line.
-pub const EVENT_BACKLOG_MOVED: &str = "backlog-moved";
+/// The event an export logs when it wrote a file used for the first time while another file was used before.
+///
+/// It names both and whether the old one got the pointer line. Before stored statuses (2026-11-27) it was `backlog-moved`,
+/// which now names an item's move.
+pub const EVENT_BACKLOG_FILE_MOVED: &str = "backlog-file-moved";
 
 /// The event a close logs when the export that followed it failed; the close itself stands.
 pub const EVENT_EXPORT_FAILED: &str = "backlog-export-failed";
@@ -142,6 +144,8 @@ pub struct ImportReport {
     pub counts: ImportCounts,
     /// The lines left out, with the reason.
     pub unparsed: Vec<Unparsed>,
+    /// The lines taken with a warning (a status tag that cannot be read), with the reason.
+    pub warnings: Vec<Unparsed>,
 }
 
 impl ImportReport {
@@ -165,6 +169,13 @@ impl ImportReport {
             let _infallible = writeln!(
                 out,
                 "  line {}: {} ({})",
+                line.line_no, line.line, line.reason
+            );
+        }
+        for line in &self.warnings {
+            let _infallible = writeln!(
+                out,
+                "  warning, line {}: {} ({})",
                 line.line_no, line.line, line.reason
             );
         }
@@ -531,7 +542,7 @@ fn point_away(home: &Home, config: &Config, from: String, key: &str) -> Result<M
 }
 
 /// The second half of a move, once the new file is recorded: the pointer's hash becomes the old file's last export, so
-/// pointing `[backlog] file` back at it overwrites the pointer without a copy, and `backlog-moved` is logged.
+/// pointing `[backlog] file` back at it overwrites the pointer without a copy, and `backlog-file-moved` is logged.
 fn finish_move(store: &Store, moved: &Moved, key: &str, actor: Actor) -> Result<()> {
     if moved.pointer {
         store.record_backlog_pointer(&moved.from, &hash(&backlog::pointer_line(key)))?;
@@ -540,7 +551,7 @@ fn finish_move(store: &Store, moved: &Moved, key: &str, actor: Actor) -> Result<
         actor,
         None,
         None,
-        EVENT_BACKLOG_MOVED,
+        EVENT_BACKLOG_FILE_MOVED,
         &serde_json::json!({ "from": moved.from, "to": key, "pointer": moved.pointer, "backup": moved.backup }),
     )?;
     Ok(())
@@ -607,6 +618,7 @@ pub fn import(
         dry_run,
         counts,
         unparsed: parsed.unparsed,
+        warnings: parsed.warnings,
     })
 }
 
@@ -618,7 +630,7 @@ pub fn import(
 /// Fails when a field cannot be written to the file (empty, several lines, a project that starts with `#`, Done or
 /// Dropped) or the store fails.
 pub fn add(store: &mut Store, env: &Env<'_>, request: &AddRequest) -> Result<Change> {
-    add_for(store, env, request, None)
+    add_for(store, env, request, backlog_actor(env.actor), None)
 }
 
 /// [`add`] for an exploration: the `backlog-added` event carries `task`.
@@ -630,6 +642,7 @@ pub fn add_for(
     store: &mut Store,
     env: &Env<'_>,
     request: &AddRequest,
+    mover: BacklogActor,
     task: Option<TaskId>,
 ) -> Result<Change> {
     let found = backlog::normalize(request.text.trim());
@@ -642,7 +655,7 @@ pub fn add_for(
             .map(|section| section.trim().to_owned()),
         text: found.text,
         notes: request.notes.iter().map(|note| clean_note(note)).collect(),
-        state: BacklogState::Open,
+        status: BacklogStatus::Backlog,
         owner: request.owner.or(found.owner).unwrap_or(BacklogOwner::Agent),
         added: found.added.or(Some(today)),
         not_before: request.not_before.clone().or(found.not_before),
@@ -650,34 +663,123 @@ pub fn add_for(
         done_on: None,
         done_note: None,
     };
-    let item = store.add_backlog_item_for(&draft, env.actor, task)?;
+    let item = store.add_backlog_item_for(&draft, env.actor, mover, task)?;
     Ok(changed(store, env, &[item]))
 }
 
-/// Marks an item done, or dropped, and exports.
+/// Who moves an item for the guard, from who acts.
+///
+/// The CLI with no `HEADWORK_ROLE` is the user, the orchestrator's tools and the CLI it runs are the orchestrator, a worker
+/// is a worker, and the tick and hooks are headwork.
+#[must_use]
+pub const fn backlog_actor(actor: Actor) -> BacklogActor {
+    BacklogActor::from_actor(actor, false)
+}
+
+fn project_known(config: &Config, project: &str) -> bool {
+    config
+        .projects
+        .keys()
+        .any(|name| name.to_string() == project)
+}
+
+/// Moves an item through the status guard and exports.
+///
+/// The actor is [`backlog_actor`] of who acts, `actor_task` the acting worker's own task (a worker moves only the item
+/// linked to it), and a start needs the item's project to be one headwork runs.
 ///
 /// # Errors
 ///
-/// Fails when the item is unknown or not open, or the store fails.
-pub fn finish(
+/// Fails when the item is unknown, the guard refuses the move (its reason is the message), or the store fails.
+pub fn move_item(
     store: &mut Store,
     env: &Env<'_>,
+    actor_task: Option<TaskId>,
     id: i64,
-    note: Option<&str>,
-    drop: bool,
+    target: Target,
+    reason: Option<&str>,
 ) -> Result<Change> {
-    let item = store.finish_backlog_item(id, note, drop, env.actor)?;
+    let has_project = project_known(env.config, &store.backlog_item(id)?.draft.project);
+    let request = BacklogMove {
+        actor_task,
+        ..BacklogMove::new(target, backlog_actor(env.actor), env.actor, has_project)
+            .with_reason(reason.map(str::trim).filter(|reason| !reason.is_empty()))
+    };
+    let item = store.move_backlog_item(id, &request)?;
     Ok(changed(store, env, &[item]))
 }
 
-/// Takes an item back to open and exports.
+/// Marks an item done today with a note, and exports; refused while a live task works on it.
 ///
 /// # Errors
 ///
-/// Fails when the item is unknown or already open, or the store fails.
+/// As [`move_item`].
+pub fn finish(store: &mut Store, env: &Env<'_>, id: i64, note: Option<&str>) -> Result<Change> {
+    move_item(store, env, None, id, Target::Done, note)
+}
+
+/// Cancels an item today with a reason, and exports; refused while a live task works on it, and for the orchestrator
+/// without a reason.
+///
+/// # Errors
+///
+/// As [`move_item`].
+pub fn cancel(store: &mut Store, env: &Env<'_>, id: i64, reason: Option<&str>) -> Result<Change> {
+    move_item(store, env, None, id, Target::Cancelled, reason)
+}
+
+/// Spins an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
+///
+/// # Errors
+///
+/// As [`move_item`].
+pub fn start(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
+    move_item(store, env, None, id, Target::InProgress, None)
+}
+
+/// Blocks an item for `reason` (the user and the orchestrator give `decision` or `event`) with a note.
+///
+/// # Errors
+///
+/// As [`move_item`].
+pub fn block(
+    store: &mut Store,
+    env: &Env<'_>,
+    actor_task: Option<TaskId>,
+    id: i64,
+    reason: BlockReason,
+    note: Option<&str>,
+) -> Result<Change> {
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    move_item(
+        store,
+        env,
+        actor_task,
+        id,
+        Target::Blocked {
+            reason,
+            note: note.map(str::to_owned),
+        },
+        None,
+    )
+}
+
+/// Takes a blocked item back to the status it had before its block.
+///
+/// # Errors
+///
+/// As [`move_item`].
+pub fn unblock(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
+    move_item(store, env, None, id, Target::Unblock, None)
+}
+
+/// Takes a done or cancelled item back to the backlog and exports.
+///
+/// # Errors
+///
+/// As [`move_item`].
 pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
-    let item = store.reopen_backlog_item(id, env.actor)?;
-    Ok(changed(store, env, &[item]))
+    move_item(store, env, None, id, Target::Backlog, None)
 }
 
 /// Changes an item and exports.
@@ -718,11 +820,11 @@ pub struct LinkedSpawn {
     pub unlinked: Option<String>,
 }
 
-/// `spawn` for a task that comes from a backlog item.
+/// `spawn` for a task that comes from a backlog item: the item moves to in progress, linked to the task.
 ///
-/// The check that the item is open and that no live task holds it runs before the spawn; the link runs after it. A link
-/// refused after the task started leaves the task running unlinked and says so in [`LinkedSpawn::unlinked`], so the
-/// caller can tell the user.
+/// The guard runs before the spawn (from the backlog, from in progress with no live task, or a respawn of an item blocked
+/// as `task_lost` or `partial`); the move runs after it. A move refused after the task started leaves the task running
+/// unlinked and says so in [`LinkedSpawn::unlinked`], so the caller can tell the user.
 ///
 /// # Errors
 ///
@@ -733,13 +835,22 @@ pub fn spawn_linked(
     request: &SpawnRequest<'_>,
     item: Option<i64>,
 ) -> Result<LinkedSpawn> {
+    let link = |task: Option<TaskId>| BacklogMove {
+        link: task,
+        ..BacklogMove::new(
+            Target::InProgress,
+            backlog_actor(env.actor),
+            env.actor,
+            true,
+        )
+    };
     if let Some(id) = item {
-        store.check_backlog_linkable(id)?;
+        store.check_backlog_move(id, &link(None))?;
     }
     let (task, pumped) = spawn(store, env, request)?;
     let mut unlinked = None;
     if let Some(id) = item {
-        match store.link_backlog_item(id, TaskId(task.id.0), env.actor) {
+        match store.move_backlog_item(id, &link(Some(TaskId(task.id.0)))) {
             Ok(_) => drop(export_after(store, env)),
             Err(error) => {
                 unlinked = Some(format!(
@@ -756,26 +867,55 @@ pub fn spawn_linked(
     })
 }
 
-/// The items that match, in export order. `state` is `open` (the default when absent), `done`, `dropped` or `all`.
+/// The statuses a `--status` word names: one status, `open` (backlog, in progress and blocked) or `all`.
 ///
 /// # Errors
 ///
-/// Fails when `state` is none of those or the store fails.
+/// Fails when the word is none of those.
+pub fn statuses(word: &str) -> Result<Vec<ItemStatus>> {
+    Ok(match word {
+        "open" => ItemStatus::OPEN.to_vec(),
+        "all" => Vec::new(),
+        other => vec![other.parse()?],
+    })
+}
+
+/// The statuses an old `--state` word names, accepted for one release: `open` is backlog, in progress and blocked,
+/// `dropped` is cancelled, and `done` and `all` stay.
+///
+/// # Errors
+///
+/// Fails when the word is none of `open`, `done`, `dropped` and `all`.
+pub fn old_state(word: &str) -> Result<Vec<ItemStatus>> {
+    match word {
+        "open" | "done" | "all" => statuses(word),
+        "dropped" => Ok(vec![ItemStatus::Cancelled]),
+        other => bail!("unknown state `{other}`: open, done, dropped or all (use --status)"),
+    }
+}
+
+/// The items that match, in export order. `status` is a status, `open` (the default when absent: backlog, in progress
+/// and blocked) or `all`; `state` is the old word, read by [`old_state`] when `status` is absent.
+///
+/// # Errors
+///
+/// Fails when a word is unknown or the store fails.
 pub fn list(
     store: &Store,
     project: Option<&str>,
     owner: Option<BacklogOwner>,
+    status: Option<&str>,
     state: Option<&str>,
 ) -> Result<Vec<BacklogItem>> {
-    let state = match state {
-        None | Some("open") => Some(BacklogState::Open),
-        Some("all") => None,
-        Some(other) => Some(other.parse()?),
+    let statuses = match (status, state) {
+        (Some(word), _) => statuses(word)?,
+        (None, Some(word)) => old_state(word)?,
+        (None, None) => ItemStatus::OPEN.to_vec(),
     };
     Ok(store.backlog_items(&BacklogFilter {
         project: project.map(str::to_owned),
         owner,
-        state,
+        statuses,
     })?)
 }
 

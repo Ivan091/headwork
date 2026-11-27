@@ -95,6 +95,18 @@ pub enum StoreError {
         /// Why.
         reason: String,
     },
+    /// The status guard refused a new item.
+    #[error("backlog add: {0}")]
+    BacklogAddRefused(String),
+    /// A stored backlog item's row does not read back.
+    #[error("backlog item {id}: {source}")]
+    BadBacklogRow {
+        /// The item.
+        id: i64,
+        /// What does not parse.
+        #[source]
+        source: Box<Self>,
+    },
     /// A backlog item cannot be written as it is.
     #[error("backlog item: {0}")]
     InvalidBacklogItem(#[source] headwork_core::backlog::BacklogError),

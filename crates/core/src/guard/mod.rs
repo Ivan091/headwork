@@ -5,6 +5,7 @@
 //! for a [`Decision`]. Whether a deny blocks or is only logged (shadow mode) is the caller's business.
 
 pub mod ask;
+mod backlog_cli;
 pub mod grants;
 mod heavy;
 pub mod paths;
@@ -494,6 +495,9 @@ fn check_worker_command(
     if let Some(decision) = check_admin(scope, command) {
         return decision;
     }
+    if let Some(decision) = backlog_cli::backlog_command(command) {
+        return decision;
+    }
     if scope.reviewer
         && let Some(decision) = check_reviewer_command(command)
     {
@@ -671,11 +675,12 @@ fn plain_update(args: &[String]) -> bool {
     true
 }
 
-/// The arguments a command passes to the headwork CLI: those of `headwork` under any path or extension, or those
+/// The arguments a command passes to the headwork CLI: those of `headwork` or `headworkw` under any path or extension, or
+/// of `$HEADWORK_EXE` (the launcher's own program, quoted or not, with or without braces), or those
 /// after `--` of `cargo run -p headwork`. `None` for anything else.
 fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
     match command.program_name().as_str() {
-        "headwork" => Some(command.args()),
+        "headwork" | "headworkw" | "$headwork_exe" | "${headwork_exe}" => Some(command.args()),
         "cargo" => {
             let args = command.args();
             let run = args.iter().find(|arg| !arg.starts_with('+'))?;

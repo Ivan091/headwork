@@ -2561,17 +2561,17 @@ fn the_backlog_migration_renames_the_tables_and_the_event_types_and_keeps_the_ro
     );
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();
-    let (text, task): (String, i64) = conn
+    let (text, task, status): (String, Option<i64>, String) = conn
         .query_row(
-            "SELECT text, task_id FROM backlog_items WHERE id = 1",
+            "SELECT text, task_id, status FROM backlog_items WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
     assert_eq!(
-        (text.as_str(), task),
-        ("Keep me", 7),
-        "the item and its task link"
+        (text.as_str(), task, status.as_str()),
+        ("Keep me", None, "backlog"),
+        "the item stays; 0031 drops a link to a task the store never had"
     );
     let mut files = conn
         .prepare("SELECT path, export_hash, configured_at FROM backlog_files ORDER BY path")
@@ -2624,4 +2624,147 @@ fn the_backlog_migration_renames_the_tables_and_the_event_types_and_keeps_the_ro
         )
         .unwrap();
     assert_eq!(index, 1);
+}
+
+#[test]
+fn the_status_migration_maps_each_old_state_and_keeps_ids_and_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 30);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO tasks (id, project, slug, kind, state, model, brief_path, queued_at, updated_at)
+             VALUES (1, 'me-sim', 'live', 'scene', 'working', 'opus', 'b.md', 't', 't'),
+                    (2, 'me-sim', 'over', 'scene', 'closed', 'opus', 'b.md', 't', 't'),
+                    (3, 'me-sim', 'gone', 'scene', 'dropped', 'opus', 'b.md', 't', 't'),
+                    (4, 'me-sim', 'broke', 'scene', 'failed', 'opus', 'b.md', 't', 't'),
+                    (5, 'me-sim', 'wait', 'scene', 'queued', 'opus', 'b.md', 't', 't');
+         INSERT INTO backlog_items (id, project, text, state, owner, task_id, position, done_on, done_note, created_at, updated_at)
+             VALUES (10, 'me-sim', 'open alone', 'open', 'agent', NULL, 1, NULL, NULL, 't', 't'),
+                    (11, 'me-sim', 'open working', 'open', 'agent', 1, 2, NULL, NULL, 't', 't'),
+                    (12, 'me-sim', 'open closed', 'open', 'agent', 2, 3, NULL, NULL, 't', 't'),
+                    (13, 'me-sim', 'open dropped', 'open', 'agent', 3, 4, NULL, NULL, 't', 't'),
+                    (14, 'me-sim', 'open failed', 'open', 'agent', 4, 5, NULL, NULL, 't', 't'),
+                    (15, 'me-sim', 'open queued', 'open', 'user', 5, 6, NULL, NULL, 't', 't'),
+                    (16, 'me-sim', 'was done', 'done', 'agent', NULL, 7, '2026-11-20', 'PR #1', 't', 't'),
+                    (17, 'me-sim', 'was dropped', 'dropped', 'agent', NULL, 8, '2026-11-21', 'no', 't', 't');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'backlog-dropped', '{\"id\": 17}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'backlog-moved', '{\"from\": \"a.md\"}');",
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    let items = store
+        .backlog_items(&headwork_store::BacklogFilter::default())
+        .unwrap();
+    let found: Vec<(i64, &str, Option<i64>)> = items
+        .iter()
+        .map(|item| {
+            (
+                item.id,
+                item.draft.status.kind().as_str(),
+                item.task.as_ref().map(|task| task.id),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (10, "backlog", None),
+            (11, "in_progress", Some(1)),
+            (12, "backlog", Some(2)),
+            (13, "backlog", Some(3)),
+            (14, "backlog", Some(4)),
+            (15, "in_progress", Some(5)),
+            (16, "done", None),
+            (17, "cancelled", None),
+        ]
+    );
+    let done = items.iter().find(|item| item.id == 16).unwrap();
+    assert_eq!(
+        (
+            done.draft
+                .done_on
+                .as_ref()
+                .map(headwork_core::backlog::BacklogDate::as_str),
+            done.draft.done_note.as_deref()
+        ),
+        (Some("2026-11-20"), Some("PR #1")),
+        "the other columns come along"
+    );
+    assert_eq!(
+        items[5].draft.owner,
+        headwork_core::backlog::BacklogOwner::User
+    );
+    let kinds: Vec<String> = store
+        .events(EventFilter {
+            task: None,
+            limit: 50,
+        })
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    assert!(
+        kinds.contains(&"backlog-dropped".to_owned()),
+        "old events stay as written: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"backlog-file-moved".to_owned())
+            && !kinds.contains(&"backlog-moved".to_owned()),
+        "an old file move is renamed so it never reads as an item move: {kinds:?}"
+    );
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let index: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'backlog_items_by_task'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index, 1, "the index is made again");
+    let refused = conn.execute("UPDATE backlog_items SET status = 'open' WHERE id = 10", []);
+    assert!(refused.is_err(), "the old word is refused by the CHECK");
+}
+
+#[test]
+fn a_backlog_block_is_all_or_nothing_and_a_bad_row_names_its_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 30);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO backlog_items (id, project, text, state, owner, position, created_at, updated_at)
+             VALUES (10, 'me-sim', 'one', 'open', 'agent', 1, 't', 't');",
+    )
+    .unwrap();
+    drop(conn);
+    drop(Store::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for bad in [
+        "UPDATE backlog_items SET status = 'blocked' WHERE id = 10",
+        "UPDATE backlog_items SET status = 'blocked', blocked_reason = 'event' WHERE id = 10",
+        "UPDATE backlog_items SET blocked_reason = 'event', status_before_block = 'backlog' WHERE id = 10",
+        "UPDATE backlog_items SET status_before_block = 'backlog' WHERE id = 10",
+    ] {
+        assert!(
+            conn.execute(bad, []).is_err(),
+            "a block is all or nothing: {bad}"
+        );
+    }
+    conn.execute(
+        "UPDATE backlog_items SET status = 'blocked', blocked_reason = 'event', status_before_block = 'backlog' WHERE id = 10",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE backlog_items SET done_on = 'someday' WHERE id = 10",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&path).unwrap();
+    let error = store.backlog_item(10).unwrap_err().to_string();
+    assert!(error.starts_with("backlog item 10: "), "{error}");
 }

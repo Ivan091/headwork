@@ -40,6 +40,8 @@ impl Machine {
             .env("HEADWORK_HOME", self.home())
             .env("HEADWORK_CLAUDE_JSON", self.dir.path().join(".claude.json"))
             .env("HEADWORK_CLAUDE_DIR", self.dir.path().join(".claude"))
+            .env_remove("HEADWORK_ROLE")
+            .env_remove("HEADWORK_SESSION")
             .output()
             .unwrap()
     }
