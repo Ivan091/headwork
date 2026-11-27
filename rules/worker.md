@@ -61,8 +61,7 @@ or run `{close}`. Both take the checked path and close the task only when:
 - every pull request of the task is merged, or was closed unmerged by the user, or the task has none. Report each pull
   request with `report` (status `review`, its `pr` URL) as you open it, so headwork finds it on any branch;
 - your report reached `{parent}` by `SendMessage`;
-- no question or review waits on the user, and no job of yours still runs;
-- where the project has a `done_check` for your kind, `done` names its `scenes`.
+- no question or review waits on the user, and no job of yours still runs.
 
 Otherwise the close is refused with the reason and the task stays as it was: finish what is missing, or, when you are
 stuck, tell `{parent}`. A task the user dropped closes too. The close ends this pane, so run nothing after it.
