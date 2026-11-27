@@ -2648,7 +2648,8 @@ fn the_status_migration_maps_each_old_state_and_keeps_ids_and_links() {
                     (15, 'me-sim', 'open queued', 'open', 'user', 5, 6, NULL, NULL, 't', 't'),
                     (16, 'me-sim', 'was done', 'done', 'agent', NULL, 7, '2026-11-20', 'PR #1', 't', 't'),
                     (17, 'me-sim', 'was dropped', 'dropped', 'agent', NULL, 8, '2026-11-21', 'no', 't', 't');
-         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'backlog-dropped', '{\"id\": 17}');",
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'backlog-dropped', '{\"id\": 17}');
+         INSERT INTO events (at, actor, type, data) VALUES ('t', 'user', 'backlog-moved', '{\"from\": \"a.md\"}');",
     )
     .unwrap();
     drop(conn);
@@ -2707,6 +2708,11 @@ fn the_status_migration_maps_each_old_state_and_keeps_ids_and_links() {
     assert!(
         kinds.contains(&"backlog-dropped".to_owned()),
         "old events stay as written: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"backlog-file-moved".to_owned())
+            && !kinds.contains(&"backlog-moved".to_owned()),
+        "an old file move is renamed so it never reads as an item move: {kinds:?}"
     );
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();

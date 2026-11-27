@@ -40,3 +40,5 @@ DROP TABLE backlog_items;
 ALTER TABLE backlog_items_new RENAME TO backlog_items;
 
 CREATE INDEX backlog_items_by_task ON backlog_items (task_id);
+
+UPDATE events SET type = 'backlog-file-moved' WHERE type = 'backlog-moved';
