@@ -31,7 +31,7 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 pub use backlog::{
     BacklogEdit, BacklogFile, BacklogFilter, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE,
     EVENT_BACKLOG_DROPPED, EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED,
-    ImportCounts,
+    EVENT_BACKLOG_PICKED, ImportCounts,
 };
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use digest::EVENT_DIGEST_PUSHED;

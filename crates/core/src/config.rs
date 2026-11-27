@@ -459,15 +459,34 @@ pub struct ModelsConfig {
     pub allowed: Vec<Model>,
     /// Fable needs the user's approval per task.
     pub fable_needs_user: bool,
-    /// The model of a task kind when a spawn names none (`silent = "sonnet"`); a kind not listed takes `default`.
+    /// The model of a task kind when a spawn names none (`silent = "sonnet"`); a kind not listed takes `default`,
+    /// except `explore`, which takes Opus.
     pub by_kind: BTreeMap<String, Model>,
 }
 
 impl ModelsConfig {
-    /// The model a task of `kind` runs when its spawn names none.
+    /// The model a task of `kind` runs when its spawn names none: the configured one, else Opus for `explore` when it is
+    /// allowed, else `default`.
     #[must_use]
     pub fn for_kind(&self, kind: &str) -> Model {
-        self.by_kind.get(kind).copied().unwrap_or(self.default)
+        if let Some(model) = self.by_kind.get(kind) {
+            return *model;
+        }
+        if kind == EXPLORE_KIND && self.allows(Model::Opus) {
+            return Model::Opus;
+        }
+        self.default
+    }
+
+    /// The model the parts of a lead of `lead_kind` run when their spawn names none: Sonnet for the parts of an
+    /// exploration when it is allowed; `None` leaves the ordinary default.
+    #[must_use]
+    pub fn for_part(&self, lead_kind: &str) -> Option<Model> {
+        (lead_kind == EXPLORE_KIND && self.allows(Model::Sonnet)).then_some(Model::Sonnet)
+    }
+
+    fn allows(&self, model: Model) -> bool {
+        self.allowed.is_empty() || self.allowed.contains(&model)
     }
 }
 
@@ -766,6 +785,9 @@ pub struct LeadsConfig {
 
 /// The kind of the part that runs a review: the reviewer lead (`docs/review-flows.md`).
 pub const REVIEW_KIND: &str = "review";
+
+/// The kind of an exploration: an audit, a shadow review or read-only research that ends in a report and a `Backlog` ask.
+pub const EXPLORE_KIND: &str = "explore";
 
 /// The flow a review takes when neither the user nor `[reviews] flows` names one.
 pub const DEFAULT_FLOW: &str = "code";

@@ -89,6 +89,9 @@ const DEPRECATED_TOOL_NAMES: &[(&str, &str)] = &[
 /// The worker tools only a lead's session sees and may call.
 const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start", "review_resolve"];
 
+/// The orchestrator tools an explorer (a task of kind `explore`, not a part) also sees and may call.
+const EXPLORER_TOOLS: &[&str] = &["backlog_list", "backlog_add"];
+
 /// The worker tools only a reviewer lead (a part of kind `review`) sees and may call.
 const REVIEWER_TOOLS: &[&str] = &[
     "review_next",
@@ -396,7 +399,7 @@ const TOOLS: &[ToolDef] = &[
             "The backlog list (kept in the store, exported to `backlog.md`): one line per item with its id, project, text, owner, ",
             "dates and the task spawned for it. Open items by default.",
         ),
-        roles: ORCHESTRATOR,
+        roles: BOTH,
         schema: || {
             object(
                 json!({
@@ -412,9 +415,9 @@ const TOOLS: &[ToolDef] = &[
         name: "backlog_add",
         description: concat!(
             "Add an item to the backlog list, last, and export `backlog.md`. Never edit `backlog.md` by hand. Text that starts with ",
-            "`For you` is the user's. Commit and push the regenerated file afterwards.",
+            "`For you` is the user's. Committing and pushing the regenerated file is the orchestrator's job; an explorer does not.",
         ),
-        roles: ORCHESTRATOR,
+        roles: BOTH,
         schema: || {
             object(
                 json!({
@@ -1025,11 +1028,13 @@ impl<'a> Server<'a> {
         };
         let lead = self.is_lead();
         let reviewer = self.is_reviewer();
+        let sees_backlog = role == Role::Orchestrator || self.is_explorer();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
             .filter(|tool| lead || !LEAD_TOOLS.contains(&tool.name))
             .filter(|tool| reviewer || !REVIEWER_TOOLS.contains(&tool.name))
+            .filter(|tool| sees_backlog || !EXPLORER_TOOLS.contains(&tool.name))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -1082,6 +1087,7 @@ impl<'a> Server<'a> {
         if REVIEWER_TOOLS.contains(&name) && !self.is_reviewer() {
             bail!("`{name}` is a reviewer lead's tool; your task is not a review");
         }
+        self.check_explorer_tool(name, role)?;
         match name {
             "board" => self.board(&session, role, args),
             "inbox" => self.inbox(&session, role),
@@ -1203,6 +1209,24 @@ impl<'a> Server<'a> {
             }
             "review_finish" => to_text(&review_loop::finish(self.store, &self.env, &part)?),
             other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn check_explorer_tool(&self, name: &str, role: Role) -> Result<()> {
+        if role == Role::Worker && EXPLORER_TOOLS.contains(&name) && !self.is_explorer() {
+            bail!(
+                "`{name}` is an orchestrator's tool, and an explorer's (a task of kind `explore`); your task is neither"
+            );
+        }
+        Ok(())
+    }
+
+    fn is_explorer(&self) -> bool {
+        match self.identity.managed() {
+            Some((session, Role::Worker)) => self
+                .own_task(session)
+                .is_ok_and(|task| super::explore::is_explorer(&task)),
+            Some(_) | None => false,
         }
     }
 
@@ -1397,6 +1421,10 @@ impl<'a> Server<'a> {
             due: optional("due").map(str::parse).transpose()?,
             notes,
         };
+        if let Some((session, Role::Worker)) = self.identity.managed() {
+            let task = self.own_task(session)?;
+            return to_text(&super::explore::add(self.store, &self.env, &task, request)?);
+        }
         to_text(&super::backlog::add(self.store, &self.env, &request)?)
     }
 
@@ -1768,7 +1796,6 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .map(str::parse)
             .transpose()?;
-        let flags = spawn_flags(args, "task", "flag_reason")?;
         let opus_reason = match model {
             Some(Model::Opus) => Some(
                 text(args, "reason")
@@ -1794,11 +1821,8 @@ impl<'a> Server<'a> {
                  run it yourself after the user's `Allow`, or leave it out of the part's brief"
             );
         }
-        let (kind, in_main) = if carries_go {
-            (lead.kind.clone(), true)
-        } else {
-            ("task".to_owned(), false)
-        };
+        let (kind, in_main, model) = part_kind(lead, carries_go, model, &self.env.config.models);
+        let flags = spawn_flags(args, &kind, "flag_reason")?;
         let incoming = self.env.home.root().join("incoming");
         std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
         let file = incoming.join(format!("{project}-{slug}.md"));
@@ -2135,6 +2159,25 @@ fn items<T: serde::de::DeserializeOwned>(args: &Value) -> Result<Vec<T>> {
     let items = args.get("items").cloned().unwrap_or_else(|| json!([]));
     serde_json::from_value(items)
         .map_err(|error| anyhow!("`items` does not have the expected shape: {error}"))
+}
+
+/// The kind, main-checkout flag and model of a part: a part of an exploration explores too, on Sonnet unless told otherwise.
+fn part_kind(
+    lead: &Task,
+    carries_go: bool,
+    model: Option<Model>,
+    models: &headwork_core::config::ModelsConfig,
+) -> (String, bool, Option<Model>) {
+    let kind = if carries_go || lead.kind == headwork_core::EXPLORE_KIND {
+        lead.kind.clone()
+    } else {
+        "task".to_owned()
+    };
+    (
+        kind,
+        carries_go,
+        model.or_else(|| models.for_part(&lead.kind)),
+    )
 }
 
 fn backlog_id(args: &Value) -> Result<i64> {

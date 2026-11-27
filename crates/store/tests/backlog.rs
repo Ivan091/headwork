@@ -14,8 +14,8 @@ use headwork_core::{
 };
 use headwork_store::{
     BacklogEdit, BacklogFilter, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_DONE, EVENT_BACKLOG_DROPPED,
-    EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED, EventFilter, NewTask,
-    PrSeen, Store, StoreError, Task,
+    EVENT_BACKLOG_EDITED, EVENT_BACKLOG_EXPORTED, EVENT_BACKLOG_IMPORTED, EVENT_BACKLOG_PICKED,
+    EventFilter, NewTask, PrSeen, Store, StoreError, Task,
 };
 
 fn store() -> (Store, Config) {
@@ -515,4 +515,46 @@ fn an_item_that_cannot_be_written_to_the_file_is_refused() {
         "{refused:?}"
     );
     assert_eq!(store.backlog_item(one.id).unwrap().draft.project, "me-sim");
+}
+
+#[test]
+fn pick_counts_are_the_newest_pick_and_the_adds_after_it() {
+    let (mut store, config) = store();
+    let task = task(&mut store, &config, "explore");
+    let left = |store: &Store, id| {
+        let (picked, added) = store.backlog_pick_counts(id).unwrap();
+        headwork_core::backlog::adds_left(picked, added)
+    };
+    assert_eq!(left(&store, task.id), 0, "no pick yet");
+    let pick = |store: &Store, count: u64| {
+        store
+            .append_event(
+                Actor::Hook,
+                Some(task.id),
+                Some("s1"),
+                EVENT_BACKLOG_PICKED,
+                &serde_json::json!({ "count": count, "picks": [] }),
+            )
+            .unwrap();
+    };
+    store
+        .add_backlog_item_for(&draft("before the pick"), Actor::Worker, Some(task.id))
+        .unwrap();
+    pick(&store, 2);
+    assert_eq!(left(&store, task.id), 2);
+    store
+        .add_backlog_item_for(&draft("first"), Actor::Worker, Some(task.id))
+        .unwrap();
+    store
+        .add_backlog_item(&draft("another task's"), Actor::Orchestrator)
+        .unwrap();
+    assert_eq!(left(&store, task.id), 1);
+    store
+        .add_backlog_item_for(&draft("second"), Actor::Worker, Some(task.id))
+        .unwrap();
+    assert_eq!(left(&store, task.id), 0);
+    pick(&store, 1);
+    assert_eq!(left(&store, task.id), 1, "a later pick replaces the count");
+    pick(&store, 0);
+    assert_eq!(left(&store, task.id), 0);
 }

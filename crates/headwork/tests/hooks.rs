@@ -14,8 +14,8 @@ use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{
-    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles,
-    WORKER_RULES, platform_words,
+    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, EXPLORER_PART_HEADING, ORCHESTRATOR_RULES,
+    PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES, platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::update::{Notice, UpdateState};
@@ -125,7 +125,12 @@ fn world_flagged(
     let mut store = home.open_store().unwrap();
     store.sync_projects(&config).unwrap();
     let brief = dir.path().join("brief.md");
-    std::fs::write(&brief, "# Task\n\nDo the thing.\n").unwrap();
+    let brief_text = if kind == "explore" {
+        format!("# Task\n\nDo the thing.\n\nWrites: {dir_text}/notes/report.md\n")
+    } else {
+        "# Task\n\nDo the thing.\n".to_owned()
+    };
+    std::fs::write(&brief, brief_text).unwrap();
     let host = FakeHost::new();
     let request = SpawnRequest {
         request: TaskRequest {
@@ -4920,4 +4925,263 @@ fn done_climbs_the_own_ladder_in_process_and_ends_a_claude_that_stays() {
     );
     launcher.kill().unwrap_or(());
     launcher.wait().unwrap();
+}
+
+const EXPLORE: &str = "brief_writable = [\"@DIR@/notes\"]\n[leads]\nenabled = true\n";
+
+fn explore_world() -> World {
+    world_of(EXPLORE, "", false, "explore")
+}
+
+fn backlog_ask(options: &[&str]) -> Value {
+    let options: Vec<Value> = options
+        .iter()
+        .map(|label| json!({ "label": label, "description": "d" }))
+        .collect();
+    json!({ "questions": [{
+        "question": "Which go on the backlog?", "header": "Backlog", "options": options, "multiSelect": true
+    }] })
+}
+
+fn answer_backlog(w: &mut World, answer: &str) {
+    let input = json!({
+        "tool_name": "AskUserQuestion",
+        "tool_input": backlog_ask(&["Guard x", "Fix y", "Skip it"]),
+        "tool_response": { "answers": { "Which go on the backlog?": answer } },
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+}
+
+fn add_item(w: &mut World, text: &str) -> (bool, String) {
+    let identity = worker_identity(w);
+    w.tool(
+        identity,
+        "backlog_add",
+        &json!({ "project": "demo", "text": text }),
+    )
+}
+
+#[test]
+fn an_exploration_spawn_needs_a_report_path_and_defaults_to_opus_and_silent() {
+    let mut w = explore_world();
+    assert_eq!(w.task.close, CloseMode::Silent, "silent close");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "spawn",
+        &json!({ "project": "demo", "slug": "bare", "kind": "explore", "brief": "Look around." }),
+    );
+    assert!(
+        is_error && text.contains("explore-no-report") && text.contains("Writes:"),
+        "{text}"
+    );
+    let notes = w
+        .dir
+        .path()
+        .join("notes")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let elsewhere = format!("Look around.\nWrites: {notes}\nWrites: S:/Elsewhere/x.md");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "spawn",
+        &json!({ "project": "demo", "slug": "bare", "kind": "explore", "brief": elsewhere }),
+    );
+    assert!(
+        is_error && text.contains("explore-no-report"),
+        "the folder itself and other folders: {text}"
+    );
+    let brief = format!("Look around.\nWrites: {notes}/found.md");
+    let (is_error, text) = w.tool(
+        orchestrator_identity(),
+        "spawn",
+        &json!({ "project": "demo", "slug": "ok", "kind": "explore", "brief": brief }),
+    );
+    assert!(!is_error, "{text}");
+    let task = w.store.find_task("demo-ok").unwrap().unwrap();
+    assert_eq!(task.model, Model::Opus, "built-in model of the kind");
+    assert_eq!(task.close, CloseMode::Silent);
+}
+
+#[test]
+fn only_an_explorer_sees_and_calls_the_narrow_backlog_tools() {
+    let mut plain = world(EXPLORE, false);
+    let identity = worker_identity(&plain);
+    let names = plain.tool_names(identity);
+    assert!(
+        !names.iter().any(|name| name.starts_with("backlog")),
+        "{names:?}"
+    );
+    let (is_error, text) = add_item(&mut plain, "Guard x.");
+    assert!(is_error && text.contains("explore"), "{text}");
+    let mut explorer = explore_world();
+    let identity = worker_identity(&explorer);
+    let names = explorer.tool_names(identity.clone());
+    assert!(
+        names.contains(&"backlog_list".to_owned()) && names.contains(&"backlog_add".to_owned()),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&"backlog_done".to_owned()) && !names.contains(&"backlog_edit".to_owned()),
+        "{names:?}"
+    );
+    let (is_error, text) = explorer.tool(identity.clone(), "backlog_done", &json!({ "id": 1 }));
+    assert!(is_error, "{text}");
+    let (is_error, text) = explorer.tool(identity, "backlog_list", &json!({}));
+    assert!(!is_error, "{text}");
+    let orchestrator = explorer.tool_names(orchestrator_identity());
+    assert!(
+        orchestrator.contains(&"backlog_done".to_owned()),
+        "the orchestrator keeps all four"
+    );
+}
+
+#[test]
+fn a_part_of_an_exploration_gets_no_backlog_tools() {
+    let mut w = explore_world();
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "scan", "brief": "Scan the thing." }),
+    );
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-scan");
+    assert_eq!(part.kind, "explore", "a part of an exploration explores");
+    assert_eq!(
+        part.close,
+        CloseMode::Silent,
+        "an explore part closes silently"
+    );
+    assert_eq!(
+        part.model,
+        Model::Sonnet,
+        "a part runs on Sonnet unless told otherwise"
+    );
+    let session = w.store.session_of(part.id).unwrap().unwrap().id;
+    let identity = Identity {
+        session: Some(session),
+        role: Some(Role::Worker),
+    };
+    let names = w.tool_names(identity.clone());
+    assert!(
+        !names.iter().any(|name| name.starts_with("backlog")),
+        "{names:?}"
+    );
+    let (is_error, text) = w.tool(
+        identity,
+        "backlog_add",
+        &json!({ "project": "demo", "text": "Nope." }),
+    );
+    assert!(is_error, "{text}");
+}
+
+#[test]
+fn an_explorer_adds_what_the_user_picked_with_a_source() {
+    let mut w = explore_world();
+    w.start();
+    let (is_error, text) = add_item(&mut w, "Guard x.");
+    assert!(is_error && text.contains("backlog-unasked"), "{text}");
+    answer_backlog(&mut w, "Guard x, Fix y");
+    let picked: Vec<EventRecord> = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "backlog-picked")
+        .collect();
+    assert_eq!(picked.len(), 1);
+    assert_eq!(picked[0].data["count"], 2);
+    let (is_error, text) = add_item(&mut w, "Guard x.");
+    assert!(!is_error, "{text}");
+    let report = w
+        .dir
+        .path()
+        .join("notes")
+        .join("report.md")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    assert!(
+        text.contains(&format!("Source: {report}, task demo-sand")),
+        "{text}"
+    );
+    let (is_error, text) = add_item(&mut w, "Fix y. Source: notes/other.md");
+    assert!(
+        !is_error && text.contains("Source: notes/other.md") && !text.contains("task demo-sand"),
+        "{text}"
+    );
+    let (is_error, text) = add_item(&mut w, "A third one.");
+    assert!(
+        is_error && text.contains("backlog-unasked"),
+        "the picks are used up: {text}"
+    );
+    let added = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "backlog-added")
+        .count();
+    assert_eq!(added, 2, "the task is on both events");
+    answer_backlog(&mut w, "Skip it");
+    let (is_error, text) = add_item(&mut w, "Again.");
+    assert!(
+        is_error && text.contains("backlog-unasked"),
+        "a declined ask adds nothing: {text}"
+    );
+}
+
+#[test]
+fn an_explorer_edits_only_the_scratchpad_and_its_report_in_shadow() {
+    let mut w = explore_world();
+    w.start();
+    let tree = w.worktree().join("src.rs").display().to_string();
+    w.pre("Write", &json!({ "file_path": tree, "content": "x" }));
+    assert_eq!(
+        w.denies(),
+        [("would-deny".to_owned(), "explore-write".to_owned())]
+    );
+    let report = w
+        .dir
+        .path()
+        .join("notes")
+        .join("report.md")
+        .display()
+        .to_string();
+    w.pre("Write", &json!({ "file_path": report, "content": "x" }));
+    assert_eq!(w.denies().len(), 1, "the report is granted");
+}
+
+#[test]
+fn explorer_rules_reach_an_exploration_and_no_one_else() {
+    let mut plain = world("", false);
+    let text = context(&plain.start());
+    assert!(!text.contains("You explore: a report"), "{text}");
+    let mut explorer = world_of("brief_writable = [\"@DIR@/notes\"]", "", false, "explore");
+    let text = context(&explorer.start());
+    assert!(
+        text.contains("## You explore: a report, then the Backlog ask")
+            && !text.contains("You are a part of an exploration"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_part_of_an_exploration_gets_only_the_part_section_of_the_explorer_rules() {
+    let mut w = explore_world();
+    w.start();
+    let (is_error, text) = part_spawn(
+        &mut w,
+        &json!({ "slug": "scan", "brief": "Scan the thing." }),
+    );
+    assert!(!is_error, "{text}");
+    let part = part_named(&w, "sand-scan");
+    w.session = w.store.session_of(part.id).unwrap().unwrap().id;
+    let text = context(&w.start());
+    assert!(text.contains(EXPLORER_PART_HEADING), "{text}");
+    assert!(!text.contains("You explore: a report"), "{text}");
+    assert!(!text.contains("`## Backlog candidates`"), "{text}");
+    assert!(!text.contains("with `backlog_add`"), "{text}");
+    let section = EXPLORER_PART_HEADING;
+    let body = text.split(section).nth(1).unwrap_or_default();
+    assert!(
+        body.trim().len() > 40,
+        "the part section is not empty: {body}"
+    );
 }

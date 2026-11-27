@@ -61,6 +61,7 @@ fn worker(branch: &str) -> Scope {
         orchestrator_repos: Vec::new(),
         orchestrator_repo_excludes: Vec::new(),
         reviewer: false,
+        explorer: false,
     }
 }
 
@@ -1650,6 +1651,107 @@ fn the_orchestrator_gains_nothing_from_worker_grants() {
         Some(RuleId::OrchestratorEdit),
         "only orchestrator_writable counts"
     );
+}
+
+#[test]
+fn an_explorer_reads_builds_and_writes_only_the_scratchpad_and_its_report() {
+    let scope = Scope {
+        explorer: true,
+        own_delivery: false,
+        extra_writable: vec![GuardPath::new("S:/Code/notes/report.md")],
+        ..worker("HEAD")
+    };
+    let table: &[(&str, Option<RuleId>)] = &[
+        ("git diff abc def", None),
+        ("rg foo src", None),
+        ("gh pr view 3", None),
+        ("git commit -m x", Some(RuleId::ExploreWrite)),
+        ("git push origin x", Some(RuleId::ExploreWrite)),
+        ("git checkout -b x", Some(RuleId::ExploreWrite)),
+        ("gh pr create --title x", Some(RuleId::ExploreWrite)),
+        ("gh pr merge 3", Some(RuleId::ExploreWrite)),
+        ("gh pr edit 3 --title x", Some(RuleId::ExploreWrite)),
+        ("gh pr close 3", Some(RuleId::ExploreWrite)),
+        ("gh pr comment 3 --body x", Some(RuleId::ExploreWrite)),
+        ("gh pr review 3 --approve", Some(RuleId::ExploreWrite)),
+        ("git stash", Some(RuleId::ExploreWrite)),
+        ("git stash push -m x", Some(RuleId::ExploreWrite)),
+        ("git stash list", None),
+        ("git worktree add ../x", Some(RuleId::ExploreWrite)),
+        ("git worktree list", None),
+        ("git branch -D x", Some(RuleId::ExploreWrite)),
+        ("git branch x", Some(RuleId::ExploreWrite)),
+        ("git branch --list", None),
+        ("git tag x", Some(RuleId::ExploreWrite)),
+        ("git tag -l", None),
+        ("git reset --hard", Some(RuleId::ExploreWrite)),
+        ("git rebase main", Some(RuleId::ExploreWrite)),
+        ("git merge main", Some(RuleId::ExploreWrite)),
+        ("git pull", Some(RuleId::ExploreWrite)),
+        ("git cherry-pick abc", Some(RuleId::ExploreWrite)),
+        ("git -C S:/Code/notes add report.md", None),
+        ("git -C S:/Code/notes commit -m x report.md", None),
+        ("git -C S:/Code/notes pull --ff-only", None),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
+    }
+    assert_eq!(
+        rule(&check_tool(&scope, &bash("cargo test"))),
+        Some(RuleId::HeavyUngated),
+        "builds stay allowed: only the gate rule speaks"
+    );
+    let edit = |path| ToolCall::Write { tool: "Edit", path };
+    let cases = [
+        (
+            "S:/Code/me-sim/me-sim-sand/src/lib.rs",
+            Some(RuleId::ExploreWrite),
+        ),
+        ("S:/Code/notes/other.md", Some(RuleId::ExploreWrite)),
+        ("S:/Code/notes/report.md", None),
+        ("C:/Users/User/AppData/Local/Temp/claude/x/notes.md", None),
+    ];
+    for (path, want) in cases {
+        assert_eq!(rule(&check_tool(&scope, &edit(path))), want, "{path}");
+    }
+    let plain = Scope {
+        explorer: false,
+        ..scope
+    };
+    assert_eq!(
+        rule(&check_tool(
+            &plain,
+            &edit("S:/Code/me-sim/me-sim-sand/src/lib.rs")
+        )),
+        None,
+        "a plain worker edits its worktree"
+    );
+}
+
+#[test]
+fn explore_write_does_not_see_shell_writes_inside_the_folder() {
+    let scope = Scope {
+        explorer: true,
+        own_delivery: false,
+        ..worker("HEAD")
+    };
+    for command in [
+        "echo x > src/lib.rs",
+        "sed -i s/a/b/ src/lib.rs",
+        "tee src/lib.rs",
+        "cp a.rs src/lib.rs",
+        "mv a.rs src/lib.rs",
+    ] {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            None,
+            "a known limit, left to the explorer rules: {command}"
+        );
+    }
 }
 
 #[test]

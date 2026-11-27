@@ -196,6 +196,7 @@ mod tests {
         assert_eq!("confirm".parse(), Ok(CloseMode::Confirm));
         assert!("loud".parse::<CloseMode>().is_err());
         assert_eq!(CloseMode::default_for("silent"), CloseMode::Silent);
+        assert_eq!(CloseMode::default_for("explore"), CloseMode::Silent);
         assert_eq!(CloseMode::default_for("task"), CloseMode::Confirm);
         assert_eq!(CloseMode::Silent.to_string(), "silent");
         assert_eq!(

@@ -10,6 +10,7 @@ pub mod digest;
 pub mod doctor;
 pub mod effort;
 pub mod exit;
+pub mod explore;
 pub mod flags;
 pub mod flows;
 pub mod gate;

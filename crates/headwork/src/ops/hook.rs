@@ -12,7 +12,9 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use headwork_adapters::host::{Choice, SurfaceId, TerminalHost};
-use headwork_core::config::{Delivery, ProjectConfig, PushMode, REVIEW_KIND, WorktreeCommand};
+use headwork_core::config::{
+    Delivery, EXPLORE_KIND, ProjectConfig, PushMode, REVIEW_KIND, WorktreeCommand,
+};
 use headwork_core::guard::ask::{AskFacts, Precondition, Question, check_ask};
 use headwork_core::guard::grants::brief_grants;
 use headwork_core::guard::stop::{StopFacts, check_stop};
@@ -647,6 +649,7 @@ pub fn scope_for(
                 scope.allowed_user_only = store.user_only_allowed(task.id)?;
                 scope.task_name = Some(task.name.to_string());
                 scope.reviewer = task.kind == REVIEW_KIND;
+                scope.explorer = task.kind == EXPLORE_KIND;
                 if let Some(project) = config.project(task.project()) {
                     let main = env.home.expand(&project.main);
                     writable.push(GuardPath::new(&slashed(&main.join(SUBAGENT_WORKTREES))));
@@ -1223,6 +1226,15 @@ fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
                     let env = call.env.ops_env();
                     super::review_loop::answer_disputes(store, &env, task, &answers)?;
                 }
+            }
+            if task.kind == EXPLORE_KIND {
+                super::explore::record_backlog_picks(
+                    store,
+                    task,
+                    &call.session.id,
+                    asked,
+                    &response,
+                )?;
             }
             if task.shape.is_lead() && close_go(asked, &response) {
                 store.append_event(
