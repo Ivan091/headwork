@@ -258,6 +258,8 @@ pub enum Target {
     Done,
     /// Not wanted any more.
     Cancelled,
+    /// The link to a task that is over ends and the status stays; headwork only, for a done or blocked item.
+    Unlink,
 }
 
 impl Target {
@@ -271,12 +273,17 @@ impl Target {
             Self::Unblock => "unblocked",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
+            Self::Unlink => "unlinked",
         }
     }
 }
 
 /// What the guard knows about an item besides its status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts the guard reads, one per condition of a transition table row"
+)]
 pub struct MoveFacts<'a> {
     /// The name of the live task linked to it (any state but closed, dropped and failed).
     pub live_task: Option<&'a str>,
@@ -286,6 +293,8 @@ pub struct MoveFacts<'a> {
     pub in_actor_epic: bool,
     /// Whether a task can work on it: its project is one headwork runs, or a spawn names the project.
     pub has_project: bool,
+    /// Whether the move names a task to link that is not the live task linked to it.
+    pub links_another_task: bool,
     /// The note of a finish or the reason of a cancel the move came with.
     pub reason: Option<&'a str>,
 }
@@ -302,8 +311,11 @@ pub enum MoveKind {
     Relink,
     /// Blocked (task lost, partial) back to in progress.
     Respawn,
-    /// Finished.
+    /// Finished, and the link ended.
     Finish,
+    /// Finished by headwork while its task still lives (it merged): the link stays, so the task can take it back if it
+    /// opens another pull request ([`MoveKind::Unfinish`]).
+    MergeFinish,
     /// Blocked.
     Block,
     /// Back from blocked.
@@ -314,6 +326,8 @@ pub enum MoveKind {
     Reopen,
     /// Done back to in progress: its task, merged, opened another pull request.
     Unfinish,
+    /// The link to a task that is over ends; the status stays, and a done item's note becomes the move's.
+    Unlink,
 }
 
 /// What a move does to the item's link to a task.
@@ -334,6 +348,8 @@ pub enum DateEffect {
     Keep,
     /// `done_on` becomes today and `done_note` the move's note or reason.
     Stamp,
+    /// `done_on` stays and `done_note` becomes the move's note, when it has one.
+    Renote,
     /// Both are cleared.
     Clear,
 }
@@ -377,9 +393,12 @@ pub enum MoveRefusal {
     /// A note or reason that runs over several lines, which the file could not hold.
     #[error("the {0} must be one line")]
     MultiLine(&'static str),
-    /// A note or reason holding `[` or `]`, which would break the status tag it is written into.
+    /// A block note holding `[` or `]`, which would break the status tag it is written into.
     #[error("the {0} must not hold `[` or `]`")]
     Bracket(&'static str),
+    /// A done note whose parentheses do not pair up, which would break the `(done D: note)` group it is written into.
+    #[error("the {0} must pair its parentheses")]
+    Parentheses(&'static str),
     /// The orchestrator cancelling without saying why.
     #[error("the orchestrator cancels an item only with a reason (the user's words)")]
     ReasonRequired,
@@ -432,15 +451,15 @@ const fn moved(from: Option<ItemStatus>, to: BacklogStatus, kind: MoveKind) -> I
 /// task can take it back; a cancel stamps and ends the link; a reopen clears the date and ends the link (a done item
 /// may still be linked to its merged task); an unfinish clears the date; a block for a lost
 /// task ends the link; everything else keeps both.
-fn with_effects(step: ItemMove, actor: BacklogActor, facts: &MoveFacts<'_>) -> ItemMove {
+fn with_effects(step: ItemMove) -> ItemMove {
     let (link, dates) = match (step.kind, &step.to) {
         (MoveKind::Start | MoveKind::Relink | MoveKind::Respawn, _) => {
             (LinkEffect::Set, DateEffect::Keep)
         }
-        (MoveKind::Finish, _) if actor == BacklogActor::Headwork && facts.live_task.is_some() => {
-            (LinkEffect::Keep, DateEffect::Stamp)
-        }
+        (MoveKind::MergeFinish, _) => (LinkEffect::Keep, DateEffect::Stamp),
         (MoveKind::Finish | MoveKind::Cancel, _) => (LinkEffect::Clear, DateEffect::Stamp),
+        (MoveKind::Unlink, BacklogStatus::Done) => (LinkEffect::Clear, DateEffect::Renote),
+        (MoveKind::Unlink, _) => (LinkEffect::Clear, DateEffect::Keep),
         (MoveKind::Reopen, _) => (LinkEffect::Clear, DateEffect::Clear),
         (MoveKind::Unfinish, _) => (LinkEffect::Keep, DateEffect::Clear),
         (MoveKind::Block, BacklogStatus::Blocked(block))
@@ -465,10 +484,29 @@ fn one_line(field: &'static str, text: Option<&str>) -> Result<(), MoveRefusal> 
     };
     if text.contains(['\n', '\r']) {
         Err(MoveRefusal::MultiLine(field))
-    } else if text.contains(['[', ']']) {
-        Err(MoveRefusal::Bracket(field))
     } else {
         Ok(())
+    }
+}
+
+/// Refuses a text whose parentheses do not pair up: a `)` with no `(` before it, or a `(` left open.
+fn balanced(field: &'static str, text: Option<&str>) -> Result<(), MoveRefusal> {
+    let mut depth = 0_usize;
+    for c in text.unwrap_or_default().chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or(MoveRefusal::Parentheses(field))?;
+            }
+            _ => {}
+        }
+    }
+    if depth == 0 {
+        Ok(())
+    } else {
+        Err(MoveRefusal::Parentheses(field))
     }
 }
 
@@ -490,9 +528,18 @@ pub fn transition(
 ) -> Result<ItemMove, MoveRefusal> {
     if let Target::Blocked { note, .. } = to {
         one_line("note", note.as_deref())?;
+        if note
+            .as_deref()
+            .is_some_and(|note| note.contains(['[', ']']))
+        {
+            return Err(MoveRefusal::Bracket("note"));
+        }
     }
     one_line("reason", facts.reason)?;
-    decide(from, to, actor, facts).map(|step| with_effects(step, actor, facts))
+    if *to == Target::Done {
+        balanced("note", facts.reason)?;
+    }
+    decide(from, to, actor, facts).map(with_effects)
 }
 
 fn decide(
@@ -588,10 +635,33 @@ fn decide(
             | BacklogStatus::Cancelled => Err(refuse()),
         },
         Target::Done => {
-            finish(from, actor, facts).map(|()| moved(kind, BacklogStatus::Done, MoveKind::Finish))
+            finish(from, actor, facts).map(|kind_of| moved(kind, BacklogStatus::Done, kind_of))
+        }
+        Target::Unlink => {
+            unlink(from, actor, facts).map(|()| moved(kind, from.clone(), MoveKind::Unlink))
         }
         Target::Cancelled => cancel(from, actor, facts)
             .map(|()| moved(kind, BacklogStatus::Cancelled, MoveKind::Cancel)),
+    }
+}
+
+/// Headwork ends the link of a done or blocked item whose task is over; the status stays.
+fn unlink(
+    from: &BacklogStatus,
+    actor: BacklogActor,
+    facts: &MoveFacts<'_>,
+) -> Result<(), MoveRefusal> {
+    match from {
+        BacklogStatus::Done | BacklogStatus::Blocked(_)
+            if actor == BacklogActor::Headwork && facts.live_task.is_none() =>
+        {
+            Ok(())
+        }
+        BacklogStatus::Done
+        | BacklogStatus::Blocked(_)
+        | BacklogStatus::Backlog
+        | BacklogStatus::InProgress
+        | BacklogStatus::Cancelled => Err(not_allowed(actor, Some(from.kind()), &Target::Unlink)),
     }
 }
 
@@ -602,7 +672,16 @@ fn start(
 ) -> Result<MoveKind, MoveRefusal> {
     use BacklogActor as A;
     let refuse = || not_allowed(actor, Some(from.kind()), &Target::InProgress);
-    if *from == BacklogStatus::Done && actor == A::Headwork && facts.live_task.is_some() {
+    if *from == BacklogStatus::Done && actor == A::Headwork {
+        let Some(task) = facts.live_task else {
+            return Err(refuse());
+        };
+        if facts.links_another_task {
+            return Err(MoveRefusal::TaskWorks(task.to_owned()));
+        }
+        if !facts.has_project {
+            return Err(MoveRefusal::NoProject);
+        }
         return Ok(MoveKind::Unfinish);
     }
     let kind = match from {
@@ -665,15 +744,18 @@ fn finish(
     from: &BacklogStatus,
     actor: BacklogActor,
     facts: &MoveFacts<'_>,
-) -> Result<(), MoveRefusal> {
+) -> Result<MoveKind, MoveRefusal> {
     use BacklogActor as A;
     match (from, actor) {
         (BacklogStatus::Done, _) => Err(MoveRefusal::Already(ItemStatus::Done)),
-        (BacklogStatus::InProgress, A::Headwork) => Ok(()),
+        (BacklogStatus::InProgress, A::Headwork) if facts.live_task.is_some() => {
+            Ok(MoveKind::MergeFinish)
+        }
+        (BacklogStatus::InProgress, A::Headwork) => Ok(MoveKind::Finish),
         (
             BacklogStatus::Backlog | BacklogStatus::InProgress | BacklogStatus::Blocked(_),
             A::User | A::Orchestrator,
-        ) => facts.live_task.map_or(Ok(()), |task| {
+        ) => facts.live_task.map_or(Ok(MoveKind::Finish), |task| {
             Err(MoveRefusal::FinishedByTask(task.to_owned()))
         }),
         _ => Err(not_allowed(actor, Some(from.kind()), &Target::Done)),
@@ -748,8 +830,9 @@ impl TaskEndEffect {
 /// What a task that moves to `state` does to each in-progress item linked to it (`docs/backlog.md`, section 10).
 ///
 /// `merged` finishes it; `closed` (an item still in progress, so it never saw `merged`) finishes it, naming the merged
-/// pull requests or saying there was none; `dropped` and `failed` block it as `task_lost`; any other state leaves it
-/// alone. `merged_urls` are the task's merged pull requests, oldest first.
+/// pull requests or saying there was none; `dropped` and `failed` block it as `task_lost`, unless the task already merged
+/// work (an item a merged task took back when it opened another pull request), which finishes it; any other state leaves
+/// it alone. `merged_urls` are the task's merged pull requests, oldest first.
 #[must_use]
 pub fn on_task_end(
     state: TaskState,
@@ -773,6 +856,9 @@ pub fn on_task_end(
                 merged()
             },
         }),
+        (TaskState::Dropped | TaskState::Failed, _) if !merged_urls.is_empty() => {
+            Some(TaskEndEffect::Finish { note: merged() })
+        }
         (TaskState::Dropped, _) => Some(TaskEndEffect::Lost {
             note: format!("task {task_name} dropped"),
         }),

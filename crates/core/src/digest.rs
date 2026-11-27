@@ -240,7 +240,7 @@ fn user_items<'a>(
 
 /// The ids of the backlog items that wait on the user, in the digest's order.
 ///
-/// Those due or started come first, then the other open items of the user that have no task and are not held back by a
+/// Those due or started come first, then the other open items of the user that no live task holds and are not held back by a
 /// `not_before` date. The digest and the dashboard both use this, so they never disagree.
 #[must_use]
 pub fn waiting_items(backlog_items: &[BacklogItem], today: &BacklogDate) -> Vec<i64> {

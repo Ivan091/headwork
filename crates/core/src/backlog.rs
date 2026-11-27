@@ -325,6 +325,9 @@ pub struct Parsed {
     pub items: Vec<BacklogDraft>,
     /// The lines left out.
     pub unparsed: Vec<Unparsed>,
+    /// The lines taken with a warning: an item whose status tag cannot be read, imported in the backlog with the tag
+    /// kept in its text.
+    pub warnings: Vec<Unparsed>,
 }
 
 /// The text after a leading `For you:` or `For you (...):` when it has one; an item written so is the user's.
@@ -595,13 +598,18 @@ const FROM_IN_PROGRESS: &str = ", from in progress";
 /// <state>]` (the task part is ignored), `[blocked: <reason>]`, `[blocked: <reason>: <note>]`, and either blocked form
 /// with `, from in progress` after the reason when an unblock returns the item to in progress (else to the backlog).
 ///
-/// `None` when the line ends in no tag; `Some(Err)` names why a tag that starts like one cannot be read.
+/// Only `[in progress]`, `[in progress: ...]` and `[blocked: ...]` count as tags, so `Collect [in progress reports]` is
+/// plain text. `None` when the line ends in no tag; `Some(Err)` names why a tag of those shapes cannot be read.
 fn status_tag(body: &str) -> Option<Result<(&str, BacklogStatus), String>> {
     let inner_end = body.strip_suffix(']')?.len();
-    let start = [format!("[{IN_PROGRESS}"), format!("[{BLOCKED}:")]
-        .iter()
-        .filter_map(|marker| body.rfind(marker.as_str()))
-        .max()?;
+    let start = [
+        format!("[{IN_PROGRESS}]"),
+        format!("[{IN_PROGRESS}:"),
+        format!("[{BLOCKED}:"),
+    ]
+    .iter()
+    .filter_map(|marker| body.rfind(marker.as_str()))
+    .max()?;
     let before = body.get(..start)?;
     if !before.ends_with(char::is_whitespace) {
         return None;
@@ -750,6 +758,7 @@ fn mark_of(rest: &str) -> (Mark, &str) {
 struct Reader {
     items: Vec<BacklogDraft>,
     unparsed: Vec<Unparsed>,
+    warnings: Vec<Unparsed>,
     project: String,
     section: Option<String>,
     area: Area,
@@ -801,8 +810,11 @@ impl Reader {
         };
         let read = read_body(body, status != BacklogStatus::Backlog);
         if let Some(why) = &read.bad_tag {
-            self.skip(line_no, line, why);
-            return;
+            self.warnings.push(Unparsed {
+                line_no,
+                line: line.to_owned(),
+                reason: format!("{why}; imported in the backlog with the tag kept in its text"),
+            });
         }
         if self.area == Area::Projects
             && read
@@ -944,6 +956,7 @@ pub fn parse(text: &str) -> Parsed {
     let mut reader = Reader {
         items: Vec::new(),
         unparsed: Vec::new(),
+        warnings: Vec::new(),
         project: GENERAL.to_owned(),
         section: None,
         area: Area::Projects,
@@ -961,6 +974,7 @@ pub fn parse(text: &str) -> Parsed {
     Parsed {
         items: reader.items,
         unparsed,
+        warnings: reader.warnings,
     }
 }
 
@@ -1487,6 +1501,67 @@ mod tests {
     }
 
     #[test]
+    fn a_done_note_with_brackets_and_paired_parentheses_survives_the_round_trip() {
+        let mut done = row(1, &one("- [ ] Shipped (added 2026-11-02)"));
+        done.draft.status = BacklogStatus::Done;
+        done.draft.done_on = Some(date("2026-11-20"));
+        done.draft.done_note = Some("fixed in [#123] (see #12)".to_owned());
+        let written = render(std::slice::from_ref(&done));
+        let back = parse(&written).items.remove(0);
+        assert_eq!(
+            (back.text.as_str(), back.done_note.as_deref()),
+            ("Shipped", Some("fixed in [#123] (see #12)")),
+            "{written}"
+        );
+        done.draft.done_note = Some("fixed :)".to_owned());
+        let broken = parse(&render(&[done])).items.remove(0);
+        assert_ne!(
+            broken.done_note.as_deref(),
+            Some("fixed :)"),
+            "an unpaired parenthesis cannot round-trip, which is why the guard refuses it"
+        );
+    }
+
+    #[test]
+    fn a_tag_that_cannot_be_read_leaves_plain_text_and_a_warning() {
+        for (odd, text) in [
+            ("- [ ] Odd [blocked: nonsense]", "Odd [blocked: nonsense]"),
+            (
+                "- [ ] Odd [blocked: event, from somewhere]",
+                "Odd [blocked: event, from somewhere]",
+            ),
+            (
+                "- [ ] Odd [in progress: for days]",
+                "Odd [in progress: for days]",
+            ),
+        ] {
+            let parsed = parse(&format!("## p\n\n{odd}\n"));
+            assert!(parsed.unparsed.is_empty(), "{odd}: {:?}", parsed.unparsed);
+            let item = parsed.items.first();
+            assert_eq!(
+                item.map(|item| (item.text.as_str(), item.status.clone())),
+                Some((text, BacklogStatus::Backlog)),
+                "{odd}: taken as plain text"
+            );
+            assert!(
+                parsed
+                    .warnings
+                    .first()
+                    .is_some_and(|line| line.line_no == 3 && line.reason.contains("status tag")),
+                "{odd}: {:?}",
+                parsed.warnings
+            );
+        }
+        let plain = parse("## p\n\n- [ ] Collect [in progress reports]\n");
+        assert!(plain.warnings.is_empty(), "{:?}", plain.warnings);
+        assert_eq!(
+            plain.items.first().map(|item| item.text.as_str()),
+            Some("Collect [in progress reports]"),
+            "only the three tag shapes count"
+        );
+    }
+
+    #[test]
     fn status_tags_are_written_and_read_back() {
         let lost = BacklogStatus::Blocked(Block {
             reason: BlockReason::TaskLost,
@@ -1544,22 +1619,6 @@ mod tests {
             "Read [the docs]",
             "a bracket that is no tag stays in the text"
         );
-        for odd in [
-            "- [ ] Odd [blocked: nonsense]",
-            "- [ ] Odd [blocked: event, from somewhere]",
-            "- [ ] Odd [in progress for days]",
-        ] {
-            let parsed = parse(&format!("## p\n\n{odd}\n"));
-            assert!(parsed.items.is_empty(), "{odd}");
-            assert!(
-                parsed
-                    .unparsed
-                    .first()
-                    .is_some_and(|line| line.line_no == 3 && line.reason.contains("status tag")),
-                "{odd}: {:?}",
-                parsed.unparsed
-            );
-        }
         let event = one("- [ ] Wait [blocked: event, from in progress: the 2.0 release: soon]");
         assert_eq!(
             event.status,

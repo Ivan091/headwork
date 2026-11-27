@@ -34,6 +34,7 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     linked_to_actor: false,
     in_actor_epic: false,
     has_project: true,
+    links_another_task: false,
     reason: None,
 };
 
@@ -163,7 +164,23 @@ fn allowed_rows() -> Vec<Row> {
             A::Headwork,
             LIVE,
             S::Done,
-            MoveKind::Finish,
+            MoveKind::MergeFinish,
+        ),
+        (
+            Some(S::Done),
+            Target::Unlink,
+            A::Headwork,
+            PLAIN,
+            S::Done,
+            MoveKind::Unlink,
+        ),
+        (
+            Some(lost()),
+            Target::Unlink,
+            A::Headwork,
+            PLAIN,
+            lost(),
+            MoveKind::Unlink,
         ),
         (
             Some(S::InProgress),
@@ -953,23 +970,64 @@ two",
         ),
         (
             Some(S::Backlog),
-            Target::Cancelled,
+            Target::Done,
             A::User,
             MoveFacts {
-                reason: Some("not ]wanted"),
+                reason: Some("fixed :)"),
                 ..PLAIN
             },
-            MoveRefusal::Bracket("reason"),
+            MoveRefusal::Parentheses("note"),
         ),
         (
             Some(S::Backlog),
             Target::Done,
             A::User,
             MoveFacts {
-                reason: Some("PR [#4"),
+                reason: Some("see (later"),
                 ..PLAIN
             },
-            MoveRefusal::Bracket("reason"),
+            MoveRefusal::Parentheses("note"),
+        ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Headwork,
+            MoveFacts {
+                links_another_task: true,
+                ..LIVE
+            },
+            MoveRefusal::TaskWorks("headwork-x".to_owned()),
+        ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Headwork,
+            MoveFacts {
+                has_project: false,
+                ..LIVE
+            },
+            MoveRefusal::NoProject,
+        ),
+        (
+            Some(S::Done),
+            Target::Unlink,
+            A::Headwork,
+            LIVE,
+            not(A::Headwork, "done", "unlinked"),
+        ),
+        (
+            Some(S::InProgress),
+            Target::Unlink,
+            A::Headwork,
+            PLAIN,
+            not(A::Headwork, "in_progress", "unlinked"),
+        ),
+        (
+            Some(S::Done),
+            Target::Unlink,
+            A::User,
+            PLAIN,
+            not(A::User, "done", "unlinked"),
         ),
         (
             Some(S::Backlog),
@@ -1112,7 +1170,17 @@ fn the_task_end_table() {
             finish("task t, no pull request"),
         ),
         (TaskState::Dropped, &[][..], lost("task t dropped")),
-        (TaskState::Failed, &urls[..], lost("task t failed")),
+        (TaskState::Failed, &[][..], lost("task t failed")),
+        (
+            TaskState::Failed,
+            &urls[..],
+            finish("task t merged u/1, u/2"),
+        ),
+        (
+            TaskState::Dropped,
+            &urls[..],
+            finish("task t merged u/1, u/2"),
+        ),
         (TaskState::Queued, &[][..], None),
         (TaskState::Spawning, &[][..], None),
         (TaskState::Working, &[][..], None),
@@ -1213,6 +1281,22 @@ fn each_move_says_what_it_does_to_the_link_and_the_done_date() {
             LIVE,
             LinkEffect::Keep,
             DateEffect::Stamp,
+        ),
+        (
+            Some(S::Done),
+            Target::Unlink,
+            A::Headwork,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Renote,
+        ),
+        (
+            Some(blocked(R::Event, ReturnTo::Backlog)),
+            Target::Unlink,
+            A::Headwork,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Keep,
         ),
         (
             Some(S::InProgress),
@@ -1371,4 +1455,33 @@ fn the_linked_item_table() {
             "{state} {status}"
         );
     }
+}
+
+#[test]
+fn brackets_are_refused_only_in_block_notes_and_reasons_need_one_line() {
+    use BacklogStatus as S;
+    let allowed = |to: Target, reason: Option<&'static str>| {
+        transition(
+            Some(&S::Backlog),
+            &to,
+            A::User,
+            &MoveFacts { reason, ..PLAIN },
+        )
+    };
+    assert!(
+        allowed(Target::Done, Some("fixed in [#123]")).is_ok(),
+        "a done note may hold brackets"
+    );
+    assert!(
+        allowed(Target::Done, Some("fixed (see #12)")).is_ok(),
+        "paired parentheses"
+    );
+    assert!(
+        allowed(Target::Cancelled, Some("not ]wanted :)")).is_ok(),
+        "a cancel reason is never exported"
+    );
+    assert_eq!(
+        allowed(Target::Cancelled, Some("a\nb")).map(|_| ()),
+        Err(MoveRefusal::MultiLine("reason"))
+    );
 }

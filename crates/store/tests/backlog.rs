@@ -899,19 +899,34 @@ fn pick_counts_are_the_newest_pick_and_the_adds_after_it() {
             .unwrap();
     };
     store
-        .add_backlog_item_for(&draft("before the pick"), Actor::Worker, Some(task.id))
+        .add_backlog_item_for(
+            &draft("before the pick"),
+            Actor::Worker,
+            BacklogActor::Explorer,
+            Some(task.id),
+        )
         .unwrap();
     pick(&store, 2);
     assert_eq!(left(&store, task.id), 2);
     store
-        .add_backlog_item_for(&draft("first"), Actor::Worker, Some(task.id))
+        .add_backlog_item_for(
+            &draft("first"),
+            Actor::Worker,
+            BacklogActor::Explorer,
+            Some(task.id),
+        )
         .unwrap();
     store
         .add_backlog_item(&draft("another task's"), Actor::Orchestrator)
         .unwrap();
     assert_eq!(left(&store, task.id), 1);
     store
-        .add_backlog_item_for(&draft("second"), Actor::Worker, Some(task.id))
+        .add_backlog_item_for(
+            &draft("second"),
+            Actor::Worker,
+            BacklogActor::Explorer,
+            Some(task.id),
+        )
         .unwrap();
     assert_eq!(left(&store, task.id), 0);
     pick(&store, 1);
@@ -921,15 +936,20 @@ fn pick_counts_are_the_newest_pick_and_the_adds_after_it() {
 }
 
 #[test]
-fn an_add_passes_the_guard_and_always_lands_in_the_backlog() {
+fn an_add_passes_the_guard_as_its_mover_and_must_be_a_backlog_item() {
     let (mut store, config) = store();
     let mut done = draft("Written as done");
     done.status = BacklogStatus::Done;
-    let added = store.add_backlog_item(&done, Actor::User).unwrap();
-    assert_eq!(
-        added.draft.status,
-        BacklogStatus::Backlog,
-        "an add is a new backlog item"
+    let refused_done = store.add_backlog_item(&done, Actor::User);
+    assert!(
+        matches!(&refused_done, Err(StoreError::BacklogAddRefused(reason)) if reason.contains("not as done")),
+        "{refused_done:?}"
+    );
+    let worker_as_worker =
+        store.add_backlog_item_for(&draft("Worker"), Actor::Worker, BacklogActor::Worker, None);
+    assert!(
+        matches!(worker_as_worker, Err(StoreError::BacklogAddRefused(_))),
+        "the mover is the one passed"
     );
     let refused = store.add_backlog_item(&draft("From a worker"), Actor::Worker);
     assert!(
@@ -939,7 +959,12 @@ fn an_add_passes_the_guard_and_always_lands_in_the_backlog() {
     let explorer = task(&mut store, &config, "explore");
     assert!(
         store
-            .add_backlog_item_for(&draft("A pick"), Actor::Worker, Some(explorer.id))
+            .add_backlog_item_for(
+                &draft("A pick"),
+                Actor::Worker,
+                BacklogActor::Explorer,
+                Some(explorer.id),
+            )
             .is_ok(),
         "an exploration adds its picks"
     );
@@ -1009,5 +1034,66 @@ fn a_reopen_of_a_done_item_still_linked_to_its_merged_task_ends_the_link() {
     assert_eq!(
         (reopened.draft.status, reopened.task),
         (BacklogStatus::Backlog, None)
+    );
+}
+
+#[test]
+fn a_task_dropped_after_it_took_its_merged_item_back_finishes_the_item() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "back", "Merged, back, dropped");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
+    store
+        .transition(
+            worker.id,
+            &Trigger::ReviewOpened { repo_allowed: true },
+            Actor::Tick,
+        )
+        .unwrap();
+    assert_eq!(
+        store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress,
+        "taken back"
+    );
+    store.drop_task(worker.id, Actor::Orchestrator).unwrap();
+    let item = store.backlog_item(id).unwrap();
+    assert_eq!(
+        (
+            item.draft.status,
+            item.task,
+            item.draft.done_note.as_deref()
+        ),
+        (
+            BacklogStatus::Done,
+            None,
+            Some("task me-sim-back merged https://github.com/Ivan091/me-sim/pull/3")
+        ),
+        "the work merged, so the item is done, not task_lost"
+    );
+}
+
+#[test]
+fn an_unlink_at_a_task_end_is_a_logged_move() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "logged", "Merged then closed");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
+    close(&mut store, &worker, &[Trigger::ForceClose]);
+    let last = moves(&store).into_iter().last().unwrap();
+    assert_eq!(
+        (
+            last["item"].as_i64(),
+            last["from"].as_str(),
+            last["to"].as_str(),
+            last["kind"].as_str(),
+            last["actor"].as_str()
+        ),
+        (
+            Some(id),
+            Some("done"),
+            Some("done"),
+            Some("unlink"),
+            Some("headwork")
+        )
     );
 }

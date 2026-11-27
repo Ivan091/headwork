@@ -75,7 +75,8 @@ pub struct BacklogMove<'a> {
     pub actor: BacklogActor,
     /// Who moves it, for the event log.
     pub by: Actor,
-    /// The acting worker's or explorer's own task.
+    /// The acting worker's or explorer's own task. Nothing fills it in P1, whose backlog tools are the orchestrator's;
+    /// P2's worker item tools will, for the guard's worker rows.
     pub actor_task: Option<TaskId>,
     /// Whether a task can work on it; the caller knows the configured projects, or a spawn names one.
     pub has_project: bool,
@@ -370,6 +371,11 @@ fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'a>) -> MoveFacts<'a> 
             .is_some_and(|own| item.task.as_ref().is_some_and(|task| task.id == own.0)),
         in_actor_epic: false,
         has_project: request.has_project,
+        links_another_task: request.link.is_some_and(|link| {
+            item.task
+                .as_ref()
+                .is_some_and(|task| task.is_live() && task.id != link.0)
+        }),
         reason: request.reason,
     }
 }
@@ -405,6 +411,13 @@ fn write_move(
         DateEffect::Keep => (before.draft.done_on.clone(), before.draft.done_note.clone()),
         DateEffect::Stamp => (Some(today(tx)?), request.reason.map(str::to_owned)),
         DateEffect::Clear => (None, None),
+        DateEffect::Renote => (
+            before.draft.done_on.clone(),
+            request
+                .reason
+                .map(str::to_owned)
+                .or_else(|| before.draft.done_note.clone()),
+        ),
     };
     let (reason, note, before_block) = block_columns(&step.to);
     tx.execute(
@@ -522,21 +535,10 @@ pub(crate) fn task_ended(
                 }
             }
             Some(LinkedEnd::Unlink { note }) => {
+                let request = BacklogMove::new(Target::Unlink, BacklogActor::Headwork, actor, true)
+                    .with_reason(note.as_deref());
                 for id in ids {
-                    tx.execute(
-                        &format!(
-                            "UPDATE backlog_items SET task_id = NULL, done_note = coalesce(?2, done_note), updated_at = {NOW}
-                             WHERE id = ?1"
-                        ),
-                        params![id, note],
-                    )?;
-                    event(
-                        tx,
-                        actor,
-                        Some(task.id),
-                        EVENT_BACKLOG_EDITED,
-                        &load(tx, id)?,
-                    )?;
+                    headwork_move(tx, task, id, &request)?;
                 }
             }
             None => {}
@@ -589,44 +591,47 @@ impl Store {
         Ok(items)
     }
 
-    /// Adds an item last and logs `backlog-added`.
+    /// Adds an item last and logs `backlog-added`; `actor` moves it as [`BacklogActor::from_actor`] says, never as an
+    /// explorer.
     ///
     /// # Errors
     ///
-    /// Returns the SQLite error.
+    /// As [`Store::add_backlog_item_for`].
     pub fn add_backlog_item(
         &mut self,
         draft: &BacklogDraft,
         actor: Actor,
     ) -> Result<BacklogItem, StoreError> {
-        self.add_backlog_item_for(draft, actor, None)
+        self.add_backlog_item_for(draft, actor, BacklogActor::from_actor(actor, false), None)
     }
 
-    /// Adds an item last, in the backlog, and logs `backlog-added` for `task`, the exploration that added it. The add
-    /// passes the status guard: an event's worker adds only as an exploration (`task` given).
+    /// Adds an item last, in the backlog, and logs `backlog-added` by `by` for `task`, the exploration that added it.
+    ///
+    /// The add passes the status guard as `mover` (`transition(None, backlog, ...)`): a worker is refused, an explorer
+    /// adds. The draft's status must be `backlog`.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::BacklogRefused`] when the guard refuses the add, or the SQLite error.
+    /// Returns [`StoreError::BacklogAddRefused`] when the draft's status is not `backlog` or the guard refuses the add,
+    /// [`StoreError::InvalidBacklogItem`] when a field cannot be written to the file, or the SQLite error.
     pub fn add_backlog_item_for(
         &mut self,
         draft: &BacklogDraft,
-        actor: Actor,
+        by: Actor,
+        mover: BacklogActor,
         task: Option<TaskId>,
     ) -> Result<BacklogItem, StoreError> {
-        let step = transition(
-            None,
-            &Target::Backlog,
-            BacklogActor::from_actor(actor, task.is_some()),
-            &MoveFacts::default(),
-        )
-        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let draft = BacklogDraft {
-            status: step.to,
-            ..draft.clone()
-        };
+        if draft.status != BacklogStatus::Backlog {
+            return Err(StoreError::BacklogAddRefused(format!(
+                "a new item is added to the backlog, not as {}",
+                draft.status.kind()
+            )));
+        }
+        transition(None, &Target::Backlog, mover, &MoveFacts::default())
+            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+        let actor = by;
         let tx = self.conn.transaction()?;
-        let id = insert(&tx, &draft)?;
+        let id = insert(&tx, draft)?;
         let item = load(&tx, id)?;
         event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
         tx.commit()?;

@@ -144,6 +144,8 @@ pub struct ImportReport {
     pub counts: ImportCounts,
     /// The lines left out, with the reason.
     pub unparsed: Vec<Unparsed>,
+    /// The lines taken with a warning (a status tag that cannot be read), with the reason.
+    pub warnings: Vec<Unparsed>,
 }
 
 impl ImportReport {
@@ -167,6 +169,13 @@ impl ImportReport {
             let _infallible = writeln!(
                 out,
                 "  line {}: {} ({})",
+                line.line_no, line.line, line.reason
+            );
+        }
+        for line in &self.warnings {
+            let _infallible = writeln!(
+                out,
+                "  warning, line {}: {} ({})",
                 line.line_no, line.line, line.reason
             );
         }
@@ -609,6 +618,7 @@ pub fn import(
         dry_run,
         counts,
         unparsed: parsed.unparsed,
+        warnings: parsed.warnings,
     })
 }
 
@@ -652,7 +662,12 @@ pub fn add_for(
         done_on: None,
         done_note: None,
     };
-    let item = store.add_backlog_item_for(&draft, env.actor, task)?;
+    let mover = if task.is_some() {
+        BacklogActor::Explorer
+    } else {
+        backlog_actor(env.actor)
+    };
+    let item = store.add_backlog_item_for(&draft, env.actor, mover, task)?;
     Ok(changed(store, env, &[item]))
 }
 
