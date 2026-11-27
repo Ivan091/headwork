@@ -230,6 +230,34 @@ fn check_heading(field: &'static str, name: &str) -> Result<(), BacklogError> {
     }
 }
 
+/// The longest text an automatic item takes from a brief.
+const GOAL_CHARS: usize = 160;
+
+/// The goal line of a brief: its first line with words, without markdown marks, a leading `Goal:`, brackets, and cut to
+/// [`GOAL_CHARS`] characters; `None` for a brief with no words.
+#[must_use]
+pub fn goal_line(brief: &str) -> Option<String> {
+    let line = brief
+        .lines()
+        .map(|line| {
+            line.trim_start_matches(['#', '-', '*', '>', ' ', '\t'])
+                .trim()
+        })
+        .find(|line| !line.is_empty())?;
+    let line = line
+        .get(..5)
+        .filter(|head| head.eq_ignore_ascii_case("goal:"))
+        .and_then(|_| line.get(5..))
+        .unwrap_or(line);
+    let clean: String = line.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean.chars().take(GOAL_CHARS).collect())
+    }
+}
+
 /// A note as it is kept: trimmed, without a leading `- `.
 #[must_use]
 pub fn clean_note(note: &str) -> String {

@@ -1209,6 +1209,9 @@ fn each_task_end_effect_is_a_move_headwork_may_make() {
         TaskEndEffect::Lost {
             note: "n".to_owned(),
         },
+        TaskEndEffect::Partial {
+            note: "n".to_owned(),
+        },
     ] {
         let live = MoveFacts {
             live_task: Some("t"),
@@ -1507,5 +1510,83 @@ fn a_generated_unlink_note_is_paren_checked_like_a_done_note() {
     assert_eq!(
         unlink("task t merged https://x/wiki/a_(b"),
         Err(MoveRefusal::Parentheses("note"))
+    );
+}
+
+#[test]
+fn a_partial_outcome_blocks_the_item_whether_the_task_merged_or_closed() {
+    for state in [TaskState::Merged, TaskState::Closed] {
+        assert_eq!(
+            on_task_end(state, TaskOutcome::Partial, &[], "t"),
+            Some(TaskEndEffect::Partial {
+                note: "task t partial".to_owned()
+            }),
+            "{state}"
+        );
+    }
+    for state in [TaskState::Working, TaskState::InReview] {
+        assert_eq!(
+            on_task_end(state, TaskOutcome::Partial, &[], "t"),
+            None,
+            "{state}"
+        );
+    }
+    let effect = TaskEndEffect::Partial {
+        note: "n".to_owned(),
+    };
+    let moved = transition(
+        Some(&BacklogStatus::InProgress),
+        &effect.target(),
+        A::Headwork,
+        &PLAIN,
+    );
+    assert_eq!(moved.map(|step| step.to.kind()), Ok(ItemStatus::Blocked));
+}
+
+#[test]
+fn a_task_outcome_is_read_from_the_word_a_done_call_gives() {
+    assert_eq!("done".parse::<TaskOutcome>().ok(), Some(TaskOutcome::Done));
+    assert_eq!(
+        "partial".parse::<TaskOutcome>().ok(),
+        Some(TaskOutcome::Partial)
+    );
+    assert!("finished".parse::<TaskOutcome>().is_err());
+    assert_eq!(TaskOutcome::default(), TaskOutcome::Done);
+}
+
+#[test]
+fn the_goal_line_is_the_first_line_with_words_without_marks() {
+    use headwork_core::backlog::goal_line;
+    assert_eq!(
+        goal_line(
+            "# Goal: Build [the] thing
+
+more"
+        )
+        .as_deref(),
+        Some("Build the thing")
+    );
+    assert_eq!(
+        goal_line(
+            "
+
+  - Fix   it  
+"
+        )
+        .as_deref(),
+        Some("Fix it")
+    );
+    assert_eq!(
+        goal_line(
+            "   
+
+"
+        ),
+        None
+    );
+    assert_eq!(goal_line("Goal:"), None);
+    assert_eq!(
+        goal_line(&"x".repeat(500)).map(|goal| goal.chars().count()),
+        Some(160)
     );
 }

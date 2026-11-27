@@ -499,6 +499,24 @@ button.on {
   border-color: var(--red);
 }
 
+#backlog .chip.status-in_progress {
+  color: var(--blue);
+}
+
+#backlog .chip.status-blocked {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+#backlog .chip.status-done {
+  color: var(--green, var(--muted));
+}
+
+#backlog .chip.status-cancelled {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
 #backlog button.chip.task {
   color: var(--blue);
   border-color: var(--blue);

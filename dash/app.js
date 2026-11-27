@@ -1198,7 +1198,15 @@
   let backlogTimer = null;
   let backlogBody = null;
   const backlogFolds = new Map();
-  const backlogFilter = { project: "", owner: "", text: "" };
+  const backlogFilter = { project: "", owner: "", status: "", text: "" };
+  const BACKLOG_STATUSES = [
+    ["", "any status"],
+    ["backlog", "backlog"],
+    ["in_progress", "in progress"],
+    ["blocked", "blocked"],
+    ["done", "done"],
+    ["cancelled", "cancelled"],
+  ];
 
   function backlogGroup(key, title, count, fallbackOpen) {
     const group = document.createElement("details");
@@ -1235,9 +1243,7 @@
     if (item.due) {
       chips.append(span("due " + item.due, "chip" + (item.due < today && isOpenItem(item) ? " overdue" : "")));
     }
-    if (item.status !== "backlog") {
-      chips.append(span(statusChip(item), "chip status-" + item.status));
-    }
+    chips.append(span(statusChip(item), "chip status-" + item.status));
     if (item.task) {
       const task = document.createElement("button");
       task.type = "button";
@@ -1274,6 +1280,9 @@
       return false;
     }
     if (backlogFilter.owner && item.owner !== backlogFilter.owner) {
+      return false;
+    }
+    if (backlogFilter.status && item.status !== backlogFilter.status) {
       return false;
     }
     const needle = backlogFilter.text.trim().toLowerCase();
@@ -1317,6 +1326,10 @@
         renderBacklog();
       }
     );
+    const status = backlogSelect("status", backlogFilter.status, BACKLOG_STATUSES, (value) => {
+      backlogFilter.status = value;
+      renderBacklog();
+    });
     const find = document.createElement("input");
     find.type = "search";
     find.placeholder = "find an item";
@@ -1328,7 +1341,7 @@
       again.focus();
       again.setSelectionRange(find.value.length, find.value.length);
     });
-    bar.append(project, owner, find);
+    bar.append(project, owner, status, find);
     return bar;
   }
 

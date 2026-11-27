@@ -254,8 +254,7 @@ Each item's status is stored. Every move goes through one pure guard, `transitio
 `crates/core/src/backlog/status.rs`, and adds through `transition(None, backlog, ...)`; import is the one way in that
 skips the guard (section 3). A move is written by one store call, `Store::move_backlog_item`, which writes the row and the event
 `backlog-moved` (`item`, `from`, `to`, `actor`, `reason`, `kind`, `task`) in one transaction. The design is
-`S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phase P1 (no epics, dependencies, worker item
-tools or automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
+`S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phases P1 and P2 (no epics, dependencies or automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
 
 | Status | Meaning |
 |---|---|
@@ -278,16 +277,16 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 | `done` (linked to a live task) | `in_progress` | headwork: the task, merged, opened another pull request; refused when the move names another task or the item's project has no task path |
 | `done`, `blocked` (linked to a task that is over) | the same | headwork: the link ends (`Unlink`) |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
-| `in_progress` | `blocked` | worker on its own item and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
+| `in_progress` | `blocked` | worker on its own item (`item_block`) and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
 | `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`dep_cancelled`) |
-| `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item, headwork |
+| `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item (`item_unblock`), headwork |
 | `blocked` (`task_lost`, `partial`) | `in_progress` | user, orchestrator, headwork: a respawn |
 | `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children |
 | `done`, `cancelled` | `backlog` | user and orchestrator (`backlog reopen`, `backlog_reopen`), clearing `done_on` and `done_note` and ending the link (a done item may still be linked to its merged task) |
 
 Refused: a worker touching an item its task is not linked to; an explorer outside its epic; anyone but headwork
-finishing an item a live task works on; a cancel while a live task works on it (drop the task first); `cancelled` on a
-`done` item; the orchestrator cancelling without a reason; a move to the status the item already has.
+finishing an item a live task works on; a cancel while a live task works on it, at the store (the ops-level cancel drops the
+task first, see below); `cancelled` on a `done` item; the orchestrator cancelling without a reason; a move to the status the item already has.
 
 What a task's end does to each `in_progress` item linked to it (`on_task_end`, applied by the store's `task_ended` to
 every such item, inside the transition):
@@ -298,6 +297,12 @@ every such item, inside the transition):
 | `closed` (the item never saw `merged`) | `done`, note `task <name> merged <urls>`, or `task <name>, no pull request` |
 | `dropped`, `failed` | `blocked` (`task_lost`), note `task <name> dropped` or `failed`, back to `in_progress` on unblock, link ended; but `done` with the merged note when the task had merged pull requests (it took its merged item back for a later pull request) |
 | any other state | no change |
+
+A worker's `done` takes `outcome`: `done` (default) or `partial`. With `partial`, once the close has begun the store
+(`Store::record_partial_outcome`) blocks every in-progress item linked to the task as `partial` (note `task <name>
+partial: <the summary, one line, without brackets>`) and logs `task-outcome`; `on_task_end(Merged | Closed, Partial)` is that
+row of the table. An item the merge already finished stays `done`: say `partial` before the pull request merges.
+
 
 The other items linked to the task (`on_linked_end`): when a merged task goes back to `in_review` (a later pull
 request), its `done` items go back to `in_progress` (move kind `unfinish`: link kept, done date cleared). When the task is
@@ -311,3 +316,23 @@ Every allowed move carries its link and date effects (`ItemMove::link`, `ItemMov
 them. A block note, a cancel reason or a done note over several lines is refused. A block note may not hold `[` or `]`
 (it sits in the status tag), and a done note must pair its parentheses (it sits in the trailing `(done D: note)` group);
 a cancel reason is never exported, so only its line count is checked.
+
+### Surfaces (P2)
+
+- **Worker tools**: `item_block` (`decision` or `event`, a note, optional `id`) and `item_unblock` for the item the worker's
+  task is linked to; the guard's worker rows refuse any other item (`NotLinked`) and any other reason. The block keeps
+  the link, so the task ending does not make the item `task_lost`; once the task is over the link ends and the block stays.
+- **An item for every spawn** (decision D1): `spawn` without `--backlog` adds an item for the task after it started
+  (`ops::backlog::auto_item`): text the goal line of the brief (`core::backlog::goal_line`: the first line with words,
+  without markdown marks and a leading `Goal:`, at most 160 characters; `Task <name>` when it cannot be written), project
+  the task's, owner `agent`, added and moved to `in_progress` linked to the task, both by headwork. A failure leaves the
+  task running and says so in `backlog_unlinked`.
+- **Cancel drops the task**: `backlog cancel` and `backlog_cancel` on an item with a live task first drop and close the
+  task through the checked drop (`ops::backlog::drop_live_task`; nothing is dropped when the cancel itself would be
+  refused: the item is not open, or the orchestrator gave no reason), then cancel the item. A close that fails after
+  the drop leaves the item blocked as `task_lost`; cancelling it again finishes the job.
+- **Digest** (section 8): blocked items with the reason `decision`, `task_lost`, `partial` or `dep_cancelled` show as
+  `blocked #<id> (<reason>): <text> - <note>` after the dated items, and are in the drawer's "Waiting on you"; `depends`
+  and `event` blocks wait on something else and do not.
+- **Drawer**: every row carries its status chip (a blocked one with its reason and note), and a status filter beside the
+  project and owner filters.

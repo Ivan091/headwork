@@ -40,6 +40,9 @@ pub const EVENT_BACKLOG_MOVED: &str = "backlog-moved";
 /// stands.
 pub const EVENT_BACKLOG_MOVE_REFUSED: &str = "backlog-move-refused";
 
+/// The event of a worker's `done` that said it did not finish the work (`outcome`, `note`, `items`).
+pub(crate) const EVENT_TASK_OUTCOME: &str = "task-outcome";
+
 /// The event of an item's fields changed.
 pub const EVENT_BACKLOG_EDITED: &str = "backlog-edited";
 
@@ -75,8 +78,7 @@ pub struct BacklogMove<'a> {
     pub actor: BacklogActor,
     /// Who moves it, for the event log.
     pub by: Actor,
-    /// The acting worker's or explorer's own task. Nothing fills it in P1, whose backlog tools are the orchestrator's;
-    /// P2's worker item tools will, for the guard's worker rows.
+    /// The acting worker's or explorer's own task. The worker item tools fill it in, for the guard's worker rows.
     pub actor_task: Option<TaskId>,
     /// Whether a task can work on it; the caller knows the configured projects, or a spawn names one.
     pub has_project: bool,
@@ -517,7 +519,7 @@ pub(crate) fn task_ended(
     if let Some(effect) = on_task_end(to, TaskOutcome::Done, &merged, &name) {
         let note = match &effect {
             TaskEndEffect::Finish { note } => Some(note.as_str()),
-            TaskEndEffect::Lost { .. } => None,
+            TaskEndEffect::Lost { .. } | TaskEndEffect::Partial { .. } => None,
         };
         let request = BacklogMove::new(effect.target(), BacklogActor::Headwork, actor, true)
             .with_reason(note);
@@ -564,6 +566,70 @@ impl Store {
     /// Returns [`StoreError::UnknownBacklogItem`] when there is none, or a read error.
     pub fn backlog_item(&self, id: i64) -> Result<BacklogItem, StoreError> {
         load(&self.conn, id)
+    }
+
+    /// The items linked to a task, in export order, whatever their status.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn backlog_items_of_task(&self, task: TaskId) -> Result<Vec<BacklogItem>, StoreError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM backlog_items t LEFT JOIN tasks k ON k.id = t.task_id
+             WHERE t.task_id = ?1 ORDER BY t.position, t.id"
+        ))?;
+        let rows = statement.query_map(params![task.0], RawBacklogItem::read)?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?.into_backlog_item()?);
+        }
+        Ok(items)
+    }
+
+    /// Records that a task's `done` said it did not finish the work, and blocks each in-progress item linked to it as
+    /// `partial` ([`on_task_end`] with [`TaskOutcome::Partial`]); the note is the worker's, cut to one line. An item
+    /// already done (its pull request merged first) stays done. Logs `task-outcome`; returns the ids blocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read or write error; a move the guard refuses is logged as `backlog-move-refused` and does not fail.
+    pub fn record_partial_outcome(
+        &mut self,
+        task: &Task,
+        session: &str,
+        note: Option<&str>,
+        actor: Actor,
+    ) -> Result<Vec<i64>, StoreError> {
+        let tx = self.conn.transaction()?;
+        let blocked = linked_ids(&tx, task.id, ItemStatus::InProgress)?;
+        let name = task.name.to_string();
+        let effect = on_task_end(TaskState::Closed, TaskOutcome::Partial, &[], &name);
+        if let Some(TaskEndEffect::Partial { note: head }) = effect {
+            let said = note
+                .map(|note| note.replace(['\n', '\r', '[', ']'], " "))
+                .map(|note| note.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|note| !note.is_empty());
+            let text = said.map_or_else(|| head.clone(), |said| format!("{head}: {said}"));
+            let request = BacklogMove::new(
+                TaskEndEffect::Partial { note: text }.target(),
+                BacklogActor::Headwork,
+                actor,
+                true,
+            );
+            for id in &blocked {
+                headwork_move(&tx, task, *id, &request)?;
+            }
+        }
+        insert_event(
+            &tx,
+            actor,
+            Some(task.id),
+            Some(session),
+            EVENT_TASK_OUTCOME,
+            &serde_json::json!({ "outcome": TaskOutcome::Partial.as_str(), "note": note, "items": blocked }),
+        )?;
+        tx.commit()?;
+        Ok(blocked)
     }
 
     /// The items that match, in export order.
