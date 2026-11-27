@@ -299,18 +299,19 @@ impl<'b> Run<'_, 'b> {
         Ok(is_new)
     }
 
-    fn tell_orchestrator(&mut self, text: String) -> Result<()> {
+    fn tell_orchestrator(&mut self, text: String) -> Result<bool> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(0));
-        if !super::update::leave_tick_notice(self.env().home, now, text)? {
-            self.error(
-                "tick-notice",
-                None,
-                "the update lock stayed taken: the notice was not left",
-            )?;
+        if super::update::leave_tick_notice(self.env().home, now, text)? {
+            return Ok(true);
         }
-        Ok(())
+        self.error(
+            "tick-notice",
+            None,
+            "the update lock stayed taken: the notice was not left",
+        )?;
+        Ok(false)
     }
 
     fn retell_due(&self, key: &str, rule: FindingId) -> Result<bool> {
@@ -424,8 +425,9 @@ impl<'b> Run<'_, 'b> {
 
     /// Pushes each new line of me-studio's push outbox (`[machine] push_outbox`, `docs/video-flow.md`) to the phone: the
     /// host notification and a notice the orchestrator's next prompt carries, which it pushes with `PushNotification`. The
-    /// cursor is the id of the last line sent, kept as the event `push-outbox-sent`; it moves after each line, so a failure
-    /// resends only the lines not yet sent. A missing file is quiet; a host that is down sends nothing and moves nothing.
+    /// cursor is the id of the last line sent, kept as the event `push-outbox-sent`; it moves only after the host
+    /// notification and the notice both went out, so a failure retries that line at the next tick: delivery is at least
+    /// once, a line may be told twice, never lost. A missing file is quiet; a host that is down sends nothing and moves nothing.
     fn push_outbox(&mut self) -> Result<()> {
         let env = self.env();
         let Some(path) = env.config.machine.push_outbox.as_deref() else {
@@ -446,8 +448,15 @@ impl<'b> Run<'_, 'b> {
         let actor = self.actor();
         for entry in headwork_core::video_flow::new_entries(&content, last.as_deref()) {
             let text = entry.text();
-            self.notify(&text);
-            self.tell_orchestrator(format!("Push to the user's phone: {text}"))?;
+            if let Err(error) = env.host.notify(&text) {
+                bail!(
+                    "the push of outbox line {} failed: {error}; it is retried by the next tick",
+                    entry.id
+                );
+            }
+            if !self.tell_orchestrator(format!("Push to the user's phone: {text}"))? {
+                return Ok(());
+            }
             self.store.append_event(
                 actor,
                 None,

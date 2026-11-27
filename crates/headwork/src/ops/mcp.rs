@@ -2164,9 +2164,28 @@ impl<'a> Server<'a> {
         ) {
             bail!("the task is already {}", task.state);
         }
-        let unsure = match super::done_check::run(&self.env, &task, args)? {
-            super::done_check::Outcome::Pass => None,
-            super::done_check::Outcome::Unsure(why) => Some(why),
+        let unsure = match super::done_check::run(&self.env, &task, args) {
+            Ok(super::done_check::Outcome::Pass) => None,
+            Ok(super::done_check::Outcome::Unsure(why)) => {
+                self.store.append_event(
+                    self.env.actor,
+                    Some(task.id),
+                    Some(session),
+                    "done-check-unsure",
+                    &json!({ "why": why }),
+                )?;
+                Some(why)
+            }
+            Err(refusal) => {
+                self.store.append_event(
+                    self.env.actor,
+                    Some(task.id),
+                    Some(session),
+                    "done-check-refused",
+                    &json!({ "why": refusal.to_string() }),
+                )?;
+                return Err(refusal);
+            }
         };
         let outcome = super::flags::start_planned(
             self.store,

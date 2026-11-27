@@ -3294,3 +3294,45 @@ fn the_tick_pushes_each_outbox_line_once_and_waits_for_a_partial_one() {
         "the cursor is the last id sent"
     );
 }
+
+#[test]
+fn outbox_push_skips_in_none_mode_sends_the_newest_on_an_unknown_cursor_and_leaves_a_notice() {
+    let mut w = world_with(false, 4);
+    let outbox = w.dir.path().join("studio-push-outbox.jsonl");
+    w.config.machine.push_outbox = Some(outbox.display().to_string());
+    std::fs::write(
+        &outbox,
+        format!(
+            "{}{}{}",
+            outbox_line("a"),
+            outbox_line("b"),
+            outbox_line("c")
+        ),
+    )
+    .unwrap();
+    w.config.machine.push = headwork_core::config::PushMode::None;
+    run_tick(&mut w);
+    assert_eq!(pushed(&w), 0, "push none sends nothing");
+    w.config.machine.push = headwork_core::config::PushMode::Claude;
+    run_tick(&mut w);
+    assert_eq!(
+        pushed(&w),
+        1,
+        "an unknown cursor sends the newest line only"
+    );
+    let notices = headwork::ops::update::take_notices(&w.home).unwrap();
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("Hourly runs failing")),
+        "{notices:?}"
+    );
+    assert_eq!(
+        w.store
+            .last_event_id_field("push-outbox-sent")
+            .unwrap()
+            .as_deref(),
+        Some("c"),
+        "cursor"
+    );
+}

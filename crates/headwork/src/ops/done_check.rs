@@ -43,7 +43,9 @@ fn scenes(args: &Value) -> Vec<String> {
 /// Refuses (`done-check-scenes`) a task the check applies to that names no scene, and (`done-check-waiting`) one whose
 /// scenes wait; the message lists them, one per line, for the lead's `Close` ask.
 pub fn run(env: &Env<'_>, task: &Task, args: &Value) -> Result<Outcome> {
-    let project = env.project(task)?;
+    let Ok(project) = env.project(task) else {
+        return Ok(Outcome::Pass);
+    };
     let Some(check) = &project.done_check else {
         return Ok(Outcome::Pass);
     };

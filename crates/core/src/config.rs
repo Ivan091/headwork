@@ -44,6 +44,9 @@ pub enum ConfigError {
     /// An allowed model set is empty.
     #[error("{0}: the allowed model set is empty")]
     NoModels(String),
+    /// A project's `done_check` names no task kind or has no command, which would switch the gate off silently.
+    #[error("project `{0}`: done_check needs at least one kind and a command")]
+    EmptyDoneCheck(ProjectName),
     /// A project allows a model the machine does not.
     #[error("project `{project}` allows `{model}`, which models.allowed does not")]
     ProjectWidensModels {
@@ -1292,6 +1295,15 @@ impl ProjectConfig {
                     model: *model,
                 });
             }
+        }
+        if self.done_check.as_ref().is_some_and(|check| {
+            check.kinds.is_empty()
+                || check
+                    .command
+                    .first()
+                    .is_none_or(|program| program.trim().is_empty())
+        }) {
+            return Err(ConfigError::EmptyDoneCheck(name.clone()));
         }
         if let Some(repo) = self.allowed_repos.iter().find(|repo| !repo.is_valid()) {
             return Err(ConfigError::BadRepo {

@@ -46,7 +46,8 @@ impl OutboxEntry {
 /// The parseable lines of `content` after the line whose id is `last_sent`, found by position.
 ///
 /// A last line without its newline may still be written and is ignored; a line that does not parse is skipped. With no
-/// `last_sent`, or one the file no longer holds, every parseable line is new.
+/// `last_sent`, or one the file no longer holds (a first run, a rotated file), only the newest line is new: older streaks
+/// are history and a burst of them would be a flood.
 #[must_use]
 pub fn new_entries(content: &str, last_sent: Option<&str>) -> Vec<OutboxEntry> {
     let complete = content.rsplit_once('\n').map_or("", |(head, _)| head);
@@ -56,7 +57,7 @@ pub fn new_entries(content: &str, last_sent: Option<&str>) -> Vec<OutboxEntry> {
         .collect();
     let after = last_sent
         .and_then(|id| entries.iter().rposition(|entry| entry.id == id))
-        .map_or(0, |at| at + 1);
+        .map_or_else(|| entries.len().saturating_sub(1), |at| at + 1);
     entries.into_iter().skip(after).collect()
 }
 
@@ -92,7 +93,8 @@ impl AckScene {
     fn line(&self) -> String {
         let stage = match (&self.stage, self.on_master) {
             (Some(stage), _) => stage.replace('_', " "),
-            (None, _) => "not on master yet".to_owned(),
+            (None, false) => "not on master yet".to_owned(),
+            (None, true) => "on master, stage unknown".to_owned(),
         };
         format!("{}: {stage}", self.scene)
     }
@@ -116,14 +118,15 @@ pub fn done_verdict(exit: Option<i32>, stdout: &str, stderr: &str) -> DoneVerdic
                 })
                 .unwrap_or_default();
             if waiting.is_empty() {
-                DoneVerdict::Waiting(vec![
-                    "(the check named no scene: read its output)".to_owned(),
-                ])
+                DoneVerdict::Waiting(vec![format!(
+                    "the check exited 1 and named no scene; its output: {}",
+                    stdout.trim()
+                )])
             } else {
                 DoneVerdict::Waiting(waiting)
             }
         }
-        Some(code) => DoneVerdict::Unknown(format!("the check exited {code}: {}", stderr.trim())),
+        Some(code) => DoneVerdict::Unknown(format!("the check exited {code} ({})", stderr.trim())),
         None => DoneVerdict::Unknown("the check ended without an exit code".to_owned()),
     }
 }
@@ -174,17 +177,34 @@ mod tests {
     }
 
     #[test]
-    fn unknown_cursor_sends_everything() {
+    fn unknown_cursor_sends_only_the_newest_line() {
         let content = format!("{}{}", line("a"), line("b"));
+        let ids = |last| {
+            new_entries(&content, last)
+                .into_iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            new_entries(&content, Some("gone")).len(),
-            2,
-            "a replaced file is read whole"
+            ids(Some("gone")),
+            ["b"],
+            "a replaced file sends its newest line"
         );
+        assert_eq!(ids(None), ["b"], "a first run sends the newest line");
+        assert!(
+            new_entries("", None).is_empty(),
+            "an empty file sends nothing"
+        );
+    }
+
+    #[test]
+    fn a_scene_on_master_without_a_stage_is_not_called_unmerged() {
+        let json =
+            r#"{"scenes":[{"scene":"c","stage":null,"on_master":true,"acknowledged":false}]}"#;
         assert_eq!(
-            new_entries(&content, None).len(),
-            2,
-            "no cursor reads whole"
+            done_verdict(Some(1), json, ""),
+            DoneVerdict::Waiting(vec!["c: on master, stage unknown".to_owned()]),
+            "on_master is read"
         );
     }
 
