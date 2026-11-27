@@ -53,7 +53,7 @@ workspace of its own titled with the task name (`<project>-<slug>`). The lead op
 fresh workspace's shell, as `mode = "workspaces"` does today. Every part and every helper opens as a new tab of that
 workspace (`Target::Tab`), with no splits. The workspace and the lead's tab carry the task name; a part's tab shows only
 the part (`review`), since the workspace title already names the task: `[leads] part_title`, default `{part}`, with
-`{name}`, `{model}` and `{effort}` as in `[layout] title`. So the workspace `headwork-lead-groups-plan` holds the tabs
+`{name}`, `{role}`, `{model}` and `{effort}` as in `[layout] title`. So the workspace `headwork-lead-groups-plan` holds the tabs
 `headwork-lead-groups-plan`, `review`, `render`.
 
 This placement holds for lead tasks whatever `[layout] mode` says, because a task's sessions must stay together. The

@@ -9,8 +9,8 @@
 
 use anyhow::Result;
 use headwork_adapters::host::SurfaceId;
-use headwork_core::TaskShape;
 use headwork_core::lead::part_label;
+use headwork_core::{REVIEW_KIND, TaskShape};
 use headwork_store::{Store, Task};
 use serde::Serialize;
 
@@ -35,12 +35,14 @@ pub struct Retitled {
 pub fn title_of(store: &Store, env: &Env<'_>, task: &Task) -> Result<String> {
     let name = task.name.to_string();
     let effort = effort::of_task(env.home, env.config, task);
+    let role = role_of(task);
     Ok(match task.shape {
         TaskShape::Part { parent } => {
             let lead = store.task(parent)?;
             env.config.leads.title_for(
                 part_label(task.slug().as_str(), lead.slug().as_str()),
                 &name,
+                role,
                 task.model.as_str(),
                 Some(effort.as_str()),
             )
@@ -48,9 +50,22 @@ pub fn title_of(store: &Store, env: &Env<'_>, task: &Task) -> Result<String> {
         TaskShape::Lead | TaskShape::Plain => {
             env.config
                 .layout
-                .title_for(&name, task.model.as_str(), Some(effort.as_str()))
+                .title_for(&name, role, task.model.as_str(), Some(effort.as_str()))
         }
     })
+}
+
+/// The kind of session a task is, for `{role}`: `reviewer` for a review part, else `lead`, `part` or `worker`.
+#[must_use]
+pub fn role_of(task: &Task) -> &'static str {
+    if task.kind == REVIEW_KIND {
+        return "reviewer";
+    }
+    match task.shape {
+        TaskShape::Lead => "lead",
+        TaskShape::Part { .. } => "part",
+        TaskShape::Plain => "worker",
+    }
 }
 
 /// Gives a task's surface its title.

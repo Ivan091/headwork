@@ -850,13 +850,13 @@ fn retitle_sets_every_live_pane_or_the_one_named_and_follows_the_layout_template
     let mut w = world_with(10, "builtin", "");
     let (sand, _) = w.spawn("sand", false);
     let (dune, _) = w.spawn("dune", false);
-    w.config.layout.title = "{effort}|{model}|{name}".to_owned();
+    w.config.layout.title = "{role}|{effort}|{model}|{name}".to_owned();
     let (all, failed) = headwork::ops::title::retitle(&w.store, &env(&w), None).unwrap();
     assert!(failed.is_empty(), "{failed:?}");
     let titles: Vec<&str> = all.iter().map(|item| item.title.as_str()).collect();
     assert_eq!(
         titles,
-        ["high|haiku|demo-sand", "high|haiku|demo-dune"],
+        ["worker|high|haiku|demo-sand", "worker|high|haiku|demo-dune"],
         "all live tasks"
     );
     let (one, _) = headwork::ops::title::retitle(&w.store, &env(&w), Some(&dune)).unwrap();
@@ -1261,6 +1261,44 @@ fn a_part_opens_as_a_tab_of_its_leads_workspace_titled_with_the_part_only() {
         surfaces.len(),
         3,
         "the lead and two parts as tabs: {surfaces:?}"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "the placeholders are the config template's own, not format arguments"
+)]
+fn the_role_names_the_kind_of_session_in_a_pane_title() {
+    let mut w = world_with(
+        10,
+        "builtin",
+        "
+[leads]
+enabled = true
+part_title = \"{role}:{part}\"
+",
+    );
+    w.config.layout.title = "{role}:{name}".to_owned();
+    let (lead, _) = w.spawn("plan", false);
+    let part = w.part(&lead, "build");
+    let mut reviewer = w.part(&lead, "check");
+    reviewer.kind = "review".to_owned();
+    let mut plain = lead.clone();
+    plain.shape = TaskShape::Plain;
+    let titles: Vec<String> = [&lead, &part, &reviewer, &plain]
+        .iter()
+        .map(|task| headwork::ops::title::title_of(&w.store, &env(&w), task).unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "lead:demo-plan",
+            "part:build",
+            "reviewer:check",
+            "worker:demo-plan"
+        ],
+        "lead, part, reviewer and plain worker"
     );
 }
 

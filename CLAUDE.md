@@ -318,7 +318,7 @@ program in wmux, not an `Agent` subagent) with the `helper_tab` MCP tool: always
 
 ### Pane titles
 
-Each worker's pane or tab is titled `<task name>`, from `[layout] title` (default `{name}`; `{model}` and `{effort}` also work), set
+Each worker's pane or tab is titled `<task name>`, from `[layout] title` (default `{name}`; `{role}` (`lead`, `part`, `reviewer` or `worker`), `{model}` and `{effort}` also work), set
 when the pane opens, re-asserted by every tick, and by `headwork retitle [<name>]` on demand. The effort is the stored
 one, else the level Claude's settings give the model (`ops/effort.rs`), else `medium`; spawn stores it. `?` shows only when
 it cannot be told. See `docs/decisions.md` (2026-11-14, pane titles).
