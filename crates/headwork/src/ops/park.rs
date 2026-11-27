@@ -699,8 +699,13 @@ fn end_orchestrator(
     if !runs_inside(env, &target.session) {
         return close_orchestrator(store, env, id);
     }
-    match start_closer(env, id) {
-        Ok(pid) => {
+    let mut closer = closer_command(env, id);
+    let argv: Vec<String> = closer
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    match headwork_adapters::proc::spawn_detached(&mut closer) {
+        Ok((pid, _)) => {
             store.append_event(
                 env.actor,
                 None,
@@ -708,6 +713,7 @@ fn end_orchestrator(
                 "detached",
                 &serde_json::json!({
                     "command": "park --close-orchestrator",
+                    "argv": argv,
                     "pid": pid,
                     "reason": "the park runs inside the orchestrator it closes",
                 }),
@@ -747,8 +753,8 @@ fn runs_inside(env: &Env<'_>, session: &SessionRow) -> bool {
     headwork_core::reap::descends_from(&procs, std::process::id(), &roots)
 }
 
-/// Starts `headwork park --close-orchestrator <session> --after <this pid>` detached and outside any surface.
-fn start_closer(env: &Env<'_>, session: &str) -> Result<u32> {
+/// `headwork park --close-orchestrator <session> --after <this pid>`, to run detached and outside any surface.
+fn closer_command(env: &Env<'_>, session: &str) -> std::process::Command {
     let mut process = std::process::Command::new(env.exe);
     process
         .args(["park", "--close-orchestrator", session, "--after"])
@@ -759,8 +765,7 @@ fn start_closer(env: &Env<'_>, session: &str) -> Result<u32> {
     for var in super::resume::SURFACE_VARS {
         process.env_remove(var);
     }
-    let (pid, _) = headwork_adapters::proc::spawn_detached(&mut process)?;
-    Ok(pid)
+    process
 }
 
 /// How long the detached closer waits for the park that started it to exit.

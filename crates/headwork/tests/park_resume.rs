@@ -790,7 +790,14 @@ fn resume_refuses_while_a_park_runs() {
 impl World {
     /// A running orchestrator session in the user's own pane, as `headwork orchestrator` records it.
     fn orchestrator(&mut self) -> (String, u32, PathBuf) {
-        let id = format!("orchestrator-{}", self.children.len());
+        let pid = self.sleeper();
+        let (id, dir) = self.orchestrator_as(pid);
+        (id, pid, dir)
+    }
+
+    /// An orchestrator session whose launcher and `claude` are recorded as `pid`.
+    fn orchestrator_as(&mut self, pid: u32) -> (String, PathBuf) {
+        let id = format!("orchestrator-{}-{pid}", self.children.len());
         self.store
             .record_session(
                 &NewSession {
@@ -805,14 +812,13 @@ impl World {
                 Actor::User,
             )
             .unwrap();
-        let pid = self.sleeper();
         self.store.session_launched(&id, pid, pid, "job").unwrap();
         let dir = self.dir.path().join("code");
         std::fs::create_dir_all(&dir).unwrap();
         self.store
             .set_session_dir(&id, &dir.display().to_string().replace('\\', "/"))
             .unwrap();
-        (id, pid, dir)
+        (id, dir)
     }
 
     fn seen_in(&self, workspace: &str, session: &str) -> String {
@@ -837,7 +843,7 @@ impl World {
             .position(|c| c == &format!("send {surface} /exit"));
         let worker_closed = calls
             .iter()
-            .rposition(|c| c.starts_with("close-") && !c.contains(surface));
+            .rposition(|c| c.starts_with("close-") && c.split(' ').nth(1) != Some(surface));
         assert!(
             exit.is_some() && worker_closed.is_some() && exit > worker_closed,
             "/exit is typed into its pane after the workers' panes close: {calls:?}"
@@ -2153,4 +2159,120 @@ fn a_gated_job_whose_pid_already_waits_takes_no_slot() {
         "its gate takes a slot in turn"
     );
     assert!(!slots.join("cpu").join("slot-1").exists(), "no slot taken");
+}
+
+fn detached_argv(w: &World) -> Vec<String> {
+    let events = w
+        .store
+        .events(EventFilter {
+            task: None,
+            limit: 500,
+        })
+        .unwrap();
+    let event = events.iter().find(|e| e.kind == "detached").unwrap();
+    event.data["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_park_running_under_the_orchestrator_hands_its_close_to_a_detached_closer() {
+    let mut w = world("ask");
+    let own = std::process::id();
+    let (orchestrator, _) = w.orchestrator_as(own);
+    let surface = w.seen_in("Workspace 1", &orchestrator);
+    let exe = std::env::current_exe().unwrap();
+    let env = Env {
+        home: &w.home,
+        config: &w.config,
+        host: &w.host,
+        exe: &exe,
+        actor: Actor::User,
+    };
+    let report = park(&mut w.store, &env, quick(200)).unwrap();
+    let parked = report.orchestrator.clone().unwrap();
+    assert!(
+        matches!(parked.end, OrchestratorEnd::Detached { .. }),
+        "a park under the orchestrator's pid cannot end it itself: {report:?}"
+    );
+    let home = w.home.root().display().to_string();
+    assert_eq!(
+        detached_argv(&w),
+        [
+            "park",
+            "--close-orchestrator",
+            orchestrator.as_str(),
+            "--after",
+            own.to_string().as_str(),
+            "--home",
+            home.as_str(),
+        ],
+        "the closer waits for this park, in this home"
+    );
+    assert!(
+        !w.host.calls().contains(&format!("send {surface} /exit")),
+        "the park itself types nothing: {:?}",
+        w.host.calls()
+    );
+    assert_ne!(
+        w.store.session(&orchestrator).unwrap().unwrap().0.state,
+        SessionState::Ended,
+        "the closer ends it later"
+    );
+}
+
+#[test]
+fn a_closer_that_does_not_start_is_reported_and_the_orchestrator_is_left() {
+    let mut w = world("ask");
+    let (orchestrator, _) = w.orchestrator_as(std::process::id());
+    let env = env!(w);
+    let report = park(&mut w.store, &env, quick(200)).unwrap();
+    let parked = report.orchestrator.clone().unwrap();
+    assert!(
+        matches!(&parked.end, OrchestratorEnd::Failed { problem } if problem.contains("did not start")),
+        "{report:?}"
+    );
+    assert_eq!(w.events_of("orchestrator-closed"), 1, "logged");
+    assert!(
+        report.safe_to_restart,
+        "the restart ends it anyway: {report:?}"
+    );
+    assert_ne!(
+        w.store.session(&orchestrator).unwrap().unwrap().0.state,
+        SessionState::Ended,
+        "left running"
+    );
+}
+
+#[test]
+fn the_closer_waits_for_the_park_to_exit_before_it_closes_the_orchestrator() {
+    let mut w = world("ask");
+    let (orchestrator, root_pid, _) = w.orchestrator();
+    let surface = w.seen_in("Workspace 1", &orchestrator);
+    let park_pid = w.sleeper();
+    let started = Instant::now();
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1_500));
+        headwork_adapters::proc::kill_tree(park_pid).unwrap()
+    });
+    let env = env!(w);
+    let end =
+        headwork::ops::park::close_orchestrator_after(&mut w.store, &env, &orchestrator, park_pid)
+            .unwrap();
+    assert!(killer.join().unwrap(), "the park stand-in ran until killed");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1_400),
+        "nothing is closed while the park runs: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(end, OrchestratorEnd::Ended, "the fake pane ignores /exit");
+    assert!(dead(root_pid), "then the orchestrator is ended");
+    assert!(
+        w.host.calls().contains(&format!("close-surface {surface}")),
+        "and its pane closed: {:?}",
+        w.host.calls()
+    );
 }
