@@ -640,7 +640,8 @@ fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
 
 /// A worker's git write against a folder outside its writable folders ([`git_folder`]; an unknown folder is allowed).
 /// A fast-forward of the project's main checkout (`git pull --ff-only`) is allowed, as the ship flow does after a
-/// merge, and so are `git worktree add` and `git worktree prune` there, and a write the worker's extra writable paths allow ([`grants`]).
+/// merge, and so are `git worktree add` and `git worktree prune` there, and a write the worker's extra writable paths
+/// allow ([`grants`]).
 fn check_git_outside(
     scope: &Scope,
     command: &SimpleCommand,

@@ -16,8 +16,9 @@ pub struct WorktreeAdd {
 
 /// The worktrees the `git worktree add` commands of `line` make, run from `cwd`.
 ///
-/// It follows `cd` and `pushd` and each `-C`, so a relative folder is resolved where git resolves it; a command whose folder cannot be told (`cd -`,
-/// `popd`, `--git-dir`) yields nothing. Whether the command ran, and made a worktree, is for the caller to check.
+/// It follows `cd` and `pushd` and each `-C`, so a relative folder is resolved where git resolves it; a command whose
+/// folder cannot be told (`cd -`, `popd`, `--git-dir`) yields nothing. Whether the command ran, and made a
+/// worktree, is for the caller to check.
 #[must_use]
 pub fn worktree_adds(line: &str, cwd: &str, places: &Places) -> Vec<WorktreeAdd> {
     let mut here = Some(cwd.to_owned());
