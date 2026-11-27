@@ -223,7 +223,7 @@ impl Store {
 
     /// Whether the session completed a call of `tool` since the prompt that started the current turn (a task
     /// notification starts none), no more than `seconds` ago, or only began one (its `PreToolUse` record) within
-    /// [`PRE_ONLY_GRACE_SECS`].
+    /// `PRE_ONLY_GRACE_SECS` (5 s).
     ///
     /// # Errors
     ///
