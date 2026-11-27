@@ -2206,6 +2206,8 @@ fn a_worker_or_an_explorer_never_writes_the_backlog_through_the_cli() {
         ("\"${HEADWORK_EXE}\" backlog cancel 3", denied),
         ("\"$HEADWORK_EXE\" backlog list", None),
         ("xargs headwork backlog done 3", None),
+        ("${x:-$(headwork backlog done 3)}", denied),
+        ("echo ${x:-$(headwork backlog done 3)}", denied),
         ("cd x && headwork backlog start 3", denied),
         ("headwork backlog", None),
         ("headwork backlog list --status blocked", None),
@@ -2235,4 +2237,25 @@ fn a_worker_or_an_explorer_never_writes_the_backlog_through_the_cli() {
         Decision::Allow,
         "the orchestrator's CLI is its own"
     );
+}
+
+#[test]
+fn only_a_plain_braced_name_is_one_word_so_commands_inside_an_expansion_are_seen() {
+    let rule = |command: &str| match check_tool(&worker("sand"), &bash(command)) {
+        Decision::Allow => None,
+        Decision::Deny(verdict) => Some(verdict.rule),
+    };
+    assert_eq!(
+        rule("echo ${x:-$(git push --force)}"),
+        Some(RuleId::WorkerForcePush)
+    );
+    assert_eq!(
+        rule("${x:-$(headwork backlog done 3)}"),
+        Some(RuleId::WorkerBacklogCli)
+    );
+    assert_eq!(
+        rule("${HEADWORK_EXE} backlog done 3"),
+        Some(RuleId::WorkerBacklogCli)
+    );
+    assert_eq!(rule("echo ${HOME}/x"), None, "a plain name is one word");
 }

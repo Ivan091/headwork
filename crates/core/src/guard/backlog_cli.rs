@@ -5,8 +5,9 @@
 //! refused too). Listing stays allowed, and an explorer adds its picked items through its `backlog_add` tool. The CLI
 //! itself also refuses a writing command in a session that sets `HEADWORK_SESSION` without a known `HEADWORK_ROLE`.
 //!
-//! Gaps that remain: a command that removes both variables (`env -u HEADWORK_SESSION -u HEADWORK_ROLE headwork backlog
-//! done 3`) passes the CLI as the user and is caught only by this rule, which is shadow (it logs, never blocks) unless
+//! Gaps that remain: a forged `HEADWORK_ROLE=orchestrator headwork backlog done 3` passes the CLI's check as the
+//! orchestrator, and a command that removes both variables (`env -u HEADWORK_SESSION -u HEADWORK_ROLE headwork backlog
+//! done 3`) passes the CLI as the user; both are caught only by this rule, which is shadow (it logs, never blocks) unless
 //! `worker-backlog-cli` is listed in `[hooks] enforce_rules`; and `xargs headwork backlog ...` is not read as a headwork
 //! command, since the shell reader does not unwrap `xargs`.
 

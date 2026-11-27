@@ -340,12 +340,11 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     out.end_word();
                     out.redirect_target = redirection(&mut chars);
                 }
-                '$' if chars.peek() == Some(&'{') => {
+                '$' if plain_braced_name(&chars).is_some() => {
                     out.push('$');
-                    for inner in chars.by_ref() {
-                        out.push(inner);
-                        if inner == '}' {
-                            break;
+                    for _ in 0..plain_braced_name(&chars).unwrap_or_default() {
+                        if let Some(inner) = chars.next() {
+                            out.push(inner);
                         }
                     }
                 }
@@ -356,6 +355,21 @@ fn split(line: &str) -> Vec<Vec<String>> {
         }
     }
     out.finish()
+}
+
+/// The length of a `{name}` right ahead, when its content is a plain variable name (letters, digits, underscore): the
+/// `${name}` it ends is then one word. Anything else (`${x:-$(cmd)}`) is read as before, so `{`, `(` and backticks still
+/// end the command and the commands inside are seen.
+fn plain_braced_name(chars: &Peekable<Chars<'_>>) -> Option<usize> {
+    for (at, c) in chars.clone().enumerate() {
+        match (at, c) {
+            (0, '{') => {}
+            (2.., '}') => return Some(at + 1),
+            (1.., c) if c.is_ascii_alphanumeric() || c == '_' => {}
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Reads the rest of a redirection operator after its first `>` or `<`: a second `>` or a `|` (`>>`, `>|`), then
