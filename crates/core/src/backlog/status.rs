@@ -426,7 +426,8 @@ const fn moved(from: Option<ItemStatus>, to: BacklogStatus, kind: MoveKind) -> I
 
 /// The link and date effects of an allowed move: a start, relink or respawn links the move's task; a finish stamps the
 /// date and ends the link, except headwork's finish of an item whose task still lives (merged), which keeps it so the
-/// task can take it back; a cancel stamps and ends the link; a reopen and an unfinish clear the date; a block for a lost
+/// task can take it back; a cancel stamps and ends the link; a reopen clears the date and ends the link (a done item
+/// may still be linked to its merged task); an unfinish clears the date; a block for a lost
 /// task ends the link; everything else keeps both.
 fn with_effects(step: ItemMove, actor: BacklogActor, facts: &MoveFacts<'_>) -> ItemMove {
     let (link, dates) = match (step.kind, &step.to) {
@@ -437,7 +438,8 @@ fn with_effects(step: ItemMove, actor: BacklogActor, facts: &MoveFacts<'_>) -> I
             (LinkEffect::Keep, DateEffect::Stamp)
         }
         (MoveKind::Finish | MoveKind::Cancel, _) => (LinkEffect::Clear, DateEffect::Stamp),
-        (MoveKind::Reopen | MoveKind::Unfinish, _) => (LinkEffect::Keep, DateEffect::Clear),
+        (MoveKind::Reopen, _) => (LinkEffect::Clear, DateEffect::Clear),
+        (MoveKind::Unfinish, _) => (LinkEffect::Keep, DateEffect::Clear),
         (MoveKind::Block, BacklogStatus::Blocked(block))
             if block.reason == BlockReason::TaskLost =>
         {
@@ -455,7 +457,10 @@ fn with_effects(step: ItemMove, actor: BacklogActor, facts: &MoveFacts<'_>) -> I
 }
 
 fn one_line(field: &'static str, text: Option<&str>) -> Result<(), MoveRefusal> {
-    if text.is_some_and(|text| text.contains('\n') || text.contains('\r')) {
+    let Some(text) = text else {
+        return Ok(());
+    };
+    if text.contains(['\n', '\r']) {
         Err(MoveRefusal::MultiLine(field))
     } else {
         Ok(())

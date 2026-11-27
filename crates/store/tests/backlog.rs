@@ -971,3 +971,43 @@ fn a_note_or_reason_over_several_lines_is_refused() {
         BacklogStatus::Backlog
     );
 }
+
+#[test]
+fn a_merged_item_stays_done_when_its_task_is_dropped_and_loses_the_link() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "dropped", "Merged then dropped");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
+    store.drop_task(worker.id, Actor::Orchestrator).unwrap();
+    let item = store.backlog_item(id).unwrap();
+    assert_eq!(
+        (
+            item.draft.status,
+            item.task,
+            item.draft.done_note.as_deref()
+        ),
+        (
+            BacklogStatus::Done,
+            None,
+            Some("task me-sim-dropped merged https://github.com/Ivan091/me-sim/pull/3")
+        ),
+        "the work merged, so it stays done and the link ends; a merged task never fails, failed comes only from spawning"
+    );
+}
+
+#[test]
+fn a_reopen_of_a_done_item_still_linked_to_its_merged_task_ends_the_link() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "again", "Do it again");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
+    assert!(
+        store.backlog_item(id).unwrap().task.is_some(),
+        "linked at the merge"
+    );
+    let reopened = by_user(&mut store, id, Target::Backlog, None).unwrap();
+    assert_eq!(
+        (reopened.draft.status, reopened.task),
+        (BacklogStatus::Backlog, None)
+    );
+}

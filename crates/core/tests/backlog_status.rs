@@ -1215,8 +1215,8 @@ fn each_move_says_what_it_does_to_the_link_and_the_done_date() {
             Some(S::Done),
             Target::Backlog,
             A::User,
-            PLAIN,
-            LinkEffect::Keep,
+            LIVE,
+            LinkEffect::Clear,
             DateEffect::Clear,
         ),
         (
@@ -1224,8 +1224,16 @@ fn each_move_says_what_it_does_to_the_link_and_the_done_date() {
             Target::Backlog,
             A::Orchestrator,
             PLAIN,
-            LinkEffect::Keep,
+            LinkEffect::Clear,
             DateEffect::Clear,
+        ),
+        (
+            Some(S::InProgress),
+            block(R::Partial),
+            A::Headwork,
+            LIVE,
+            LinkEffect::Keep,
+            DateEffect::Keep,
         ),
         (
             Some(S::Done),
