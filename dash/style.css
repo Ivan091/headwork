@@ -345,3 +345,17 @@ button.on {
   font-size: 12px;
   opacity: 0.7;
 }
+
+#node-tip {
+  position: fixed;
+  z-index: 20;
+  max-width: 270px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  word-break: break-word;
+}
