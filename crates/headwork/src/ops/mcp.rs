@@ -203,10 +203,10 @@ const TOOLS: &[ToolDef] = &[
                     "backlog": {
                         "type": "integer",
                         "description": concat!(
-                            "The id of the open backlog item this task comes from (`backlog_list`): it is linked to the task and ",
-                            "finished when the task closes. Refused before the task starts when the item is not open or a live task holds ",
-                            "it; a link refused after the task started leaves it running unlinked and the result says why ",
-                            "(`backlog_unlinked`).",
+                            "The id of the backlog item this task comes from (`backlog_list`): it moves to in progress, linked to the task, ",
+                            "and is done when the task merges or closes. Taken from backlog, from in progress with no live task, or from ",
+                            "blocked as task_lost or partial (a respawn); refused before the task starts otherwise. A link refused after ",
+                            "the task started leaves it running unlinked and the result says why (`backlog_unlinked`).",
                         ),
                     },
                     "allow_ask": {

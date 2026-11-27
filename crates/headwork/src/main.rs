@@ -973,8 +973,9 @@ struct SpawnArgs {
     /// worker's first action is the `Allow` ask for it, and it runs the command only after the user's tap.
     #[arg(long = "allow-ask", value_name = "COMMAND")]
     allow_ask: Vec<String>,
-    /// The backlog item (its id from `headwork backlog`) this task comes from: it is linked to the task and finished when the
-    /// task closes.
+    /// The backlog item (its id from `headwork backlog`) this task comes from: it moves to in progress, linked to the task,
+    /// and is done when the task merges or closes. Taken from the backlog, from in progress with no live task, or blocked as
+    /// `task_lost` or `partial` (a respawn).
     #[arg(long, value_name = "ID", alias = "todo")]
     backlog: Option<i64>,
     /// Print JSON instead of text.

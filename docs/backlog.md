@@ -252,7 +252,7 @@ Each item's status is stored and written only through one pure guard, `transitio
 `crates/core/src/backlog/status.rs`, and one store call, `Store::move_backlog_item`, which writes the row and the event
 `backlog-moved` (`item`, `from`, `to`, `actor`, `reason`, `kind`, `task`) in one transaction. The design is
 `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phase P1 (no epics, dependencies, worker item
-tools or respawn yet). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
+tools or automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
 
 | Status | Meaning |
 |---|---|

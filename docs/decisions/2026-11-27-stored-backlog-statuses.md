@@ -4,7 +4,8 @@ Backlog items carry a stored status (`backlog`, `in_progress`, `blocked`, `done`
 `done` and `dropped`, moved only through the pure guard `core::backlog::transition` and `Store::move_backlog_item`
 (`docs/backlog.md`, section 10; design `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`). P1 builds the
 statuses, the guard, the task-end table and the user's and orchestrator's commands; epics, dependencies, the worker's
-item tools, `done` outcomes and respawns come in later phases.
+item tools, `done` outcomes and headwork's automatic respawns come in later phases; a respawn by hand, `spawn
+--backlog` of an item blocked as `task_lost` or `partial`, exists now.
 
 Choices taken for P1:
 
