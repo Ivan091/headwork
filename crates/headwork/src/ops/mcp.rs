@@ -855,8 +855,10 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "park",
         description: "Park the machine before a restart: every session writes a recap, jobs stop at a checkpoint, the \
-                      panes close. It runs in the background; read `board` for the machine mode. Write your own \
-                      recap first, in the same turn: the park takes it as yours; without one it asks you for it.",
+                      panes close, and last it closes you (`/exit`, so your Remote Control session is archived) \
+                      unless `keep_orchestrator`; the resume opens a new orchestrator from your recap. It runs in the \
+                      background; read `board` for the machine mode. Write your own recap first, in the same turn: the \
+                      park takes it as yours; without one it asks you for it.",
         roles: ORCHESTRATOR,
         schema: || {
             object(
@@ -864,6 +866,10 @@ const TOOLS: &[ToolDef] = &[
                     "deadline_s": {
                         "type": "integer",
                         "description": "Seconds to wait for recaps and checkpoints; 300 when absent.",
+                    },
+                    "keep_orchestrator": {
+                        "type": "boolean",
+                        "description": "Leave this orchestrator session running for the restart to end; false when absent.",
                     },
                 }),
                 &[],
@@ -1519,17 +1525,7 @@ impl<'a> Server<'a> {
     }
 
     fn start_detached(&self, command: &'static str, args: &Value) -> Result<String> {
-        let mut process = std::process::Command::new(self.env.exe);
-        process.arg(command);
-        if command == "park"
-            && let Some(seconds) = args.get("deadline_s").and_then(Value::as_u64)
-        {
-            process.args(["--deadline", &seconds.to_string()]);
-        }
-        process
-            .arg("--home")
-            .arg(self.env.home.root())
-            .current_dir(self.env.home.root());
+        let mut process = detached_command(self.env.exe, self.env.home.root(), command, args);
         let (pid, _) = headwork_adapters::proc::spawn_detached(&mut process)?;
         self.store.append_event(
             self.env.actor,
@@ -2275,11 +2271,90 @@ fn registration(args: &Value) -> Result<Registration> {
     })
 }
 
+/// The detached `headwork park` or `headwork resume` the orchestrator's tools start: the tool's arguments as flags,
+/// and no surface variables, so the run does not count as running in the orchestrator's pane.
+fn detached_command(
+    exe: &std::path::Path,
+    home: &std::path::Path,
+    command: &str,
+    args: &Value,
+) -> std::process::Command {
+    let mut process = std::process::Command::new(exe);
+    process.arg(command);
+    if command == "park"
+        && let Some(seconds) = args.get("deadline_s").and_then(Value::as_u64)
+    {
+        process.args(["--deadline", &seconds.to_string()]);
+    }
+    if command == "park" && args.get("keep_orchestrator").and_then(Value::as_bool) == Some(true) {
+        process.arg("--keep-orchestrator");
+    }
+    for var in super::resume::SURFACE_VARS {
+        process.env_remove(var);
+    }
+    process.arg("--home").arg(home).current_dir(home);
+    process
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(clippy::unwrap_used, reason = "tests")]
 
-    use super::parse_pr;
+    use super::{detached_command, parse_pr};
+
+    fn args_of(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_park_tool_passes_its_arguments_as_flags_and_drops_the_surface_variables() {
+        let exe = std::path::Path::new("S:/bin/headwork.exe");
+        let home = std::path::Path::new("S:/home");
+        let cases = [
+            (serde_json::json!({}), vec!["park", "--home", "S:/home"]),
+            (
+                serde_json::json!({ "deadline_s": 30, "keep_orchestrator": true }),
+                vec![
+                    "park",
+                    "--deadline",
+                    "30",
+                    "--keep-orchestrator",
+                    "--home",
+                    "S:/home",
+                ],
+            ),
+            (
+                serde_json::json!({ "keep_orchestrator": false }),
+                vec!["park", "--home", "S:/home"],
+            ),
+        ];
+        for (args, expected) in cases {
+            let command = detached_command(exe, home, "park", &args);
+            assert_eq!(args_of(&command), expected, "{args}");
+            for var in super::super::resume::SURFACE_VARS {
+                assert!(
+                    command
+                        .get_envs()
+                        .any(|(key, value)| key == var && value.is_none()),
+                    "{var} is removed"
+                );
+            }
+        }
+        let resume = detached_command(
+            exe,
+            home,
+            "resume",
+            &serde_json::json!({ "keep_orchestrator": true }),
+        );
+        assert_eq!(
+            args_of(&resume),
+            ["resume", "--home", "S:/home"],
+            "park flags only for park"
+        );
+    }
 
     #[test]
     fn a_pull_request_url_parses_on_any_host() {

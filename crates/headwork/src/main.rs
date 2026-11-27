@@ -175,6 +175,15 @@ enum Command {
         /// Seconds to wait for recaps and checkpoints before forcing what is left.
         #[arg(long, default_value_t = 300)]
         deadline: u64,
+        /// Leave the orchestrator running for the restart to end, instead of closing it as the last step.
+        #[arg(long)]
+        keep_orchestrator: bool,
+        /// Internal: close this orchestrator session once the park process `--after` has exited.
+        #[arg(long, hide = true, requires = "after")]
+        close_orchestrator: Option<String>,
+        /// Internal: the park process the closer waits for.
+        #[arg(long, hide = true)]
+        after: Option<u32>,
         /// The headwork home.
         #[arg(long)]
         home: Option<PathBuf>,
@@ -1074,9 +1083,18 @@ fn run(cli: Cli, out: &mut impl Write) -> Result<ExitCode> {
         } => return launch_command(&Home::at(home)?, task, (resume, fresh, crash)),
         Command::Park {
             deadline,
+            keep_orchestrator,
+            close_orchestrator,
+            after,
             home,
             json,
-        } => return park_command(&Home::at(home)?, deadline, json, out),
+        } => {
+            let home = Home::at(home)?;
+            if let (Some(session), Some(after)) = (close_orchestrator, after) {
+                return close_orchestrator_command(&home, &session, after, json, out);
+            }
+            return park_command(&home, deadline, keep_orchestrator, json, out);
+        }
         Command::Resume {
             logon,
             wait,
@@ -1235,9 +1253,38 @@ fn standalone<T>(
     act(&mut store, &env)
 }
 
-fn park_command(home: &Home, deadline: u64, json: bool, out: &mut impl Write) -> Result<ExitCode> {
+fn close_orchestrator_command(
+    home: &Home,
+    session: &str,
+    after: u32,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
+    let end = standalone(home, Actor::User, |store, env| {
+        headwork::ops::park::close_orchestrator_after(store, env, session, after)
+    })?;
+    if json {
+        json_out(out, &end)?;
+    } else {
+        writeln!(
+            out,
+            "orchestrator {session}: {}",
+            render::orchestrator_end(&end)
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn park_command(
+    home: &Home,
+    deadline: u64,
+    keep_orchestrator: bool,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<ExitCode> {
     let opts = ParkOptions {
         deadline: std::time::Duration::from_secs(deadline),
+        keep_orchestrator,
         ..ParkOptions::default()
     };
     let report = standalone(home, Actor::User, |store, env| park(store, env, opts))?;

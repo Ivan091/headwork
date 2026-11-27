@@ -592,3 +592,43 @@ fn todo_is_a_hidden_deprecated_alias_of_backlog() {
         ["headwork todo is deprecated; use headwork backlog"]
     );
 }
+
+#[test]
+fn park_close_orchestrator_runs_only_the_closer_and_needs_after() {
+    let home = home_with_fixture();
+    let mut finished = Command::new(env!("CARGO_BIN_EXE_headwork"))
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let gone = finished.id();
+    finished.wait().unwrap();
+    let after = gone.to_string();
+    let output = headwork(
+        home.path(),
+        &[
+            "park",
+            "--close-orchestrator",
+            "nobody",
+            "--after",
+            &after,
+            "--json",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("\"how\": \"gone\""),
+        "an unknown session is gone: {text}"
+    );
+    assert!(!text.contains("safe_to_restart"), "no park runs: {text}");
+    let board = stdout(&headwork(home.path(), &["board"]));
+    assert!(
+        board.starts_with("machine normal"),
+        "the machine was not parked: {board}"
+    );
+
+    let output = headwork(home.path(), &["park", "--close-orchestrator", "nobody"]);
+    assert!(!output.status.success(), "the closer needs --after");
+    assert!(stderr(&output).contains("--after"), "{}", stderr(&output));
+}

@@ -183,6 +183,16 @@ fn inside(path: &str, folder: &str) -> bool {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
 }
 
+/// Whether `pid` is one of `roots` or runs under one of them, so ending a root's tree would end `pid` too.
+///
+/// It follows parent links in `procs`; a parent that started after its child only took the id over and breaks the chain.
+#[must_use]
+pub fn descends_from(procs: &[Proc], pid: u32, roots: &[u32]) -> bool {
+    let mut chain = BTreeSet::new();
+    Tree::new(procs).ancestors(pid, &mut chain);
+    roots.iter().any(|root| chain.contains(root))
+}
+
 struct Tree<'a> {
     by_pid: HashMap<u32, &'a Proc>,
     children: HashMap<u32, Vec<u32>>,
@@ -852,6 +862,34 @@ mod tests {
                 parents_kept: true,
             });
             assert_eq!(ended(&plan), expected, "recorded start {started}: {plan:?}");
+        }
+    }
+
+    #[test]
+    fn descends_from_follows_parent_links_and_stops_at_a_taken_over_id() {
+        let procs = [
+            p(10, None, "claude.exe", 100),
+            p(20, Some(10), "headwork.exe", 110),
+            p(30, Some(20), "headwork.exe", 120),
+            p(40, Some(99), "headwork.exe", 130),
+            p(50, Some(60), "headwork.exe", 140),
+            p(60, Some(10), "bash.exe", 900),
+        ];
+        let cases = [
+            (30, vec![10], true),
+            (10, vec![10], true),
+            (30, vec![20, 77], true),
+            (40, vec![10], false),
+            (50, vec![10], false),
+            (30, vec![], false),
+            (123, vec![10], false),
+        ];
+        for (pid, roots, expected) in cases {
+            assert_eq!(
+                descends_from(&procs, pid, &roots),
+                expected,
+                "{pid} under {roots:?}"
+            );
         }
     }
 }
