@@ -675,11 +675,12 @@ fn plain_update(args: &[String]) -> bool {
     true
 }
 
-/// The arguments a command passes to the headwork CLI: those of `headwork` or `headworkw` under any path or extension, or those
+/// The arguments a command passes to the headwork CLI: those of `headwork` or `headworkw` under any path or extension, or
+/// of `$HEADWORK_EXE` (the launcher's own program, quoted or not, with or without braces), or those
 /// after `--` of `cargo run -p headwork`. `None` for anything else.
 fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
     match command.program_name().as_str() {
-        "headwork" | "headworkw" => Some(command.args()),
+        "headwork" | "headworkw" | "$headwork_exe" | "${headwork_exe}" => Some(command.args()),
         "cargo" => {
             let args = command.args();
             let run = args.iter().find(|arg| !arg.starts_with('+'))?;

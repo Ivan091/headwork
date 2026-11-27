@@ -340,6 +340,15 @@ fn split(line: &str) -> Vec<Vec<String>> {
                     out.end_word();
                     out.redirect_target = redirection(&mut chars);
                 }
+                '$' if chars.peek() == Some(&'{') => {
+                    out.push('$');
+                    for inner in chars.by_ref() {
+                        out.push(inner);
+                        if inner == '}' {
+                            break;
+                        }
+                    }
+                }
                 ';' | '&' | '|' | '(' | ')' | '`' | '{' | '}' => out.end_command(),
                 c if c.is_whitespace() => out.end_word(),
                 c => out.push(c),
