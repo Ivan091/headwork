@@ -226,6 +226,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         if let Some(store) = &store {
             checks.push(migrations_check(d, config, store));
             checks.push(usage_prices_check(config, store));
+            checks.push(leftovers_check(config, store));
         }
     }
     if let Some(store) = &store {
@@ -391,6 +392,38 @@ fn trust_check(d: &Doctor<'_>, config: &Config, store: Option<&Store>) -> Check 
         )
     };
     Check::ok("trust", detail)
+}
+
+fn leftovers_check(config: &Config, store: &Store) -> Check {
+    match super::leftovers::list(store, config, false) {
+        Ok(found) if found.is_empty() => Check::ok(
+            "rc-leftovers",
+            "no ended session left a Remote Control entry in the Claude app",
+        ),
+        Ok(found) => {
+            let names: Vec<&str> = found
+                .iter()
+                .take(5)
+                .map(|leftover| leftover.rc_name.as_str())
+                .collect();
+            let more = found.len().saturating_sub(names.len());
+            let rest = if more > 0 {
+                format!(" and {more} more")
+            } else {
+                String::new()
+            };
+            Check::warn(
+                "rc-leftovers",
+                format!(
+                    "{} ended sessions may still be listed in the Claude app: {}{rest}",
+                    found.len(),
+                    names.join(", "),
+                ),
+                "archive them in the Claude app, then run `headwork leftovers clear --all`",
+            )
+        }
+        Err(error) => Check::warn("rc-leftovers", format!("{error}"), "check the store"),
+    }
 }
 
 fn idle_slots_check(config: &Config) -> Check {

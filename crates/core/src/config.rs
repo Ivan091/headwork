@@ -414,6 +414,9 @@ pub struct WatchConfig {
     /// process tree; 0 skips `/exit`. Claude Code archives its Remote Control session at claude.ai as it exits, which a
     /// killed process never does, so a killed session stays listed in the Claude app.
     pub exit_grace_s: u32,
+    /// Days back that `headwork leftovers`, `doctor` and `board` look for Remote Control leftovers: sessions that ended
+    /// without `/exit` and may still be listed in the Claude app. 0 looks at all time.
+    pub leftover_days: u32,
     /// Hours a standing tick finding stays silent before the user is told of it again; 0 tells each finding once.
     pub retell_after_h: u32,
     /// Per finding kind, hours before it is told again, replacing `retell_after_h` (0 tells that kind once).
@@ -438,6 +441,7 @@ impl Default for WatchConfig {
             merged_grace_min: 10,
             closing_grace_s: 60,
             exit_grace_s: 15,
+            leftover_days: 7,
             retell_after_h: 6,
             retell_after_h_by_rule: BTreeMap::new(),
             roots: Vec::new(),
