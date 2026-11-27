@@ -50,3 +50,11 @@ Choices taken for P1:
   worker or explorer session every `headwork backlog` subcommand but `list` (fail closed, list options and their values
   skipped as clap reads them; so add, done, start, cancel, block, unblock,
   reopen, edit, import, export and any unknown word are refused); `list` stays allowed.
+- A dropped or failed task that had merged pull requests finishes its in-progress item (an item it took back for a
+  later pull request) instead of blocking it as `task_lost`: the work merged.
+- The end of a link to a task that is over is a move like any other (target `Unlink`, kind `unlink`, `backlog-moved`
+  with the same `from` and `to`), so every write of an item's status columns goes through `write_move`. Headwork's
+  finish that keeps the link of a merged task is its own kind, `merge_finish`.
+- Block notes may not hold `[` or `]` (they sit in the status tag); done notes must pair their parentheses (they sit in
+  the trailing done group); cancel reasons are never exported, so only one line is asked of them.
+- The CLI refuses a writing backlog command when `HEADWORK_SESSION` is set and `HEADWORK_ROLE` is missing or unknown.

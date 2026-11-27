@@ -47,7 +47,7 @@ Events: `backlog-added`, `backlog-moved` (every status move, section 10), `backl
 | `- [ ] body` | In the backlog, or the status its tag names |
 | `- [ ] body [in progress]`, `[in progress: task <name> <state>]` | In progress; the task part is ignored |
 | `- [ ] body [blocked: <reason>]`, `[blocked: <reason>: <note>]` | Blocked; back to the backlog on unblock, or to in progress when the reason is followed by `, from in progress` (`[blocked: task_lost, from in progress: task x dropped]`) |
-| A tag that starts `[in progress` or `[blocked:` and cannot be read | Reported, the item is left out |
+| A `[in progress: ...]` or `[blocked: ...]` tag that cannot be read | The item is imported in the backlog as plain text, the tag kept in its text, and the import lists a warning for the line. Only `[in progress]`, `[in progress: ...]` and `[blocked: ...]` count as tags: `Collect [in progress reports]` is plain text |
 | `- [x] body` | Done, or cancelled when its trailing group starts with `cancelled`, `dropped` or `superseded` |
 | `- body` | Cancelled under `## Cancelled` or `## Dropped`, done under `## Done`; anywhere else it is reported |
 | An indented `  - note` right after an item | One of its notes |
@@ -80,7 +80,8 @@ text, and adds the ones the store lacks.
 - It never deletes or changes a row and never writes the file. Importing the same file twice adds nothing.
 - It is the one way in that skips the status guard: it restores the statuses the file names (done, cancelled, in
   progress, blocked), where `add` and `backlog_add` pass `transition(None, backlog, ...)` and always add to the backlog.
-- It prints the counts and every unparsed line with its number and reason, and records `backlog_files.imported_at`.
+- It prints the counts, every unparsed line with its number and reason, and every warning (an item taken with a status
+  tag it could not read), and records `backlog_files.imported_at`.
   `--dry-run` prints the same and writes nothing, not even `imported_at`.
 
 ## 4. Export
@@ -181,7 +182,8 @@ when nothing waits. In order:
    pending notes.
 6. `backlog #<id>: <text>`: the other open items of owner `user`.
 
-Items linked to a task, done or cancelled, and items with a future `not_before` are left out. When more than nine items
+Items linked to a live task (any state but closed, dropped or failed), done or cancelled items, and items with a future
+`not_before` are left out; an item whose linked task is over waits again. When more than nine items
 wait, eight show and the last line is `... and N more: headwork digest`.
 
 A pull request waits for the user when it is open in the `prs` rows, its task is `in_review`, and the task's newest
@@ -273,7 +275,8 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 | `backlog` | `in_progress` | user (`backlog start`), orchestrator (`backlog_start`, `spawn --backlog`), headwork; refused for an item whose project headwork does not run |
 | `in_progress` (no live task) | `in_progress` | user, orchestrator, headwork: a new task linked |
 | `in_progress` | `done` | headwork: the task-end table |
-| `done` (linked to a live task) | `in_progress` | headwork: the task, merged, opened another pull request |
+| `done` (linked to a live task) | `in_progress` | headwork: the task, merged, opened another pull request; refused when the move names another task or the item's project has no task path |
+| `done`, `blocked` (linked to a task that is over) | the same | headwork: the link ends (`Unlink`) |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
 | `in_progress` | `blocked` | worker on its own item and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
 | `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`dep_cancelled`) |
@@ -291,18 +294,20 @@ every such item, inside the transition):
 
 | Task becomes | Item |
 |---|---|
-| `merged` | `done` today, note `task <name> merged <urls>`; the link stays while the task lives |
+| `merged` | `done` today, note `task <name> merged <urls>`; the link stays while the task lives (move kind `merge_finish`) |
 | `closed` (the item never saw `merged`) | `done`, note `task <name> merged <urls>`, or `task <name>, no pull request` |
-| `dropped`, `failed` | `blocked` (`task_lost`), note `task <name> dropped` or `failed`, back to `in_progress` on unblock, link ended |
+| `dropped`, `failed` | `blocked` (`task_lost`), note `task <name> dropped` or `failed`, back to `in_progress` on unblock, link ended; but `done` with the merged note when the task had merged pull requests (it took its merged item back for a later pull request) |
 | any other state | no change |
 
 The other items linked to the task (`on_linked_end`): when a merged task goes back to `in_review` (a later pull
-request), its `done` items go back to `in_progress` (link kept, done date cleared). When the task is `closed`,
-`dropped` or `failed`, a `done` item loses its link and its note becomes `task <name> merged <every merged url>`, and a
-`blocked` item loses its link and keeps its block (an unblock of a `task_lost` item returns it to `in_progress` with
+request), its `done` items go back to `in_progress` (move kind `unfinish`: link kept, done date cleared). When the task is
+`closed`, `dropped` or `failed`, a `done` item loses its link and its note becomes `task <name> merged <every merged
+url>`, and a `blocked` item loses its link and keeps its block (move kind `unlink`, target `Unlink`, logged as
+`backlog-moved` with the same `from` and `to`) (an unblock of a `task_lost` item returns it to `in_progress` with
 no task, which `spawn --backlog` takes). A `cancelled` item is never touched. A move the guard refuses there is
 logged as `backlog-move-refused` and never fails the task's transition.
 
 Every allowed move carries its link and date effects (`ItemMove::link`, `ItemMove::dates`); the store only applies
-them. A note, a cancel reason or a done note over several lines, or holding `[` or `]`, is refused, as the file
-could not hold it or read its status tag back.
+them. A block note, a cancel reason or a done note over several lines is refused. A block note may not hold `[` or `]`
+(it sits in the status tag), and a done note must pair its parentheses (it sits in the trailing `(done D: note)` group);
+a cancel reason is never exported, so only its line count is checked.
