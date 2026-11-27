@@ -838,6 +838,9 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
     let empty = Value::Null;
     let tool_input = call.input.get("tool_input").unwrap_or(&empty);
+    if let Err(error) = note_pending_worktree_adds(store, call, tool) {
+        note(store, call, &json!({ "worktree-add-pending": error.to_string() }))?;
+    }
     if tool == "PushNotification" {
         store.append_event(
             Actor::Hook,
@@ -1076,27 +1079,73 @@ fn tool_used(tool: &str, input: Option<&Value>) -> Value {
     })
 }
 
-/// Records the worktrees a worker's Bash call made with `git worktree add` as helper worktrees of its task, so the
-/// guard counts them as its own and the close removes them. Each is logged `helper-worktree-recorded` by the store.
-fn record_self_made_worktrees(store: &mut Store, call: &Call<'_>, tool: &str) -> Result<()> {
-    let (Some(task), "Bash", Role::Worker) = (call.task, tool, call.session.role) else {
-        return Ok(());
-    };
-    let Some(command) = call
-        .input
+/// The event a worker's `PreToolUse` leaves for a Bash line with `git worktree add`: the folders the line aims at that
+/// do not exist yet. Only those can be taken as made by the line that follows.
+const EVENT_WORKTREE_PENDING: &str = "worktree-add-pending";
+
+/// The Bash line of a worker's call when it mentions a worktree.
+fn worktree_command<'a>(call: &'a Call<'_>, tool: &str) -> Option<&'a str> {
+    if tool != "Bash" || call.session.role != Role::Worker {
+        return None;
+    }
+    call.input
         .get("tool_input")
         .and_then(|input| input.get("command"))
         .and_then(Value::as_str)
         .filter(|command| command.contains("worktree"))
-    else {
+}
+
+fn places_of(call: &Call<'_>) -> Places {
+    Places {
+        home: Some(slashed(&call.env.home.expand("~"))),
+        temp: Some(slashed(call.env.temp)),
+    }
+}
+
+/// Notes, before a worker's Bash line runs, the folders its `git worktree add` commands aim at that do not exist yet.
+fn note_pending_worktree_adds(store: &Store, call: &Call<'_>, tool: &str) -> Result<()> {
+    let Some(command) = worktree_command(call, tool) else {
         return Ok(());
     };
-    let env = call.env;
-    let places = Places {
-        home: Some(slashed(&env.home.expand("~"))),
-        temp: Some(slashed(env.temp)),
+    let dirs: Vec<String> = headwork_core::guard::worktree_adds(command, &call.cwd(), &places_of(call))
+        .into_iter()
+        .map(|added| added.dir)
+        .filter(|dir| !Path::new(dir).exists())
+        .collect();
+    store.append_event(
+        Actor::Hook,
+        call.session.task_id,
+        Some(&call.session.id),
+        EVENT_WORKTREE_PENDING,
+        &json!({ "dirs": dirs }),
+    )?;
+    Ok(())
+}
+
+/// Records the worktrees a worker's Bash call made with `git worktree add` as helper worktrees of its task, so the
+/// guard counts them as its own and the close removes them. Each is logged `helper-worktree-recorded` by the store.
+fn record_self_made_worktrees(store: &mut Store, call: &Call<'_>, tool: &str) -> Result<()> {
+    let (Some(task), Some(command)) = (call.task, worktree_command(call, tool)) else {
+        return Ok(());
     };
-    let made = super::helpers::record_self_made(store, &env.ops_env(), task, &call.cwd(), &places, command);
+    let pending = match store.session_event(&call.session.id, EVENT_WORKTREE_PENDING)? {
+        Some(data) => data
+            .get("dirs")
+            .and_then(Value::as_array)
+            .map(|dirs| dirs.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let env = call.env;
+    let made = super::helpers::record_self_made(
+        store,
+        &env.ops_env(),
+        task,
+        &call.cwd(),
+        &places_of(call),
+        command,
+        &pending,
+    );
     for (dir, error) in made.failed {
         note(store, call, &json!({ "self-made-worktree": dir, "error": error }))?;
     }

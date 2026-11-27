@@ -158,7 +158,8 @@ pub struct SelfMade {
 ///
 /// It records them as [`add`] does for one it makes itself, so they are writable for the task and removed at its
 /// close. Only a folder that is a linked git worktree now (it holds a `.git` file) and that no task has recorded is
-/// taken. A folder that fails to record is reported in [`SelfMade::failed`] and the others still go on.
+/// taken, and only when it was pending: the `PreToolUse` hook saw it absent before the line ran, so a failed
+/// `git worktree add` aimed at an existing worktree never takes it over. A folder that fails to record is reported in [`SelfMade::failed`] and the others still go on.
 pub fn record_self_made(
     store: &mut Store,
     env: &Env<'_>,
@@ -166,9 +167,13 @@ pub fn record_self_made(
     cwd: &str,
     places: &Places,
     line: &str,
+    pending: &[String],
 ) -> SelfMade {
     let mut made = SelfMade::default();
     for added in worktree_adds(line, cwd, places) {
+        if !pending.iter().any(|dir| same(dir, Path::new(&added.dir))) {
+            continue;
+        }
         let outcome = record_one(store, env, task, &added);
         match outcome {
             Ok(true) => made.recorded.push(added.dir),

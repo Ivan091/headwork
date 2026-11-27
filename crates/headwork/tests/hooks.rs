@@ -562,20 +562,10 @@ fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
     let made = w.dir.path().join("demo-publish-all");
     let probe = w.dir.path().join("wt-timing-probe");
     let other = w.dir.path().join("demo-other");
+    let stale = w.dir.path().join("demo-stale");
     git(
         &main,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "publish-all",
-            made.to_str().unwrap(),
-        ],
-    );
-    git(
-        &main,
-        &["worktree", "add", "-q", "--detach", probe.to_str().unwrap()],
+        &["worktree", "add", "-q", "--detach", stale.to_str().unwrap()],
     );
     std::fs::create_dir(&other).unwrap();
     let edit = |w: &mut World, path: &Path| {
@@ -587,13 +577,31 @@ fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
     edit(&mut w, &made);
     assert_eq!(w.denies().len(), 1, "denied before it is recorded");
 
-    post_bash(
-        &mut w,
+    let first = "git worktree add -b publish-all ../demo-publish-all";
+    pre_bash_in(&mut w, &main, first);
+    git(
         &main,
-        "git worktree add -b publish-all ../demo-publish-all",
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "publish-all",
+            made.to_str().unwrap(),
+        ],
     );
+    post_bash(&mut w, &main, first);
     let own = w.worktree();
-    post_bash(&mut w, &own, "git worktree add --detach ../wt-timing-probe");
+    let second = "git worktree add --detach ../wt-timing-probe";
+    pre_bash_in(&mut w, &own, second);
+    git(
+        &main,
+        &["worktree", "add", "-q", "--detach", probe.to_str().unwrap()],
+    );
+    post_bash(&mut w, &own, second);
+    let aimed_at_existing = "git worktree add ../demo-stale";
+    pre_bash_in(&mut w, &main, aimed_at_existing);
+    post_bash(&mut w, &main, aimed_at_existing);
     post_bash(&mut w, &main, "git worktree add ../demo-other");
     post_bash(&mut w, &main, "git worktree add ../not-made-at-all");
     post_bash(&mut w, &main, "git worktree add ../demo-sand");
@@ -607,7 +615,7 @@ fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
     assert_eq!(
         recorded,
         ["publish-all", "wt-timing-probe"],
-        "only real worktrees, none twice"
+        "only fresh real worktrees, none twice"
     );
 
     let before = w.denies().len();
