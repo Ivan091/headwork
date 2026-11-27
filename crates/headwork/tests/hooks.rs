@@ -4166,27 +4166,28 @@ fn a_silent_flag_on_an_ordinary_kind_closes_without_the_users_go() {
     assert!(!is_error, "a silent lead closes without asking: {text}");
 }
 
-#[test]
-fn done_with_a_planned_review_requests_it_and_is_refused() {
-    let mut w = world_flagged(
-        REVIEWS,
-        "",
-        false,
-        "task",
-        CloseMode::Silent,
-        Some(Level::Standard),
-    );
+fn planned_world(level: Level) -> World {
+    let mut w = world_flagged(REVIEWS, "", false, "task", CloseMode::Silent, Some(level));
     w.start();
+    w
+}
+
+#[test]
+fn done_with_a_planned_review_starts_it_and_is_refused() {
+    let mut w = planned_world(Level::Standard);
     assert_eq!(
         w.store.task(w.task.id).unwrap().review_plan,
         Some(Level::Standard)
     );
     let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
-    assert!(is_error && text.contains("review-planned"), "{text}");
+    assert!(
+        is_error && text.contains("review-planned") && text.contains("`done` waits for it"),
+        "{text}"
+    );
     let review = w.store.open_review(w.task.id).unwrap().unwrap();
     assert_eq!(
         (review.state, review.level, review.flow.as_str()),
-        (ReviewState::Requested, Level::Standard, "code"),
+        (ReviewState::Running, Level::Standard, "code"),
         "{review:?}"
     );
     assert_eq!(
@@ -4202,6 +4203,146 @@ fn done_with_a_planned_review_requests_it_and_is_refused() {
     );
     let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
     assert!(is_error && text.contains("review-open"), "{text}");
+}
+
+#[test]
+fn done_with_a_planned_review_that_cannot_start_asks_for_review_start() {
+    let mut w = planned_world(Level::Standard);
+    std::fs::create_dir_all(w.dir.path().join("demo-sand-review")).unwrap();
+    let (is_error, text) = w.tool(worker_identity(&w), "done", &json!({ "summary": "built" }));
+    assert!(
+        is_error && text.contains("`review_start`") && text.contains("automatic start failed"),
+        "{text}"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(review.state, ReviewState::Requested, "{review:?}");
+}
+
+#[test]
+fn a_review_report_starts_a_planned_review_on_the_committed_head_even_with_a_dirty_tree() {
+    let mut w = planned_world(Level::Light);
+    let tree = w.worktree();
+    std::fs::write(tree.join("change.txt"), "committed").unwrap();
+    git(&tree, &["add", "change.txt"]);
+    git(&tree, &["commit", "-q", "-m", "change"]);
+    std::fs::write(tree.join("change.txt"), "still being fixed").unwrap();
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "report",
+        &json!({ "status": "review", "summary": "ready", "pr": PR_URL }),
+    );
+    assert!(
+        !is_error && text.contains("sand-review") && text.contains("Keep working"),
+        "{text}"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(review.state, ReviewState::Running, "{review:?}");
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&tree)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(review.head_sha.as_deref(), Some(head.trim()));
+    assert_eq!(
+        part_named(&w, "sand-review").kind,
+        "review",
+        "the reviewer lead runs"
+    );
+}
+
+#[test]
+fn a_review_report_falls_back_to_review_start_when_the_automatic_start_fails() {
+    let mut w = planned_world(Level::Light);
+    std::fs::create_dir_all(w.dir.path().join("demo-sand-review")).unwrap();
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "report",
+        &json!({ "status": "review", "summary": "ready", "pr": PR_URL }),
+    );
+    assert!(
+        !is_error && text.contains("`review_start`") && text.contains("automatic start failed"),
+        "{text}"
+    );
+    let review = w.store.open_review(w.task.id).unwrap().unwrap();
+    assert_eq!(review.state, ReviewState::Requested, "{review:?}");
+}
+
+#[test]
+fn commits_landing_during_a_level_one_round_earn_one_fix_scoped_round() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 1);
+    let me = reviewer(&w, &part);
+    let tree = w.worktree();
+    std::fs::write(tree.join("ci.txt"), "ci fix").unwrap();
+    git(&tree, &["add", "ci.txt"]);
+    git(&tree, &["commit", "-q", "-m", "ci fix"]);
+    let (delivered, _) = run_round(&mut w, &me, &[], &[]);
+    assert!(
+        delivered["next"]
+            .as_str()
+            .unwrap()
+            .contains("review_resolve"),
+        "{delivered}"
+    );
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert!(review.late_commits, "{review:?}");
+    let (is_error, text) = w.tool(me.clone(), "review_finish", &json!({}));
+    assert!(is_error, "a late round is still due: {text}");
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "review_resolve",
+        &json!({ "items": [] }),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(me.clone(), "review_verdict", &json!({ "items": [] }));
+    assert!(!is_error, "{text}");
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(
+        (review.round, review.state, review.late_commits),
+        (2, ReviewState::Running, false),
+        "{review:?}"
+    );
+    assert_ne!(review.round_base_sha, review.reviewed_sha, "{review:?}");
+    run_round(&mut w, &me, &[], &[]);
+    let (is_error, text) = w.tool(
+        worker_identity(&w),
+        "review_resolve",
+        &json!({ "items": [] }),
+    );
+    assert!(!is_error, "{text}");
+    let (is_error, text) = w.tool(me.clone(), "review_verdict", &json!({ "items": [] }));
+    assert!(!is_error, "{text}");
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert_eq!(
+        (review.round, review.state),
+        (2, ReviewState::Rechecking),
+        "no second extra round: {review:?}"
+    );
+    let (is_error, text) = w.tool(me, "review_finish", &json!({}));
+    assert!(!is_error, "{text}");
+}
+
+#[test]
+fn a_level_one_round_without_late_commits_ends_after_one_round() {
+    let mut w = world(REVIEWS, false);
+    let part = started_review(&mut w, 1);
+    let me = reviewer(&w, &part);
+    let (delivered, _) = run_round(&mut w, &me, &[], &[]);
+    assert!(
+        delivered["next"]
+            .as_str()
+            .unwrap()
+            .contains("review_finish"),
+        "{delivered}"
+    );
+    let review = w.store.reviews_of(w.task.id).unwrap().pop().unwrap();
+    assert!(!review.late_commits, "{review:?}");
+    let (is_error, text) = w.tool(me, "review_finish", &json!({}));
+    assert!(!is_error, "{text}");
 }
 
 #[test]

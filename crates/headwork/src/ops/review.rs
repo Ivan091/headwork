@@ -37,6 +37,16 @@ pub const LEAD_NEXT: &str = "The reviewer lead runs now as your part `review`; y
      argue outside that answer. Your `done` waits until the review finishes; then tell the user its outcome in one \
      line.";
 
+/// How a review starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartMode {
+    /// The implementing lead called `review_start`: uncommitted changes refuse it (`review-dirty`).
+    Lead,
+    /// headwork starts a planned review as the lead reports its pull request or calls `done`: the committed `HEAD` is
+    /// pinned whatever the lead's tree holds, since the lead may still be fixing CI.
+    Auto,
+}
+
 /// A review that started.
 #[derive(Debug, Clone, Serialize)]
 pub struct Started {
@@ -60,6 +70,15 @@ pub struct Started {
 /// uncommitted changes (`review-dirty`), when the flow does not load, or when git, the worktree or the spawn fail; a
 /// worktree made before a failed spawn is removed again.
 pub fn start(store: &mut Store, env: &Env<'_>, lead: &Task) -> Result<Started> {
+    start_in(store, env, lead, StartMode::Lead)
+}
+
+/// Starts the review requested for `lead` in `mode`; [`start`] is the lead's own call.
+///
+/// # Errors
+///
+/// As [`start`], except that [`StartMode::Auto`] never refuses uncommitted changes.
+pub fn start_in(store: &mut Store, env: &Env<'_>, lead: &Task, mode: StartMode) -> Result<Started> {
     if !env.config.reviews.enabled {
         bail!("reviews are off (`[reviews] enabled = false`)");
     }
@@ -82,7 +101,7 @@ pub fn start(store: &mut Store, env: &Env<'_>, lead: &Task) -> Result<Started> {
     let loaded = load_flow(env.home.root(), &review.flow, &allowed).map_err(anyhow::Error::msg)?;
     let dir = env.task_dir(lead)?;
     let worktrees = env.worktrees(lead)?;
-    if worktrees.is_dirty(&dir)? {
+    if mode == StartMode::Lead && worktrees.is_dirty(&dir)? {
         bail!(
             "review-dirty: {} holds uncommitted changes; commit them first",
             dir.display()

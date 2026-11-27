@@ -292,6 +292,7 @@ fn due(store: &Store, loaded: &LoadedFlow, review: &ReviewRow) -> Result<bool> {
         loaded.flow.level(review.level),
         review.round,
         fixed_important,
+        review.late_commits,
     ))
 }
 
@@ -630,7 +631,10 @@ pub fn deliver(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Step> {
     for id in &selection.delivered {
         store.resolve_finding(*id, Resolution::Open, None, false)?;
     }
-    let lead = store.task(review.task_id)?.name.to_string();
+    let lead_task = store.task(review.task_id)?;
+    let late = lead_moved_on(env, &lead_task, &review);
+    let review = store.set_late_commits(review.id, late)?;
+    let lead = lead_task.name.to_string();
     let rows = store.review_findings(review.id)?;
     let findings: Vec<FindingRow> = rows
         .iter()
@@ -656,12 +660,24 @@ pub fn deliver(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Step> {
             listed.len()
         )
     };
-    let next = if findings.is_empty() {
+    let later = if late {
+        format!(
+            " Commits landed in `{lead}` after the head this round reviewed: one more round checks only the commits since."
+        )
+    } else {
+        String::new()
+    };
+    let next = if findings.is_empty() && late {
+        format!(
+            "Nothing to deliver for an answer.{info}{later} Ask `{lead}` with `SendMessage` to call `review_resolve` with \
+             no items, then call `review_verdict` with none to start that round."
+        )
+    } else if findings.is_empty() {
         format!("Nothing to deliver for an answer.{info} Then call `review_finish`.")
     } else {
         format!(
             "Send `{lead}` these findings with `SendMessage`, numbered by their ids, each with its place, severity, \
-             summary and scenario; it answers each with `review_resolve`.{info} Then wait for its message."
+             summary and scenario; it answers each with `review_resolve`.{info}{later} Then wait for its message."
         )
     };
     Ok(Step {
@@ -671,6 +687,19 @@ pub fn deliver(store: &mut Store, env: &Env<'_>, part: &Task) -> Result<Step> {
         tell: Some(lead),
         next,
     })
+}
+
+/// Whether the implementing lead's `HEAD` is no longer the commit the review pinned: commits landed while a round ran.
+fn lead_moved_on(env: &Env<'_>, lead: &Task, review: &ReviewRow) -> bool {
+    let Some(pinned) = review.head_sha.as_deref() else {
+        return false;
+    };
+    let head = env.task_dir(lead).and_then(|dir| {
+        env.worktrees(lead)?
+            .resolve(&dir, "HEAD")
+            .map_err(anyhow::Error::from)
+    });
+    head.is_ok_and(|head| head != pinned)
 }
 
 /// The implementing lead's fixes and disputes, one per finding that waits on it.

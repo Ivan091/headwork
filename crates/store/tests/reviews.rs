@@ -467,3 +467,46 @@ fn a_due_round_starts_round_two_with_fresh_nodes() {
         "round two has fixed nothing yet"
     );
 }
+
+#[test]
+fn late_commits_are_flagged_and_reset_when_the_next_round_starts() {
+    let (mut store, task) = store_with_task();
+    let review = store
+        .request_review(task, "code", Level::Light, "", Actor::Hook)
+        .unwrap();
+    assert!(!review.late_commits, "a new review has none");
+    store
+        .move_review(review.id, ReviewTrigger::Start, false, false, Actor::Worker)
+        .unwrap();
+    store
+        .set_review_target(review.id, None, "base", "head")
+        .unwrap();
+    store
+        .move_review(
+            review.id,
+            ReviewTrigger::Deliver,
+            true,
+            false,
+            Actor::Worker,
+        )
+        .unwrap();
+    let review = store.set_late_commits(review.id, true).unwrap();
+    assert!(review.late_commits, "flagged at delivery");
+    store
+        .move_review(
+            review.id,
+            ReviewTrigger::Resolve,
+            true,
+            false,
+            Actor::Worker,
+        )
+        .unwrap();
+    let review = store
+        .move_review(review.id, ReviewTrigger::Verdict, true, true, Actor::Worker)
+        .unwrap();
+    assert_eq!(
+        (review.round, review.state, review.late_commits),
+        (2, ReviewState::Running, false),
+        "the next round starts clean"
+    );
+}

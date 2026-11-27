@@ -659,18 +659,40 @@ fn another_round_is_due_only_after_an_important_fix_and_below_the_level_s_rounds
     let flow = code();
     let strict = flow.level(Level::Strict);
     assert!(
-        round_due(strict, 1, true),
+        round_due(strict, 1, true, false),
         "level 3 runs round 2 after an important fix"
     );
     assert!(
-        !round_due(strict, 1, false),
+        !round_due(strict, 1, false, false),
         "no important fix (only doubts or nits, or nothing), no second round"
     );
-    assert!(!round_due(strict, 2, true), "two rounds at most");
+    assert!(!round_due(strict, 2, true, false), "two rounds at most");
     assert!(
-        !round_due(flow.level(Level::Standard), 1, true),
+        !round_due(flow.level(Level::Standard), 1, true, false),
         "level 2 runs one round"
     );
+}
+
+#[test]
+fn late_commits_earn_exactly_one_more_round() {
+    let flow = code();
+    let table = [
+        (Level::Light, 1, false, true, true),
+        (Level::Light, 2, false, true, false),
+        (Level::Light, 1, false, false, false),
+        (Level::Strict, 1, false, true, true),
+        (Level::Strict, 2, false, true, true),
+        (Level::Strict, 3, false, true, false),
+        (Level::Strict, 2, true, false, false),
+        (Level::Strict, 1, true, true, true),
+    ];
+    for (level, round, fixed, late, want) in table {
+        assert_eq!(
+            round_due(flow.level(level), round, fixed, late),
+            want,
+            "{level:?} round {round} fixed {fixed} late {late}"
+        );
+    }
 }
 
 fn trigger() -> impl Strategy<Value = ReviewTrigger> {

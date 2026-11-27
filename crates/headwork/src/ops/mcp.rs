@@ -2094,15 +2094,25 @@ impl<'a> Server<'a> {
         let state = moved.unwrap_or(self.store.task(task.id)?.state);
         let note = if status == "review" {
             let fresh = self.store.task(task.id)?;
-            super::flags::start_planned(
+            let outcome = super::flags::start_planned(
                 self.store,
                 self.env.config,
                 self.env.home.root(),
                 &fresh,
                 headwork_core::PlanMoment::FirstPullRequest,
                 self.env.actor,
-            )?
-            .note()
+            )?;
+            match self.auto_start(&fresh, &outcome) {
+                Some(Ok(started)) => Some(format!(
+                    "headwork: the planned review started as your part `{}` on the committed HEAD. Keep working (CI fixes are \
+                     fine) and wait for its findings. {}",
+                    started.part, started.next
+                )),
+                Some(Err(error)) => outcome
+                    .note()
+                    .map(|note| format!("{note} (automatic start failed: {error:#})")),
+                None => outcome.note(),
+            }
         } else {
             None
         };
@@ -2111,6 +2121,16 @@ impl<'a> Server<'a> {
             reply["note"] = Value::String(note);
         }
         to_text(&reply)
+    }
+
+    fn auto_start(
+        &mut self,
+        lead: &Task,
+        outcome: &super::flags::PlannedOutcome,
+    ) -> Option<Result<super::review::Started>> {
+        matches!(outcome, super::flags::PlannedOutcome::Requested { .. }).then(|| {
+            super::review::start_in(self.store, &self.env, lead, super::review::StartMode::Auto)
+        })
     }
 
     fn done(&mut self, session: &str, task: Task, args: &Value) -> Result<String> {
@@ -2137,18 +2157,32 @@ impl<'a> Server<'a> {
         ) {
             bail!("the task is already {}", task.state);
         }
-        match super::flags::start_planned(
+        let outcome = super::flags::start_planned(
             self.store,
             self.env.config,
             self.env.home.root(),
             &task,
             headwork_core::PlanMoment::Done,
             self.env.actor,
-        )? {
-            super::flags::PlannedOutcome::Requested { review, level, .. } => bail!(
-                "review-planned: a level-{level} review (review {review}) was planned for this task; commit your work, then \
-                 call `review_start`"
-            ),
+        )?;
+        let started = self.auto_start(&task, &outcome);
+        match outcome {
+            super::flags::PlannedOutcome::Requested { review, level, .. } => match started {
+                Some(Ok(started)) => bail!(
+                    "review-planned: a level-{level} review (review {review}) was planned for this task and started as your \
+                     part `{}` on the committed HEAD; `done` waits for it. {}",
+                    started.part,
+                    started.next
+                ),
+                Some(Err(error)) => bail!(
+                    "review-planned: a level-{level} review (review {review}) was planned for this task; commit your work, \
+                     then call `review_start` (automatic start failed: {error:#})"
+                ),
+                None => bail!(
+                    "review-planned: a level-{level} review (review {review}) was planned for this task; commit your work, \
+                     then call `review_start`"
+                ),
+            },
             super::flags::PlannedOutcome::FlowBroken(problem) => bail!(
                 "a review was planned for this task, but {problem}; the plan is cleared and no review started: tell the \
                  user, then call `done` again"
