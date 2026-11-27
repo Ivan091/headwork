@@ -14,8 +14,8 @@ use headwork::ops::Env;
 use headwork::ops::hook::{GitProbe, HookEnv, HookEvent, HookReply, run_hook};
 use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::rules::{
-    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, EXPLORER_PART_HEADING, ORCHESTRATOR_RULES,
-    PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES, platform_words,
+    ASK_BEFORE_CLOSE_HEADING, CLOSING_HEADING, EXPLORER_PART_HEADING, EXPLORER_RULES,
+    ORCHESTRATOR_RULES, PLAIN_LEAD_HEADING, RuleFiles, WORKER_RULES, platform_words,
 };
 use headwork::ops::spawn::{SpawnRequest, spawn};
 use headwork::ops::update::{Notice, UpdateState};
@@ -314,6 +314,14 @@ fn hooks_record_the_permission_mode_the_session_is_in() {
         });
         w.hook(HookEvent::PreToolUse, &input);
         assert_eq!(mode(&w), expected, "after {reported}");
+    }
+}
+
+#[test]
+fn the_built_in_rules_send_reports_with_send_user_file() {
+    for rules in [WORKER_RULES, EXPLORER_RULES] {
+        assert!(rules.contains("`SendUserFile`"), "{rules}");
+        assert!(rules.contains("path"), "{rules}");
     }
 }
 
