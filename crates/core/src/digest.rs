@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::FindingId;
-use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, LinkedTask};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, BlockReason, LinkedTask};
 
 /// The header of a digest that holds lines.
 pub const HEADER: &str = "Needs you";
@@ -185,14 +185,51 @@ fn ask_line(ask: &AskFact) -> String {
     )
 }
 
+/// The blocked items that wait on the user: a decision to make, a task lost, work left partial, a dependency cancelled.
+/// A block on an event or on a dependency that is not done waits on something else.
+fn blocked_for_user(backlog_items: &[BacklogItem]) -> Vec<&BacklogItem> {
+    let mut blocked: Vec<&BacklogItem> = backlog_items
+        .iter()
+        .filter(|item| {
+            item.draft.status.block().is_some_and(|block| {
+                matches!(
+                    block.reason,
+                    BlockReason::Decision
+                        | BlockReason::TaskLost
+                        | BlockReason::Partial
+                        | BlockReason::DepCancelled
+                )
+            })
+        })
+        .collect();
+    blocked.sort_by_key(|item| (item.position, item.id));
+    blocked
+}
+
+fn blocked_line(item: &BacklogItem) -> String {
+    let text = shorten(&item.draft.text, TEXT_LIMIT);
+    let Some(block) = item.draft.status.block() else {
+        return format!("backlog #{}: {text}", item.id);
+    };
+    let note = block
+        .note
+        .as_deref()
+        .map(|note| format!(" - {}", shorten(note, TEXT_LIMIT)))
+        .unwrap_or_default();
+    format!("blocked #{} ({}): {text}{note}", item.id, block.reason)
+}
+
 fn dated_backlog_items(
     backlog_items: &[BacklogItem],
     today: &BacklogDate,
+    blocked: &[i64],
 ) -> Vec<(BacklogDate, i64, String)> {
     let mut dated: Vec<(BacklogDate, i64, String)> = backlog_items
         .iter()
         .filter(|item| {
-            item.draft.status.is_open() && !item.task.as_ref().is_some_and(LinkedTask::is_live)
+            item.draft.status.is_open()
+                && !item.task.as_ref().is_some_and(LinkedTask::is_live)
+                && !blocked.contains(&item.id)
         })
         .filter_map(|item| {
             let text = shorten(&item.draft.text, TEXT_LIMIT);
@@ -240,14 +277,20 @@ fn user_items<'a>(
 
 /// The ids of the backlog items that wait on the user, in the digest's order.
 ///
-/// Those due or started come first, then the other open items of the user that no live task holds and are not held back by a
+/// Those due or started come first, then the blocked ones that need the user, then the other open items of the user that no
+/// live task holds and are not held back by a
 /// `not_before` date. The digest and the dashboard both use this, so they never disagree.
 #[must_use]
 pub fn waiting_items(backlog_items: &[BacklogItem], today: &BacklogDate) -> Vec<i64> {
-    let mut ids: Vec<i64> = dated_backlog_items(backlog_items, today)
+    let blocked: Vec<i64> = blocked_for_user(backlog_items)
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let mut ids: Vec<i64> = dated_backlog_items(backlog_items, today, &blocked)
         .into_iter()
         .map(|(_, id, _)| id)
         .collect();
+    ids.extend(blocked);
     let rest: Vec<i64> = user_items(backlog_items, today, &ids)
         .into_iter()
         .map(|item| item.id)
@@ -264,7 +307,8 @@ fn is_gate_finding(kind: &str) -> bool {
 
 /// Builds the digest from `facts`.
 ///
-/// Asks come oldest first, then backlog items due or started, migration notes, pull requests, findings open long enough
+/// Asks come oldest first, then backlog items due or started, blocked items that need a decision or a respawn, migration
+/// notes, pull requests, findings open long enough
 /// (gate findings, a stale holder or a starved wait, at once),
 /// and the other open items of the user, trimmed to [`MAX_LINES`] with a closing line for the rest.
 #[must_use]
@@ -272,9 +316,13 @@ pub fn build(facts: &Facts) -> Digest {
     let mut asks: Vec<&AskFact> = facts.asks.iter().collect();
     asks.sort_by_key(|ask| (std::cmp::Reverse(ask.waiting_s), ask.id));
     let mut lines: Vec<String> = asks.into_iter().map(ask_line).collect();
-    let dated = dated_backlog_items(&facts.backlog_items, &facts.today);
-    let listed: Vec<i64> = dated.iter().map(|(_, id, _)| *id).collect();
+    let blocked = blocked_for_user(&facts.backlog_items);
+    let blocked_ids: Vec<i64> = blocked.iter().map(|item| item.id).collect();
+    let dated = dated_backlog_items(&facts.backlog_items, &facts.today, &blocked_ids);
+    let mut listed: Vec<i64> = dated.iter().map(|(_, id, _)| *id).collect();
+    listed.extend(&blocked_ids);
     lines.extend(dated.into_iter().map(|(_, _, line)| line));
+    lines.extend(blocked.into_iter().map(blocked_line));
     lines.extend(facts.notes.iter().map(|note| {
         format!(
             "migration note {}: {}",
@@ -582,5 +630,38 @@ mod tests {
             vec![5, 2],
             "dated first, then the user's"
         );
+    }
+
+    #[test]
+    fn blocked_items_that_need_the_user_are_listed_once_with_their_reason_and_note() {
+        use crate::backlog::{Block, ReturnTo};
+        let blocked = |id, reason, note: Option<&str>| {
+            let mut found = item(id, "Blocked thing", BacklogOwner::Agent);
+            found.draft.status = BacklogStatus::Blocked(Block {
+                reason,
+                note: note.map(str::to_owned),
+                before: ReturnTo::InProgress,
+            });
+            found
+        };
+        let mut facts = facts();
+        let mut due = blocked(1, BlockReason::Decision, Some("which engine"));
+        due.draft.due = Some(date("2026-11-20"));
+        facts.backlog_items = vec![
+            blocked(2, BlockReason::Event, Some("the release")),
+            blocked(3, BlockReason::TaskLost, None),
+            blocked(4, BlockReason::Depends, None),
+            due,
+        ];
+        let digest = build(&facts);
+        assert_eq!(
+            digest.lines,
+            [
+                "blocked #1 (decision): Blocked thing - which engine",
+                "blocked #3 (task_lost): Blocked thing",
+            ],
+            "{digest:?}"
+        );
+        assert_eq!(waiting_items(&facts.backlog_items, &facts.today), [1, 3]);
     }
 }

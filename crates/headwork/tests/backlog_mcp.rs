@@ -14,8 +14,11 @@ use headwork::ops::Env;
 use headwork::ops::mcp::{Identity, Server};
 use headwork_adapters::git::FakeGit;
 use headwork_adapters::host::fake::FakeHost;
-use headwork_core::backlog::BacklogStatus;
+use headwork_core::TaskState;
+use headwork_core::backlog::{BacklogOwner, BacklogStatus, BlockReason, ItemStatus};
+use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role};
+use headwork_store::NewSession;
 use headwork_store::{BacklogFilter, Store};
 use serde_json::{Value, json};
 
@@ -391,6 +394,232 @@ fn the_status_tools_start_block_unblock_cancel_and_reopen() {
         w.store.backlog_item(id).unwrap().draft.status,
         BacklogStatus::InProgress
     );
-    let (is_error, text) = w.tool("backlog_cancel", &json!({ "id": id, "reason": "no" }));
-    assert!(is_error && text.contains("drop the task first"), "{text}");
+    let (is_error, text) = w.tool("backlog_cancel", &json!({ "id": id, "reason": " " }));
+    assert!(
+        is_error && text.contains("only with a reason"),
+        "a refused cancel drops nothing: {text}"
+    );
+    let task = w.store.find_task("demo-spun").unwrap().unwrap();
+    assert!(task.state != TaskState::Dropped, "{:?}", task.state);
+    w.ok("backlog_cancel", &json!({ "id": id, "reason": "no" }));
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::Cancelled
+    );
+    let task = w.store.find_task("demo-spun").unwrap().unwrap();
+    assert!(
+        task.state == TaskState::Closed,
+        "cancelling the item drops and closes its live task: {:?}",
+        task.state
+    );
+}
+
+impl World {
+    fn worker_tool(&mut self, task: &str, name: &str, arguments: &Value) -> (bool, String) {
+        let id = self.store.find_task(task).unwrap().unwrap().id;
+        let session = format!("session-{task}");
+        if self.store.session(&session).unwrap().is_none() {
+            self.store
+                .record_session(
+                    &NewSession {
+                        id: session.clone(),
+                        task_id: Some(id),
+                        role: Role::Worker,
+                        rc_name: task.to_owned(),
+                        host: "wmux".to_owned(),
+                        host_workspace: None,
+                        host_surface: None,
+                    },
+                    Actor::Hook,
+                )
+                .unwrap();
+        }
+        if self.store.task(id).unwrap().state == TaskState::Spawning {
+            self.store
+                .transition(
+                    id,
+                    &Trigger::SessionStarted(SessionFacts {
+                        session_matches: true,
+                        launcher_alive: true,
+                    }),
+                    Actor::Hook,
+                )
+                .unwrap();
+        }
+        let env = Env {
+            home: &self.home,
+            config: &self.config,
+            host: &self.host,
+            exe: Path::new("S:/bin/headwork.exe"),
+            actor: Actor::Worker,
+        };
+        let identity = Identity {
+            session: Some(session),
+            role: Some(Role::Worker),
+        };
+        let message = json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        let reply = Server::new(&mut self.store, env, &self.prs, identity)
+            .handle(&message)
+            .unwrap();
+        let result = reply["result"].clone();
+        let text = result["content"][0]["text"].as_str().unwrap().to_owned();
+        (result["isError"].as_bool().unwrap(), text)
+    }
+
+    fn spawn_plain(&mut self, slug: &str, brief: &str) -> i64 {
+        self.ok(
+            "spawn",
+            &json!({ "project": "demo", "slug": slug, "brief": brief }),
+        );
+        let task = self
+            .store
+            .find_task(&format!("demo-{slug}"))
+            .unwrap()
+            .unwrap();
+        self.store
+            .backlog_items_of_task(task.id)
+            .unwrap()
+            .first()
+            .unwrap()
+            .id
+    }
+}
+
+#[test]
+fn a_spawn_without_a_backlog_item_makes_one_in_progress_from_the_briefs_goal_line() {
+    let mut w = world();
+    let id = w.spawn_plain(
+        "plain",
+        "# Goal: Build the thing
+
+More words.
+",
+    );
+    let item = w.store.backlog_item(id).unwrap();
+    assert_eq!(item.draft.text, "Build the thing");
+    assert_eq!(item.draft.status, BacklogStatus::InProgress);
+    assert_eq!(item.draft.owner, BacklogOwner::Agent);
+    assert_eq!(item.draft.project, "demo");
+    assert_eq!(item.task.unwrap().name, "demo-plain");
+}
+
+#[test]
+fn a_worker_blocks_and_unblocks_its_own_item_and_nobody_elses() {
+    let mut w = world();
+    let own = w.spawn_plain(
+        "own",
+        "Wait for the release
+",
+    );
+    let other = w.spawn_plain(
+        "other",
+        "Another thing
+",
+    );
+    let (is_error, text) = w.worker_tool(
+        "demo-own",
+        "item_block",
+        &json!({ "reason": "event", "note": "the release is out Friday" }),
+    );
+    assert!(!is_error, "{text}");
+    let status = w.store.backlog_item(own).unwrap().draft.status;
+    assert_eq!(status.kind(), ItemStatus::Blocked, "{status:?}");
+    assert_eq!(status.block().unwrap().reason, BlockReason::Event);
+    let (is_error, text) = w.worker_tool(
+        "demo-own",
+        "item_block",
+        &json!({ "id": other, "reason": "event", "note": "x" }),
+    );
+    assert!(is_error && text.contains("its own task"), "{text}");
+    let (is_error, text) = w.worker_tool(
+        "demo-own",
+        "item_block",
+        &json!({ "reason": "task_lost", "note": "x" }),
+    );
+    assert!(is_error, "{text}");
+    let (is_error, text) = w.worker_tool("demo-own", "item_unblock", &json!({}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        w.store.backlog_item(own).unwrap().draft.status,
+        BacklogStatus::InProgress
+    );
+    let (is_error, _) = w.tool("item_block", &json!({ "reason": "event", "note": "x" }));
+    assert!(is_error, "the orchestrator has no item tools");
+}
+
+#[test]
+fn a_partial_done_blocks_the_item_instead_of_finishing_it() {
+    let mut w = world();
+    let id = w.spawn_plain(
+        "half", "Do half
+",
+    );
+    let task = w.store.find_task("demo-half").unwrap().unwrap();
+    let blocked = w
+        .store
+        .record_partial_outcome(
+            &task,
+            "session-demo-half",
+            Some(
+                "the rest [later]
+next",
+            ),
+            Actor::Worker,
+        )
+        .unwrap();
+    assert_eq!(blocked, vec![id]);
+    let status = w.store.backlog_item(id).unwrap().draft.status;
+    let block = status.block().unwrap();
+    assert_eq!(block.reason, BlockReason::Partial);
+    assert_eq!(
+        block.note.as_deref(),
+        Some("task demo-half partial: the rest later next")
+    );
+}
+
+#[test]
+fn the_done_tool_with_outcome_partial_blocks_the_item_and_a_bad_outcome_is_refused() {
+    let mut w = world();
+    let id = w.spawn_plain(
+        "tool", "Do some
+",
+    );
+    let (is_error, text) = w.worker_tool(
+        "demo-tool",
+        "done",
+        &json!({ "summary": "half done", "outcome": "finished" }),
+    );
+    assert!(is_error && text.contains("task outcome"), "{text}");
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress,
+        "a refused outcome changes nothing"
+    );
+    let task = w.store.find_task("demo-tool").unwrap().unwrap();
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            None,
+            "tool-used",
+            &json!({ "tool": "SendMessage" }),
+        )
+        .unwrap();
+    let (is_error, text) = w.worker_tool(
+        "demo-tool",
+        "done",
+        &json!({ "summary": "half done", "outcome": "partial" }),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.contains("partial"), "{text}");
+    let item = w.store.backlog_item(id).unwrap();
+    let block = item.draft.status.block().unwrap();
+    assert_eq!(block.reason, BlockReason::Partial);
+    assert_eq!(
+        block.note.as_deref(),
+        Some("task demo-tool partial: half done")
+    );
 }

@@ -1562,6 +1562,8 @@ fn mcp_tools_follow_the_role() {
             "board",
             "inbox",
             "migrate_list",
+            "item_block",
+            "item_unblock",
             "report",
             "done",
             "recap",

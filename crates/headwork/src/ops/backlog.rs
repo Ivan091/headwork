@@ -699,7 +699,11 @@ pub fn move_item(
     target: Target,
     reason: Option<&str>,
 ) -> Result<Change> {
-    let has_project = project_known(env.config, &store.backlog_item(id)?.draft.project);
+    let before = store.backlog_item(id)?;
+    let has_project = project_known(env.config, &before.draft.project);
+    if target == Target::Cancelled {
+        drop_live_task(store, env, &before, reason)?;
+    }
     let request = BacklogMove {
         actor_task,
         ..BacklogMove::new(target, backlog_actor(env.actor), env.actor, has_project)
@@ -707,6 +711,42 @@ pub fn move_item(
     };
     let item = store.move_backlog_item(id, &request)?;
     Ok(changed(store, env, &[item]))
+}
+
+/// Drops the live task of an item about to be cancelled, through the checked drop and close, so the cancel that follows
+/// finds no live task. Nothing is dropped when the cancel itself would be refused (the item is not open, or the
+/// orchestrator gave no reason). A close that fails after the drop leaves the item blocked as `task_lost`, and a second
+/// cancel finishes the job.
+fn drop_live_task(
+    store: &mut Store,
+    env: &Env<'_>,
+    item: &BacklogItem,
+    reason: Option<&str>,
+) -> Result<()> {
+    let Some(task) = item.task.as_ref().filter(|task| task.is_live()) else {
+        return Ok(());
+    };
+    if !item.draft.status.is_open() {
+        bail!(
+            "it is {}: only an open item is cancelled",
+            item.draft.status.kind()
+        );
+    }
+    let reason = reason.map(str::trim).filter(|reason| !reason.is_empty());
+    if env.actor == Actor::Orchestrator && reason.is_none() {
+        bail!("the orchestrator cancels an item only with a reason (the user's words)");
+    }
+    let id = TaskId(task.id);
+    store.drop_task(id, env.actor)?;
+    store.append_event(
+        env.actor,
+        Some(id),
+        None,
+        "drop-reason",
+        &serde_json::json!({ "user_words": reason.unwrap_or("backlog item cancelled"), "item": item.id }),
+    )?;
+    super::close::close(store, env, id, None)?;
+    Ok(())
 }
 
 /// Marks an item done today with a note, and exports; refused while a live task works on it.
@@ -849,8 +889,8 @@ pub fn spawn_linked(
     }
     let (task, pumped) = spawn(store, env, request)?;
     let mut unlinked = None;
-    if let Some(id) = item {
-        match store.move_backlog_item(id, &link(Some(TaskId(task.id.0)))) {
+    match item {
+        Some(id) => match store.move_backlog_item(id, &link(Some(TaskId(task.id.0)))) {
             Ok(_) => drop(export_after(store, env)),
             Err(error) => {
                 unlinked = Some(format!(
@@ -858,13 +898,64 @@ pub fn spawn_linked(
                     task.name
                 ));
             }
-        }
+        },
+        None => match auto_item(store, env, request, &task) {
+            Ok(_) => drop(export_after(store, env)),
+            Err(error) => {
+                unlinked = Some(format!(
+                    "task {} runs without a backlog item of its own: {error:#}",
+                    task.name
+                ));
+            }
+        },
     }
     Ok(LinkedSpawn {
         task,
         pumped,
         unlinked,
     })
+}
+
+/// The item a spawn without `--backlog` gets (decision D1): the brief's goal line as text, owner agent, in progress and
+/// linked to the task, added and started by headwork. Returns its id.
+fn auto_item(
+    store: &mut Store,
+    env: &Env<'_>,
+    request: &SpawnRequest<'_>,
+    task: &Task,
+) -> Result<i64> {
+    let brief = std::fs::read_to_string(request.brief).unwrap_or_default();
+    let project = request.request.project.to_string();
+    let today = store.backlog_today()?;
+    let draft_for = |text: String| BacklogDraft {
+        project: project.clone(),
+        section: None,
+        text,
+        notes: Vec::new(),
+        status: BacklogStatus::Backlog,
+        owner: BacklogOwner::Agent,
+        added: Some(today.clone()),
+        not_before: None,
+        due: None,
+        done_on: None,
+        done_note: None,
+    };
+    let text = backlog::goal_line(&brief)
+        .map(|goal| backlog::normalize(&goal).text)
+        .filter(|text| draft_for(text.clone()).validate().is_ok())
+        .unwrap_or_else(|| format!("Task {}", task.name));
+    let item = store.add_backlog_item_for(
+        &draft_for(text),
+        env.actor,
+        BacklogActor::Headwork,
+        Some(TaskId(task.id.0)),
+    )?;
+    let start = BacklogMove {
+        link: Some(TaskId(task.id.0)),
+        ..BacklogMove::new(Target::InProgress, BacklogActor::Headwork, env.actor, true)
+    };
+    store.move_backlog_item(item.id, &start)?;
+    Ok(item.id)
 }
 
 /// The statuses a `--status` word names: one status, `open` (backlog, in progress and blocked) or `all`.

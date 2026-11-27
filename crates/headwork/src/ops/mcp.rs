@@ -9,7 +9,7 @@ use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_adapters::git::GitHost;
-use headwork_core::backlog::Target;
+use headwork_core::backlog::{ItemStatus, Target, TaskOutcome};
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
@@ -513,6 +513,36 @@ const TOOLS: &[ToolDef] = &[
         schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
     },
     ToolDef {
+        name: "item_block",
+        description: concat!(
+            "Block the backlog item your task works on until something happens outside it: `decision` (it needs the user's ",
+            "call) or `event` (it waits for a release, an account, a person), with a note. Use it when the work must wait, ",
+            "then finish with `done`: the task ending does not mark the item lost. `item_unblock` takes it back.",
+        ),
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "reason": { "type": "string", "enum": ["decision", "event"] },
+                    "note": { "type": "string", "description": "The decision or the event it waits for." },
+                    "id": { "type": "integer", "description": "The item; optional when your task works on one." },
+                }),
+                &["reason", "note"],
+            )
+        },
+    },
+    ToolDef {
+        name: "item_unblock",
+        description: "Take the blocked backlog item your task works on back to the status it had before its block.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({ "id": { "type": "integer", "description": "The item; optional when your task works on one blocked item." } }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
         name: "backlog_reopen",
         description: "Take a done or cancelled backlog item back to the backlog, and export `backlog.md`.",
         roles: ORCHESTRATOR,
@@ -593,6 +623,14 @@ const TOOLS: &[ToolDef] = &[
             object(
                 json!({
                     "summary": { "type": "string", "description": "What was built, test results, pull request links." },
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["done", "partial"],
+                        "description": concat!(
+                            "`done` (default), or `partial` when the work is not finished: the backlog item your task works on ",
+                            "becomes blocked (`partial`) instead of done; say what is left in `summary`.",
+                        ),
+                    },
                     "scenes": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -1249,6 +1287,7 @@ impl<'a> Server<'a> {
             "update" => self.update(args),
             "migrate_list" => self.migrate_list(args),
             "migrate_mark" => self.migrate_mark(args),
+            "item_block" | "item_unblock" => self.item_tool(name, &session, args),
             backlog if backlog.starts_with("backlog_") => self.backlog_tool(backlog, args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
@@ -1552,6 +1591,74 @@ impl<'a> Server<'a> {
             "backlog_unblock" => self.backlog_move(args, Target::Unblock, None),
             "backlog_reopen" => self.backlog_move(args, Target::Backlog, None),
             other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn record_outcome(
+        &mut self,
+        task: &Task,
+        session: &str,
+        outcome: TaskOutcome,
+        summary: Option<&str>,
+    ) -> Result<Option<String>> {
+        if outcome != TaskOutcome::Partial {
+            return Ok(None);
+        }
+        let blocked = self
+            .store
+            .record_partial_outcome(task, session, summary, self.env.actor)?;
+        Ok(Some(format!(
+            concat!(
+                "done recorded as partial: backlog item(s) {:?} are blocked (partial); this session, its pane ",
+                "and its worktree close now"
+            ),
+            blocked
+        )))
+    }
+
+    fn own_item(&self, task: &Task, args: &Value, status: ItemStatus) -> Result<i64> {
+        if let Some(id) = args.get("id").and_then(Value::as_i64) {
+            return Ok(id);
+        }
+        let ids: Vec<i64> = self
+            .store
+            .backlog_items_of_task(task.id)?
+            .iter()
+            .filter(|item| item.draft.status.kind() == status)
+            .map(|item| item.id)
+            .collect();
+        match ids.as_slice() {
+            [id] => Ok(*id),
+            [] => bail!("your task works on no {status} backlog item"),
+            _ => bail!("your task works on several {status} backlog items ({ids:?}): pass `id`"),
+        }
+    }
+
+    fn item_tool(&mut self, name: &str, session: &str, args: &Value) -> Result<String> {
+        let task = &self.own_task(session)?;
+        let actor_task = Some(task.id);
+        if name == "item_block" {
+            let reason = text(args, "reason")?.parse()?;
+            let note = text(args, "note")?;
+            let id = self.own_item(task, args, ItemStatus::InProgress)?;
+            to_text(&super::backlog::block(
+                self.store,
+                &self.env,
+                actor_task,
+                id,
+                reason,
+                Some(&note),
+            )?)
+        } else {
+            let id = self.own_item(task, args, ItemStatus::Blocked)?;
+            to_text(&super::backlog::move_item(
+                self.store,
+                &self.env,
+                actor_task,
+                id,
+                Target::Unblock,
+                None,
+            )?)
         }
     }
 
@@ -2336,10 +2443,16 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .unwrap_or("done")
             .to_owned();
+        let outcome = outcome_of(args)?;
         begin_own_close(self.store, &self.env, self.git, task.id)?;
         self.store
             .record_report(task.id, session, "done", &summary, &[], None)?;
+        let said = args.get("summary").and_then(Value::as_str);
+        let partial = self.record_outcome(&task, session, outcome, said)?;
         self.closing = Some(task);
+        if let Some(text) = partial {
+            return Ok(text);
+        }
         Ok(unsure.map_or_else(
             || "done recorded; this session, its pane and its worktree close now".to_owned(),
             |why| {
@@ -2373,6 +2486,15 @@ fn part_kind(
         carries_go,
         model.or_else(|| models.for_part(&lead.kind)),
     )
+}
+
+fn outcome_of(args: &Value) -> Result<TaskOutcome> {
+    Ok(args
+        .get("outcome")
+        .and_then(Value::as_str)
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or_default())
 }
 
 fn backlog_id(args: &Value) -> Result<i64> {

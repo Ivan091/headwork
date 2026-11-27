@@ -381,7 +381,7 @@ pub enum MoveRefusal {
     /// Anyone but headwork finishing an item a live task works on.
     #[error("task {0} works on it: only headwork finishes it, when the task finishes")]
     FinishedByTask(String),
-    /// A cancel of an item a live task works on (P1: the drop is not part of the cancel yet).
+    /// A cancel of an item a live task works on, at the store; the ops-level cancel drops the task first.
     #[error("task {0} works on it: drop the task first, then cancel the item")]
     DropTaskFirst(String),
     /// A start or link while a live task already works on it.
@@ -790,12 +790,40 @@ fn cancel(
     }
 }
 
-/// What the task said about its item when it ended; `Done` until the worker's `done` can say otherwise.
+/// What the task said about its item when it ended: the outcome of the worker's `done`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskOutcome {
     /// The task finished the work.
     #[default]
     Done,
+    /// The task closed without finishing the work: the item is blocked as `partial`.
+    Partial,
+}
+
+impl TaskOutcome {
+    /// The word a `done` call gives for it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Partial => "partial",
+        }
+    }
+}
+
+impl FromStr for TaskOutcome {
+    type Err = UnknownWord;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            "done" => Ok(Self::Done),
+            "partial" => Ok(Self::Partial),
+            other => Err(UnknownWord {
+                kind: "task outcome",
+                word: other.to_owned(),
+            }),
+        }
+    }
 }
 
 /// What the end of a task does to each in-progress item linked to it.
@@ -811,6 +839,11 @@ pub enum TaskEndEffect {
         /// `task <name> dropped` or `task <name> failed`.
         note: String,
     },
+    /// The item is blocked (`partial`) with this note: the task closed without finishing it.
+    Partial {
+        /// `task <name> partial`, then the worker's note.
+        note: String,
+    },
 }
 
 impl TaskEndEffect {
@@ -821,6 +854,10 @@ impl TaskEndEffect {
             Self::Finish { .. } => Target::Done,
             Self::Lost { note } => Target::Blocked {
                 reason: BlockReason::TaskLost,
+                note: Some(note.clone()),
+            },
+            Self::Partial { note } => Target::Blocked {
+                reason: BlockReason::Partial,
                 note: Some(note.clone()),
             },
         }
@@ -848,6 +885,11 @@ pub fn on_task_end(
         }
     };
     match (state, outcome) {
+        (TaskState::Merged | TaskState::Closed, TaskOutcome::Partial) => {
+            Some(TaskEndEffect::Partial {
+                note: format!("task {task_name} partial"),
+            })
+        }
         (TaskState::Merged, TaskOutcome::Done) => Some(TaskEndEffect::Finish { note: merged() }),
         (TaskState::Closed, TaskOutcome::Done) => Some(TaskEndEffect::Finish {
             note: if merged_urls.is_empty() {
