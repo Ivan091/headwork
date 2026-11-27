@@ -53,8 +53,12 @@ URLs, the stored branch, the branch checked out), a later pull request takes a `
 `finish` takes a close claim (`<home>/closing/<id>.lock`) so two finishers never run one close.
 A lead gets helper worktrees for its parts from the worker tool `worktree_add` (`ops/helpers.rs`, migration 0012): made by
 the project's `worktree_new` at `worktree_path` with the part's slug, writable for the task, removed at close (one that
-holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
-the main checkout with `git pull --ff-only`; the guard rule `worker-force-push` refuses a plain force, `-f` or `+refspec`
+holds work stays and is logged). A worktree a worker makes itself with `git worktree add` is recorded the same way by the
+`PostToolUse` hook once the command succeeds (`core/src/guard/worktree_add.rs`, `ops/helpers.rs` `record_self_made`; only
+a linked worktree no row holds), so edits and git there pass `worker-edit-outside` and `worker-git-outside`
+(`docs/decisions/2026-11-27-self-made-worktrees.md`). Workers may also write `<main>/.claude/worktrees` (subagent
+worktrees), fast-forward the main checkout with `git pull --ff-only` and run `git worktree add` and `git worktree prune`
+there; the guard rule `worker-force-push` refuses a plain force, `-f` or `+refspec`
 and allows `--force-with-lease` only to the task's own recorded branch, one branch at a time (`--all`, `--branches`,
 `--mirror`, `--tags`, `--prune`, `--delete` are refused); `install = true` on a project lets its workers run
 `headwork install` and a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`). The project keys
@@ -70,6 +74,9 @@ minutes (`core/src/removal.rs`, counts in `worktrees`, migration 0024); any othe
 failure, make the tick ask keep or delete, and nothing is retried until it is answered (the answer clears the counts);
 `close --force` and a user's `headwork clean` try at once (`RemovalMode::Now`), and a close still backing off skips
 its transition (`docs/decisions/2026-11-25-worktree-removal-backoff.md`).
+The `ask-push` rule counts a `PushNotification` recorded at `PreToolUse` (event `tool-pre`) only for a short grace
+(`PRE_ONLY_GRACE_SECS`, 5 s: the same batch of tool calls), a completed one (`tool-used`) when it came since the turn's
+prompt and no more than 600 s ago, and an identical re-ask within 120 s of its deny is not logged again.
 `headwork clean` (`ops/clean.rs`, pure decisions in `core/src/clean.rs`) removes the worktrees of merged (session
 ended) and closed tasks through the project's own `worktree_remove`, and Claude Code agent worktrees inside main
 checkouts (`.claude/worktrees/agent-*`) whose locking agent is gone and whose branch is merged (branch deleted with
@@ -144,7 +151,8 @@ findings a verify stage rejected stay back), `review_verdict` (fix accepted or r
 worktree there). The reviewer lead's ask headed `Dispute` (one question per finding, `Finding <id>:`, options "Keep
 the finding" and "Drop it") is read by the `PostToolUse` hook. A lead's `done` is refused while its review is open
 (`review-open`), a reviewer's while its review is not finished (`review-unfinished`), and the stop rule
-`review-unfinished` holds a reviewer lead with ready nodes or answers to re-check; closing either task cancels the
+`review-unfinished` holds a reviewer lead with ready nodes (and a free `parallel` slot) or answers to re-check, unless it
+waits on its own background subagents; closing either task cancels the
 review.
 R4 surfaces them: `board` prints a lead's open review under it (`Store::review_summary`), `status` ends its line with
 `in review (level N)` (`review requested (level N)` before it starts), `doctor` validates every flow (check `flows`: a broken one fails while reviews are on, warns while

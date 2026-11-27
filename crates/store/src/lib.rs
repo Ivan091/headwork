@@ -38,8 +38,8 @@ pub use digest::EVENT_DIGEST_PUSHED;
 pub use error::StoreError;
 pub use graph::{EventMark, EventRange, SpendOf};
 pub use hooks::{
-    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_USER_ONLY_ALLOWED,
-    EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
+    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_TOOL_PRE,
+    EVENT_USER_ONLY_ALLOWED, EVENT_WOULD_DENY, HookSession, RulesVersion, TurnSoFar,
 };
 pub use leftovers::EVENT_RC_ARCHIVED;
 pub use migrate::{MIGRATIONS, migrate};

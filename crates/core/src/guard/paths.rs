@@ -48,6 +48,12 @@ impl Places {
     pub fn resolve(&self, cwd: &str, path: &str) -> GuardPath {
         GuardPath::resolve(cwd, &self.expand(path))
     }
+
+    /// Like [`Places::resolve`], but keeps the case, so the text names a folder on disk.
+    #[must_use]
+    pub fn resolve_exact(&self, cwd: &str, path: &str) -> String {
+        GuardPath::resolve_exact(cwd, &self.expand(path))
+    }
 }
 
 /// A path in the guard's comparable form.
@@ -67,22 +73,22 @@ impl GuardPath {
         Self::new(&joined)
     }
 
+    /// The normalized text of `path`, joined to `cwd` first when it is relative, with its case kept.
+    #[must_use]
+    pub fn resolve_exact(cwd: &str, path: &str) -> String {
+        let path = path.replace('\\', "/");
+        let joined = if is_absolute(&path) {
+            path
+        } else {
+            format!("{}/{path}", cwd.replace('\\', "/"))
+        };
+        normalized(&joined)
+    }
+
     /// Normalizes an absolute path.
     #[must_use]
     pub fn new(path: &str) -> Self {
-        let path = msys_to_drive(&path.replace('\\', "/")).to_lowercase();
-        let (prefix, rest) = split_root(&path);
-        let mut parts: Vec<&str> = Vec::new();
-        for part in rest.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    parts.pop();
-                }
-                part => parts.push(part),
-            }
-        }
-        Self(format!("{prefix}{}", parts.join("/")))
+        Self(normalized(&path.to_lowercase()))
     }
 
     /// Normalizes `path` when it is absolute: a drive letter, a leading slash or `~`. `None` for a relative path.
@@ -114,6 +120,22 @@ impl std::fmt::Display for GuardPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+fn normalized(path: &str) -> String {
+    let path = msys_to_drive(&path.replace('\\', "/"));
+    let (prefix, rest) = split_root(&path);
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    format!("{prefix}{}", parts.join("/"))
 }
 
 fn is_absolute(path: &str) -> bool {

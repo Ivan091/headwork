@@ -183,7 +183,8 @@ whose it is, and the live-name uniqueness check stays as it is. Its tab shows on
   orchestrator.
 - `rules/orchestrator.md`: "Briefing a lead" becomes "Dispatching": the brief is the user's request; status in one line;
   send the user to the lead; never relay an ask's text.
-- Guard: no new scope. A lead keeps the worker scope (its worktree, its helper worktrees). A part has its own. The
+- Guard: no new scope. A lead keeps the worker scope (its worktree, its helper worktrees, which include worktrees it
+  made itself with `git worktree add`: `docs/decisions/2026-11-27-self-made-worktrees.md`). A part has its own. The
   `worker-git-outside` and grant rules apply unchanged. The `stop-unfinished` rule treats a lead with a live part like a
   worker with background work: it may stop and wait for the part's message.
 

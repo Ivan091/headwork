@@ -1,0 +1,13 @@
+id = "2026-11-27-push-at-pre-tool-use"
+title = "The plugin hooks PushNotification at PreToolUse"
+since = "2026-11-27"
+requires = ["headwork"]
+why = """plugin/hooks/hooks.json adds PushNotification to the PreToolUse matcher, so ask-push sees a push sent in the \
+same tool batch as its AskUserQuestion (docs/decisions/2026-11-27-ask-push-window.md). Plugin files load at session \
+start: sessions started after the pull get the matcher, running ones keep the old one and record the push at \
+PostToolUse only, as before. Nothing breaks; restart or park and resume sessions only when ask-push is enforced."""
+check = "headwork doctor"
+
+[[step]]
+kind = "agent"
+run = "headwork doctor"

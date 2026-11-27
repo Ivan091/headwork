@@ -73,9 +73,9 @@ Never close another task: force-closing is for the user and the orchestrator.
   "worktree"` where they touch the same files), review and integrate their work, and deliver in one or a few pull
   requests.
 - A part that needs a worktree of its own beside yours (its own branch and pull request) gets one from the headwork
-  `worktree_add` tool, never from a worktree script or `git worktree add`: it is writable for you and removed when your
-  task closes. After a merge you may fast-forward the main checkout with `git -C <main> pull --ff-only`, nothing else
-  there.
+  `worktree_add` tool: it is writable for you and removed when your task closes (a worktree you make with `git worktree
+  add` is taken as one too, once the command succeeds). After a merge you may fast-forward the main checkout with `git
+  -C <main> pull --ff-only`; `git worktree add` and `prune` are the only other git writes there.
 - When a part truly needs its own session (a long render, a separate review, another project), do not spawn it and never
   run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` of another task through Bash. Send the orchestrator
   the proposed slugs and a brief for each, by `report` with kind `progress` or `SendMessage`; say which must follow which.

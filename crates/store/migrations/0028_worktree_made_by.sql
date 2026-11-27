@@ -1,0 +1,1 @@
+ALTER TABLE worktrees ADD COLUMN made_by TEXT NOT NULL DEFAULT 'tool';

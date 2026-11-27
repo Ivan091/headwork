@@ -6,8 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail, ensure};
+use headwork_adapters::worktree::Worktrees;
 use headwork_core::Slug;
 use headwork_core::config::TaskVars;
+use headwork_core::guard::{Places, WorktreeAdd, worktree_adds};
 use headwork_store::{Store, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
@@ -130,6 +132,9 @@ pub fn remove_one(
         worktree: &helper.path,
     };
     let worktrees = env.worktrees(task)?;
+    if helper.self_made {
+        return remove_self_made(store, task, helper, &worktrees, env);
+    }
     let error = match worktrees.remove(&env.project(task)?.worktree_remove, &vars) {
         Ok(()) if !dir.exists() => None,
         Ok(()) => Some("the remove command left the folder in place".to_owned()),
@@ -142,6 +147,87 @@ pub fn remove_one(
     store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
     drop(worktrees.delete_empty_branch(&helper.branch));
     Ok(None)
+}
+
+/// What recording the worktrees a worker made itself did.
+#[derive(Debug, Default)]
+pub struct SelfMade {
+    /// The folders recorded.
+    pub recorded: Vec<String>,
+    /// The folders that failed to record, with why.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Removes a worktree its worker made itself, never with the project's remove command: plain `git worktree remove`
+/// takes it only when it holds no changes. Its branch is never deleted: a Bash line cannot show which branch its add
+/// created (a failed `-b` followed by an add of an existing branch, a `-B` over an existing one), so the branch stays
+/// for the user or `headwork clean`.
+fn remove_self_made(
+    store: &mut Store,
+    task: &Task,
+    helper: &WorktreeRow,
+    worktrees: &Worktrees,
+    env: &Env<'_>,
+) -> Result<Option<String>> {
+    let dir = PathBuf::from(&helper.path);
+    if !worktrees.remove_plain(&helper.path)? || dir.exists() {
+        return Ok(Some(
+            "a worktree the worker made itself is removed only when it holds no work".to_owned(),
+        ));
+    }
+    store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
+    Ok(None)
+}
+
+/// Records the worktrees a worker's successful Bash `line` made with `git worktree add` as helpers of `task`.
+///
+/// It records them as [`add`] does for one it makes itself, so they are writable for the task and removed at its
+/// close. Only a folder that is a linked git worktree now (it holds a `.git` file) and that no task has recorded is
+/// taken, and only when it was pending: the `PreToolUse` hook saw it absent before the line ran, so a failed
+/// `git worktree add` aimed at an existing worktree never takes it over. A folder that fails to record is reported in
+/// [`SelfMade::failed`] and the others still go on.
+pub fn record_self_made(
+    store: &mut Store,
+    env: &Env<'_>,
+    task: &Task,
+    cwd: &str,
+    places: &Places,
+    line: &str,
+    pending: &[String],
+) -> SelfMade {
+    let mut made = SelfMade::default();
+    for added in worktree_adds(line, cwd, places) {
+        if !pending.iter().any(|dir| same(dir, Path::new(&added.dir))) {
+            continue;
+        }
+        let outcome = record_one(store, env, task, &added);
+        match outcome {
+            Ok(true) => made.recorded.push(added.dir),
+            Ok(false) => {}
+            Err(error) => made.failed.push((added.dir, error.to_string())),
+        }
+    }
+    made
+}
+
+fn record_one(store: &mut Store, env: &Env<'_>, task: &Task, added: &WorktreeAdd) -> Result<bool> {
+    let dir = PathBuf::from(&added.dir);
+    if !dir.join(".git").is_file() || taken(store, &dir)? {
+        return Ok(false);
+    }
+    let current = env
+        .worktrees(task)?
+        .current_branch(&dir)?
+        .unwrap_or_default();
+    store.record_self_made_worktree(task.id, &added.dir, &current, env.actor)?;
+    Ok(true)
+}
+
+fn taken(store: &Store, dir: &Path) -> Result<bool> {
+    Ok(store
+        .recorded_worktrees()?
+        .iter()
+        .any(|(_, row, _)| row.state != "removed" && same(&row.path, dir)))
 }
 
 fn same(recorded: &str, dir: &Path) -> bool {

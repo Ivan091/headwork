@@ -22,6 +22,9 @@ use crate::queries::insert_event;
 use crate::records::{RemovalAttempts, SessionRow, TaskId, WorktreeRow};
 use crate::{NOW, Store, StoreError};
 
+const MADE_BY_TOOL: &str = "tool";
+const MADE_BY_WORKER: &str = "worker";
+
 const NEWEST_WORKTREE: &str =
     "(SELECT id FROM worktrees WHERE task_id = ?1 AND helper = 0 ORDER BY id DESC LIMIT 1)";
 
@@ -702,13 +705,15 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT path, branch, state FROM worktrees WHERE task_id = ?1 AND helper = 0 ORDER BY id DESC LIMIT 1",
+                "SELECT path, branch, state, made_by FROM worktrees WHERE task_id = ?1 AND helper = 0
+                 ORDER BY id DESC LIMIT 1",
                 params![task.0],
                 |row| {
                     Ok(WorktreeRow {
                         path: row.get(0)?,
                         branch: row.get(1)?,
                         state: row.get(2)?,
+                        self_made: row.get::<_, String>(3)? == MADE_BY_WORKER,
                     })
                 },
             )
@@ -843,14 +848,41 @@ impl Store {
         branch: &str,
         actor: Actor,
     ) -> Result<(), StoreError> {
+        self.record_helper(task, path, branch, MADE_BY_TOOL, actor)
+    }
+
+    /// Records a worktree a worker made itself with `git worktree add` as a helper of `task`. `branch` is the branch
+    /// the add created, empty when it created none: only such a branch is the worktree's to delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns the SQLite error.
+    pub fn record_self_made_worktree(
+        &mut self,
+        task: TaskId,
+        path: &str,
+        branch: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        self.record_helper(task, path, branch, MADE_BY_WORKER, actor)
+    }
+
+    fn record_helper(
+        &mut self,
+        task: TaskId,
+        path: &str,
+        branch: &str,
+        made_by: &str,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO worktrees (task_id, path, branch, state, helper) VALUES (?1, ?2, ?3, 'present', 1)
+            "INSERT INTO worktrees (task_id, path, branch, state, helper, made_by) VALUES (?1, ?2, ?3, 'present', 1, ?4)
              ON CONFLICT(path) DO UPDATE SET task_id = excluded.task_id, branch = excluded.branch, state = 'present',
-               helper = 1",
-            params![task.0, path, branch],
+               helper = 1, made_by = excluded.made_by",
+            params![task.0, path, branch, made_by],
         )?;
-        let data = serde_json::json!({ "path": path, "branch": branch });
+        let data = serde_json::json!({ "path": path, "branch": branch, "made_by": made_by });
         insert_event(
             &tx,
             actor,
@@ -870,8 +902,8 @@ impl Store {
     /// Returns a read error.
     pub fn helper_worktrees(&self, task: TaskId) -> Result<Vec<WorktreeRow>, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT path, branch, state FROM worktrees WHERE task_id = ?1 AND helper = 1 AND state != 'removed'
-             ORDER BY id",
+            "SELECT path, branch, state, made_by FROM worktrees WHERE task_id = ?1 AND helper = 1
+             AND state != 'removed' ORDER BY id",
         )?;
         let rows = statement
             .query_map(params![task.0], |row| {
@@ -879,6 +911,7 @@ impl Store {
                     path: row.get(0)?,
                     branch: row.get(1)?,
                     state: row.get(2)?,
+                    self_made: row.get::<_, String>(3)? == MADE_BY_WORKER,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -893,7 +926,7 @@ impl Store {
     /// Returns a read error.
     pub fn recorded_worktrees(&self) -> Result<Vec<(TaskId, WorktreeRow, bool)>, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT task_id, path, branch, state, helper FROM worktrees ORDER BY id DESC",
+            "SELECT task_id, path, branch, state, helper, made_by FROM worktrees ORDER BY id DESC",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -903,6 +936,7 @@ impl Store {
                         path: row.get(1)?,
                         branch: row.get(2)?,
                         state: row.get(3)?,
+                        self_made: row.get::<_, String>(5)? == MADE_BY_WORKER,
                     },
                     row.get::<_, i64>(4)? != 0,
                 ))

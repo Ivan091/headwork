@@ -133,6 +133,37 @@ impl Worktrees {
         Ok(BranchEnd::Deleted)
     }
 
+    /// The branch checked out in the worktree at `dir`, none when its `HEAD` is detached.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot read it.
+    pub fn current_branch(&self, dir: &Path) -> Result<Option<String>, WorktreeError> {
+        let output = self.output(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["branch", "--show-current"]),
+            "git branch --show-current",
+        )?;
+        let name = output.trim();
+        Ok((!name.is_empty()).then(|| name.to_owned()))
+    }
+
+    /// Removes the worktree at `path` with plain `git worktree remove`, which refuses one that holds changes.
+    /// Returns whether it went.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WorktreeError`] when git cannot run or times out.
+    pub fn remove_plain(&self, path: &str) -> Result<bool, WorktreeError> {
+        match self.git(&["worktree", "remove", path]) {
+            Ok(()) => Ok(true),
+            Err(WorktreeError::Failed { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Whether the main checkout's repository has a local branch named `branch`.
     ///
     /// # Errors

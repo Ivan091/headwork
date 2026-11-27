@@ -24,12 +24,12 @@ use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::names::kept_text;
 use headwork_core::review::{ParsedCommand, parse_command};
 use headwork_core::{
-    Actor, AskKind, Config, PermissionMode, ReviewState, Role, SessionState, TaskState,
+    Actor, AskKind, Config, PermissionMode, ReviewState, Role, RuleId, SessionState, TaskState,
     is_orchestrator_address,
 };
 use headwork_store::{
-    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_WOULD_DENY, HookSession, NewAsk,
-    ReviewError, Store, StoreError, Task,
+    EVENT_DENY, EVENT_PROMPT, EVENT_READDRESSED, EVENT_TOOL, EVENT_TOOL_PRE, EVENT_WOULD_DENY,
+    HookSession, NewAsk, ReviewError, Store, StoreError, Task,
 };
 use serde_json::{Value, json};
 
@@ -838,6 +838,23 @@ fn pre_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
     let empty = Value::Null;
     let tool_input = call.input.get("tool_input").unwrap_or(&empty);
+    if let Err(error) = note_pending_worktree_adds(store, call, tool) {
+        note(
+            store,
+            call,
+            &json!({ "worktree-add-pending": error.to_string() }),
+        )?;
+    }
+    if tool == "PushNotification" {
+        store.append_event(
+            Actor::Hook,
+            call.session.task_id,
+            Some(&call.session.id),
+            EVENT_TOOL_PRE,
+            &tool_used(tool, Some(tool_input)),
+        )?;
+        return Ok(HookReply::default());
+    }
     let decision = if tool == "AskUserQuestion" {
         ask_decision(store, call, tool_input)?
     } else {
@@ -925,6 +942,12 @@ fn readdress(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Optio
     Ok(Some(input))
 }
 
+/// How old a `PushNotification` of the current turn may be and still count for an ask, in seconds.
+pub const PUSH_TURN_WINDOW_SECS: u32 = 600;
+
+/// How long an identical `ask-push` deny in a session is not logged again, in seconds; no other rule is deduplicated.
+pub const REPEAT_DENY_SECS: u32 = 120;
+
 fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<Decision> {
     let config = call.env.config;
     let project = call.task.and_then(|task| config.project(task.project()));
@@ -939,10 +962,10 @@ fn ask_decision(store: &Store, call: &Call<'_>, tool_input: &Value) -> Result<De
             Precondition::NotRequired
         }
         PushMode::Claude
-            if store.used_tool_within(
+            if store.used_tool_this_turn_within(
                 &call.session.id,
                 "PushNotification",
-                config.hooks.push_window_secs,
+                PUSH_TURN_WINDOW_SECS,
             )? =>
         {
             Precondition::Met
@@ -1060,8 +1083,97 @@ fn tool_used(tool: &str, input: Option<&Value>) -> Value {
     })
 }
 
+/// The event a worker's `PreToolUse` leaves for a Bash line with `git worktree add`: the folders the line aims at that
+/// do not exist yet. Only those can be taken as made by the line that follows.
+const EVENT_WORKTREE_PENDING: &str = "worktree-add-pending";
+
+/// The Bash line of a worker's call when it mentions a worktree.
+fn worktree_command<'a>(call: &'a Call<'_>, tool: &str) -> Option<&'a str> {
+    if tool != "Bash" || call.session.role != Role::Worker {
+        return None;
+    }
+    call.input
+        .get("tool_input")
+        .and_then(|input| input.get("command"))
+        .and_then(Value::as_str)
+        .filter(|command| command.contains("worktree"))
+}
+
+fn places_of(call: &Call<'_>) -> Places {
+    Places {
+        home: Some(slashed(&call.env.home.expand("~"))),
+        temp: Some(slashed(call.env.temp)),
+    }
+}
+
+/// Notes, before a worker's Bash line runs, the folders its `git worktree add` commands aim at that do not exist yet.
+fn note_pending_worktree_adds(store: &Store, call: &Call<'_>, tool: &str) -> Result<()> {
+    let Some(command) = worktree_command(call, tool) else {
+        return Ok(());
+    };
+    let dirs: Vec<String> =
+        headwork_core::guard::worktree_adds(command, &call.cwd(), &places_of(call))
+            .into_iter()
+            .map(|added| added.dir)
+            .filter(|dir| !Path::new(dir).exists())
+            .collect();
+    store.append_event(
+        Actor::Hook,
+        call.session.task_id,
+        Some(&call.session.id),
+        EVENT_WORKTREE_PENDING,
+        &json!({ "dirs": dirs }),
+    )?;
+    Ok(())
+}
+
+/// Records the worktrees a worker's Bash call made with `git worktree add` as helper worktrees of its task, so the
+/// guard counts them as its own and the close removes them. Each is logged `helper-worktree-recorded` by the store.
+fn record_self_made_worktrees(store: &mut Store, call: &Call<'_>, tool: &str) -> Result<()> {
+    let (Some(task), Some(command)) = (call.task, worktree_command(call, tool)) else {
+        return Ok(());
+    };
+    let pending: Vec<String> = store
+        .session_event(&call.session.id, EVENT_WORKTREE_PENDING)?
+        .as_ref()
+        .and_then(|data| data.get("dirs"))
+        .and_then(Value::as_array)
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let env = call.env;
+    let made = super::helpers::record_self_made(
+        store,
+        &env.ops_env(),
+        task,
+        &call.cwd(),
+        &places_of(call),
+        command,
+        &pending,
+    );
+    for (dir, error) in made.failed {
+        note(
+            store,
+            call,
+            &json!({ "self-made-worktree": dir, "error": error }),
+        )?;
+    }
+    Ok(())
+}
+
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
+    if let Err(error) = record_self_made_worktrees(store, call, tool) {
+        note(
+            store,
+            call,
+            &json!({ "self-made-worktree": error.to_string() }),
+        )?;
+    }
     if starts_background_work(tool, call) {
         store.append_event(
             Actor::Hook,
@@ -1333,24 +1445,33 @@ fn decide(
         return Ok(HookReply::default());
     };
     let enforce = call.env.config.hooks.enforces(verdict.rule);
-    store.append_event(
-        Actor::Hook,
-        call.session.task_id,
-        Some(&call.session.id),
-        if enforce {
-            EVENT_DENY
-        } else {
-            EVENT_WOULD_DENY
-        },
-        &json!({
-            "hook": event.claude_name(),
-            "tool": tool,
-            "rule": verdict.rule,
-            "reason": verdict.reason,
-            "input": input,
-            "cwd": call.cwd(),
-        }),
-    )?;
+    let repeat = verdict.rule == RuleId::AskPush
+        && store.denied_within(
+            &call.session.id,
+            verdict.rule.as_str(),
+            input,
+            REPEAT_DENY_SECS,
+        )?;
+    if !repeat {
+        store.append_event(
+            Actor::Hook,
+            call.session.task_id,
+            Some(&call.session.id),
+            if enforce {
+                EVENT_DENY
+            } else {
+                EVENT_WOULD_DENY
+            },
+            &json!({
+                "hook": event.claude_name(),
+                "tool": tool,
+                "rule": verdict.rule,
+                "reason": verdict.reason,
+                "input": input,
+                "cwd": call.cwd(),
+            }),
+        )?;
+    }
     if !enforce {
         return Ok(HookReply::default());
     }

@@ -535,6 +535,131 @@ fn a_worker_writes_its_helper_worktrees_and_subagent_worktrees_but_not_others() 
     );
 }
 
+fn post_bash(w: &mut World, cwd: &Path, command: &str) {
+    let input = json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+        "tool_response": {},
+        "cwd": cwd.display().to_string(),
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+}
+
+fn pre_bash_in(w: &mut World, cwd: &Path, command: &str) {
+    let input = json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+        "cwd": cwd.display().to_string(),
+    });
+    w.hook(HookEvent::PreToolUse, &input);
+}
+
+#[test]
+fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
+    let mut w = world("", false);
+    w.start();
+    let main = w.dir.path().join("demo");
+    let made = w.dir.path().join("demo-publish-all");
+    let probe = w.dir.path().join("wt-timing-probe");
+    let other = w.dir.path().join("demo-other");
+    let stale = w.dir.path().join("demo-stale");
+    git(
+        &main,
+        &["worktree", "add", "-q", "--detach", stale.to_str().unwrap()],
+    );
+    std::fs::create_dir(&other).unwrap();
+    let edit = |w: &mut World, path: &Path| {
+        w.pre(
+            "Edit",
+            &json!({ "file_path": path.join("a.rs").display().to_string() }),
+        );
+    };
+    edit(&mut w, &made);
+    assert_eq!(w.denies().len(), 1, "denied before it is recorded");
+
+    let first = "git worktree add -b publish-all ../demo-publish-all";
+    pre_bash_in(&mut w, &main, first);
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "publish-all",
+            made.to_str().unwrap(),
+        ],
+    );
+    post_bash(&mut w, &main, first);
+    let own = w.worktree();
+    let second = "git worktree add --detach ../wt-timing-probe";
+    pre_bash_in(&mut w, &own, second);
+    git(
+        &main,
+        &["worktree", "add", "-q", "--detach", probe.to_str().unwrap()],
+    );
+    post_bash(&mut w, &own, second);
+    let aimed_at_existing = "git worktree add ../demo-stale";
+    pre_bash_in(&mut w, &main, aimed_at_existing);
+    post_bash(&mut w, &main, aimed_at_existing);
+    post_bash(&mut w, &main, "git worktree add ../demo-other");
+    post_bash(&mut w, &main, "git worktree add ../not-made-at-all");
+    post_bash(&mut w, &main, "git worktree add ../demo-sand");
+    let recorded: Vec<String> = w
+        .store
+        .helper_worktrees(w.task.id)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.branch)
+        .collect();
+    assert_eq!(
+        recorded,
+        ["publish-all", ""],
+        "only fresh real worktrees, none twice, the detached one with no branch"
+    );
+
+    let before = w.denies().len();
+    edit(&mut w, &made);
+    for (dir, command) in [
+        (&made, "git checkout -q -b more"),
+        (&made, "git mv a.rs b.rs"),
+        (&probe, "git checkout master"),
+        (&main, "git worktree add ../demo-next"),
+        (&main, "git worktree prune"),
+    ] {
+        pre_bash_in(&mut w, dir, command);
+    }
+    assert_eq!(w.denies().len(), before, "all allowed: {:?}", w.denies());
+
+    edit(&mut w, &other);
+    for command in [
+        "git reset --hard origin/master",
+        "git rebase master",
+        "git tag v1",
+        "git add .",
+    ] {
+        pre_bash_in(&mut w, &main, command);
+    }
+    let denied = w.denies();
+    assert_eq!(denied.len(), before + 5, "{denied:?}");
+    let rules: Vec<&str> = denied
+        .iter()
+        .skip(before)
+        .map(|(_, rule)| rule.as_str())
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            "worker-edit-outside",
+            "worker-git-outside",
+            "worker-git-outside",
+            "worker-git-outside",
+            "worker-git-outside"
+        ],
+        "another task's folder and the main checkout stay refused"
+    );
+}
+
 #[test]
 fn a_worker_closes_only_itself_and_writes_git_only_in_its_folders() {
     let mut w = world("", false);
@@ -668,6 +793,133 @@ fn ask_checks_name_their_rules() {
         ["ask-push", "ask-changes-option", "ask-review-file"],
         "rules"
     );
+}
+
+fn age_pushes(w: &World, seconds: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type IN ('tool-used', 'tool-pre')"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+fn plain_ask() -> Value {
+    ask_input(&["Ship it (Recommended)", "Drop it"], "Ship")
+}
+
+#[test]
+fn a_push_recorded_at_pre_tool_use_just_before_the_ask_counts() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.pre("PushNotification", &json!({ "message": "Ship?" }));
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "same batch");
+    assert!(w.denies().is_empty(), "no deny logged");
+}
+
+fn age_pre_pushes(w: &World, seconds: u32) {
+    let db = rusqlite::Connection::open(w.home.store_path()).unwrap();
+    db.execute(
+        &format!(
+            "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{seconds} seconds') WHERE type = 'tool-pre'"
+        ),
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_push_seen_only_at_pre_tool_use_counts_only_within_the_grace() {
+    let mut w = world(
+        "enforce = true
+push_window_secs = 0",
+        false,
+    );
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.pre("PushNotification", &json!({ "message": "Ship?" }));
+    age_pre_pushes(&w, 0);
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        0,
+        "just before"
+    );
+    age_pre_pushes(&w, 60);
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "60 s before"
+    );
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 132);
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        0,
+        "completed 132 s before"
+    );
+    let tools = w
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == "tool-used")
+        .count();
+    assert_eq!(tools, 1, "one tool-used for one push");
+}
+
+#[test]
+fn a_push_of_this_turn_counts_up_to_ten_minutes() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 132);
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 0, "132 s old");
+}
+
+#[test]
+fn a_push_of_an_earlier_turn_or_older_than_ten_minutes_does_not_count() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go" }));
+    w.post("PushNotification", &json!({}));
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "next" }));
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "pushed in an earlier turn"
+    );
+    w.post("PushNotification", &json!({}));
+    age_pushes(&w, 601);
+    assert_eq!(
+        w.pre("AskUserQuestion", &plain_ask()).exit,
+        2,
+        "pushed over ten minutes ago"
+    );
+}
+
+#[test]
+fn an_identical_re_ask_logs_its_would_deny_once() {
+    let mut w = world("push_window_secs = 0", false);
+    w.start();
+    w.pre("AskUserQuestion", &plain_ask());
+    w.pre("AskUserQuestion", &plain_ask());
+    assert_eq!(w.denies().len(), 1, "one would-deny");
+    w.pre(
+        "AskUserQuestion",
+        &ask_input(&["Merge (Recommended)", "Wait"], "Merge"),
+    );
+    assert_eq!(w.denies().len(), 2, "a different ask logs its own");
+}
+
+#[test]
+fn an_enforced_re_ask_is_still_denied() {
+    let mut w = world("enforce = true\npush_window_secs = 0", false);
+    w.start();
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "first");
+    assert_eq!(w.pre("AskUserQuestion", &plain_ask()).exit, 2, "again");
+    assert_eq!(w.denies().len(), 1, "logged once");
 }
 
 fn open_asks(w: &World) -> usize {
@@ -3537,6 +3789,80 @@ fn node_done(node: &str, extra: &Value) -> Value {
         .unwrap()
         .extend(extra.as_object().unwrap().clone());
     args
+}
+
+const REVIEWS_TWO_AT_ONCE: &str = "
+[leads]
+enabled = true
+max_parts = 1
+
+[reviews]
+enabled = true
+lead_model = \"haiku\"
+parallel = 2
+";
+
+/// The reviewer lead's would-denies of `review-unfinished`.
+fn review_unfinished(w: &World, part: &Task) -> usize {
+    w.store
+        .events(EventFilter {
+            task: Some(part.id),
+            limit: 200,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "would-deny" && event.data["rule"] == "review-unfinished")
+        .count()
+}
+
+#[test]
+fn a_reviewer_lead_waiting_on_its_nodes_may_stop() {
+    let mut w = world(REVIEWS_TWO_AT_ONCE, false);
+    let part = started_review(&mut w, 1);
+    let me = reviewer(&w, &part);
+    let (is_error, text) = w.tool(me.clone(), "review_next", &json!({}));
+    assert!(!is_error, "{text}");
+    assert_eq!(
+        json_of(&text)["nodes"].as_array().unwrap().len(),
+        2,
+        "two slots, two nodes; the third waits for a slot"
+    );
+    w.session = me.session.clone().unwrap();
+    let stop =
+        json!({ "last_assistant_message": "Two nodes are running; the third waits for a slot." });
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        0,
+        "a ready node with no free slot does not hold the lead"
+    );
+
+    let (is_error, text) = w.tool(
+        me,
+        "review_node_done",
+        &node_done("correctness", &json!({ "findings": [] })),
+    );
+    assert!(!is_error, "{text}");
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        1,
+        "a ready node with a free slot holds the lead"
+    );
+
+    w.hook(HookEvent::UserPromptSubmit, &json!({ "prompt": "go on" }));
+    w.hook(
+        HookEvent::PostToolUse,
+        &json!({ "tool_name": "Agent", "tool_input": { "run_in_background": true }, "tool_response": {} }),
+    );
+    w.hook(HookEvent::Stop, &stop);
+    assert_eq!(
+        review_unfinished(&w, &part),
+        1,
+        "a lead that waits on its background node subagents may stop"
+    );
 }
 
 #[test]

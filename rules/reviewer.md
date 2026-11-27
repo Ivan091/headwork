@@ -17,5 +17,6 @@
   applies the level's dispute rule and says what comes next: tell `{parent}` what is left, run the next round, or ask
   the user about unsettled disputes in one `AskUserQuestion` headed `Dispute`, one question per finding starting
   `Finding <id>:`, with the options "Keep the finding" and "Drop it".
-- You may not stop while nodes are ready or answers wait on your verdict (`review-unfinished`). When nothing is left,
+- You may not stop while nodes are ready or answers wait on your verdict (`review-unfinished`), unless you wait on
+  node or re-check subagents you started in the background. When nothing is left,
   call `review_finish`, send `{parent}` the one-line outcome it gives you, report `done`, and close yourself.
