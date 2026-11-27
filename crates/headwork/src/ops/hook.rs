@@ -1076,8 +1076,33 @@ fn tool_used(tool: &str, input: Option<&Value>) -> Value {
     })
 }
 
+/// Records the worktrees a worker's Bash call made with `git worktree add` as helper worktrees of its task, so the
+/// guard counts them as its own and the close removes them. Each is logged `helper-worktree-recorded` by the store.
+fn record_self_made_worktrees(store: &mut Store, call: &Call<'_>, tool: &str) -> Result<()> {
+    let (Some(task), "Bash", Role::Worker) = (call.task, tool, call.session.role) else {
+        return Ok(());
+    };
+    let Some(command) = call
+        .input
+        .get("tool_input")
+        .and_then(|input| input.get("command"))
+        .and_then(Value::as_str)
+        .filter(|command| command.contains("worktree"))
+    else {
+        return Ok(());
+    };
+    let env = call.env;
+    let places = Places {
+        home: Some(slashed(&env.home.expand("~"))),
+        temp: Some(slashed(env.temp)),
+    };
+    super::helpers::record_self_made(store, &env.ops_env(), task, &call.cwd(), &places, command)?;
+    Ok(())
+}
+
 fn post_tool(store: &mut Store, call: &Call<'_>) -> Result<HookReply> {
     let tool = call.text("tool_name").unwrap_or_default();
+    record_self_made_worktrees(store, call, tool)?;
     if starts_background_work(tool, call) {
         store.append_event(
             Actor::Hook,

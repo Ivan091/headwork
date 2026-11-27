@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail, ensure};
 use headwork_core::Slug;
 use headwork_core::config::TaskVars;
+use headwork_core::guard::{Places, worktree_adds};
 use headwork_store::{Store, Task, TaskId, WorktreeRow};
 use serde::Serialize;
 
@@ -142,6 +143,43 @@ pub fn remove_one(
     store.set_helper_worktree_state(task.id, &helper.path, "removed", env.actor)?;
     drop(worktrees.delete_empty_branch(&helper.branch));
     Ok(None)
+}
+
+/// Records the worktrees a worker's successful Bash `line` made with `git worktree add` as helpers of `task`.
+///
+/// It records them as [`add`] does for one it makes itself, so they are writable for the task and removed at its
+/// close. Only a folder
+/// that is a linked git worktree now (it holds a `.git` file) and that no task has recorded is taken. Returns the
+/// folders recorded.
+///
+/// # Errors
+///
+/// Fails when the store fails.
+pub fn record_self_made(
+    store: &mut Store,
+    env: &Env<'_>,
+    task: &Task,
+    cwd: &str,
+    places: &Places,
+    line: &str,
+) -> Result<Vec<String>> {
+    let mut recorded = Vec::new();
+    for added in worktree_adds(line, cwd, places) {
+        let dir = PathBuf::from(&added.dir);
+        if !dir.join(".git").is_file() || taken(store, &dir)? {
+            continue;
+        }
+        store.record_helper_worktree(task.id, &added.dir, &added.branch, env.actor)?;
+        recorded.push(added.dir);
+    }
+    Ok(recorded)
+}
+
+fn taken(store: &Store, dir: &Path) -> Result<bool> {
+    Ok(store
+        .recorded_worktrees()?
+        .iter()
+        .any(|(_, row, _)| row.state != "removed" && same(&row.path, dir)))
 }
 
 fn same(recorded: &str, dir: &Path) -> bool {

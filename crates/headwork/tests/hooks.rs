@@ -535,6 +535,123 @@ fn a_worker_writes_its_helper_worktrees_and_subagent_worktrees_but_not_others() 
     );
 }
 
+fn post_bash(w: &mut World, cwd: &Path, command: &str) {
+    let input = json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+        "tool_response": {},
+        "cwd": cwd.display().to_string(),
+    });
+    w.hook(HookEvent::PostToolUse, &input);
+}
+
+fn pre_bash_in(w: &mut World, cwd: &Path, command: &str) {
+    let input = json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+        "cwd": cwd.display().to_string(),
+    });
+    w.hook(HookEvent::PreToolUse, &input);
+}
+
+#[test]
+fn a_worktree_a_worker_makes_itself_becomes_its_helper_and_is_writable() {
+    let mut w = world("", false);
+    w.start();
+    let main = w.dir.path().join("demo");
+    let made = w.dir.path().join("demo-publish-all");
+    let probe = w.dir.path().join("wt-timing-probe");
+    let other = w.dir.path().join("demo-other");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "publish-all",
+            made.to_str().unwrap(),
+        ],
+    );
+    git(
+        &main,
+        &["worktree", "add", "-q", "--detach", probe.to_str().unwrap()],
+    );
+    std::fs::create_dir(&other).unwrap();
+    let edit = |w: &mut World, path: &Path| {
+        w.pre(
+            "Edit",
+            &json!({ "file_path": path.join("a.rs").display().to_string() }),
+        );
+    };
+    edit(&mut w, &made);
+    assert_eq!(w.denies().len(), 1, "denied before it is recorded");
+
+    post_bash(
+        &mut w,
+        &main,
+        "git worktree add -b publish-all ../demo-publish-all",
+    );
+    let own = w.worktree();
+    post_bash(&mut w, &own, "git worktree add --detach ../wt-timing-probe");
+    post_bash(&mut w, &main, "git worktree add ../demo-other");
+    post_bash(&mut w, &main, "git worktree add ../not-made-at-all");
+    post_bash(&mut w, &main, "git worktree add ../demo-sand");
+    let recorded: Vec<String> = w
+        .store
+        .helper_worktrees(w.task.id)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.branch)
+        .collect();
+    assert_eq!(
+        recorded,
+        ["publish-all", "wt-timing-probe"],
+        "only real worktrees, none twice"
+    );
+
+    let before = w.denies().len();
+    edit(&mut w, &made);
+    for (dir, command) in [
+        (&made, "git checkout -q -b more"),
+        (&made, "git mv a.rs b.rs"),
+        (&probe, "git checkout master"),
+        (&main, "git worktree add ../demo-next"),
+        (&main, "git worktree prune"),
+    ] {
+        pre_bash_in(&mut w, dir, command);
+    }
+    assert_eq!(w.denies().len(), before, "all allowed: {:?}", w.denies());
+
+    edit(&mut w, &other);
+    for command in [
+        "git reset --hard origin/master",
+        "git rebase master",
+        "git tag v1",
+        "git add .",
+    ] {
+        pre_bash_in(&mut w, &main, command);
+    }
+    let denied = w.denies();
+    assert_eq!(denied.len(), before + 5, "{denied:?}");
+    let rules: Vec<&str> = denied
+        .iter()
+        .skip(before)
+        .map(|(_, rule)| rule.as_str())
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            "worker-edit-outside",
+            "worker-git-outside",
+            "worker-git-outside",
+            "worker-git-outside",
+            "worker-git-outside"
+        ],
+        "another task's folder and the main checkout stay refused"
+    );
+}
+
 #[test]
 fn a_worker_closes_only_itself_and_writes_git_only_in_its_folders() {
     let mut w = world("", false);

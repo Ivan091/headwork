@@ -53,8 +53,12 @@ URLs, the stored branch, the branch checked out), a later pull request takes a `
 `finish` takes a close claim (`<home>/closing/<id>.lock`) so two finishers never run one close.
 A lead gets helper worktrees for its parts from the worker tool `worktree_add` (`ops/helpers.rs`, migration 0012): made by
 the project's `worktree_new` at `worktree_path` with the part's slug, writable for the task, removed at close (one that
-holds work stays and is logged). Workers may also write `<main>/.claude/worktrees` (subagent worktrees) and fast-forward
-the main checkout with `git pull --ff-only`; the guard rule `worker-force-push` refuses a plain force, `-f` or `+refspec`
+holds work stays and is logged). A worktree a worker makes itself with `git worktree add` is recorded the same way by the
+`PostToolUse` hook once the command succeeds (`core/src/guard/worktree_add.rs`, `ops/helpers.rs` `record_self_made`; only
+a linked worktree no row holds), so edits and git there pass `worker-edit-outside` and `worker-git-outside`
+(`docs/decisions/2026-11-27-self-made-worktrees.md`). Workers may also write `<main>/.claude/worktrees` (subagent
+worktrees), fast-forward the main checkout with `git pull --ff-only` and run `git worktree add` and `git worktree prune`
+there; the guard rule `worker-force-push` refuses a plain force, `-f` or `+refspec`
 and allows `--force-with-lease` only to the task's own recorded branch, one branch at a time (`--all`, `--branches`,
 `--mirror`, `--tags`, `--prune`, `--delete` are refused); `install = true` on a project lets its workers run
 `headwork install` and a plain `headwork update` (`--dry-run`, `--wait`, `--json`, never `--to`). The project keys

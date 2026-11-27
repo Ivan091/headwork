@@ -67,6 +67,61 @@ fn worker(branch: &str) -> Scope {
 const MAIN: &str = "S:/Code/me-sim/me-sim";
 
 #[test]
+fn a_worker_may_add_and_prune_worktrees_in_its_main_checkout_and_nothing_more() {
+    let mut scope = worker("sand");
+    scope
+        .writable
+        .push(GuardPath::new("S:/Code/me-sim/wt-timing-probe"));
+    let table: &[(&str, Option<RuleId>)] = &[
+        (
+            "git -C S:/Code/me-sim/me-sim worktree add ../wt-x -b x",
+            None,
+        ),
+        ("cd S:/Code/me-sim/me-sim && git worktree add ../wt-x", None),
+        ("git -C S:/Code/me-sim/me-sim worktree prune", None),
+        (
+            "git -C S:/Code/me-sim/me-sim worktree remove ../wt-x",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim reset --hard origin/master",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim rebase master",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim tag v1",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/me-sim add .",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-studio/me-studio worktree add ../wt",
+            Some(RuleId::WorkerGitOutside),
+        ),
+        (
+            "git -C S:/Code/me-sim/wt-timing-probe checkout master",
+            None,
+        ),
+        (
+            "git -C S:/Code/me-sim/wt-other checkout master",
+            Some(RuleId::WorkerGitOutside),
+        ),
+    ];
+    for (command, want) in table {
+        assert_eq!(
+            rule(&check_tool(&scope, &bash(command))),
+            *want,
+            "{command}"
+        );
+    }
+}
+
+#[test]
 fn a_worker_may_fast_forward_its_main_checkout_and_nothing_more() {
     let scope = worker("sand");
     let table: &[(&str, Option<RuleId>)] = &[

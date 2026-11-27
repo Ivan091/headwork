@@ -10,6 +10,7 @@ mod heavy;
 pub mod paths;
 pub mod shell;
 pub mod stop;
+mod worktree_add;
 
 use serde::Serialize;
 
@@ -17,6 +18,7 @@ use crate::{ORCHESTRATOR_ADDRESS, Role, RuleId};
 use grants::{ForceKind, GrantedGit, PushForm, classify_push, granted_git};
 pub use paths::{GuardPath, Places};
 pub use shell::{SimpleCommand, commands};
+pub use worktree_add::{WorktreeAdd, worktree_adds};
 
 /// The header of the ask by which the user allows one task a user-only command.
 pub const ALLOW_HEADER: &str = "Allow";
@@ -334,7 +336,8 @@ fn check_write(scope: &Scope, role: Role, tool: &str, path: &str) -> Decision {
         Role::Worker if !inside => Decision::deny(
             RuleId::WorkerEditOutside,
             format!(
-                "{tool} on {path} is outside this task's folder ({}); edit only your own worktree",
+                "{tool} on {path} is outside this task's folder ({}); edit only your own worktree or a helper worktree: \
+                 make one with the `worktree_add` tool, or with `git worktree add`, which counts once it succeeds",
                 scope.cwd
             ),
         ),
@@ -637,7 +640,7 @@ fn headwork_args(command: &SimpleCommand) -> Option<&[String]> {
 
 /// A worker's git write against a folder outside its writable folders ([`git_folder`]; an unknown folder is allowed).
 /// A fast-forward of the project's main checkout (`git pull --ff-only`) is allowed, as the ship flow does after a
-/// merge, and so is a write the worker's extra writable paths allow ([`grants`]).
+/// merge, and so are `git worktree add` and `git worktree prune` there, and a write the worker's extra writable paths allow ([`grants`]).
 fn check_git_outside(
     scope: &Scope,
     command: &SimpleCommand,
@@ -655,7 +658,9 @@ fn check_git_outside(
         return GitPlace::Own;
     }
     let fast_forward = sub == "pull" && args.iter().any(|arg| arg == "--ff-only");
-    if fast_forward
+    let worktree_upkeep =
+        sub == "worktree" && matches!(args.first().map(String::as_str), Some("add" | "prune"));
+    if (fast_forward || worktree_upkeep)
         && scope
             .main_checkout
             .as_ref()
