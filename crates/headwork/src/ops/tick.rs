@@ -203,6 +203,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
     run.stage("backlog", Run::backlog)?;
+    run.stage("store_backup", Run::store_backup)?;
     run.stage("digest", Run::digest)?;
     run.stage("usage", Run::usage)?;
     run.sweep(FindingId::TickError)?;
@@ -389,6 +390,18 @@ impl<'b> Run<'_, 'b> {
             | super::backlog::Export::Busy
             | super::backlog::Export::NotImported { .. } => Ok(()),
         }
+    }
+
+    /// Copies the store once a day (`docs/store-backup.md`); quiet unless a copy is made or fails.
+    fn store_backup(&mut self) -> Result<()> {
+        let root = self.env().home.root();
+        super::store_backup::daily(
+            self.store,
+            root,
+            self.actor(),
+            super::store_backup::now_ms(),
+        )?;
+        Ok(())
     }
 
     /// Pushes the "Needs you" digest once a day (`docs/backlog.md`) through the host notification the findings use. A host

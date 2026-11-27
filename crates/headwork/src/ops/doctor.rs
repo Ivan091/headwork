@@ -233,6 +233,7 @@ pub fn doctor(d: &Doctor<'_>) -> DoctorReport {
         let enforce = config.as_ref().is_ok_and(|config| config.hooks.enforce);
         checks.push(tick_check(store, enforce));
         checks.push(tick_hung_check(d));
+        checks.push(store_backup_check(d));
         if d.platform == Platform::MacOs {
             checks.push(tick_agent_check(d.probe, store, enforce));
         }
@@ -1108,6 +1109,27 @@ fn tick_hung_check(d: &Doctor<'_>) -> Check {
         ),
         Ok(None) => Check::ok("tick-hung", "no tick holds tick.lock for long"),
         Err(error) => Check::warn("tick-hung", format!("{error:#}"), "check the home folder"),
+    }
+}
+
+/// A warning when the newest daily copy of the store is older than two days; none yet is fine, the
+/// tick check covers a tick that never ran.
+fn store_backup_check(d: &Doctor<'_>) -> Check {
+    use super::store_backup::{STALE_AFTER_S, dir, newest_age_s, now_ms};
+    match newest_age_s(&dir(d.home.root()), now_ms()) {
+        Some(age) if age <= STALE_AFTER_S => Check::ok(
+            "store-backup",
+            format!("the newest daily copy of the store is {} h old", age / 3600),
+        ),
+        Some(age) => Check::warn(
+            "store-backup",
+            format!("the newest daily copy of the store is {} h old", age / 3600),
+            "the tick makes one a day: check that it runs and `headwork log` for `store-backup-failed`",
+        ),
+        None => Check::ok(
+            "store-backup",
+            "no daily copy of the store yet; the next tick makes one",
+        ),
     }
 }
 

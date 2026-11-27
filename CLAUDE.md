@@ -201,6 +201,7 @@ slot folder exists), `status` ends a task's line with `waiting for cpu` (a lead 
 lists gate findings at once. The guard rule `heavy-ungated` (`core/src/guard/heavy.rs`) denies a worker's ungated cargo
 build, test, clippy or bench and `check.sh`, with the hint `headwork gate run cpu -- <the command>`; it is shadow until
 listed in `[hooks] enforce_rules`.
+The daily store backup (`docs/store-backup.md`, `ops/store_backup.rs`): the tick stage `store_backup` copies `state.db` with `VACUUM INTO` to `<home>/backups/daily-<millis>.db` once a day, keeps seven, logs `store-backup` or `store-backup-failed` only; `doctor` check `store-backup` warns past two days.
 Milestone 6 is park and resume (`ops/park.rs`, `ops/resume.rs`), recaps (`ops/recap.rs`) and the jobs registry (`ops/jobs.rs`), stored by migration 0005.
 Workers open in split panes (`ops/place.rs`, pure choice in `core/src/layout.rs`, pane per session in migration
 0007); see "Panes" below.
