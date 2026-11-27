@@ -46,7 +46,8 @@ Events: `backlog-added`, `backlog-moved` (every status move, section 10), `backl
 | `## Done`, `## Cancelled`, `## Dropped` (also `## Done (last 20)`) | Every item below is done, or cancelled; project `general` |
 | `- [ ] body` | In the backlog, or the status its tag names |
 | `- [ ] body [in progress]`, `[in progress: task <name> <state>]` | In progress; the task part is ignored |
-| `- [ ] body [blocked: <reason>]`, `[blocked: <reason> <note>]` | Blocked; back to in progress on unblock for `task_lost` and `partial`, else to the backlog |
+| `- [ ] body [blocked: <reason>]`, `[blocked: <reason>: <note>]` | Blocked; back to the backlog on unblock, or to in progress when the reason is followed by `, from in progress` (`[blocked: task_lost, from in progress: task x dropped]`) |
+| A tag that starts `[in progress` or `[blocked:` and cannot be read | Reported, the item is left out |
 | `- [x] body` | Done, or cancelled when its trailing group starts with `cancelled`, `dropped` or `superseded` |
 | `- body` | Cancelled under `## Cancelled` or `## Dropped`, done under `## Done`; anywhere else it is reported |
 | An indented `  - note` right after an item | One of its notes |
@@ -62,7 +63,8 @@ The export (`render`) writes the title and one intro paragraph, then every open 
 projects' first items, `general` last) with the items that have no section first and each section after, then
 `## Done (last 20)` with the 20 most recent done items. An item prints `For you: ` when its owner is the user (and only then), and `(not before D) (due D) (added D)` unless the
 text already says that date. An item in progress ends with `[in progress]`, or `[in progress: task <name> <task state>]`
-when a task is linked; a blocked one with `[blocked: <reason>]` or `[blocked: <reason> <note>]`; an item in the backlog
+when a task is linked; a blocked one with `[blocked: <reason>]` or `[blocked: <reason>: <note>]`, with `, from in progress`
+after the reason when an unblock returns it there; an item in the backlog
 has no tag. The reader also takes the earlier `(task <name>)` and `(task <name>, <state>)`. Cancelled items are not
 written. The reader understands what the renderer writes: a test renders then parses and compares text, status, owner
 and dates.

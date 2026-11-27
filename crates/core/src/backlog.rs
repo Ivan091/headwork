@@ -588,10 +588,15 @@ fn closing_group(inside: &[char]) -> Option<Closing> {
 const IN_PROGRESS: &str = "in progress";
 const BLOCKED: &str = "blocked";
 
+/// How a block whose unblock returns to in progress says so in its tag.
+const FROM_IN_PROGRESS: &str = ", from in progress";
+
 /// The status tag at the end of an open item's line and the text before it: `[in progress]`, `[in progress: task <name>
-/// <state>]` (the task part is ignored), `[blocked: <reason>]` or `[blocked: <reason> <note>]`. A blocked item read so
-/// returns to in progress when its task was lost or left it partial, else to the backlog.
-fn status_tag(body: &str) -> Option<(&str, BacklogStatus)> {
+/// <state>]` (the task part is ignored), `[blocked: <reason>]`, `[blocked: <reason>: <note>]`, and either blocked form
+/// with `, from in progress` after the reason when an unblock returns the item to in progress (else to the backlog).
+///
+/// `None` when the line ends in no tag; `Some(Err)` names why a tag that starts like one cannot be read.
+fn status_tag(body: &str) -> Option<Result<(&str, BacklogStatus), String>> {
     let inner_end = body.strip_suffix(']')?.len();
     let start = [format!("[{IN_PROGRESS}"), format!("[{BLOCKED}:")]
         .iter()
@@ -602,33 +607,43 @@ fn status_tag(body: &str) -> Option<(&str, BacklogStatus)> {
         return None;
     }
     let inside = body.get(start + 1..inner_end)?;
-    let status = if inside == IN_PROGRESS
+    let bad = || Err(format!("a status tag that cannot be read: `[{inside}]`"));
+    if inside == IN_PROGRESS
         || inside
             .strip_prefix(IN_PROGRESS)
             .is_some_and(|rest| rest.starts_with(": task "))
     {
-        BacklogStatus::InProgress
-    } else {
-        let rest = inside.strip_prefix(BLOCKED)?.strip_prefix(':')?.trim();
-        let (word, note) = rest.split_once(' ').unwrap_or((rest, ""));
-        let reason: BlockReason = word.parse().ok()?;
-        let note = note.trim();
+        return Some(Ok((before.trim_end(), BacklogStatus::InProgress)));
+    }
+    let Some(rest) = inside
+        .strip_prefix(BLOCKED)
+        .and_then(|rest| rest.strip_prefix(':'))
+    else {
+        return Some(bad());
+    };
+    let (head, note) = rest.split_once(':').unwrap_or((rest, ""));
+    let (word, return_to) = match head.trim().strip_suffix(FROM_IN_PROGRESS) {
+        Some(word) => (word, ReturnTo::InProgress),
+        None => (head.trim(), ReturnTo::Backlog),
+    };
+    let Ok(reason) = word.trim().parse::<BlockReason>() else {
+        return Some(bad());
+    };
+    let note = note.trim();
+    Some(Ok((
+        before.trim_end(),
         BacklogStatus::Blocked(Block {
             reason,
             note: (!note.is_empty()).then(|| note.to_owned()),
-            before: if matches!(reason, BlockReason::TaskLost | BlockReason::Partial) {
-                ReturnTo::InProgress
-            } else {
-                ReturnTo::Backlog
-            },
-        })
-    };
-    Some((before.trim_end(), status))
+            before: return_to,
+        }),
+    )))
 }
 
 struct Body {
     text: String,
     status: Option<BacklogStatus>,
+    bad_tag: Option<String>,
     added: Option<BacklogDate>,
     not_before: Option<BacklogDate>,
     due: Option<BacklogDate>,
@@ -637,9 +652,10 @@ struct Body {
 
 fn read_body(body: &str, closed: bool) -> Body {
     let trimmed = body.trim();
-    let (body, status) = match status_tag(trimmed).filter(|_| !closed) {
-        Some((rest, tagged)) => (rest, Some(tagged)),
-        None => (trimmed, None),
+    let (body, status, bad_tag) = match status_tag(trimmed).filter(|_| !closed) {
+        Some(Ok((rest, tagged))) => (rest, Some(tagged), None),
+        Some(Err(why)) => (trimmed, None, Some(why)),
+        None => (trimmed, None, None),
     };
     let mut chars: Vec<char> = body.chars().collect();
     if let Some(group) = trailing_group(&chars)
@@ -682,6 +698,7 @@ fn read_body(body: &str, closed: bool) -> Body {
     Body {
         text: text.trim().to_owned(),
         status,
+        bad_tag,
         added,
         not_before,
         due,
@@ -781,6 +798,10 @@ impl Reader {
             return;
         };
         let read = read_body(body, status != BacklogStatus::Backlog);
+        if let Some(why) = &read.bad_tag {
+            self.skip(line_no, line, why);
+            return;
+        }
         if self.area == Area::Projects
             && read
                 .closing
@@ -989,13 +1010,22 @@ fn item_line(item: &BacklogItem, done: bool) -> String {
             (BacklogStatus::InProgress, None) => {
                 append(&mut line, format_args!(" [{IN_PROGRESS}]"));
             }
-            (BacklogStatus::Blocked(block), _) => match &block.note {
-                Some(note) => append(
-                    &mut line,
-                    format_args!(" [{BLOCKED}: {} {note}]", block.reason),
-                ),
-                None => append(&mut line, format_args!(" [{BLOCKED}: {}]", block.reason)),
-            },
+            (BacklogStatus::Blocked(block), _) => {
+                let from = match block.before {
+                    ReturnTo::InProgress => FROM_IN_PROGRESS,
+                    ReturnTo::Backlog => "",
+                };
+                match &block.note {
+                    Some(note) => append(
+                        &mut line,
+                        format_args!(" [{BLOCKED}: {}{from}: {note}]", block.reason),
+                    ),
+                    None => append(
+                        &mut line,
+                        format_args!(" [{BLOCKED}: {}{from}]", block.reason),
+                    ),
+                }
+            }
             _ => {}
         }
     }
@@ -1486,7 +1516,7 @@ mod tests {
             "- [ ] Plain (added 2026-11-02)\n",
             "- [ ] Running (added 2026-11-02) [in progress: task headwork-run in_review]\n",
             "- [ ] Started (added 2026-11-02) [in progress]\n",
-            "- [ ] Lost (added 2026-11-02) [blocked: task_lost task headwork-old dropped]\n",
+            "- [ ] Lost (added 2026-11-02) [blocked: task_lost, from in progress: task headwork-old dropped]\n",
             "- [ ] Waiting (added 2026-11-02) [blocked: decision]\n",
         ] {
             assert!(written.contains(line), "{line}in\n{written}");
@@ -1512,10 +1542,31 @@ mod tests {
             "Read [the docs]",
             "a bracket that is no tag stays in the text"
         );
+        for odd in [
+            "- [ ] Odd [blocked: nonsense]",
+            "- [ ] Odd [blocked: event, from somewhere]",
+            "- [ ] Odd [in progress for days]",
+        ] {
+            let parsed = parse(&format!("## p\n\n{odd}\n"));
+            assert!(parsed.items.is_empty(), "{odd}");
+            assert!(
+                parsed
+                    .unparsed
+                    .first()
+                    .is_some_and(|line| line.line_no == 3 && line.reason.contains("status tag")),
+                "{odd}: {:?}",
+                parsed.unparsed
+            );
+        }
+        let event = one("- [ ] Wait [blocked: event, from in progress: the 2.0 release: soon]");
         assert_eq!(
-            one("- [ ] Odd [blocked: nonsense]").text,
-            "Odd [blocked: nonsense]",
-            "an unknown reason is no tag"
+            event.status,
+            BacklogStatus::Blocked(Block {
+                reason: BlockReason::Event,
+                note: Some("the 2.0 release: soon".to_owned()),
+                before: ReturnTo::InProgress,
+            }),
+            "the note may hold a colon"
         );
         assert_eq!(
             one("- [x] Old (cancelled 2026-11-20: not wanted)").status,
