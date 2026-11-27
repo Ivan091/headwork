@@ -2,8 +2,9 @@
 
 use headwork_core::TaskState;
 use headwork_core::backlog::{
-    BacklogActor as A, BacklogStatus, Block, BlockReason as R, ItemStatus, MoveFacts, MoveKind,
-    MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome, on_task_end, transition,
+    BacklogActor as A, BacklogStatus, Block, BlockReason as R, DateEffect, ItemStatus, LinkEffect,
+    LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,
+    on_linked_end, on_task_end, transition,
 };
 
 fn blocked(reason: R, before: ReturnTo) -> BacklogStatus {
@@ -12,6 +13,13 @@ fn blocked(reason: R, before: ReturnTo) -> BacklogStatus {
         note: Some("why".to_owned()),
         before,
     })
+}
+
+fn block_with(note: &str) -> Target {
+    Target::Blocked {
+        reason: R::Event,
+        note: Some(note.to_owned()),
+    }
 }
 
 fn block(reason: R) -> Target {
@@ -26,7 +34,7 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     linked_to_actor: false,
     in_actor_epic: false,
     has_project: true,
-    has_reason: false,
+    reason: None,
 };
 
 const OWN: MoveFacts<'static> = MoveFacts {
@@ -45,7 +53,7 @@ const LIVE: MoveFacts<'static> = MoveFacts {
 };
 
 const REASON: MoveFacts<'static> = MoveFacts {
-    has_reason: true,
+    reason: Some("the user said so"),
     ..PLAIN
 };
 
@@ -429,6 +437,14 @@ fn allowed_rows() -> Vec<Row> {
             S::Backlog,
             MoveKind::Reopen,
         ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Headwork,
+            LIVE,
+            S::InProgress,
+            MoveKind::Unfinish,
+        ),
     ]
 }
 
@@ -782,7 +798,7 @@ fn refused_rows() -> Vec<(
             Target::Cancelled,
             A::Orchestrator,
             MoveFacts {
-                has_reason: true,
+                reason: Some("the user said so"),
                 ..LIVE
             },
             MoveRefusal::DropTaskFirst(task()),
@@ -877,6 +893,66 @@ fn refused_rows() -> Vec<(
             A::Worker,
             OWN,
             not(A::Worker, "done", "backlog"),
+        ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Headwork,
+            PLAIN,
+            not(A::Headwork, "done", "in_progress"),
+        ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Orchestrator,
+            LIVE,
+            not(A::Orchestrator, "done", "in_progress"),
+        ),
+        (
+            Some(S::Backlog),
+            block_with(
+                "a
+b",
+            ),
+            A::User,
+            PLAIN,
+            MoveRefusal::MultiLine("note"),
+        ),
+        (
+            Some(S::Backlog),
+            Target::Cancelled,
+            A::User,
+            MoveFacts {
+                reason: Some(
+                    "a
+b",
+                ),
+                ..PLAIN
+            },
+            MoveRefusal::MultiLine("reason"),
+        ),
+        (
+            Some(S::Backlog),
+            Target::Done,
+            A::Orchestrator,
+            MoveFacts {
+                reason: Some(
+                    "one
+two",
+                ),
+                ..PLAIN
+            },
+            MoveRefusal::MultiLine("reason"),
+        ),
+        (
+            Some(S::Backlog),
+            Target::Cancelled,
+            A::Orchestrator,
+            MoveFacts {
+                reason: Some("   "),
+                ..PLAIN
+            },
+            MoveRefusal::ReasonRequired,
         ),
     ]
 }
@@ -1052,6 +1128,212 @@ fn each_task_end_effect_is_a_move_headwork_may_make() {
             )
             .is_ok(),
             "{effect:?}"
+        );
+    }
+}
+
+type EffectRow = (
+    Option<BacklogStatus>,
+    Target,
+    A,
+    MoveFacts<'static>,
+    LinkEffect,
+    DateEffect,
+);
+
+#[test]
+#[expect(clippy::too_many_lines, reason = "one row per kind of move")]
+fn each_move_says_what_it_does_to_the_link_and_the_done_date() {
+    use BacklogStatus as S;
+    let lost = blocked(R::TaskLost, ReturnTo::InProgress);
+    let cases: &[EffectRow] = &[
+        (
+            None,
+            Target::Backlog,
+            A::User,
+            PLAIN,
+            LinkEffect::Keep,
+            DateEffect::Keep,
+        ),
+        (
+            Some(S::Backlog),
+            Target::InProgress,
+            A::User,
+            PLAIN,
+            LinkEffect::Set,
+            DateEffect::Keep,
+        ),
+        (
+            Some(S::InProgress),
+            Target::InProgress,
+            A::Orchestrator,
+            PLAIN,
+            LinkEffect::Set,
+            DateEffect::Keep,
+        ),
+        (
+            Some(lost.clone()),
+            Target::InProgress,
+            A::Orchestrator,
+            PLAIN,
+            LinkEffect::Set,
+            DateEffect::Keep,
+        ),
+        (
+            Some(S::InProgress),
+            Target::Done,
+            A::Headwork,
+            LIVE,
+            LinkEffect::Keep,
+            DateEffect::Stamp,
+        ),
+        (
+            Some(S::InProgress),
+            Target::Done,
+            A::Headwork,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Stamp,
+        ),
+        (
+            Some(S::Backlog),
+            Target::Done,
+            A::User,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Stamp,
+        ),
+        (
+            Some(S::Backlog),
+            Target::Cancelled,
+            A::User,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Stamp,
+        ),
+        (
+            Some(S::Done),
+            Target::Backlog,
+            A::User,
+            PLAIN,
+            LinkEffect::Keep,
+            DateEffect::Clear,
+        ),
+        (
+            Some(S::Cancelled),
+            Target::Backlog,
+            A::Orchestrator,
+            PLAIN,
+            LinkEffect::Keep,
+            DateEffect::Clear,
+        ),
+        (
+            Some(S::Done),
+            Target::InProgress,
+            A::Headwork,
+            LIVE,
+            LinkEffect::Keep,
+            DateEffect::Clear,
+        ),
+        (
+            Some(S::InProgress),
+            block(R::TaskLost),
+            A::Headwork,
+            PLAIN,
+            LinkEffect::Clear,
+            DateEffect::Keep,
+        ),
+        (
+            Some(S::InProgress),
+            block(R::Event),
+            A::Orchestrator,
+            LIVE,
+            LinkEffect::Keep,
+            DateEffect::Keep,
+        ),
+        (
+            Some(lost),
+            Target::Unblock,
+            A::User,
+            PLAIN,
+            LinkEffect::Keep,
+            DateEffect::Keep,
+        ),
+    ];
+    for (from, to, actor, facts, link, dates) in cases {
+        let step = transition(from.as_ref(), to, *actor, facts)
+            .unwrap_or_else(|refusal| unreachable!("{from:?} -> {to:?} by {actor}: {refusal}"));
+        assert_eq!(
+            (step.link, step.dates),
+            (*link, *dates),
+            "{from:?} -> {to:?} by {actor}"
+        );
+    }
+}
+
+#[test]
+fn the_linked_item_table() {
+    let urls = ["u/1".to_owned(), "u/2".to_owned()];
+    let unlink = |note: Option<&str>| {
+        Some(LinkedEnd::Unlink {
+            note: note.map(str::to_owned),
+        })
+    };
+    let cases = [
+        (
+            TaskState::InReview,
+            ItemStatus::Done,
+            &urls[..],
+            Some(LinkedEnd::Unfinish),
+        ),
+        (
+            TaskState::Closed,
+            ItemStatus::Done,
+            &urls[..],
+            unlink(Some("task t merged u/1, u/2")),
+        ),
+        (
+            TaskState::Dropped,
+            ItemStatus::Done,
+            &urls[..],
+            unlink(Some("task t merged u/1, u/2")),
+        ),
+        (
+            TaskState::Failed,
+            ItemStatus::Done,
+            &[][..],
+            unlink(Some("task t, no pull request")),
+        ),
+        (
+            TaskState::Closed,
+            ItemStatus::Blocked,
+            &[][..],
+            unlink(None),
+        ),
+        (
+            TaskState::Dropped,
+            ItemStatus::Blocked,
+            &[][..],
+            unlink(None),
+        ),
+        (
+            TaskState::Failed,
+            ItemStatus::Blocked,
+            &[][..],
+            unlink(None),
+        ),
+        (TaskState::InReview, ItemStatus::Blocked, &[][..], None),
+        (TaskState::Merged, ItemStatus::Done, &urls[..], None),
+        (TaskState::Working, ItemStatus::Done, &[][..], None),
+        (TaskState::Closed, ItemStatus::InProgress, &[][..], None),
+        (TaskState::Closed, ItemStatus::Cancelled, &[][..], None),
+        (TaskState::Closed, ItemStatus::Backlog, &[][..], None),
+    ];
+    for (state, status, merged, want) in cases {
+        assert_eq!(
+            on_linked_end(state, status, merged, "t"),
+            want,
+            "{state} {status}"
         );
     }
 }

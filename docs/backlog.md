@@ -76,6 +76,8 @@ text, and adds the ones the store lacks.
   in any state, counts as `already` and is skipped. A second line with the same text in the same file counts as
   `duplicate` and is skipped.
 - It never deletes or changes a row and never writes the file. Importing the same file twice adds nothing.
+- It is the one way in that skips the status guard: it restores the statuses the file names (done, cancelled, in
+  progress, blocked), where `add` and `backlog_add` pass `transition(None, backlog, ...)` and always add to the backlog.
 - It prints the counts and every unparsed line with its number and reason, and records `backlog_files.imported_at`.
   `--dry-run` prints the same and writes nothing, not even `imported_at`.
 
@@ -268,6 +270,7 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 | `backlog` | `in_progress` | user (`backlog start`), orchestrator (`backlog_start`, `spawn --backlog`), headwork; refused for an item whose project headwork does not run |
 | `in_progress` (no live task) | `in_progress` | user, orchestrator, headwork: a new task linked |
 | `in_progress` | `done` | headwork: the task-end table |
+| `done` (linked to a live task) | `in_progress` | headwork: the task, merged, opened another pull request |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
 | `in_progress` | `blocked` | worker on its own item and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
 | `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`dep_cancelled`) |
@@ -285,10 +288,17 @@ every such item, inside the transition):
 
 | Task becomes | Item |
 |---|---|
-| `merged` | `done` today, note `task <name> merged <urls>`, link ended |
+| `merged` | `done` today, note `task <name> merged <urls>`; the link stays while the task lives |
 | `closed` (the item never saw `merged`) | `done`, note `task <name> merged <urls>`, or `task <name>, no pull request` |
 | `dropped`, `failed` | `blocked` (`task_lost`), note `task <name> dropped` or `failed`, back to `in_progress` on unblock, link ended |
 | any other state | no change |
 
-An item already `cancelled`, `done` or `blocked` is not in progress, so a task's end leaves it alone. A move the guard
-refuses there is logged as `backlog-move-refused` and never fails the task's transition.
+The other items linked to the task (`on_linked_end`): when a merged task goes back to `in_review` (a later pull
+request), its `done` items go back to `in_progress` (link kept, done date cleared). When the task is `closed`,
+`dropped` or `failed`, a `done` item loses its link and its note becomes `task <name> merged <every merged url>`, and a
+`blocked` item loses its link and keeps its block (an unblock of a `task_lost` item returns it to `in_progress` with
+no task, which `spawn --backlog` takes). A `cancelled` item is never touched. A move the guard refuses there is
+logged as `backlog-move-refused` and never fails the task's transition.
+
+Every allowed move carries its link and date effects (`ItemMove::link`, `ItemMove::dates`); the store only applies
+them. A note, a cancel reason or a done note over several lines is refused, as the file could not hold it.

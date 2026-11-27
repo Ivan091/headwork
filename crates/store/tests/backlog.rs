@@ -46,7 +46,7 @@ fn by_user(
 ) -> Result<BacklogItem, StoreError> {
     store.move_backlog_item(
         id,
-        &BacklogMove::new(target, BacklogActor::User, Actor::User).with_reason(reason),
+        &BacklogMove::new(target, BacklogActor::User, Actor::User, true).with_reason(reason),
     )
 }
 
@@ -59,6 +59,7 @@ fn link(store: &mut Store, id: i64, task: TaskId) -> Result<BacklogItem, StoreEr
                 Target::InProgress,
                 BacklogActor::Orchestrator,
                 Actor::Orchestrator,
+                true,
             )
         },
     )
@@ -242,6 +243,7 @@ fn finishing_cancelling_and_reopening_go_through_the_guard() {
             Target::Cancelled,
             BacklogActor::Orchestrator,
             Actor::Orchestrator,
+            true,
         ),
     );
     assert!(
@@ -255,6 +257,7 @@ fn finishing_cancelling_and_reopening_go_through_the_guard() {
                 Target::Cancelled,
                 BacklogActor::Orchestrator,
                 Actor::Orchestrator,
+                true,
             )
             .with_reason(Some("the user said so")),
         )
@@ -543,45 +546,148 @@ fn a_closed_task_with_no_pull_request_says_so() {
     );
 }
 
-#[test]
-fn a_merged_task_finishes_its_item_at_once_and_its_close_changes_nothing() {
-    let (mut store, config) = store();
-    let (worker, id) = linked(&mut store, &config, "merge", "Do it");
-    store.start_task(&config, worker.id, Actor::Tick).unwrap();
-    merged_pr(&mut store, &worker, 3, "merged");
+const MERGED: Trigger = Trigger::Merged {
+    source: MergeSource::GitHost,
+    policy: MergePolicy::Deliver,
+};
+
+fn to_merged(store: &mut Store, config: &Config, worker: &Task) {
+    store.start_task(config, worker.id, Actor::Tick).unwrap();
     for trigger in [
         Trigger::SessionStarted(SessionFacts {
             session_matches: true,
             launcher_alive: true,
         }),
         Trigger::ReviewOpened { repo_allowed: true },
-        Trigger::Merged {
-            source: MergeSource::GitHost,
-            policy: MergePolicy::Deliver,
-        },
+        MERGED,
     ] {
         store.transition(worker.id, &trigger, Actor::Tick).unwrap();
     }
-    assert_eq!(store.task(worker.id).unwrap().state, TaskState::Merged);
+    assert_eq!(
+        store.task(worker.id).unwrap().state,
+        TaskState::Merged,
+        "merged"
+    );
+}
+
+#[test]
+fn a_merged_task_finishes_its_item_and_keeps_the_link_until_it_closes() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "merge", "Do it");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
     let done = store.backlog_item(id).unwrap();
     assert_eq!(
         (
             done.draft.status,
             done.draft.done_note.as_deref(),
-            done.task
+            done.task.map(|task| task.name)
         ),
         (
             BacklogStatus::Done,
             Some("task me-sim-merge merged https://github.com/Ivan091/me-sim/pull/3"),
-            None
-        )
+            Some("me-sim-merge".to_owned())
+        ),
+        "done at the merge, still linked"
     );
-    let before = moves(&store).len();
     close(&mut store, &worker, &[Trigger::ForceClose]);
+    let closed = store.backlog_item(id).unwrap();
     assert_eq!(
-        moves(&store).len(),
-        before,
-        "the close finds no item in progress"
+        (closed.draft.status, closed.task),
+        (BacklogStatus::Done, None),
+        "the close ends the link"
+    );
+}
+
+#[test]
+fn a_merged_task_that_opens_another_pull_request_takes_its_item_back_and_the_close_names_every_merge()
+ {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "twice", "Do it in two");
+    merged_pr(&mut store, &worker, 3, "merged");
+    to_merged(&mut store, &config, &worker);
+    store
+        .transition(
+            worker.id,
+            &Trigger::ReviewOpened { repo_allowed: true },
+            Actor::Tick,
+        )
+        .unwrap();
+    let back = store.backlog_item(id).unwrap();
+    assert_eq!(
+        (
+            back.draft.status,
+            back.draft.done_on,
+            back.draft.done_note,
+            back.task.map(|task| task.name)
+        ),
+        (
+            BacklogStatus::InProgress,
+            None,
+            None,
+            Some("me-sim-twice".to_owned())
+        ),
+        "in progress again, still linked, the done date cleared"
+    );
+    let last = moves(&store).into_iter().last().unwrap();
+    assert_eq!(
+        (
+            last["from"].as_str(),
+            last["to"].as_str(),
+            last["actor"].as_str()
+        ),
+        (Some("done"), Some("in_progress"), Some("headwork"))
+    );
+    merged_pr(&mut store, &worker, 5, "merged");
+    store.transition(worker.id, &MERGED, Actor::Tick).unwrap();
+    assert_eq!(
+        store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::Done
+    );
+    close(&mut store, &worker, &[Trigger::ForceClose]);
+    let closed = store.backlog_item(id).unwrap();
+    assert_eq!(
+        (closed.draft.done_note.as_deref(), closed.task),
+        (
+            Some(
+                "task me-sim-twice merged https://github.com/Ivan091/me-sim/pull/3, https://github.com/Ivan091/me-sim/pull/5"
+            ),
+            None
+        ),
+        "the close rewrites the note with every merged pull request and ends the link"
+    );
+}
+
+#[test]
+fn a_blocked_item_loses_its_link_and_keeps_its_block_when_the_task_ends() {
+    let (mut store, config) = store();
+    let (worker, id) = linked(&mut store, &config, "held", "Wait for it");
+    let blocked = by_user(
+        &mut store,
+        id,
+        Target::Blocked {
+            reason: BlockReason::Event,
+            note: Some("the release".to_owned()),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(blocked.task.is_some(), "a block keeps the live link");
+    store.drop_task(worker.id, Actor::Orchestrator).unwrap();
+    let after = store.backlog_item(id).unwrap();
+    assert_eq!(after.task, None, "the link ends");
+    assert_eq!(after.draft.status, blocked.draft.status, "the block stays");
+    let unblocked = by_user(&mut store, id, Target::Unblock, None).unwrap();
+    assert_eq!(
+        (unblocked.draft.status, unblocked.task),
+        (BacklogStatus::InProgress, None)
+    );
+    let next = task(&mut store, &config, "next");
+    let relinked = link(&mut store, id, next.id).unwrap();
+    assert_eq!(
+        relinked.task.map(|task| task.name),
+        Some("me-sim-next".to_owned()),
+        "spawn --backlog takes an in-progress item with no task"
     );
 }
 
@@ -812,4 +918,56 @@ fn pick_counts_are_the_newest_pick_and_the_adds_after_it() {
     assert_eq!(left(&store, task.id), 1, "a later pick replaces the count");
     pick(&store, 0);
     assert_eq!(left(&store, task.id), 0);
+}
+
+#[test]
+fn an_add_passes_the_guard_and_always_lands_in_the_backlog() {
+    let (mut store, config) = store();
+    let mut done = draft("Written as done");
+    done.status = BacklogStatus::Done;
+    let added = store.add_backlog_item(&done, Actor::User).unwrap();
+    assert_eq!(
+        added.draft.status,
+        BacklogStatus::Backlog,
+        "an add is a new backlog item"
+    );
+    let refused = store.add_backlog_item(&draft("From a worker"), Actor::Worker);
+    assert!(
+        matches!(&refused, Err(StoreError::BacklogAddRefused(reason)) if reason.contains("worker")),
+        "{refused:?}"
+    );
+    let explorer = task(&mut store, &config, "explore");
+    assert!(
+        store
+            .add_backlog_item_for(&draft("A pick"), Actor::Worker, Some(explorer.id))
+            .is_ok(),
+        "an exploration adds its picks"
+    );
+}
+
+#[test]
+fn a_note_or_reason_over_several_lines_is_refused() {
+    let (mut store, _) = store();
+    let one = store.add_backlog_item(&draft("one"), Actor::User).unwrap();
+    for (target, reason) in [
+        (Target::Done, Some("a\nb")),
+        (Target::Cancelled, Some("a\r\nb")),
+        (
+            Target::Blocked {
+                reason: BlockReason::Event,
+                note: Some("a\nb".to_owned()),
+            },
+            None,
+        ),
+    ] {
+        let refused = by_user(&mut store, one.id, target, reason);
+        assert!(
+            matches!(&refused, Err(StoreError::BacklogRefused { reason, .. }) if reason.contains("one line")),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(
+        store.backlog_item(one.id).unwrap().draft.status,
+        BacklogStatus::Backlog
+    );
 }

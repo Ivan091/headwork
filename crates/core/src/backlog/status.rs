@@ -207,6 +207,21 @@ impl Serialize for BacklogStatus {
     }
 }
 
+impl BacklogActor {
+    /// Who moves an item for an event's actor: the user and the orchestrator as themselves, a worker as an explorer when
+    /// it acts as the exploration adding its picks (`explorer`) and else as a worker, the tick and hooks as headwork.
+    #[must_use]
+    pub const fn from_actor(actor: crate::Actor, explorer: bool) -> Self {
+        match actor {
+            crate::Actor::User => Self::User,
+            crate::Actor::Orchestrator => Self::Orchestrator,
+            crate::Actor::Worker if explorer => Self::Explorer,
+            crate::Actor::Worker => Self::Worker,
+            crate::Actor::Tick | crate::Actor::Hook => Self::Headwork,
+        }
+    }
+}
+
 text_enum!(
     /// Who moves an item (`docs/backlog.md`, section 10).
     BacklogActor, "backlog actor" {
@@ -262,10 +277,6 @@ impl Target {
 
 /// What the guard knows about an item besides its status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts the guard reads, one per row condition of the transition table"
-)]
 pub struct MoveFacts<'a> {
     /// The name of the live task linked to it (any state but closed, dropped and failed).
     pub live_task: Option<&'a str>,
@@ -275,8 +286,8 @@ pub struct MoveFacts<'a> {
     pub in_actor_epic: bool,
     /// Whether a task can work on it: its project is one headwork runs, or a spawn names the project.
     pub has_project: bool,
-    /// Whether the move came with a non-empty reason.
-    pub has_reason: bool,
+    /// The note of a finish or the reason of a cancel the move came with.
+    pub reason: Option<&'a str>,
 }
 
 /// What kind of move the guard allowed.
@@ -301,6 +312,30 @@ pub enum MoveKind {
     Cancel,
     /// Done or cancelled back to the backlog.
     Reopen,
+    /// Done back to in progress: its task, merged, opened another pull request.
+    Unfinish,
+}
+
+/// What a move does to the item's link to a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkEffect {
+    /// The link stays as it is.
+    Keep,
+    /// The link ends.
+    Clear,
+    /// The item is linked to the task the move names, or to none when it names none.
+    Set,
+}
+
+/// What a move does to the item's `done_on` and `done_note`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateEffect {
+    /// They stay as they are.
+    Keep,
+    /// `done_on` becomes today and `done_note` the move's note or reason.
+    Stamp,
+    /// Both are cleared.
+    Clear,
 }
 
 /// A move the guard allowed: the status before (none for a new item), the status after and the kind of move.
@@ -312,6 +347,10 @@ pub struct ItemMove {
     pub to: BacklogStatus,
     /// What kind of move it is.
     pub kind: MoveKind,
+    /// What it does to the link.
+    pub link: LinkEffect,
+    /// What it does to the done date and note.
+    pub dates: DateEffect,
 }
 
 /// Why the guard refused a move.
@@ -335,6 +374,9 @@ pub enum MoveRefusal {
     /// A start of an item no task can work on.
     #[error("no task can work on it: its project is not one headwork runs")]
     NoProject,
+    /// A note or reason that runs over several lines, which the file could not hold.
+    #[error("the {0} must be one line")]
+    MultiLine(&'static str),
     /// The orchestrator cancelling without saying why.
     #[error("the orchestrator cancels an item only with a reason (the user's words)")]
     ReasonRequired,
@@ -373,7 +415,51 @@ fn not_allowed(actor: BacklogActor, from: Option<ItemStatus>, to: &Target) -> Mo
 }
 
 const fn moved(from: Option<ItemStatus>, to: BacklogStatus, kind: MoveKind) -> ItemMove {
-    ItemMove { from, to, kind }
+    ItemMove {
+        from,
+        to,
+        kind,
+        link: LinkEffect::Keep,
+        dates: DateEffect::Keep,
+    }
+}
+
+/// The link and date effects of an allowed move: a start, relink or respawn links the move's task; a finish stamps the
+/// date and ends the link, except headwork's finish of an item whose task still lives (merged), which keeps it so the
+/// task can take it back; a cancel stamps and ends the link; a reopen and an unfinish clear the date; a block for a lost
+/// task ends the link; everything else keeps both.
+fn with_effects(step: ItemMove, actor: BacklogActor, facts: &MoveFacts<'_>) -> ItemMove {
+    let (link, dates) = match (step.kind, &step.to) {
+        (MoveKind::Start | MoveKind::Relink | MoveKind::Respawn, _) => {
+            (LinkEffect::Set, DateEffect::Keep)
+        }
+        (MoveKind::Finish, _) if actor == BacklogActor::Headwork && facts.live_task.is_some() => {
+            (LinkEffect::Keep, DateEffect::Stamp)
+        }
+        (MoveKind::Finish | MoveKind::Cancel, _) => (LinkEffect::Clear, DateEffect::Stamp),
+        (MoveKind::Reopen | MoveKind::Unfinish, _) => (LinkEffect::Keep, DateEffect::Clear),
+        (MoveKind::Block, BacklogStatus::Blocked(block))
+            if block.reason == BlockReason::TaskLost =>
+        {
+            (LinkEffect::Clear, DateEffect::Keep)
+        }
+        (MoveKind::Add | MoveKind::Block | MoveKind::Unblock, _) => {
+            (LinkEffect::Keep, DateEffect::Keep)
+        }
+    };
+    ItemMove {
+        link,
+        dates,
+        ..step
+    }
+}
+
+fn one_line(field: &'static str, text: Option<&str>) -> Result<(), MoveRefusal> {
+    if text.is_some_and(|text| text.contains('\n') || text.contains('\r')) {
+        Err(MoveRefusal::MultiLine(field))
+    } else {
+        Ok(())
+    }
 }
 
 /// The guard every move of an item passes (`docs/backlog.md`, section 10, "Transitions and who may make each").
@@ -387,6 +473,19 @@ const fn moved(from: Option<ItemStatus>, to: BacklogStatus, kind: MoveKind) -> I
 ///
 /// Returns the [`MoveRefusal`] that names why the move is not allowed.
 pub fn transition(
+    from: Option<&BacklogStatus>,
+    to: &Target,
+    actor: BacklogActor,
+    facts: &MoveFacts<'_>,
+) -> Result<ItemMove, MoveRefusal> {
+    if let Target::Blocked { note, .. } = to {
+        one_line("note", note.as_deref())?;
+    }
+    one_line("reason", facts.reason)?;
+    decide(from, to, actor, facts).map(|step| with_effects(step, actor, facts))
+}
+
+fn decide(
     from: Option<&BacklogStatus>,
     to: &Target,
     actor: BacklogActor,
@@ -493,6 +592,9 @@ fn start(
 ) -> Result<MoveKind, MoveRefusal> {
     use BacklogActor as A;
     let refuse = || not_allowed(actor, Some(from.kind()), &Target::InProgress);
+    if *from == BacklogStatus::Done && actor == A::Headwork && facts.live_task.is_some() {
+        return Ok(MoveKind::Unfinish);
+    }
     let kind = match from {
         BacklogStatus::Backlog if matches!(actor, A::User | A::Orchestrator | A::Headwork) => {
             MoveKind::Start
@@ -585,7 +687,9 @@ fn cancel(
             if let Some(task) = facts.live_task {
                 return Err(MoveRefusal::DropTaskFirst(task.to_owned()));
             }
-            if actor == A::Orchestrator && !facts.has_reason {
+            if actor == A::Orchestrator
+                && facts.reason.is_none_or(|reason| reason.trim().is_empty())
+            {
                 return Err(MoveRefusal::ReasonRequired);
             }
             Ok(())
@@ -677,5 +781,50 @@ pub fn on_task_end(
             | TaskState::Parked,
             _,
         ) => None,
+    }
+}
+
+/// What a task's state does to an item linked to it that is not in progress (`docs/backlog.md`, section 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkedEnd {
+    /// A done item goes back to in progress: its task, merged, opened another pull request.
+    Unfinish,
+    /// The link ends and the status stays; a done item's note becomes this one, naming every merged pull request.
+    Unlink {
+        /// The new done note, for a done item.
+        note: Option<String>,
+    },
+}
+
+/// What a task that moves to `state` does to a linked item of status `status` other than in progress.
+///
+/// Back in review, a done item (finished when the task merged) is in progress again; closed, dropped or failed, a done
+/// item loses its link and its note names every merged pull request, and a blocked one loses its link and keeps its block.
+#[must_use]
+pub fn on_linked_end(
+    state: TaskState,
+    status: ItemStatus,
+    merged_urls: &[String],
+    task_name: &str,
+) -> Option<LinkedEnd> {
+    let over = matches!(
+        state,
+        TaskState::Closed | TaskState::Dropped | TaskState::Failed
+    );
+    match status {
+        ItemStatus::Done if state == TaskState::InReview => Some(LinkedEnd::Unfinish),
+        ItemStatus::Done if over => Some(LinkedEnd::Unlink {
+            note: Some(if merged_urls.is_empty() {
+                format!("task {task_name}, no pull request")
+            } else {
+                format!("task {task_name} merged {}", merged_urls.join(", "))
+            }),
+        }),
+        ItemStatus::Blocked if over => Some(LinkedEnd::Unlink { note: None }),
+        ItemStatus::Backlog
+        | ItemStatus::InProgress
+        | ItemStatus::Blocked
+        | ItemStatus::Done
+        | ItemStatus::Cancelled => None,
     }
 }

@@ -26,6 +26,13 @@ Choices taken for P1:
   the merged URLs or `task <name>, no pull request`; a dropped or failed task blocks it as `task_lost`. `TaskOutcome`
   has only `Done` for now: the seam where P2's `partial` goes. A move the guard refuses there is logged
   (`backlog-move-refused`) and never fails the task's transition, since it runs inside it.
+- Done at `merged` is the user's decision (D2). The merge keeps the link, so a merged task that opens another pull
+  request (back to `in_review`) takes its done items back to `in_progress` (headwork's guard row done to in_progress,
+  only with a live linked task). At `closed` (and `dropped`, `failed`) the done items still linked lose the link and
+  their note is rewritten with every merged pull request. Blocked items linked to an ending task lose the link and keep
+  the block. The digest counts an item as taken only while its linked task lives.
+- Adds pass the guard (`transition(None, backlog, ...)`): a plain worker cannot add, an exploration adds as the
+  explorer. Import is the exception: it restores the statuses the file names, without the guard.
 - The item's move logs `backlog-moved` as the design says. That name already named the move of the generated file, so
   that event is now `backlog-file-moved`; old events keep their names and nothing reads them by type.
 - The CLI's actor comes from `HEADWORK_ROLE` as the MCP server reads it: none is the user, `orchestrator` the

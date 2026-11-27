@@ -1334,10 +1334,21 @@ mod tests {
                 actor,
             )
             .unwrap();
-        store
+        let old = store
             .add_backlog_item(
-                &draft("old", BacklogOwner::Agent, BacklogStatus::Done),
+                &draft("old", BacklogOwner::Agent, BacklogStatus::Backlog),
                 actor,
+            )
+            .unwrap();
+        store
+            .move_backlog_item(
+                old.id,
+                &headwork_store::BacklogMove::new(
+                    headwork_core::backlog::Target::Done,
+                    headwork_core::backlog::BacklogActor::User,
+                    actor,
+                    true,
+                ),
             )
             .unwrap();
         drop(store);

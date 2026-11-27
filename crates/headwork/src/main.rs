@@ -1906,7 +1906,7 @@ fn backlog_change_command(
             note,
             json,
         } => (
-            act(&mut |env| list::block(store, env, id, reason, Some(&note)))?,
+            act(&mut |env| list::block(store, env, None, id, reason, Some(&note)))?,
             json,
         ),
         BacklogAction::Unblock { id, json } => {

@@ -662,12 +662,7 @@ pub fn add_for(
 /// is a worker, and the tick and hooks are headwork.
 #[must_use]
 pub const fn backlog_actor(actor: Actor) -> BacklogActor {
-    match actor {
-        Actor::User => BacklogActor::User,
-        Actor::Orchestrator => BacklogActor::Orchestrator,
-        Actor::Worker => BacklogActor::Worker,
-        Actor::Tick | Actor::Hook => BacklogActor::Headwork,
-    }
+    BacklogActor::from_actor(actor, false)
 }
 
 fn project_known(config: &Config, project: &str) -> bool {
@@ -677,8 +672,10 @@ fn project_known(config: &Config, project: &str) -> bool {
         .any(|name| name.to_string() == project)
 }
 
-/// Moves an item through the status guard and exports: the actor is [`backlog_actor`] of who acts, and a start needs the
-/// item's project to be one headwork runs.
+/// Moves an item through the status guard and exports.
+///
+/// The actor is [`backlog_actor`] of who acts, `actor_task` the acting worker's own task (a worker moves only the item
+/// linked to it), and a start needs the item's project to be one headwork runs.
 ///
 /// # Errors
 ///
@@ -686,14 +683,15 @@ fn project_known(config: &Config, project: &str) -> bool {
 pub fn move_item(
     store: &mut Store,
     env: &Env<'_>,
+    actor_task: Option<TaskId>,
     id: i64,
     target: Target,
     reason: Option<&str>,
 ) -> Result<Change> {
     let has_project = project_known(env.config, &store.backlog_item(id)?.draft.project);
     let request = BacklogMove {
-        has_project,
-        ..BacklogMove::new(target, backlog_actor(env.actor), env.actor)
+        actor_task,
+        ..BacklogMove::new(target, backlog_actor(env.actor), env.actor, has_project)
             .with_reason(reason.map(str::trim).filter(|reason| !reason.is_empty()))
     };
     let item = store.move_backlog_item(id, &request)?;
@@ -706,7 +704,7 @@ pub fn move_item(
 ///
 /// As [`move_item`].
 pub fn finish(store: &mut Store, env: &Env<'_>, id: i64, note: Option<&str>) -> Result<Change> {
-    move_item(store, env, id, Target::Done, note)
+    move_item(store, env, None, id, Target::Done, note)
 }
 
 /// Cancels an item today with a reason, and exports; refused while a live task works on it, and for the orchestrator
@@ -716,7 +714,7 @@ pub fn finish(store: &mut Store, env: &Env<'_>, id: i64, note: Option<&str>) -> 
 ///
 /// As [`move_item`].
 pub fn cancel(store: &mut Store, env: &Env<'_>, id: i64, reason: Option<&str>) -> Result<Change> {
-    move_item(store, env, id, Target::Cancelled, reason)
+    move_item(store, env, None, id, Target::Cancelled, reason)
 }
 
 /// Spins an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
@@ -725,7 +723,7 @@ pub fn cancel(store: &mut Store, env: &Env<'_>, id: i64, reason: Option<&str>) -
 ///
 /// As [`move_item`].
 pub fn start(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
-    move_item(store, env, id, Target::InProgress, None)
+    move_item(store, env, None, id, Target::InProgress, None)
 }
 
 /// Blocks an item for `reason` (the user and the orchestrator give `decision` or `event`) with a note.
@@ -736,6 +734,7 @@ pub fn start(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
 pub fn block(
     store: &mut Store,
     env: &Env<'_>,
+    actor_task: Option<TaskId>,
     id: i64,
     reason: BlockReason,
     note: Option<&str>,
@@ -744,6 +743,7 @@ pub fn block(
     move_item(
         store,
         env,
+        actor_task,
         id,
         Target::Blocked {
             reason,
@@ -759,7 +759,7 @@ pub fn block(
 ///
 /// As [`move_item`].
 pub fn unblock(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
-    move_item(store, env, id, Target::Unblock, None)
+    move_item(store, env, None, id, Target::Unblock, None)
 }
 
 /// Takes a done or cancelled item back to the backlog and exports.
@@ -768,7 +768,7 @@ pub fn unblock(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
 ///
 /// As [`move_item`].
 pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
-    move_item(store, env, id, Target::Backlog, None)
+    move_item(store, env, None, id, Target::Backlog, None)
 }
 
 /// Changes an item and exports.
@@ -826,7 +826,12 @@ pub fn spawn_linked(
 ) -> Result<LinkedSpawn> {
     let link = |task: Option<TaskId>| BacklogMove {
         link: task,
-        ..BacklogMove::new(Target::InProgress, backlog_actor(env.actor), env.actor)
+        ..BacklogMove::new(
+            Target::InProgress,
+            backlog_actor(env.actor),
+            env.actor,
+            true,
+        )
     };
     if let Some(id) = item {
         store.check_backlog_move(id, &link(None))?;

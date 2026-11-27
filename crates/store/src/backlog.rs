@@ -8,9 +8,9 @@
 use std::collections::HashSet;
 
 use headwork_core::backlog::{
-    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason,
-    ItemMove, ItemStatus, LinkedTask, MoveFacts, MoveKind, Target, TaskOutcome, identity,
-    on_task_end, transition,
+    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, DateEffect,
+    ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask, MoveFacts, Target, TaskEndEffect,
+    TaskOutcome, identity, on_linked_end, on_task_end, transition,
 };
 use headwork_core::{Actor, TaskState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -86,15 +86,16 @@ pub struct BacklogMove<'a> {
 }
 
 impl<'a> BacklogMove<'a> {
-    /// A move by `actor` (logged as `by`) to `target`, with no reason, link or own task, for an item with a project.
+    /// A move by `actor` (logged as `by`) to `target`, with no reason, link or own task; `has_project` says whether a task
+    /// can work on the item.
     #[must_use]
-    pub const fn new(target: Target, actor: BacklogActor, by: Actor) -> Self {
+    pub const fn new(target: Target, actor: BacklogActor, by: Actor, has_project: bool) -> Self {
         Self {
             target,
             actor,
             by,
             actor_task: None,
-            has_project: true,
+            has_project,
             reason: None,
             link: None,
         }
@@ -356,16 +357,11 @@ fn counts(
     Ok((counts, fresh))
 }
 
-fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'_>) -> MoveFacts<'a> {
+fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'a>) -> MoveFacts<'a> {
     let live_task = item
         .task
         .as_ref()
-        .filter(|task| {
-            !matches!(
-                task.state,
-                TaskState::Closed | TaskState::Dropped | TaskState::Failed
-            )
-        })
+        .filter(|task| task.is_live())
         .map(|task| task.name.as_str());
     MoveFacts {
         live_task,
@@ -374,9 +370,7 @@ fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'_>) -> MoveFacts<'a> 
             .is_some_and(|own| item.task.as_ref().is_some_and(|task| task.id == own.0)),
         in_actor_epic: false,
         has_project: request.has_project,
-        has_reason: request
-            .reason
-            .is_some_and(|reason| !reason.trim().is_empty()),
+        reason: request.reason,
     }
 }
 
@@ -393,8 +387,7 @@ fn check(item: &BacklogItem, request: &BacklogMove<'_>) -> Result<ItemMove, Stor
     })
 }
 
-/// Writes an allowed move and its `backlog-moved` event: a finish or cancel dates the item and ends its link, a reopen
-/// clears that date, a start, relink or respawn links the item to the move's task, a block for a lost task ends the link.
+/// Writes an allowed move and its `backlog-moved` event, applying the move's link and date effects ([`ItemMove`]).
 fn write_move(
     tx: &Transaction<'_>,
     before: &BacklogItem,
@@ -403,20 +396,15 @@ fn write_move(
 ) -> Result<BacklogItem, StoreError> {
     let id = before.id;
     let old_task = before.task.as_ref().map(|task| task.id);
-    let task = match (&step.to, step.kind) {
-        (BacklogStatus::Done | BacklogStatus::Cancelled, _) => None,
-        (BacklogStatus::Blocked(block), _) if block.reason == BlockReason::TaskLost => None,
-        (_, MoveKind::Start | MoveKind::Relink | MoveKind::Respawn) => {
-            request.link.map(|task| task.0)
-        }
-        _ => old_task,
+    let task = match step.link {
+        LinkEffect::Keep => old_task,
+        LinkEffect::Clear => None,
+        LinkEffect::Set => request.link.map(|task| task.0),
     };
-    let (done_on, done_note) = match (&step.to, step.kind) {
-        (BacklogStatus::Done | BacklogStatus::Cancelled, _) => {
-            (Some(today(tx)?), request.reason.map(str::to_owned))
-        }
-        (_, MoveKind::Reopen) => (None, None),
-        _ => (before.draft.done_on.clone(), before.draft.done_note.clone()),
+    let (done_on, done_note) = match step.dates {
+        DateEffect::Keep => (before.draft.done_on.clone(), before.draft.done_note.clone()),
+        DateEffect::Stamp => (Some(today(tx)?), request.reason.map(str::to_owned)),
+        DateEffect::Clear => (None, None),
     };
     let (reason, note, before_block) = block_columns(&step.to);
     tx.execute(
@@ -457,49 +445,101 @@ fn write_move(
     load(tx, id)
 }
 
-/// Applies the task-end table to every in-progress item linked to a task, inside the transition's transaction: a merged
-/// task, or a closed one whose item never saw the merge, finishes it; a dropped or failed one blocks it as `task_lost`.
-/// A move the guard refuses is logged as `backlog-move-refused` and never fails the transition.
+fn linked_ids(
+    tx: &Transaction<'_>,
+    task: TaskId,
+    status: ItemStatus,
+) -> Result<Vec<i64>, StoreError> {
+    Ok(tx
+        .prepare("SELECT id FROM backlog_items WHERE task_id = ?1 AND status = ?2 ORDER BY id")?
+        .query_map(params![task.0, status.as_str()], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Moves one item for a task's state through the guard as headwork; a refusal is logged as `backlog-move-refused`.
+fn headwork_move(
+    tx: &Transaction<'_>,
+    task: &Task,
+    id: i64,
+    request: &BacklogMove<'_>,
+) -> Result<(), StoreError> {
+    let item = load(tx, id)?;
+    match check(&item, request) {
+        Ok(step) => write_move(tx, &item, &step, request).map(drop),
+        Err(error) => insert_event(
+            tx,
+            request.by,
+            Some(task.id),
+            None,
+            EVENT_BACKLOG_MOVE_REFUSED,
+            &serde_json::json!({ "item": id, "reason": error.to_string() }),
+        ),
+    }
+}
+
+/// Applies what a task's new state means for the items linked to it, inside the transition's transaction.
+///
+/// Every in-progress item follows the task-end table ([`on_task_end`]): a merged task, or a closed one whose item never
+/// saw the merge, finishes it (a merged task keeps the link); a dropped or failed one blocks it as `task_lost`. The other
+/// linked items follow [`on_linked_end`]: back in review, a done item is in progress again; over, a done item loses its
+/// link and gets a note naming every merged pull request, and a blocked one loses its link and keeps its block. A move
+/// the guard refuses is logged as `backlog-move-refused` and never fails the transition.
 pub(crate) fn task_ended(
     tx: &Transaction<'_>,
     task: &Task,
     to: TaskState,
     actor: Actor,
 ) -> Result<(), StoreError> {
-    let ids: Vec<i64> = tx
-        .prepare("SELECT id FROM backlog_items WHERE task_id = ?1 AND status = 'in_progress' ORDER BY id")?
-        .query_map(params![task.id.0], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
-    if ids.is_empty() {
+    let in_progress = linked_ids(tx, task.id, ItemStatus::InProgress)?;
+    let done = linked_ids(tx, task.id, ItemStatus::Done)?;
+    let blocked = linked_ids(tx, task.id, ItemStatus::Blocked)?;
+    if in_progress.is_empty() && done.is_empty() && blocked.is_empty() {
         return Ok(());
     }
     let merged: Vec<String> = tx
         .prepare("SELECT url FROM prs WHERE task_id = ?1 AND state = 'merged' ORDER BY number")?
         .query_map(params![task.id.0], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    let Some(effect) = on_task_end(to, TaskOutcome::Done, &merged, &task.name.to_string()) else {
-        return Ok(());
-    };
-    let note = match &effect {
-        headwork_core::backlog::TaskEndEffect::Finish { note } => Some(note.as_str()),
-        headwork_core::backlog::TaskEndEffect::Lost { .. } => None,
-    };
-    let request =
-        BacklogMove::new(effect.target(), BacklogActor::Headwork, actor).with_reason(note);
-    for id in ids {
-        let item = load(tx, id)?;
-        match check(&item, &request) {
-            Ok(step) => {
-                write_move(tx, &item, &step, &request)?;
+    let name = task.name.to_string();
+    if let Some(effect) = on_task_end(to, TaskOutcome::Done, &merged, &name) {
+        let note = match &effect {
+            TaskEndEffect::Finish { note } => Some(note.as_str()),
+            TaskEndEffect::Lost { .. } => None,
+        };
+        let request = BacklogMove::new(effect.target(), BacklogActor::Headwork, actor, true)
+            .with_reason(note);
+        for id in in_progress {
+            headwork_move(tx, task, id, &request)?;
+        }
+    }
+    for (status, ids) in [(ItemStatus::Done, done), (ItemStatus::Blocked, blocked)] {
+        match on_linked_end(to, status, &merged, &name) {
+            Some(LinkedEnd::Unfinish) => {
+                let request =
+                    BacklogMove::new(Target::InProgress, BacklogActor::Headwork, actor, true);
+                for id in ids {
+                    headwork_move(tx, task, id, &request)?;
+                }
             }
-            Err(error) => insert_event(
-                tx,
-                actor,
-                Some(task.id),
-                None,
-                EVENT_BACKLOG_MOVE_REFUSED,
-                &serde_json::json!({ "item": id, "reason": error.to_string() }),
-            )?,
+            Some(LinkedEnd::Unlink { note }) => {
+                for id in ids {
+                    tx.execute(
+                        &format!(
+                            "UPDATE backlog_items SET task_id = NULL, done_note = coalesce(?2, done_note), updated_at = {NOW}
+                             WHERE id = ?1"
+                        ),
+                        params![id, note],
+                    )?;
+                    event(
+                        tx,
+                        actor,
+                        Some(task.id),
+                        EVENT_BACKLOG_EDITED,
+                        &load(tx, id)?,
+                    )?;
+                }
+            }
+            None => {}
         }
     }
     Ok(())
@@ -562,19 +602,31 @@ impl Store {
         self.add_backlog_item_for(draft, actor, None)
     }
 
-    /// Adds an item last and logs `backlog-added` for `task`, the exploration that added it.
+    /// Adds an item last, in the backlog, and logs `backlog-added` for `task`, the exploration that added it. The add
+    /// passes the status guard: an event's worker adds only as an exploration (`task` given).
     ///
     /// # Errors
     ///
-    /// Returns the SQLite error.
+    /// Returns [`StoreError::BacklogRefused`] when the guard refuses the add, or the SQLite error.
     pub fn add_backlog_item_for(
         &mut self,
         draft: &BacklogDraft,
         actor: Actor,
         task: Option<TaskId>,
     ) -> Result<BacklogItem, StoreError> {
+        let step = transition(
+            None,
+            &Target::Backlog,
+            BacklogActor::from_actor(actor, task.is_some()),
+            &MoveFacts::default(),
+        )
+        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+        let draft = BacklogDraft {
+            status: step.to,
+            ..draft.clone()
+        };
         let tx = self.conn.transaction()?;
-        let id = insert(&tx, draft)?;
+        let id = insert(&tx, &draft)?;
         let item = load(&tx, id)?;
         event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
         tx.commit()?;

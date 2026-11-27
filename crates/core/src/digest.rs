@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::FindingId;
-use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, LinkedTask};
 
 /// The header of a digest that holds lines.
 pub const HEADER: &str = "Needs you";
@@ -191,7 +191,9 @@ fn dated_backlog_items(
 ) -> Vec<(BacklogDate, i64, String)> {
     let mut dated: Vec<(BacklogDate, i64, String)> = backlog_items
         .iter()
-        .filter(|item| item.draft.status.is_open() && item.task.is_none())
+        .filter(|item| {
+            item.draft.status.is_open() && !item.task.as_ref().is_some_and(LinkedTask::is_live)
+        })
         .filter_map(|item| {
             let text = shorten(&item.draft.text, TEXT_LIMIT);
             match (&item.draft.due, &item.draft.not_before) {
@@ -223,7 +225,7 @@ fn user_items<'a>(
         .filter(|item| {
             item.draft.status.is_open()
                 && item.draft.owner == BacklogOwner::User
-                && item.task.is_none()
+                && !item.task.as_ref().is_some_and(LinkedTask::is_live)
                 && !listed.contains(&item.id)
                 && item
                     .draft
@@ -526,6 +528,25 @@ mod tests {
         });
         facts.backlog_items = vec![done, dropped, linked];
         assert!(build(&facts).is_empty(), "nothing open and free");
+    }
+
+    #[test]
+    fn an_item_whose_linked_task_is_over_waits_again() {
+        let mut facts = facts();
+        let mut lost = item(1, "Lost one", BacklogOwner::User);
+        lost.task = Some(LinkedTask {
+            id: 1,
+            name: "demo-x".into(),
+            state: TaskState::Dropped,
+        });
+        facts.backlog_items = vec![lost];
+        let digest = build(&facts);
+        assert_eq!(
+            digest.lines.len(),
+            1,
+            "a dead link frees the item: {digest:?}"
+        );
+        assert_eq!(waiting_items(&facts.backlog_items, &facts.today), [1]);
     }
 
     #[test]

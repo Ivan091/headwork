@@ -15,8 +15,9 @@ use crate::{TaskState, UnknownWord};
 mod status;
 
 pub use status::{
-    BacklogActor, BacklogStatus, Block, BlockReason, ItemMove, ItemStatus, MoveFacts, MoveKind,
-    MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome, on_task_end, transition,
+    BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,
+    LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,
+    on_linked_end, on_task_end, transition,
 };
 
 /// The project of items that sit outside every `##` heading, and of the Done and Cancelled (or Dropped) sections.
@@ -244,6 +245,17 @@ pub struct LinkedTask {
     pub name: String,
     /// The task's state.
     pub state: TaskState,
+}
+
+impl LinkedTask {
+    /// Whether the task still lives: any state but closed, dropped and failed.
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        !matches!(
+            self.state,
+            TaskState::Closed | TaskState::Dropped | TaskState::Failed
+        )
+    }
 }
 
 /// An item as the store holds it.
