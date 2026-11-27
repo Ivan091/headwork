@@ -248,8 +248,9 @@ was never imported (a copy) is refused as in section 4 until `headwork backlog i
 
 ## 10. Stored statuses
 
-Each item's status is stored and written only through one pure guard, `transition(from, to, actor, facts)` in
-`crates/core/src/backlog/status.rs`, and one store call, `Store::move_backlog_item`, which writes the row and the event
+Each item's status is stored. Every move goes through one pure guard, `transition(from, to, actor, facts)` in
+`crates/core/src/backlog/status.rs`, and adds through `transition(None, backlog, ...)`; import is the one way in that
+skips the guard (section 3). A move is written by one store call, `Store::move_backlog_item`, which writes the row and the event
 `backlog-moved` (`item`, `from`, `to`, `actor`, `reason`, `kind`, `task`) in one transaction. The design is
 `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phase P1 (no epics, dependencies, worker item
 tools or automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.

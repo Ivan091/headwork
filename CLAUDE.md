@@ -214,7 +214,8 @@ the orchestrator's `backlog_*` tools. `[backlog] file` (machine-only) names the 
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/backlog-backups`
 first; pointing it at a new file moves the list there (`backlog-file-moved`, `configured_at`; the old file stays, with a pointer
 line under `[backlog] leave_pointer`). Each item has a stored status (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`;
-section 10) moved only through the pure guard `core::backlog::transition` and `Store::move_backlog_item`, which logs `backlog-moved`.
+section 10): moves go through the pure guard `core::backlog::transition` and `Store::move_backlog_item` (logs `backlog-moved`), adds through
+`transition(None, ...)`, and import is the one way in that skips the guard.
 `spawn --backlog <id>` links an item and moves it to `in_progress`; `apply_in` runs the task-end table on every linked in-progress
 item (merged or closed: done; dropped or failed: blocked `task_lost`). The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
 listed in `docs/backlog.md`, section 9.
