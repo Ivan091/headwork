@@ -280,7 +280,7 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 | `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item, headwork |
 | `blocked` (`task_lost`, `partial`) | `in_progress` | user, orchestrator, headwork: a respawn |
 | `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children |
-| `done`, `cancelled` | `backlog` | user and orchestrator (`backlog reopen`, `backlog_reopen`), clearing `done_on` and `done_note` |
+| `done`, `cancelled` | `backlog` | user and orchestrator (`backlog reopen`, `backlog_reopen`), clearing `done_on` and `done_note` and ending the link (a done item may still be linked to its merged task) |
 
 Refused: a worker touching an item its task is not linked to; an explorer outside its epic; anyone but headwork
 finishing an item a live task works on; a cancel while a live task works on it (drop the task first); `cancelled` on a
@@ -304,4 +304,5 @@ no task, which `spawn --backlog` takes). A `cancelled` item is never touched. A 
 logged as `backlog-move-refused` and never fails the task's transition.
 
 Every allowed move carries its link and date effects (`ItemMove::link`, `ItemMove::dates`); the store only applies
-them. A note, a cancel reason or a done note over several lines is refused, as the file could not hold it.
+them. A note, a cancel reason or a done note over several lines, or holding `[` or `]`, is refused, as the file
+could not hold it or read its status tag back.

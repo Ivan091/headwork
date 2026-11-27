@@ -47,5 +47,6 @@ Choices taken for P1:
 - The CLI trusts `HEADWORK_ROLE` for its actor. A worker could leave the variable out, so the guard rule
   `worker-backlog-cli` (`core/src/guard/backlog_cli.rs`; shadow, so it only logs, unless `worker-backlog-cli` is
   listed in `[hooks] enforce_rules`) denies a
-  worker or explorer session every writing `headwork backlog` subcommand (add, done, start, cancel, block, unblock,
-  reopen, edit, import, export); `list` stays allowed.
+  worker or explorer session every `headwork backlog` subcommand but `list` (fail closed, list options and their values
+  skipped as clap reads them; so add, done, start, cancel, block, unblock,
+  reopen, edit, import, export and any unknown word are refused); `list` stays allowed.
