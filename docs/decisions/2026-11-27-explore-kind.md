@@ -15,7 +15,9 @@ adds the picks itself (option B of `S:/Code/notes/explore-kind-proposal-2026-11-
 - Model: Opus is the built-in default of the kind when `[models] allowed` has it, else `default`
   (`ModelsConfig::for_kind`); `[models.by_kind] explore` or a spawn's
   `model` still wins, so no shared config change is needed. A part of an explore lead is kind `explore` too and runs on
-  Sonnet when allowed, unless the lead names another model (`ModelsConfig::for_part`).
+  Sonnet when allowed, unless the lead names another model (`ModelsConfig::for_part`). Parts ignore
+  `[models.by_kind] explore` on purpose: that key sets the lead's model (Opus for audits and plans), and the lead's
+  model ladder (`rules/lead.md`: a part runs on Sonnet unless the lead names another) keeps parts off it.
 - Refusal `explore-no-report`: spawn (the CLI and the orchestrator's tool alike) refuses a top-level `explore` task whose
   brief has no `Writes:` path strictly under `[hooks] brief_writable`, the same paths the guard later grants. Parts are
   exempt.
