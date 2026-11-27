@@ -44,6 +44,9 @@ pub struct ReviewRow {
     /// The head the previous round reviewed, where a later round's diff starts; `None` in round 1, and in a later
     /// round of a review started before migration 0029 (that round reviews the whole branch).
     pub round_base_sha: Option<String>,
+    /// Whether the implementing lead's `HEAD` had moved past `head_sha` when this round was delivered; the next round
+    /// starting resets it.
+    pub late_commits: bool,
     /// The round, from 1.
     pub round: u8,
     /// Where it is.
@@ -206,7 +209,7 @@ impl From<rusqlite::Error> for ReviewError {
 }
 
 const REVIEW_COLUMNS: &str = "id, task_id, part_id, flow, level, focus, base_sha, head_sha, round, state, requested_at, finished_at, \
-     reviewed_sha, round_base_sha";
+     reviewed_sha, round_base_sha, late_commits";
 
 type RawReview = (
     i64,
@@ -220,6 +223,7 @@ type RawReview = (
     String,
     String,
     Option<String>,
+    bool,
 );
 
 fn read_review(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawReview> {
@@ -235,6 +239,7 @@ fn read_review(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawReview> {
         row.get(9)?,
         row.get(10)?,
         row.get(11)?,
+        row.get::<_, i64>(14)? != 0,
     ))
 }
 
@@ -255,6 +260,7 @@ fn into_review(raw: RawReview) -> Result<ReviewRow, StoreError> {
         state,
         requested_at,
         finished_at,
+        late_commits,
     ) = raw;
     Ok(ReviewRow {
         id,
@@ -267,6 +273,7 @@ fn into_review(raw: RawReview) -> Result<ReviewRow, StoreError> {
         head_sha,
         reviewed_sha,
         round_base_sha,
+        late_commits,
         round: small(round)?,
         state: state.parse()?,
         requested_at,
@@ -627,6 +634,22 @@ impl Store {
             .collect()
     }
 
+    /// Records whether commits landed in the implementing lead's folder after the head the review pinned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReviewError::Unknown`] or a store error.
+    pub fn set_late_commits(&mut self, id: i64, late: bool) -> Result<ReviewRow, ReviewError> {
+        let changed = self.conn.execute(
+            "UPDATE reviews SET late_commits = ?2 WHERE id = ?1",
+            params![id, i64::from(late)],
+        )?;
+        if changed == 0 {
+            return Err(ReviewError::Unknown(id));
+        }
+        review_in(&self.conn, id)?.ok_or(ReviewError::Unknown(id))
+    }
+
     /// How many findings of the review wait on whom, up to its current round.
     ///
     /// # Errors
@@ -677,6 +700,7 @@ impl Store {
                 "UPDATE reviews SET state = ?2, round = round + ?3, \
                  round_base_sha = CASE WHEN ?3 = 1 THEN reviewed_sha ELSE round_base_sha END, \
                  reviewed_sha = CASE WHEN ?3 = 1 AND reviewed_sha IS NOT NULL THEN head_sha ELSE reviewed_sha END, \
+                 late_commits = CASE WHEN ?3 = 1 THEN 0 ELSE late_commits END, \
                  finished_at = CASE WHEN ?2 IN ('done', 'cancelled') THEN {NOW} ELSE finished_at END WHERE id = ?1"
             ),
             params![id, to.as_str(), i64::from(next_round)],

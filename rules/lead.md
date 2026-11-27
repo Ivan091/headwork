@@ -2,10 +2,10 @@
 
 - You are the user's counterpart for this task: the user talks to you here, not to the orchestrator. Your brief is the
   user's request as given. Before you build, confirm the scope with the user (an `AskUserQuestion` with your plan's
-  options) unless the brief already settles it, and take new work for this task from what the user types in your tab.
+  options) unless the brief settles it; take new work from what the user types in your tab.
 - Coordinate and review; hand the work to `Agent` subagents on Sonnet (the "Delegate to keep your own context small" rule above; `isolation: "worktree"`
   where they touch the same files) and use helper worktrees from `worktree_add`. Keep the plan, the integration and
-  the final read of the diff yourself. Deliver in one or a few pull requests.
+  the final read of the diff yourself.
 - Start a part, a session of its own as a tab in your workspace, only when a piece truly needs one (a separate review,
   a long render, a second branch): the headwork `part_spawn` tool with `slug` (the part's own word, such as `review`;
   its task becomes `<your slug>-<part>`), a `brief` that stands alone, and optionally `model`, `after` (another part
@@ -14,31 +14,33 @@
   you name another; your own model is never passed down. Haiku for lookups, cleanups and watch or poll loops, Sonnet for
   routine features, UI, docs, config and fixes. Opus only for new architecture, publishing
   or ledger code, security, concurrency, audits and plans, with a `reason` (`part-opus-reason`).
-  A Sonnet part that fails its checks twice or gets stuck gets one retry on Opus. Work in another project goes to the
+  A Sonnet part that fails twice or gets stuck gets one retry on Opus. Other projects' work goes to the
   orchestrator as a new task. Never run `headwork spawn`, `queue`, `drop`, `park`, `resume` or `close` through Bash.
 - A part reports to you by `SendMessage`. While a part runs you may end your turn and wait for its message. When a
   part asks the user, it asks in its own tab; tell the user which tab waits (headwork adds a line naming the part to
-  your next prompt while it waits). End a part you no longer need with
-  `part_drop`.
-- `board` and `inbox` show you and your parts only.
-- Tell the orchestrator only state changes, each as a `report` and nothing more: started, needs the user (`blocked`),
-  in review (status `review` with each pull request URL), done. Never pass on a part's details or an ask's text. When
-  the task finishes or fails, send `{orchestrator}` one short `SendMessage` line, such as "finished: <pull request
-  URLs>" or "failed: <why>".
-- You close only after every part has closed: `done` is refused while one is not closed.
-- Your subagents live in your process tree: a park ends them and they do not resume. Your parts come back as new sessions. Your `recap` names where each part stands.
+  your next prompt while it waits). End a part you no longer need with `part_drop`.
+- Tell the orchestrator only state changes, each as a `report`: started, needs the user (`blocked`), in review (status
+  `review` with each pull request URL), done. Never pass on a part's details or an ask's text. When the task finishes
+  or fails, send `{orchestrator}` one short `SendMessage` line ("finished: <pull request URLs>" or "failed: <why>").
+- Your subagents live in your process tree: a park ends them and they do not resume; your parts come back as new
+  sessions, and your `recap` names where each stands.
 
 ## Silent or confirm, and review
 
 - `part_spawn` takes `close` (`confirm` or `silent`), `review` (0 to 3) and `decided_by` (`user` for the user's words,
   else `judged` with `flag_reason`). Review 0: no code; 1: ordinary; 2: schema, hooks, MCP; 3: security, concurrency,
-  ledger; unsure: lower. A planned review starts at your first `report` with status `review` or at `done`.
+  ledger; unsure: lower. A planned review starts by itself at your first `report` with status `review` or at `done`.
+
+## Fixing review findings
+
+- Group findings by file; one `general-purpose` Sonnet subagent per group, all started at once, editing without
+  committing. Then one commit, one quick check, one `review_resolve`, one `SendMessage` to the reviewer lead.
 
 ## Ask before you close
 
 - When the task is finished (every pull request merged, every part closed), ask the user before you close: an
   `AskUserQuestion` headed `Close`, naming what was delivered, with the options "Close it (Recommended)" and "Keep it
   open". Send the report to `{orchestrator}` first, so the ask is the last thing before `done`.
-  Send a `PushNotification` with the question just before you ask, so the phone hears it.
+  Send a `PushNotification` with the question just before you ask.
 - Call `done` only after the user picked "Close it"; until then `done` is refused (`lead-close-unasked`). When they keep
   it open, take the next work they type in your tab and ask again when it is finished.
