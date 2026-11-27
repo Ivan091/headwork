@@ -3064,3 +3064,177 @@ fn a_failed_copy_is_logged_leaves_no_partial_file_and_becomes_a_tick_error() {
     );
     assert!(report.usage.is_some(), "the stage after it ran");
 }
+
+const OUTSIDE_STEP: [&str; 4] = ["Escape", "Ctrl('u')", "/exit", "Enter"];
+
+fn outside_ladder() -> Vec<&'static str> {
+    OUTSIDE_STEP
+        .iter()
+        .chain(OUTSIDE_STEP.iter())
+        .chain(["Ctrl('c')", "Ctrl('c')"].iter())
+        .copied()
+        .collect()
+}
+
+fn surface_of(w: &World, task: &Task) -> String {
+    w.store
+        .session_of(task.id)
+        .unwrap()
+        .unwrap()
+        .host_surface
+        .unwrap()
+}
+
+fn typed_into(w: &World, surface: &str) -> Vec<String> {
+    w.host
+        .calls()
+        .into_iter()
+        .filter_map(|call| {
+            call.strip_prefix(&format!("send-key {surface} "))
+                .or_else(|| call.strip_prefix(&format!("send {surface} ")))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// A stand-in for a `claude` that leaves by itself after about `seconds`, as one that heeds `/exit` would.
+fn leaving(seconds: u32) -> Child {
+    if cfg!(windows) {
+        Command::new("ping")
+            .args(["-n", &(seconds + 1).to_string(), "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap()
+    } else {
+        Command::new("sleep")
+            .arg(seconds.to_string())
+            .spawn()
+            .unwrap()
+    }
+}
+
+fn closing_apart(w: &mut World, slug: &str, launcher: u32, claude: u32) -> Task {
+    let task = spawn_task(w, slug);
+    start(w, &task, launcher, claude);
+    w.store
+        .transition(task.id, &Trigger::ForceClose, Actor::User)
+        .unwrap();
+    w.store.task(task.id).unwrap()
+}
+
+fn leftover_detail(report: &TickReport) -> String {
+    report
+        .lines
+        .iter()
+        .find(|line| line.rule == FindingId::LeftoverProcess)
+        .unwrap()
+        .detail
+        .clone()
+}
+
+#[test]
+fn a_closing_tasks_claude_that_stays_gets_the_whole_ladder_before_its_leftovers_end() {
+    let mut w = world_with(true, 10);
+    w.config.watch.exit_grace_s = 1;
+    w.limits.closing_grace = 0;
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    let task = closing_apart(&mut w, "stay", launcher.id(), claude.id());
+    let surface = surface_of(&w, &task);
+    let report = run_tick(&mut w);
+    assert_eq!(typed_into(&w, &surface), outside_ladder(), "every step");
+    assert_eq!(count(&w, "exit-ignored"), 3, "each step waited out first");
+    assert!(
+        leftover_detail(&report).contains("\"exited\":false"),
+        "{report:?}"
+    );
+    assert!(
+        wait_dead(claude.id()) && wait_dead(launcher.id()),
+        "both ended after the ladder"
+    );
+    for child in [&mut launcher, &mut claude] {
+        child.wait().unwrap();
+    }
+}
+
+#[test]
+fn a_closing_tasks_claude_that_leaves_is_recorded_exited_and_its_leftovers_still_end() {
+    let mut w = world_with(true, 10);
+    w.config.watch.exit_grace_s = 8;
+    w.limits.closing_grace = 0;
+    let (mut launcher, mut claude) = (sleeper(), leaving(4));
+    let task = closing_apart(&mut w, "leave", launcher.id(), claude.id());
+    let surface = surface_of(&w, &task);
+    let report = run_tick(&mut w);
+    assert_eq!(
+        typed_into(&w, &surface),
+        OUTSIDE_STEP,
+        "one step was enough"
+    );
+    assert_eq!(count(&w, "exit-ignored"), 0, "it left within the grace");
+    assert!(
+        leftover_detail(&report).contains("\"exited\":true"),
+        "{report:?}"
+    );
+    assert!(
+        wait_dead(launcher.id()),
+        "the launcher that lingered is ended, so the finding holds"
+    );
+    for child in [&mut launcher, &mut claude] {
+        child.wait().unwrap();
+    }
+}
+
+#[test]
+fn a_spawn_timeout_climbs_the_ladder_before_it_closes_the_pane() {
+    let mut w = world_with(true, 10);
+    w.config.watch.exit_grace_s = 1;
+    let task = spawn_task(&mut w, "slow");
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    w.store
+        .session_launched(&session.id, launcher.id(), claude.id(), "job")
+        .unwrap();
+    let surface = surface_of(&w, &task);
+    w.limits.spawn_timeout = 0;
+    run_tick(&mut w);
+    assert_eq!(state(&w, &task), TaskState::Failed, "timed out");
+    assert_eq!(typed_into(&w, &surface), outside_ladder(), "every step");
+    let calls = w.host.calls();
+    let last_key = calls
+        .iter()
+        .rposition(|c| c == &format!("send-key {surface} Ctrl('c')"))
+        .unwrap();
+    let closed = calls.iter().position(|c| c.starts_with("close-")).unwrap();
+    assert!(
+        last_key < closed,
+        "the pane closes after the ladder: {calls:?}"
+    );
+    assert!(
+        wait_dead(claude.id()) && wait_dead(launcher.id()),
+        "ended after the ladder"
+    );
+    for child in [&mut launcher, &mut claude] {
+        child.wait().unwrap();
+    }
+}
+
+#[test]
+fn a_merged_grace_climbs_the_ladder_before_it_ends_claude() {
+    let mut w = world_with(true, 10);
+    w.config.watch.exit_grace_s = 1;
+    let task = merged(&mut w, "done");
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    reported(&w, &task, &session.id);
+    let surface = surface_of(&w, &task);
+    let claude = session.claude().unwrap().pid;
+    w.limits.merged_grace = 0;
+    let report = run_tick(&mut w);
+    assert_eq!(
+        rules(&report)[0],
+        (FindingId::MergedGrace, Status::Applied),
+        "closing"
+    );
+    assert_eq!(typed_into(&w, &surface), outside_ladder(), "every step");
+    assert_eq!(count(&w, "exit-ignored"), 3, "each step waited out first");
+    assert!(wait_dead(claude), "ended after the ladder");
+}

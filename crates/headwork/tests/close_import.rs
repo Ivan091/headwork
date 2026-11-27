@@ -1811,3 +1811,37 @@ fn the_detached_closer_climbs_the_own_ladder_and_ends_claude_only_after_it() {
     launcher.kill().unwrap_or(());
     launcher.wait().unwrap();
 }
+
+#[test]
+fn a_closer_that_does_not_start_ends_claude_at_once_and_leaves_the_close_to_the_launcher() {
+    let mut w = world(10);
+    let (task, _) = spawn_task(&mut w, "nocloser", false, false);
+    let session = w.store.session_of(task.id).unwrap().unwrap();
+    let surface = session.host_surface.clone().unwrap();
+    let (mut launcher, mut claude) = (sleeper(), sleeper());
+    w.store
+        .session_launched(&session.id, launcher.id(), claude.id(), "job")
+        .unwrap();
+    let env = env!(w);
+    let report = close(&mut w.store, &env, task.id, Some(&session.id)).unwrap();
+    assert_eq!(
+        report.pending.as_deref(),
+        Some(headwork::ops::close::LAUNCHER_FINISHES),
+        "{EXE} does not exist, so no closer asks: {report:?}"
+    );
+    assert!(report.left_to_launcher(), "its caller still runs no queue");
+    let closer = all_events(&w.store, "closer");
+    assert_eq!(closer.len(), 1, "{closer:?}");
+    assert!(
+        closer[0]["error"].is_string() && closer[0]["closer"].is_null(),
+        "the failed start is logged: {closer:?}"
+    );
+    assert!(
+        typed_into(&w.host, &surface).is_empty(),
+        "nothing typed into its own pane: {:?}",
+        w.host.calls()
+    );
+    assert!(claude.wait().is_ok(), "claude is ended at once, as before");
+    launcher.kill().unwrap_or(());
+    launcher.wait().unwrap();
+}

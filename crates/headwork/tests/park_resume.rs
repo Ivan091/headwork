@@ -2377,3 +2377,101 @@ fn park_climbs_the_exit_ladder_for_every_worker_in_one_pass_before_it_closes_the
         "one ladder of three 3 s graces for both, not one each: {took:?}"
     );
 }
+
+fn restored_pane_closed(w: &World) -> Vec<serde_json::Value> {
+    w.store
+        .events(EventFilter {
+            task: None,
+            limit: 500,
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "restored-pane-closed")
+        .map(|event| event.data)
+        .collect()
+}
+
+fn typed_into(w: &World, surface: &str) -> Vec<String> {
+    w.host
+        .calls()
+        .into_iter()
+        .filter_map(|call| {
+            call.strip_prefix(&format!("send-key {surface} "))
+                .or_else(|| call.strip_prefix(&format!("send {surface} ")))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn resume_restored(w: &mut World, orchestrator: &str) {
+    let claude_dir = claude_dir_with(w, &[orchestrator]);
+    let env = env!(w);
+    let opts = ResumeOptions {
+        logon: true,
+        wait_for_host: Duration::ZERO,
+        claude_dir,
+    };
+    resume(&mut w.store, &env, &opts).unwrap();
+}
+
+#[test]
+fn a_restored_pane_whose_session_leaves_on_exit_is_closed_after_one_step() {
+    let mut w = world("never");
+    let (orchestrator, surface) = w.unmanaged_orchestrator();
+    w.host
+        .leave_on_exit(&headwork_adapters::host::SurfaceId(surface.clone()));
+    resume_restored(&mut w, &orchestrator);
+    assert_eq!(
+        typed_into(&w, &surface),
+        ["Escape", "Ctrl('u')", "/exit", "Enter"],
+        "one step: the host stopped showing the session after /exit"
+    );
+    let closed = restored_pane_closed(&w);
+    assert_eq!(closed.len(), 1, "{closed:?}");
+    assert_eq!(closed[0]["exited"], true, "{closed:?}");
+    assert!(
+        w.host.calls().contains(&format!("close-surface {surface}")),
+        "{:?}",
+        w.host.calls()
+    );
+}
+
+#[test]
+fn a_restored_pane_whose_host_stops_answering_gets_the_whole_ladder_then_closes() {
+    let mut w = world("never");
+    let (orchestrator, surface) = w.unmanaged_orchestrator();
+    w.host.fail_states_once_typed();
+    resume_restored(&mut w, &orchestrator);
+    assert_eq!(
+        typed_into(&w, &surface),
+        [
+            "Escape",
+            "Ctrl('u')",
+            "/exit",
+            "Enter",
+            "Escape",
+            "Ctrl('u')",
+            "/exit",
+            "Enter",
+            "Ctrl('c')",
+            "Ctrl('c')"
+        ],
+        "a host that does not answer counts as still showing the session"
+    );
+    let closed = restored_pane_closed(&w);
+    assert_eq!(closed.len(), 1, "{closed:?}");
+    assert_eq!(closed[0]["exited"], false, "{closed:?}");
+    let calls = w.host.calls();
+    let last_key = calls
+        .iter()
+        .rposition(|c| c == &format!("send-key {surface} Ctrl('c')"))
+        .unwrap();
+    let close = calls
+        .iter()
+        .position(|c| c == &format!("close-surface {surface}"))
+        .unwrap();
+    assert!(
+        last_key < close,
+        "the pane closes after the ladder: {calls:?}"
+    );
+}

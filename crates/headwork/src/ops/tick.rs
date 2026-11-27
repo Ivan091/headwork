@@ -1003,13 +1003,15 @@ impl<'b> Run<'_, 'b> {
             if age < self.limits.closing_grace {
                 return Ok(());
             }
-            let detail = serde_json::json!({ "closing_for_s": age });
             if let Some(session) = session.filter(|_| self.enforce) {
-                if self.exit_claude(id, &session)? {
-                    let detail = serde_json::json!({ "closing_for_s": age, "exited": true });
-                    return self.applied(FindingId::LeftoverProcess, Some(id), detail);
+                let exited = self.exit_claude(id, &session)?;
+                if exited && let Some(launcher) = session.launcher() {
+                    super::close::wait_until(LAUNCHER_AFTER_EXIT, || {
+                        !session_procs::runs(&launcher)
+                    });
                 }
                 self.end_processes(Some(id), &session)?;
+                let detail = serde_json::json!({ "closing_for_s": age, "exited": exited });
                 return self.applied(FindingId::LeftoverProcess, Some(id), detail);
             }
             let key = format!("leftover:{}", self.name(id)?);
