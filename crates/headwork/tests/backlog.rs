@@ -69,6 +69,22 @@ impl Machine {
         self.run_as(cwd, None, args)
     }
 
+    fn run_in_session(&self, role: Option<&str>, args: &[&str]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_headwork"));
+        command
+            .current_dir(self.dir.path())
+            .args(args)
+            .env("HEADWORK_HOME", self.home())
+            .env("HEADWORK_CLAUDE_JSON", self.dir.path().join(".claude.json"))
+            .env("HEADWORK_CLAUDE_DIR", self.dir.path().join(".claude"))
+            .env("HEADWORK_SESSION", "some-session")
+            .env_remove("HEADWORK_ROLE");
+        if let Some(role) = role {
+            command.env("HEADWORK_ROLE", role);
+        }
+        command.output().unwrap()
+    }
+
     fn run_as(&self, cwd: &Path, role: Option<&str>, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_headwork"));
         command
@@ -962,4 +978,28 @@ fn the_status_commands_move_an_item_through_the_guard() {
     );
     let moves = m.ok(&["log"]);
     assert!(moves.contains("backlog-moved"), "{moves}");
+}
+
+#[test]
+fn a_managed_session_without_a_known_role_may_only_list() {
+    let m = Machine::new(false);
+    let id = id_of(&m.ok(&["backlog", "add", "me-sim", "Guarded"]));
+    for role in [None, Some("bogus")] {
+        for args in [
+            vec!["backlog", "done", id.as_str()],
+            vec!["backlog", "add", "me-sim", "Sneaky"],
+            vec!["backlog", "import", "--dry-run"],
+        ] {
+            let refused = m.run_in_session(role, &args);
+            assert!(!refused.status.success(), "{role:?} {args:?}");
+            assert!(
+                String::from_utf8_lossy(&refused.stderr)
+                    .contains("HEADWORK_ROLE is missing or unknown"),
+                "{role:?} {args:?}: {}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+        }
+        let listed = m.run_in_session(role, &["backlog", "list"]);
+        assert!(listed.status.success(), "{role:?}: a listing still works");
+    }
 }

@@ -1784,7 +1784,17 @@ fn backlog_command(
     out: &mut impl Write,
 ) -> Result<ExitCode> {
     use headwork::ops::backlog as list;
-    match args.action.unwrap_or(BacklogAction::List(args.list)) {
+    let action = args.action.unwrap_or(BacklogAction::List(args.list));
+    if !matches!(action, BacklogAction::List(_)) {
+        let identity = Identity::from_env();
+        if identity.session.is_some() && identity.role.is_none() {
+            bail!(
+                "this session is managed by headwork (HEADWORK_SESSION is set) but HEADWORK_ROLE is missing or unknown, so \
+                 who acts cannot be told: the backlog is changed only by a known role; `headwork backlog list` still works"
+            );
+        }
+    }
+    match action {
         BacklogAction::List(filter) => backlog_list_command(store, &filter, out)?,
         BacklogAction::Import {
             file,
