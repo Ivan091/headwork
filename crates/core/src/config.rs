@@ -44,6 +44,9 @@ pub enum ConfigError {
     /// An allowed model set is empty.
     #[error("{0}: the allowed model set is empty")]
     NoModels(String),
+    /// A project's `done_check` names no task kind or has no command, which would switch the gate off silently.
+    #[error("project `{0}`: done_check needs at least one kind and a command")]
+    EmptyDoneCheck(ProjectName),
     /// A project allows a model the machine does not.
     #[error("project `{project}` allows `{model}`, which models.allowed does not")]
     ProjectWidensModels {
@@ -378,6 +381,10 @@ pub struct MachineConfig {
     /// The terminal host's command line program; found on `PATH` or in its default install folder when absent.
     #[serde(default)]
     pub host_bin: Option<String>,
+    /// The push outbox me-studio appends one JSON line to per failing streak; the tick pushes each new line to the phone.
+    /// Absent means no outbox is read.
+    #[serde(default)]
+    pub push_outbox: Option<String>,
 }
 
 /// `[watch]`.
@@ -671,6 +678,9 @@ pub struct ProjectConfig {
     /// Review requirements.
     #[serde(default)]
     pub review: ReviewConfig,
+    /// A command that must accept the scenes a task names before its `done` passes.
+    #[serde(default)]
+    pub done_check: Option<DoneCheckConfig>,
     /// Commands that must run as registered jobs.
     #[serde(default)]
     pub long_jobs: Vec<String>,
@@ -710,6 +720,16 @@ impl ExtraWritable {
     pub fn applies_to(&self, kind: &str) -> bool {
         self.kinds.is_empty() || self.kinds.iter().any(|own| own == kind)
     }
+}
+
+/// `done_check` of a project: `command` plus the scenes the task names in `done`, run for the listed task kinds only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DoneCheckConfig {
+    /// The task kinds the check applies to.
+    pub kinds: Vec<String>,
+    /// The program and its leading arguments; the scenes follow as further arguments.
+    pub command: Vec<String>,
 }
 
 /// `review` of a project.
@@ -1275,6 +1295,15 @@ impl ProjectConfig {
                     model: *model,
                 });
             }
+        }
+        if self.done_check.as_ref().is_some_and(|check| {
+            check.kinds.is_empty()
+                || check
+                    .command
+                    .first()
+                    .is_none_or(|program| program.trim().is_empty())
+        }) {
+            return Err(ConfigError::EmptyDoneCheck(name.clone()));
         }
         if let Some(repo) = self.allowed_repos.iter().find(|repo| !repo.is_valid()) {
             return Err(ConfigError::BadRepo {

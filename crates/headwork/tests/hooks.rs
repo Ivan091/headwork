@@ -5618,3 +5618,135 @@ fn a_part_of_an_exploration_gets_only_the_part_section_of_the_explorer_rules() {
         "the part section is not empty: {body}"
     );
 }
+
+fn video_world(exit: i32) -> World {
+    let shell = headwork_adapters::shell::default_shell()
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let w = world_of(
+        "",
+        &format!(
+            "done_check = {{ kinds = [\"video\"], command = [\"{shell}\", \"@DIR@/ack.sh\"] }}"
+        ),
+        false,
+        "video",
+    );
+    let script = format!(
+        "#!/bin/bash\nprintf '%s' '{{\"project\":\"demo\",\"all_acknowledged\":false,\"scenes\":[\
+         {{\"scene\":\"ok-one\",\"stage\":\"public\",\"on_master\":true,\"acknowledged\":true}},\
+         {{\"scene\":\"wait-two\",\"stage\":\"needs_review\",\"on_master\":true,\"acknowledged\":false}}]}}'\n\
+         echo \"$*\" > \"$(dirname \"$0\")/args.txt\"\nexit {exit}\n"
+    );
+    std::fs::write(w.dir.path().join("ack.sh"), script).unwrap();
+    w
+}
+
+fn done_with_scenes(w: &mut World, args: &Value) -> (bool, String) {
+    w.start();
+    w.post("SendMessage", &json!({}));
+    let identity = worker_identity(w);
+    w.tool(identity, "done", args)
+}
+
+#[test]
+fn done_check_exit_zero_lets_done_pass() {
+    let mut w = video_world(0);
+    let (is_error, text) =
+        done_with_scenes(&mut w, &json!({ "summary": "built", "scenes": ["ok-one"] }));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("done recorded") && !text.contains("could not tell"),
+        "{text}"
+    );
+}
+
+#[test]
+fn done_check_exit_one_refuses_and_lists_the_waiting_scene() {
+    let mut w = video_world(1);
+    let (is_error, text) = done_with_scenes(
+        &mut w,
+        &json!({ "summary": "built", "scenes": ["ok-one", "wait-two"] }),
+    );
+    assert!(is_error && text.contains("done-check-waiting"), "{text}");
+    assert!(
+        text.contains("wait-two: needs review") && !text.contains("ok-one: public"),
+        "{text}"
+    );
+    assert_eq!(w.state(), TaskState::Working, "the task stays");
+}
+
+#[test]
+fn done_check_exit_two_does_not_block_and_says_so() {
+    let mut w = video_world(2);
+    let (is_error, text) =
+        done_with_scenes(&mut w, &json!({ "summary": "built", "scenes": ["ok-one"] }));
+    assert!(!is_error, "{text}");
+    assert!(text.contains("could not tell"), "{text}");
+}
+
+#[test]
+fn done_check_needs_scenes_and_ignores_other_kinds() {
+    let mut w = video_world(0);
+    let (is_error, text) = done_with_scenes(&mut w, &json!({ "summary": "built" }));
+    assert!(is_error && text.contains("done-check-scenes"), "{text}");
+    let mut other = world_of(
+        "",
+        "done_check = { kinds = [\"video\"], command = [\"bash\", \"@DIR@/none.sh\"] }",
+        false,
+        "task",
+    );
+    let (is_error, text) = done_with_scenes(&mut other, &json!({ "summary": "built" }));
+    assert!(!is_error, "{text}");
+}
+
+#[test]
+fn done_check_receives_the_scene_ids_and_a_broken_check_is_logged_not_blocking() {
+    let mut w = video_world(0);
+    let (is_error, text) = done_with_scenes(
+        &mut w,
+        &json!({ "summary": "b", "scenes": ["ok-one", "wait-two"] }),
+    );
+    assert!(!is_error, "{text}");
+    let args = std::fs::read_to_string(w.dir.path().join("args.txt")).unwrap();
+    assert!(args.contains("ok-one wait-two"), "{args}");
+    let mut w = video_world(3);
+    let (is_error, text) =
+        done_with_scenes(&mut w, &json!({ "summary": "b", "scenes": ["ok-one"] }));
+    assert!(!is_error && text.contains("could not tell"), "{text}");
+    assert!(
+        w.events()
+            .iter()
+            .any(|event| event.kind == "done-check-unsure"),
+        "logged"
+    );
+    let mut w = world_of(
+        "",
+        "done_check = { kinds = [\"video\"], command = [\"S:/no-such-program.exe\"] }",
+        false,
+        "video",
+    );
+    let (is_error, text) = done_with_scenes(&mut w, &json!({ "summary": "b", "scenes": ["x"] }));
+    assert!(
+        !is_error && text.contains("could not tell"),
+        "a program that does not start: {text}"
+    );
+}
+
+#[test]
+fn done_check_refusal_is_logged_and_an_empty_check_is_a_config_error() {
+    let mut w = video_world(1);
+    let (is_error, _) =
+        done_with_scenes(&mut w, &json!({ "summary": "b", "scenes": ["wait-two"] }));
+    assert!(
+        is_error
+            && w.events()
+                .iter()
+                .any(|event| event.kind == "done-check-refused"),
+        "logged"
+    );
+    let bad = "[machine]\nhost = \"wmux\"\n[project.demo]\nmain = \"S:/x\"\nworktree_new = \"builtin\"\n\
+               worktree_remove = \"builtin\"\nworktree_path = \"{main}-{slug}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\n\
+               done_check = { kinds = [], command = [\"x\"] }\n";
+    assert!(Config::parse(bad, "test").is_err(), "empty kinds");
+}

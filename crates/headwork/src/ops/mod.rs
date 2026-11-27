@@ -8,6 +8,7 @@ pub mod config_sync;
 pub mod dash;
 pub mod digest;
 pub mod doctor;
+pub mod done_check;
 pub mod effort;
 pub mod exit;
 pub mod explore;

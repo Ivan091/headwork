@@ -1,0 +1,13 @@
+id = "2026-11-27-video-flow"
+title = "Phone push of me-studio's outbox and the done check of video tasks"
+since = "2026-11-27"
+requires = ["headwork"]
+why = """The tick pushes each new line of me-studio's push outbox to the phone when [machine] push_outbox names the file, \
+and a project's done_check (kinds, command) makes `done` of those task kinds run me-studio's pipeline-ack on the scenes \
+the task names (docs/video-flow.md). Both keys are optional: a machine that sets neither is unchanged. The machine that \
+publishes sets them."""
+check = "headwork doctor"
+
+[[step]]
+kind = "confirm"
+run = "headwork config show"

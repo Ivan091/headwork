@@ -797,3 +797,29 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 }
+
+impl Store {
+    /// The `id` field of the newest event of `kind`, when there is one; the cursor of the push outbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn last_event_id_field(&self, kind: &str) -> Result<Option<String>, StoreError> {
+        let data: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM events WHERE type = ?1 ORDER BY id DESC LIMIT 1",
+                params![kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(data
+            .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+            .and_then(|value| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            }))
+    }
+}

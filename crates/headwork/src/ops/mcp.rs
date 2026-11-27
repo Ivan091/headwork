@@ -521,7 +521,14 @@ const TOOLS: &[ToolDef] = &[
         roles: WORKER,
         schema: || {
             object(
-                json!({ "summary": { "type": "string", "description": "What was built, test results, pull request links." } }),
+                json!({
+                    "summary": { "type": "string", "description": "What was built, test results, pull request links." },
+                    "scenes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The scene ids the task made; required when the project's `done_check` applies to its kind."
+                    }
+                }),
                 &[],
             )
         },
@@ -2157,6 +2164,29 @@ impl<'a> Server<'a> {
         ) {
             bail!("the task is already {}", task.state);
         }
+        let unsure = match super::done_check::run(&self.env, &task, args) {
+            Ok(super::done_check::Outcome::Pass) => None,
+            Ok(super::done_check::Outcome::Unsure(why)) => {
+                self.store.append_event(
+                    self.env.actor,
+                    Some(task.id),
+                    Some(session),
+                    "done-check-unsure",
+                    &json!({ "why": why }),
+                )?;
+                Some(why)
+            }
+            Err(refusal) => {
+                self.store.append_event(
+                    self.env.actor,
+                    Some(task.id),
+                    Some(session),
+                    "done-check-refused",
+                    &json!({ "why": refusal.to_string() }),
+                )?;
+                return Err(refusal);
+            }
+        };
         let outcome = super::flags::start_planned(
             self.store,
             self.env.config,
@@ -2198,7 +2228,13 @@ impl<'a> Server<'a> {
         self.store
             .record_report(task.id, session, "done", &summary, &[], None)?;
         self.closing = Some(task);
-        Ok("done recorded; this session, its pane and its worktree close now".to_owned())
+        Ok(unsure.map_or_else(
+            || "done recorded; this session, its pane and its worktree close now".to_owned(),
+            |why| {
+                let head = "done recorded; this session, its pane and its worktree close now.";
+                format!("{head} The done check could not tell ({why}): it did not block")
+            },
+        ))
     }
 }
 
