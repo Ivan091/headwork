@@ -130,7 +130,7 @@
           "text-valign": "bottom",
           "text-margin-y": 3,
           "text-wrap": "ellipsis",
-          "text-max-width": 160,
+          "text-max-width": 200,
           "background-color": (node) => c[node.data("tone")] || c.grey,
           width: "data(size)",
           height: "data(size)",
@@ -158,15 +158,16 @@
           "target-arrow-shape": "triangle",
           "arrow-scale": 0.7,
           "curve-style": "bezier",
-          label: "data(shown)",
-          "font-size": 8,
+          label: "",
+          "font-size": 9,
           color: c.muted,
-          "text-rotation": "autorotate",
+          "text-rotation": "none",
           "text-background-color": c.bg,
           "text-background-opacity": 0.8,
           "text-background-padding": 1,
         },
       },
+      { selector: "edge.show", style: { label: "data(shown)", "z-index": 5 } },
       { selector: "edge[kind = 'message']", style: { "line-color": c.blue, "target-arrow-color": c.blue } },
       { selector: "edge[kind = 'report']", style: { "line-color": c.green, "target-arrow-color": c.green } },
       { selector: "edge[kind = 'asked']", style: { "line-color": c.red, "target-arrow-color": c.red } },
@@ -277,31 +278,56 @@
     return String(tokens);
   }
 
-  function shownLabel(node) {
-    const badges = node.badges || {};
-    let label = node.label;
-    if (TASK_KINDS.includes(node.kind) && node.state) {
-      label += " · " + node.state;
+  const NAME_MAX = 22;
+  const QUIET_KINDS = ["job", "subagent", "helper", "review", "review-node", "external"];
+
+  function middleEllipsis(text, max) {
+    if (text.length <= max) {
+      return text;
     }
+    const keep = max - 1;
+    const head = Math.ceil(keep / 2);
+    return text.slice(0, head) + "…" + text.slice(text.length - (keep - head));
+  }
+
+  function shownLabel(node) {
+    if (QUIET_KINDS.includes(node.kind)) {
+      return "";
+    }
+    const badges = node.badges || {};
+    let label = middleEllipsis(node.label, NAME_MAX);
     if (node.kind === "user" && badges.asks) {
       label += " · " + badges.asks + " ask" + (badges.asks > 1 ? "s" : "") + " waiting";
-    }
-    if (TASK_KINDS.includes(node.kind) && badges.silent) {
-      label += " · silent";
     }
     if (TASK_KINDS.includes(node.kind) && badges.findings) {
       label += " · ⚠ " + badges.findings;
     }
-    if ((node.kind === "review" || node.kind === "review-node") && badges.findings) {
-      label += " · " + badges.findings + " finding" + (badges.findings > 1 ? "s" : "");
-      if (badges.open) {
-        label += " (" + badges.open + " open)";
-      }
-    }
-    if (byId("by-cost").checked && node.tokens) {
-      label += " · " + shortCount(node.tokens);
-    }
     return label;
+  }
+
+  function detailLabel(node) {
+    const badges = node.badges || {};
+    const parts = [node.label];
+    if (node.state) {
+      parts.push(node.state);
+    }
+    if (TASK_KINDS.includes(node.kind) && badges.silent) {
+      parts.push("silent");
+    }
+    if (TASK_KINDS.includes(node.kind) && badges.findings) {
+      parts.push("⚠ " + badges.findings);
+    }
+    if ((node.kind === "review" || node.kind === "review-node") && badges.findings) {
+      let text = badges.findings + " finding" + (badges.findings > 1 ? "s" : "");
+      if (badges.open) {
+        text += " (" + badges.open + " open)";
+      }
+      parts.push(text);
+    }
+    if (node.tokens) {
+      parts.push(shortCount(node.tokens));
+    }
+    return parts.join(" · ");
   }
 
   function sizeOf(node, base) {
@@ -330,6 +356,7 @@
           id: node.id,
           label: node.label,
           shown: shownLabel(node),
+          detail: detailLabel(node),
           kind: node.kind,
           state: node.state || "",
           tone: tone(node.kind, node.state),
@@ -756,6 +783,7 @@
     selected = null;
     panel.hidden = true;
     cy.nodes().unselect();
+    syncEdgeLabels();
   }
 
   function focusOn(id) {
@@ -798,7 +826,44 @@
   }
 
   setInterval(ringFrame, RING_FRAME_MS);
-  cy.on("tap", "node", (event) => select(event.target.id()));
+  const tip = document.createElement("div");
+  tip.id = "node-tip";
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  let hovered = null;
+
+  function syncEdgeLabels() {
+    cy.edges().removeClass("show");
+    for (const id of [hovered, selected]) {
+      if (id && cy.getElementById(id).nonempty()) {
+        cy.getElementById(id).connectedEdges().addClass("show");
+      }
+    }
+  }
+
+  function placeTip(event) {
+    const pos = event.originalEvent || event;
+    tip.style.left = Math.min((pos.clientX || 0) + 12, window.innerWidth - 280) + "px";
+    tip.style.top = (pos.clientY || 0) + 14 + "px";
+  }
+
+  cy.on("mouseover", "node", (event) => {
+    hovered = event.target.id();
+    tip.textContent = event.target.data("detail");
+    tip.hidden = false;
+    placeTip(event);
+    syncEdgeLabels();
+  });
+  cy.on("mousemove", "node", placeTip);
+  cy.on("mouseout", "node", () => {
+    hovered = null;
+    tip.hidden = true;
+    syncEdgeLabels();
+  });
+  cy.on("tap", "node", (event) => {
+    select(event.target.id());
+    syncEdgeLabels();
+  });
   cy.on("tap", (event) => {
     if (event.target === cy) {
       closePanel();
