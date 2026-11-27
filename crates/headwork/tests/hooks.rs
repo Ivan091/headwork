@@ -1597,6 +1597,11 @@ fn mcp_tools_follow_the_role() {
             "backlog_list",
             "backlog_add",
             "backlog_done",
+            "backlog_start",
+            "backlog_cancel",
+            "backlog_block",
+            "backlog_unblock",
+            "backlog_reopen",
             "backlog_edit",
             "rules",
             "rule_add",
@@ -4570,7 +4575,7 @@ fn digest_backlog_item(text: &str) -> headwork_core::backlog::BacklogDraft {
     let mut draft = headwork_core::backlog::parse(&format!("## demo\n\n- [ ] For you: {text}\n"))
         .items
         .remove(0);
-    draft.state = headwork_core::backlog::BacklogState::Open;
+    draft.status = headwork_core::backlog::BacklogStatus::Backlog;
     draft
 }
 

@@ -1210,6 +1210,17 @@
     return group;
   }
 
+  function isOpenItem(item) {
+    return item.status === "backlog" || item.status === "in_progress" || item.status === "blocked";
+  }
+
+  function statusChip(item) {
+    if (item.status === "blocked") {
+      return "blocked: " + item.blocked_reason + (item.blocked_note ? " " + item.blocked_note : "");
+    }
+    return item.status.replace("_", " ") + (item.done_on && !isOpenItem(item) ? " " + item.done_on : "");
+  }
+
   function backlogRow(item, today, waiting) {
     const row = document.createElement("div");
     row.className = "bl-row" + (waiting ? " waiting" : "");
@@ -1222,10 +1233,10 @@
       chips.append(span("not before " + item.not_before, "chip" + (item.not_before > today ? " held" : "")));
     }
     if (item.due) {
-      chips.append(span("due " + item.due, "chip" + (item.due < today && item.state === "open" ? " overdue" : "")));
+      chips.append(span("due " + item.due, "chip" + (item.due < today && isOpenItem(item) ? " overdue" : "")));
     }
-    if (item.state !== "open") {
-      chips.append(span(item.state + (item.done_on ? " " + item.done_on : ""), "chip"));
+    if (item.status !== "backlog") {
+      chips.append(span(statusChip(item), "chip status-" + item.status));
     }
     if (item.task) {
       const task = document.createElement("button");
@@ -1343,7 +1354,7 @@
     if (!body) {
       return;
     }
-    const open = body.items.filter((item) => item.state === "open");
+    const open = body.items.filter(isOpenItem);
     const head = document.createElement("div");
     head.className = "bl-head";
     head.append(span("Backlog", "bl-heading"), span(open.length + " open", "note"));
@@ -1382,7 +1393,7 @@
     }
 
     const history = body.items
-      .filter((item) => item.state !== "open" && backlogMatches(item))
+      .filter((item) => !isOpenItem(item) && backlogMatches(item))
       .sort((a, b) => (b.done_on || "").localeCompare(a.done_on || "") || b.id - a.id);
     const past = backlogGroup("history", "History", history.length, false);
     const fillHistory = () => {
@@ -1397,7 +1408,7 @@
 
   async function loadBacklog() {
     try {
-      const response = await fetch("/api/backlog?state=all", { cache: "no-store" });
+      const response = await fetch("/api/backlog?status=all", { cache: "no-store" });
       const body = await response.json();
       if (!response.ok) {
         throw new Error(body.error || response.statusText);

@@ -14,7 +14,7 @@ use headwork::ops::Env;
 use headwork::ops::mcp::{Identity, Server};
 use headwork_adapters::git::FakeGit;
 use headwork_adapters::host::fake::FakeHost;
-use headwork_core::backlog::BacklogState;
+use headwork_core::backlog::BacklogStatus;
 use headwork_core::{Actor, Config, Role};
 use headwork_store::{BacklogFilter, Store};
 use serde_json::{Value, json};
@@ -121,7 +121,10 @@ fn the_list_shows_open_items_by_default_and_filters_by_project_owner_and_state()
     w.add("beta", "For you: Second item");
     let third = w.add("alpha", "Third item");
     w.ok("backlog_done", &json!({ "id": first, "note": "finished" }));
-    w.ok("backlog_done", &json!({ "id": third, "drop": true }));
+    w.ok(
+        "backlog_done",
+        &json!({ "id": third, "drop": true, "note": "the user said no" }),
+    );
     let open = w.listed(&json!({}));
     assert_eq!(open.len(), 1, "{open:?}");
     assert!(open[0].contains("Second item"), "{open:?}");
@@ -180,11 +183,14 @@ fn an_added_item_goes_last_with_its_fields_and_says_what_the_export_did() {
         Some("2026-11-02")
     );
     let (is_error, text) = w.tool("backlog_add", &json!({ "project": "Done", "text": "x" }));
-    assert!(is_error && text.contains("Done or Dropped"), "{text}");
+    assert!(
+        is_error && text.contains("Done, Cancelled or Dropped"),
+        "{text}"
+    );
 }
 
 #[test]
-fn done_finishes_an_item_and_drop_gives_it_up() {
+fn done_finishes_an_item_and_drop_cancels_it() {
     let mut w = world();
     let finished = w.add("alpha", "Finish me");
     let given_up = w.add("alpha", "Drop me");
@@ -197,10 +203,10 @@ fn done_finishes_an_item_and_drop_gives_it_up() {
         &json!({ "id": given_up, "drop": true, "note": "not needed" }),
     );
     let finished = w.store.backlog_item(finished).unwrap().draft;
-    assert_eq!(finished.state, BacklogState::Done);
+    assert_eq!(finished.status, BacklogStatus::Done);
     assert_eq!(finished.done_note.as_deref(), Some("all good"));
     let given_up = w.store.backlog_item(given_up).unwrap().draft;
-    assert_eq!(given_up.state, BacklogState::Dropped);
+    assert_eq!(given_up.status, BacklogStatus::Cancelled);
     assert_eq!(given_up.done_note.as_deref(), Some("not needed"));
     let (is_error, _) = w.tool("backlog_done", &json!({ "id": 999 }));
     assert!(is_error, "an unknown id is refused");
@@ -308,7 +314,83 @@ fn the_old_todo_tool_names_and_spawn_argument_still_work() {
             .map(|task| task.name),
         Some("demo-old".to_owned())
     );
-    w.ok("todo_done", &json!({ "id": added }));
+    let (is_error, text) = w.tool("todo_done", &json!({ "id": added }));
+    assert!(
+        is_error && text.contains("only headwork finishes it"),
+        "the old name reaches the guard: {text}"
+    );
     let items = w.store.backlog_items(&BacklogFilter::default()).unwrap();
     assert_eq!(items.len(), 2, "{items:?}");
+}
+
+#[test]
+fn the_status_tools_start_block_unblock_cancel_and_reopen() {
+    let mut w = world();
+    let id = w.add("demo", "Spin me up");
+    let elsewhere = w.add("alpha", "No project here");
+    let (is_error, text) = w.tool("backlog_start", &json!({ "id": elsewhere }));
+    assert!(is_error && text.contains("not one headwork runs"), "{text}");
+    w.ok("backlog_start", &json!({ "id": id }));
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress
+    );
+    let progress = w.listed(&json!({ "status": "in_progress" }));
+    assert!(
+        progress.len() == 1 && progress[0].contains("in_progress"),
+        "{progress:?}"
+    );
+    w.ok(
+        "backlog_block",
+        &json!({ "id": id, "reason": "decision", "note": "which engine" }),
+    );
+    let blocked = w.listed(&json!({ "status": "blocked" }));
+    assert!(
+        blocked.len() == 1 && blocked[0].contains("blocked (decision: which engine)"),
+        "{blocked:?}"
+    );
+    let (is_error, _) = w.tool(
+        "backlog_block",
+        &json!({ "id": elsewhere, "reason": "task_lost", "note": "x" }),
+    );
+    assert!(
+        is_error,
+        "the orchestrator blocks only for a decision or an event"
+    );
+    w.ok("backlog_unblock", &json!({ "id": id }));
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress
+    );
+    let (is_error, text) = w.tool("backlog_cancel", &json!({ "id": id }));
+    assert!(is_error && text.contains("reason"), "{text}");
+    let (is_error, text) = w.tool("backlog_cancel", &json!({ "id": id, "reason": "  " }));
+    assert!(is_error && text.contains("only with a reason"), "{text}");
+    w.ok(
+        "backlog_cancel",
+        &json!({ "id": id, "reason": "the user dropped it" }),
+    );
+    let item = w.store.backlog_item(id).unwrap().draft;
+    assert_eq!(
+        (item.status, item.done_note.as_deref()),
+        (BacklogStatus::Cancelled, Some("the user dropped it"))
+    );
+    assert_eq!(w.listed(&json!({ "status": "cancelled" })).len(), 1);
+    w.ok("backlog_reopen", &json!({ "id": id }));
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::Backlog
+    );
+    let spawned = w.ok(
+        "spawn",
+        &json!({ "project": "demo", "slug": "spun", "brief": "# Task
+", "backlog": id }),
+    );
+    assert_eq!(spawned["backlog_unlinked"], Value::Null);
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress
+    );
+    let (is_error, text) = w.tool("backlog_cancel", &json!({ "id": id, "reason": "no" }));
+    assert!(is_error && text.contains("drop the task first"), "{text}");
 }

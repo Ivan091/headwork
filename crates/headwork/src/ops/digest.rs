@@ -5,7 +5,7 @@
 //! at no cost. Pending migration notes are the ones the tick last stored as findings.
 
 use anyhow::Result;
-use headwork_core::backlog::BacklogState;
+use headwork_core::backlog::ItemStatus;
 use headwork_core::digest::{Digest, Facts, build};
 use headwork_core::{Actor, Config};
 use headwork_store::{BacklogFilter, EVENT_DIGEST_PUSHED, Store};
@@ -19,7 +19,7 @@ use super::rules::CONTEXT_LIMIT;
 /// Returns the store's failure.
 pub fn digest(store: &Store, config: &Config) -> Result<Digest> {
     let backlog_items = store.backlog_items(&BacklogFilter {
-        state: Some(BacklogState::Open),
+        statuses: ItemStatus::OPEN.to_vec(),
         ..BacklogFilter::default()
     })?;
     Ok(build(&Facts {

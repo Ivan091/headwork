@@ -9,6 +9,7 @@ use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_adapters::git::GitHost;
+use headwork_core::backlog::Target;
 use headwork_core::lifecycle::Trigger;
 use headwork_core::{
     Actor, Effort, MachineMode, Model, PermissionMode, ProjectName, RecapKind, Role, Slug,
@@ -397,7 +398,7 @@ const TOOLS: &[ToolDef] = &[
         name: "backlog_list",
         description: concat!(
             "The backlog list (kept in the store, exported to `backlog.md`): one line per item with its id, project, text, owner, ",
-            "dates and the task spawned for it. Open items by default.",
+            "status, dates and the task spawned for it. Open items (backlog, in progress, blocked) by default.",
         ),
         roles: BOTH,
         schema: || {
@@ -405,7 +406,16 @@ const TOOLS: &[ToolDef] = &[
                 json!({
                     "project": { "type": "string" },
                     "owner": { "type": "string", "enum": ["user", "agent"] },
-                    "state": { "type": "string", "enum": ["open", "done", "dropped", "all"], "description": "open by default." },
+                    "status": {
+                        "type": "string",
+                        "enum": ["open", "backlog", "in_progress", "blocked", "done", "cancelled", "all"],
+                        "description": "open (backlog, in progress and blocked) by default.",
+                    },
+                    "state": {
+                        "type": "string",
+                        "enum": ["open", "done", "dropped", "all"],
+                        "description": "The old filter, read for one release: dropped is cancelled. Use status.",
+                    },
                 }),
                 &[],
             )
@@ -435,18 +445,77 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "backlog_done",
-        description: "Mark an open backlog item done, or dropped with `drop`, today, with a note, and export `backlog.md`.",
+        description: concat!(
+            "Mark a backlog item no live task works on done today, with a note, and export `backlog.md`. An item a task works on ",
+            "is finished by headwork when the task merges or closes. `drop` is the old name of `backlog_cancel`.",
+        ),
         roles: ORCHESTRATOR,
         schema: || {
             object(
                 json!({
                     "id": { "type": "integer" },
-                    "note": { "type": "string", "description": "What was done, or why it was dropped." },
-                    "drop": { "type": "boolean", "description": "Drop the item instead of finishing it." },
+                    "note": { "type": "string", "description": "What was done; with `drop`, the user's reason to cancel." },
+                    "drop": { "type": "boolean", "description": "Old name for `backlog_cancel`, read for one release." },
                 }),
                 &["id"],
             )
         },
+    },
+    ToolDef {
+        name: "backlog_start",
+        description: concat!(
+            "Spin a backlog item up: backlog to in progress, and export `backlog.md`. It spawns nothing; `spawn` with `backlog` ",
+            "links a task and moves the item itself. Refused for an item whose project headwork does not run.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
+    },
+    ToolDef {
+        name: "backlog_cancel",
+        description: concat!(
+            "Cancel a backlog item the user no longer wants, relaying the user's reason, and export `backlog.md`. Refused for a ",
+            "done item, and while a live task works on it: drop the task first.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "reason": { "type": "string", "description": "Why, in the user's words." },
+                }),
+                &["id", "reason"],
+            )
+        },
+    },
+    ToolDef {
+        name: "backlog_block",
+        description: concat!(
+            "Block a backlog or in-progress item until something happens: `decision` (it needs the user's call) or `event` ",
+            "(it waits for something outside), with a note; `backlog_unblock` returns it to where it was.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "reason": { "type": "string", "enum": ["decision", "event"] },
+                    "note": { "type": "string", "description": "The decision or the event it waits for." },
+                }),
+                &["id", "reason", "note"],
+            )
+        },
+    },
+    ToolDef {
+        name: "backlog_unblock",
+        description: "Take a blocked backlog item back to the status it had before its block, and export `backlog.md`.",
+        roles: ORCHESTRATOR,
+        schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
+    },
+    ToolDef {
+        name: "backlog_reopen",
+        description: "Take a done or cancelled backlog item back to the backlog, and export `backlog.md`.",
+        roles: ORCHESTRATOR,
+        schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
     },
     ToolDef {
         name: "backlog_edit",
@@ -1179,10 +1248,7 @@ impl<'a> Server<'a> {
             "update" => self.update(args),
             "migrate_list" => self.migrate_list(args),
             "migrate_mark" => self.migrate_mark(args),
-            "backlog_list" => self.backlog_list(args),
-            "backlog_add" => self.backlog_add(args),
-            "backlog_done" => self.backlog_done(args),
-            "backlog_edit" => self.backlog_edit(args),
+            backlog if backlog.starts_with("backlog_") => self.backlog_tool(backlog, args),
             "park" => self.start_detached("park", args),
             "resume" => self.start_detached("resume", args),
             other => bail!("unknown tool `{other}`"),
@@ -1408,6 +1474,7 @@ impl<'a> Server<'a> {
             self.store,
             word("project"),
             word("owner").map(str::parse).transpose()?,
+            word("status"),
             word("state"),
         )?;
         to_text(
@@ -1450,12 +1517,54 @@ impl<'a> Server<'a> {
 
     fn backlog_done(&mut self, args: &Value) -> Result<String> {
         let note = args.get("note").and_then(Value::as_str);
-        to_text(&super::backlog::finish(
+        let target = if flag(args, "drop") {
+            Target::Cancelled
+        } else {
+            Target::Done
+        };
+        self.backlog_move(args, target, note)
+    }
+
+    fn backlog_tool(&mut self, name: &str, args: &Value) -> Result<String> {
+        match name {
+            "backlog_list" => self.backlog_list(args),
+            "backlog_add" => self.backlog_add(args),
+            "backlog_done" => self.backlog_done(args),
+            "backlog_edit" => self.backlog_edit(args),
+            "backlog_start" => self.backlog_move(args, Target::InProgress, None),
+            "backlog_cancel" => {
+                let reason = text(args, "reason")?;
+                self.backlog_move(args, Target::Cancelled, Some(&reason))
+            }
+            "backlog_block" => {
+                let reason = text(args, "reason")?.parse()?;
+                let note = text(args, "note")?;
+                to_text(&super::backlog::block(
+                    self.store,
+                    &self.env,
+                    backlog_id(args)?,
+                    reason,
+                    Some(&note),
+                )?)
+            }
+            "backlog_unblock" => self.backlog_move(args, Target::Unblock, None),
+            "backlog_reopen" => self.backlog_move(args, Target::Backlog, None),
+            other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn backlog_move(
+        &mut self,
+        args: &Value,
+        target: Target,
+        reason: Option<&str>,
+    ) -> Result<String> {
+        to_text(&super::backlog::move_item(
             self.store,
             &self.env,
             backlog_id(args)?,
-            note,
-            flag(args, "drop"),
+            target,
+            reason,
         )?)
     }
 

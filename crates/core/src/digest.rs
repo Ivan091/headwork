@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::FindingId;
-use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner, BacklogState};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogOwner};
 
 /// The header of a digest that holds lines.
 pub const HEADER: &str = "Needs you";
@@ -191,7 +191,7 @@ fn dated_backlog_items(
 ) -> Vec<(BacklogDate, i64, String)> {
     let mut dated: Vec<(BacklogDate, i64, String)> = backlog_items
         .iter()
-        .filter(|item| item.draft.state == BacklogState::Open && item.task.is_none())
+        .filter(|item| item.draft.status.is_open() && item.task.is_none())
         .filter_map(|item| {
             let text = shorten(&item.draft.text, TEXT_LIMIT);
             match (&item.draft.due, &item.draft.not_before) {
@@ -221,7 +221,7 @@ fn user_items<'a>(
     let mut rest: Vec<&BacklogItem> = backlog_items
         .iter()
         .filter(|item| {
-            item.draft.state == BacklogState::Open
+            item.draft.status.is_open()
                 && item.draft.owner == BacklogOwner::User
                 && item.task.is_none()
                 && !listed.contains(&item.id)
@@ -327,6 +327,7 @@ fn trim(mut lines: Vec<String>) -> Digest {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::backlog::BacklogStatus;
     use crate::backlog::{BacklogDraft, LinkedTask};
     use crate::vocabulary::TaskState;
 
@@ -344,7 +345,7 @@ mod tests {
                 section: None,
                 text: text.to_owned(),
                 notes: Vec::new(),
-                state: BacklogState::Open,
+                status: BacklogStatus::Backlog,
                 owner,
                 added: None,
                 not_before: None,
@@ -514,9 +515,9 @@ mod tests {
     fn done_dropped_and_linked_items_are_left_out() {
         let mut facts = facts();
         let mut done = item(1, "Done one", BacklogOwner::User);
-        done.draft.state = BacklogState::Done;
+        done.draft.status = BacklogStatus::Done;
         let mut dropped = item(2, "Dropped one", BacklogOwner::User);
-        dropped.draft.state = BacklogState::Dropped;
+        dropped.draft.status = BacklogStatus::Cancelled;
         let mut linked = item(3, "Linked one", BacklogOwner::User);
         linked.task = Some(LinkedTask {
             id: 1,
@@ -552,7 +553,7 @@ mod tests {
             state: TaskState::Working,
         });
         let mut done = item(6, "done", BacklogOwner::User);
-        done.draft.state = BacklogState::Done;
+        done.draft.status = BacklogStatus::Done;
         let agent = item(7, "agent", BacklogOwner::Agent);
         let items = [mine, later, linked, done, agent, due];
         assert_eq!(

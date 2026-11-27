@@ -621,9 +621,13 @@ struct BacklogListArgs {
     /// Only items for this owner: `user` or `agent`.
     #[arg(long)]
     owner: Option<headwork_core::backlog::BacklogOwner>,
-    /// `open` (the default), `done`, `dropped` or `all`.
-    #[arg(long, default_value = "open")]
-    state: String,
+    /// `open` (the default: `backlog`, `in_progress` and `blocked`), `backlog`, `in_progress`, `blocked`, `done`, `cancelled` or
+    /// `all`.
+    #[arg(long)]
+    status: Option<String>,
+    /// The old filter, read for one release: `open`, `done`, `dropped` (cancelled) or `all`.
+    #[arg(long, conflicts_with = "status")]
+    state: Option<String>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -659,21 +663,63 @@ enum BacklogAction {
         #[arg(long)]
         json: bool,
     },
-    /// Mark an open item done, or dropped with `--drop`, today.
+    /// Mark an item no live task works on done, today.
     Done {
         /// The item's id.
         id: i64,
-        /// What was done, or why it was dropped.
+        /// What was done; with `--drop`, why it is cancelled.
         #[arg(long)]
         note: Option<String>,
-        /// Drop the item instead of finishing it; a dropped item is kept in the store and not exported.
+        /// The old name of `backlog cancel`, read for one release.
         #[arg(long)]
         drop: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
     },
-    /// Take a done or dropped item back to open.
+    /// Spin an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
+    Start {
+        /// The item's id.
+        id: i64,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cancel an item that is not wanted any more; kept in the store and not exported. Refused while a live task works
+    /// on it: drop the task first.
+    Cancel {
+        /// The item's id.
+        id: i64,
+        /// Why; the orchestrator must give one.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Block an item until something happens.
+    Block {
+        /// The item's id.
+        id: i64,
+        /// `decision` (it needs the user's call) or `event` (it waits for something outside).
+        #[arg(long)]
+        reason: headwork_core::backlog::BlockReason,
+        /// The decision or the event.
+        #[arg(long)]
+        note: String,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a blocked item back to the status it had before its block.
+    Unblock {
+        /// The item's id.
+        id: i64,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take a done or cancelled item back to the backlog.
     Reopen {
         /// The item's id.
         id: i64,
@@ -1771,6 +1817,10 @@ fn backlog_command(
         }
         changing @ (BacklogAction::Add { .. }
         | BacklogAction::Done { .. }
+        | BacklogAction::Start { .. }
+        | BacklogAction::Cancel { .. }
+        | BacklogAction::Block { .. }
+        | BacklogAction::Unblock { .. }
         | BacklogAction::Reopen { .. }
         | BacklogAction::Edit { .. }) => backlog_change_command(store, ctx, changing, out)?,
     }
@@ -1786,7 +1836,8 @@ fn backlog_list_command(
         store,
         filter.project.as_deref(),
         filter.owner,
-        Some(&filter.state),
+        filter.status.as_deref(),
+        filter.state.as_deref(),
     )?;
     if filter.json {
         json_out(out, &items)?;
@@ -1807,6 +1858,8 @@ fn backlog_change_command(
     out: &mut impl Write,
 ) -> Result<()> {
     use headwork::ops::backlog::{self as list, AddRequest};
+    let actor = Identity::from_env().actor();
+    let act = |act: &mut dyn FnMut(&Env<'_>) -> Result<list::Change>| ctx.with_actor(actor, act);
     let (done, json) = match action {
         BacklogAction::Add {
             project,
@@ -1827,20 +1880,39 @@ fn backlog_change_command(
                 due,
                 notes,
             };
-            (ctx.with_env(|env| list::add(store, env, &request))?, json)
+            (act(&mut |env| list::add(store, env, &request))?, json)
         }
         BacklogAction::Done {
             id,
             note,
             drop,
             json,
-        } => (
-            ctx.with_env(|env| list::finish(store, env, id, note.as_deref(), drop))?,
+        } => {
+            let done = if drop {
+                act(&mut |env| list::cancel(store, env, id, note.as_deref()))?
+            } else {
+                act(&mut |env| list::finish(store, env, id, note.as_deref()))?
+            };
+            (done, json)
+        }
+        BacklogAction::Start { id, json } => (act(&mut |env| list::start(store, env, id))?, json),
+        BacklogAction::Cancel { id, reason, json } => (
+            act(&mut |env| list::cancel(store, env, id, reason.as_deref()))?,
             json,
         ),
-        BacklogAction::Reopen { id, json } => {
-            (ctx.with_env(|env| list::reopen(store, env, id))?, json)
+        BacklogAction::Block {
+            id,
+            reason,
+            note,
+            json,
+        } => (
+            act(&mut |env| list::block(store, env, id, reason, Some(&note)))?,
+            json,
+        ),
+        BacklogAction::Unblock { id, json } => {
+            (act(&mut |env| list::unblock(store, env, id))?, json)
         }
+        BacklogAction::Reopen { id, json } => (act(&mut |env| list::reopen(store, env, id))?, json),
         BacklogAction::Edit {
             id,
             text,
@@ -1862,7 +1934,7 @@ fn backlog_change_command(
                 append,
                 added: None,
             };
-            (ctx.with_env(|env| list::edit(store, env, id, &edit))?, json)
+            (act(&mut |env| list::edit(store, env, id, &edit))?, json)
         }
         BacklogAction::List(_) | BacklogAction::Import { .. } | BacklogAction::Export { .. } => {
             return Ok(());

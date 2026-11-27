@@ -15,7 +15,7 @@ use headwork::ops::backlog::{self, AddRequest, Export};
 use headwork::ops::close::close;
 use headwork::ops::spawn::SpawnRequest;
 use headwork_adapters::host::fake::FakeHost;
-use headwork_core::backlog::BacklogState;
+use headwork_core::backlog::BacklogStatus;
 use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest, TaskState,
 };
@@ -66,14 +66,23 @@ impl Machine {
     }
 
     fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_headwork"))
+        self.run_as(cwd, None, args)
+    }
+
+    fn run_as(&self, cwd: &Path, role: Option<&str>, args: &[&str]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_headwork"));
+        command
             .current_dir(cwd)
             .args(args)
             .env("HEADWORK_HOME", self.home())
             .env("HEADWORK_CLAUDE_JSON", self.dir.path().join(".claude.json"))
             .env("HEADWORK_CLAUDE_DIR", self.dir.path().join(".claude"))
-            .output()
-            .unwrap()
+            .env_remove("HEADWORK_ROLE")
+            .env_remove("HEADWORK_SESSION");
+        if let Some(role) = role {
+            command.env("HEADWORK_ROLE", role);
+        }
+        command.output().unwrap()
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -298,7 +307,10 @@ fn a_relative_and_an_absolute_name_of_one_file_are_one_record() {
 fn an_item_that_cannot_be_written_is_refused_with_the_reason() {
     let m = Machine::new(false);
     for (args, reason) in [
-        (["backlog", "add", "Done", "x"], "Done or Dropped"),
+        (
+            ["backlog", "add", "Done", "x"],
+            "Done, Cancelled or Dropped",
+        ),
         (["backlog", "add", "# x", "x"], "must not start with `#`"),
         (["backlog", "add", "me-sim", "  "], "the text is empty"),
         (["backlog", "add", "me-sim", "a\nb"], "must be one line"),
@@ -498,7 +510,10 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
             Some("demo-sand".to_owned())
         );
         let in_file = std::fs::read_to_string(w.dir.path().join("backlog.md")).unwrap();
-        assert!(in_file.contains("(task demo-sand)"), "{in_file}");
+        assert!(
+            in_file.contains("[in progress: task demo-sand "),
+            "{in_file}"
+        );
         let second =
             backlog::spawn_linked(&mut w.store, &env, &request(&w.brief, "other"), Some(id));
         assert!(second.is_err(), "a live task holds the item");
@@ -511,14 +526,20 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
     let report = close(&mut w.store, &env, refused.id, None).unwrap();
     assert_eq!(report.state, TaskState::Closed, "{report:?}");
     let item = w.store.backlog_item(id).unwrap();
-    assert_eq!(item.draft.state, BacklogState::Done);
-    assert_eq!(item.draft.done_note.as_deref(), Some("task demo-sand"));
+    assert_eq!(item.draft.status, BacklogStatus::Done);
+    assert_eq!(
+        item.draft.done_note.as_deref(),
+        Some("task demo-sand, no pull request")
+    );
     let in_file = std::fs::read_to_string(w.dir.path().join("backlog.md")).unwrap();
     assert!(
         in_file.contains("## Done (last 20)") && in_file.contains("- [x] Build the thing"),
         "{in_file}"
     );
-    assert!(in_file.contains(": task demo-sand)"), "{in_file}");
+    assert!(
+        in_file.contains(": task demo-sand, no pull request)"),
+        "{in_file}"
+    );
     let kinds: Vec<String> = w
         .store
         .events(EventFilter {
@@ -529,7 +550,10 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
         .into_iter()
         .map(|event| event.kind)
         .collect();
-    assert!(kinds.iter().any(|kind| kind == "backlog-done"), "{kinds:?}");
+    assert!(
+        kinds.iter().any(|kind| kind == "backlog-moved"),
+        "{kinds:?}"
+    );
     assert!(
         kinds.iter().any(|kind| kind == "backlog-exported"),
         "{kinds:?}"
@@ -568,16 +592,16 @@ fn add_item(store: &mut Store, env: &Env<'_>, text: &str) -> i64 {
 }
 
 #[test]
-fn a_task_for_an_item_that_is_done_dropped_or_unknown_is_refused_before_it_exists() {
+fn a_task_for_an_item_that_is_done_cancelled_or_unknown_is_refused_before_it_exists() {
     let mut w = world();
     let env = env!(w);
     let done = add_item(&mut w.store, &env, "Already done");
-    backlog::finish(&mut w.store, &env, done, None, false).unwrap();
+    backlog::finish(&mut w.store, &env, done, None).unwrap();
     let dropped = add_item(&mut w.store, &env, "Given up");
-    backlog::finish(&mut w.store, &env, dropped, None, true).unwrap();
+    backlog::cancel(&mut w.store, &env, dropped, None).unwrap();
     for (id, slug, words) in [
         (done, "late", "done"),
-        (dropped, "gone", "dropped"),
+        (dropped, "gone", "cancelled"),
         (4242, "nobody", "no backlog item"),
     ] {
         let refused = backlog::spawn_linked(&mut w.store, &env, &request(&w.brief, slug), Some(id))
@@ -700,7 +724,7 @@ fn an_export_to_a_new_file_moves_the_list_and_leaves_the_old_file_as_it_was() {
         "the new file holds the list"
     );
     assert!(
-        m.ok(&["log"]).contains("backlog-moved"),
+        m.ok(&["log"]).contains("backlog-file-moved"),
         "the move is logged"
     );
     let id = id_of(&m.ok(&["backlog", "add", "headwork", "a later item"]));
@@ -763,7 +787,7 @@ fn an_export_to_another_file_by_name_is_never_a_move() {
     assert!(after.contains("a second item"), "{after}");
     assert_ne!(after, configured, "the configured file follows the store");
     assert!(
-        !m.ok(&["log"]).contains("backlog-moved"),
+        !m.ok(&["log"]).contains("backlog-file-moved"),
         "no move is logged"
     );
 }
@@ -838,4 +862,104 @@ fn pointing_back_at_the_old_file_overwrites_the_pointer_without_a_copy() {
         std::fs::read_to_string(&old).unwrap().contains("##"),
         "the list is back"
     );
+}
+
+#[test]
+fn the_status_commands_move_an_item_through_the_guard() {
+    let m = Machine::new(false);
+    let id = id_of(&m.ok(&["backlog", "add", "me-sim", "Move me"]));
+    let refused = m.run(&["backlog", "start", &id]);
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("its project is not one headwork runs"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let blocked = m.ok(&[
+        "backlog",
+        "block",
+        &id,
+        "--reason",
+        "event",
+        "--note",
+        "the release",
+    ]);
+    assert!(
+        blocked.contains("blocked (event: the release)"),
+        "{blocked}"
+    );
+    let wrong = m.run(&[
+        "backlog",
+        "block",
+        &id,
+        "--reason",
+        "task_lost",
+        "--note",
+        "x",
+    ]);
+    assert!(
+        !wrong.status.success(),
+        "a blocked item is not blocked again"
+    );
+    assert!(
+        m.ok(&["backlog", "list", "--status", "blocked"])
+            .contains("Move me"),
+        "listed by status"
+    );
+    let unblocked = m.ok(&["backlog", "unblock", &id]);
+    assert!(!unblocked.contains("blocked"), "{unblocked}");
+    let as_orchestrator = m.run_as(
+        m.dir.path(),
+        Some("orchestrator"),
+        &["backlog", "cancel", &id],
+    );
+    assert!(
+        String::from_utf8_lossy(&as_orchestrator.stderr).contains("only with a reason"),
+        "{}",
+        String::from_utf8_lossy(&as_orchestrator.stderr)
+    );
+    let as_worker = m.run_as(
+        m.dir.path(),
+        Some("worker"),
+        &["backlog", "cancel", &id, "--reason", "x"],
+    );
+    assert!(
+        String::from_utf8_lossy(&as_worker.stderr)
+            .contains("only the item its own task is linked to"),
+        "{}",
+        String::from_utf8_lossy(&as_worker.stderr)
+    );
+    m.ok(&["backlog", "cancel", &id, "--reason", "not wanted"]);
+    assert!(
+        m.ok(&["backlog", "list", "--status", "cancelled"])
+            .contains("Move me"),
+        "cancelled"
+    );
+    assert!(
+        m.ok(&["backlog", "list", "--state", "dropped"])
+            .contains("Move me"),
+        "the old word dropped lists cancelled items"
+    );
+    assert!(
+        !m.ok(&["backlog", "list"]).contains("Move me"),
+        "the default lists open items"
+    );
+    let done_cancel = m.run(&["backlog", "cancel", &id]);
+    assert!(!done_cancel.status.success(), "already cancelled");
+    m.ok(&["backlog", "reopen", &id]);
+    m.ok(&["backlog", "done", &id, "--drop", "--note", "old spelling"]);
+    assert!(
+        m.ok(&["backlog", "list", "--status", "cancelled", "--json"])
+            .contains("old spelling"),
+        "done --drop cancels"
+    );
+    m.ok(&["backlog", "reopen", &id]);
+    m.ok(&["backlog", "done", &id, "--note", "by hand"]);
+    let cancel_done = m.run(&["backlog", "cancel", &id]);
+    assert!(
+        String::from_utf8_lossy(&cancel_done.stderr).contains("never cancelled"),
+        "{}",
+        String::from_utf8_lossy(&cancel_done.stderr)
+    );
+    let moves = m.ok(&["log"]);
+    assert!(moves.contains("backlog-moved"), "{moves}");
 }

@@ -5,7 +5,8 @@
 use std::path::Path;
 
 use headwork_core::backlog::{
-    BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogState, Parsed, parse, render,
+    BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, Block, BlockReason,
+    ItemStatus, Parsed, ReturnTo, parse, render,
 };
 use proptest::prelude::*;
 
@@ -27,20 +28,24 @@ fn rows(drafts: &[BacklogDraft]) -> Vec<BacklogItem> {
         .collect()
 }
 
-fn count(parsed: &Parsed, state: BacklogState) -> usize {
+fn count(parsed: &Parsed, status: ItemStatus) -> usize {
     parsed
         .items
         .iter()
-        .filter(|item| item.state == state)
+        .filter(|item| item.status.kind() == status)
         .count()
 }
 
 #[test]
 fn the_fixture_has_exact_counts() {
     let parsed = parse(&fixture());
-    assert_eq!(count(&parsed, BacklogState::Open), 9, "open");
-    assert_eq!(count(&parsed, BacklogState::Done), 6, "done");
-    assert_eq!(count(&parsed, BacklogState::Dropped), 4, "dropped");
+    assert_eq!(count(&parsed, ItemStatus::Backlog), 9, "backlog");
+    assert_eq!(count(&parsed, ItemStatus::Done), 6, "done");
+    assert_eq!(
+        count(&parsed, ItemStatus::Cancelled),
+        4,
+        "cancelled, written dropped"
+    );
     assert_eq!(parsed.items.len(), 19, "all");
     let owners = parsed
         .items
@@ -93,7 +98,7 @@ fn the_fixture_fields_come_out_as_written() {
     );
     assert_eq!(platform.notes.len(), 2, "notes");
     let restore = by_text("me-sim: add the restore");
-    assert_eq!(restore.state, BacklogState::Done);
+    assert_eq!(restore.status, BacklogStatus::Done);
     assert_eq!(
         restore.done_note.as_deref(),
         Some("me-sim PR #403; not yet run for real")
@@ -108,7 +113,7 @@ fn the_fixture_fields_come_out_as_written() {
     );
     assert_eq!(audit.added, Some(BacklogDate::parse("2026-11-17").unwrap()));
     let open_with_done = by_text("Still open");
-    assert_eq!(open_with_done.state, BacklogState::Open);
+    assert_eq!(open_with_done.status, BacklogStatus::Backlog);
     assert!(
         open_with_done.text.contains("(done 2026-11-16"),
         "kept in an open item"
@@ -120,8 +125,8 @@ fn the_fixture_fields_come_out_as_written() {
     assert_eq!(first.project, "general", "before any heading");
     let superseded = by_text("decide the training goal");
     assert_eq!(
-        superseded.state,
-        BacklogState::Done,
+        superseded.status,
+        BacklogStatus::Done,
         "a group that starts with done is done"
     );
     assert_eq!(
@@ -145,7 +150,7 @@ fn the_fixture_round_trips_through_the_renderer() {
     let wanted: Vec<_> = parsed
         .items
         .iter()
-        .filter(|item| item.state != BacklogState::Dropped)
+        .filter(|item| item.status != BacklogStatus::Cancelled)
         .collect();
     assert_eq!(again.items.len(), wanted.len(), "{written}");
     for want in wanted {
@@ -154,7 +159,7 @@ fn the_fixture_round_trips_through_the_renderer() {
             .iter()
             .find(|item| item.text == want.text)
             .unwrap();
-        assert_eq!(got.state, want.state, "{}", want.text);
+        assert_eq!(got.status, want.status, "{}", want.text);
         assert_eq!(got.owner, want.owner, "{}", want.text);
         assert_eq!(
             (&got.added, &got.not_before, &got.due, &got.done_on),
@@ -186,14 +191,34 @@ fn draft() -> impl Strategy<Value = BacklogDraft> {
         proptest::option::of("[a-z ]{1,12}"),
         proptest::collection::vec("[a-z]{1,10}", 0..3),
         proptest::option::of("[a-z]{1,6}"),
+        (0..4_u8, proptest::option::of("[a-z][a-z ]{0,10}[a-z]")),
     )
         .prop_map(
-            |(words, user, open, (added, not_before, due), note, notes, section)| {
+            |(
+                words,
+                user,
+                open,
+                (added, not_before, due),
+                note,
+                notes,
+                section,
+                (which, block_note),
+            )| {
                 let text = words.join(" ");
-                let state = if open {
-                    BacklogState::Open
-                } else {
-                    BacklogState::Done
+                let status = match (open, which) {
+                    (false, _) => BacklogStatus::Done,
+                    (true, 0) => BacklogStatus::Backlog,
+                    (true, 1) => BacklogStatus::InProgress,
+                    (true, 2) => BacklogStatus::Blocked(Block {
+                        reason: BlockReason::TaskLost,
+                        note: block_note,
+                        before: ReturnTo::InProgress,
+                    }),
+                    (true, _) => BacklogStatus::Blocked(Block {
+                        reason: BlockReason::Event,
+                        note: block_note,
+                        before: ReturnTo::Backlog,
+                    }),
                 };
                 let done_on = (!open).then(|| added.clone()).flatten();
                 BacklogDraft {
@@ -201,7 +226,7 @@ fn draft() -> impl Strategy<Value = BacklogDraft> {
                     section: open.then_some(section).flatten(),
                     text,
                     notes,
-                    state,
+                    status,
                     owner: if user {
                         BacklogOwner::User
                     } else {
@@ -234,13 +259,13 @@ proptest! {
         let written = render(&rows(&drafts));
         let again = parse(&written);
         prop_assert!(again.unparsed.is_empty(), "{:?}\n{}", again.unparsed, written);
-        let open: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.state == BacklogState::Open).collect();
-        let done: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.state == BacklogState::Done).collect();
+        let open: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.status.is_open()).collect();
+        let done: Vec<&BacklogDraft> = drafts.iter().filter(|d| d.status == BacklogStatus::Done).collect();
         let mut expected: Vec<&BacklogDraft> = open;
         expected.extend(done);
         prop_assert_eq!(again.items.len(), expected.len(), "{}", written);
         for want in expected {
-            let got = again.items.iter().find(|item| item.text == want.text && item.state == want.state);
+            let got = again.items.iter().find(|item| item.text == want.text && item.status == want.status);
             prop_assert!(got.is_some(), "{} lost\n{}", want.text, written);
             let got = got.unwrap();
             prop_assert_eq!(got.owner, want.owner);
