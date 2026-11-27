@@ -83,8 +83,8 @@ Every flow defines its levels; the built-in `code` flow:
 | Reviewers | correctness, tests, project rules | + error handling, design and cohesion, docs and decisions | + state machine and concurrency, security, approach challenger, scope challenger |
 | Models | Sonnet | Opus for correctness and design, Sonnet for the rest | Opus |
 | What counts as a finding | a defect with a concrete failing scenario | defects, plus risks and nits marked `nit` | everything at 2, plus doubts about the approach and the scope |
-| Verify stage | none | one adversarial verifier per finding; only `confirmed` and `plausible` go on | same |
-| Rounds | one; the fixes are re-checked | one; the fixes are re-checked | two: a second full round on the fixed commit, only after an important fix (section 13) |
+| Verify stage | none | one adversarial verifier per reviewer node, checking all its findings; only `confirmed` and `plausible` go on | one per reviewer node and file (section 14) |
+| Rounds | one; the fixes are re-checked | one; the fixes are re-checked | two: a second round on the fix commits only, after an important fix (sections 13 and 14) |
 | A dispute | accepted when it gives a reason | accepted only with evidence (a test, a code reference, a doc line) | same as 2, and the reviewer lead argues back once first |
 | A dispute not settled | accepted | goes to the user in one ask | goes to the user in one ask |
 
@@ -141,19 +141,26 @@ model = "opus"
 id = "verify"
 prompt = "code/verify.md"
 from_level = 2
-after = ["*"]                       # every node of a lower stage that ran
-each = "finding"                    # one subagent per finding of its inputs
+after = ["*"]                       # every earlier node that runs at the level
+each = { 2 = "node", 3 = "file" }   # finding | node | file, or one per level
 model = "opus"
 ```
 
 The graph:
 
 - Nodes form a directed acyclic graph through `after` (node ids, or `*` for every earlier node that runs at this level).
-  A node without `after` is ready at once. `each = "finding"` fans a node out into one subagent per finding of its
-  inputs; that is how the verify stage works, and later flows can use it for other per-item steps.
+  A node without `after` is ready at once. A plain node waits for all its inputs. `each` fans a node out over its
+  inputs' findings: `finding` is one subagent per finding, `node` one per input node (checking all its findings),
+  `file` one per input node and file (findings with no file form one group per node). It is a word or a per-level map
+  like `model`, which must name every level the node runs at. An `each` node is pipelined: its instances for one input
+  become ready as soon as that input is over (done or failed), while slower inputs still run, and the node is complete
+  when every input is and every instance is over. So `after = ["*"]` on verify means "verify each earlier node's
+  findings once that node is done", not a barrier. That is how the verify stage works, and later flows can use it for
+  other per-item steps.
 - `from_level` drops a node below that level; `after` edges to dropped nodes vanish.
 - Each node returns findings in one shape: `file`, `line`, `severity` (`important`, `nit`, `doubt`), `summary`,
-  `scenario`; a verify node returns a `verdict` (`confirmed`, `plausible`, `rejected`) per finding.
+  `scenario`; a verify instance returns a `verdict` (`confirmed`, `plausible`, `rejected`) for its one finding, or an
+  array `[{id, verdict, evidence}]` covering every finding of its group.
 - `headwork flow check [<name>]` validates every flow (ids unique, acyclic, prompts present, models allowed by
   `[models]`, levels 1 to 3 defined) and `doctor` runs it (check `flows`). A broken override is an error at load and
   `review_start` refuses it.
@@ -176,9 +183,10 @@ a `command` node (run `scripts/check.sh` in the review worktree) and a `gate` no
 - Each node is an `Agent` subagent of type `general-purpose`, never a fork (`subagent_type: "fork"` would inherit the
   reviewer lead's context). `review_next` returns, per ready node, the exact prompt to pass: the node's prompt, the
   level's pushback, the target (base and head commit, the worktree path, the changed files), the focus, and for an
-  `each` node the one finding. The reviewer rules forbid adding anything else, so reviewers do not anchor on each other
-  or on the reviewer lead's opinion.
+  `each` node the findings of its group. The reviewer rules forbid adding anything else, so reviewers do not anchor on
+  each other or on the reviewer lead's opinion.
 - Re-checks and the second round are new subagents too, given the finding, the lead's resolution and the new diff.
+  A second round's prompt names its scope: only the fix commits and the direct callers of what they changed.
 
 ## 7. Store: migration 0019
 
@@ -223,11 +231,17 @@ CREATE TABLE review_findings (
 );
 ```
 
+Migration 0029 adds `reviewed_sha` (the head the current round's nodes review: pinned by `review_start`, moved to
+`head_sha` when a round starts) and `round_base_sha` (the previous round's `reviewed_sha`, NULL in round 1) to
+`reviews` (section 14). An `each` instance's `item` is the smallest finding id of its group, so `review_nodes` keeps
+its shape.
+
 `core/src/review/` holds the pure parts: the command parser, the flow model and its validation, which nodes are ready
 given the level and the finished ones, the review's state machine (`requested` → `running` → `delivered` →
 `rechecking` → `running` (round 2) or `asking` or `done`; `cancelled` from any state when the lead closes or the user
 drops the part), and the dispute decision by level. Table tests per transition and guard, `proptest` over random node
-completions (a node never runs before its inputs; a review never delivers with a ready node).
+completions (a plain node never runs before its inputs, an `each` instance never before the input its group comes
+from; a review never delivers with a ready node).
 
 ## 8. Tools and rules
 
@@ -235,7 +249,7 @@ completions (a node never runs before its inputs; a review never delivers with a
 |---|---|---|
 | `review_start {}` | implementing lead | takes the `requested` review: refuses with uncommitted changes (`review-dirty`), pins `head_sha` (HEAD) and `base_sha` (merge base with the default branch), makes the review worktree, spawns the part `review` (`review-2` for a later review) of kind `review` with the generated brief |
 | `review_next {}` | reviewer lead | the ready nodes with their full prompts and models, marked `running`; empty when the round waits on nothing |
-| `review_node_done {node, item?, findings[]}` | reviewer lead | stores a node's findings (or verdicts); a malformed one is refused with the shape |
+| `review_node_done {node, item?, findings[] or verdict or verdicts[]}` | reviewer lead | stores a plain node's findings, or a verify instance's `verdict` (one finding) or `verdicts` (`[{id, verdict}]`, every finding of its `checks` once, none outside); a malformed one is refused with the shape |
 | `review_deliver {summary}` | reviewer lead | refused while a node is ready or running (`review-nodes-open`); returns the findings numbered (confirmed and plausible only after a verify stage, within the floor and the caps of section 13), the `listed` ones (below the floor or over a cap, with the reason) to pass on for information only, and the implementing lead's address, for the reviewer lead to send with `SendMessage` |
 | `review_resolve {items: [{id, fixed or disputed, note}]}` | implementing lead | one entry per open finding; refused while one is missing or the fixes are uncommitted; pins the new `head_sha` and returns the reviewer lead's address, for a `SendMessage` that wakes it |
 | `review_verdict {items: [{id, fix accepted or rejected, dispute accepted or kept}]}` | reviewer lead | the re-check, from fresh subagents; a kept dispute at `unsettled = "ask"` makes the review `asking` |
@@ -346,6 +360,28 @@ level table (section 4) and chose these mechanics (`docs/decisions/2026-11-26-re
 
 Not built: dropping repeats within one round by place, since different nodes at one line often raise different issues
 (10 to 30% of such pairs overlapped in the data).
+
+## 14. Faster verify and fix rounds (2026-11-27)
+
+Measured in `S:/Code/notes/review-speed-proposal-2026-11-27.md`: at level 3 the verify stage took longer than the
+analysis (44 one-finding subagents after a barrier, 15 minutes against 7), and round 2 reran all ten nodes on the whole
+diff. Three changes:
+
+- **Pipelined fan-out.** An `each` node's instances for one input start as soon as that input is over
+  (`core/src/review/schedule.rs`), so verifying overlaps the slower reviewers. Plain nodes still wait for all inputs.
+- **Batched verify.** `each = "node"` and `each = "file"` give one verifier per input node, or per input node and file;
+  the `code` flow uses `node` at level 2 and `file` at level 3. A group is formed only from a completed input node's
+  findings at or above the floor, so it never changes once ready; that is why `file` groups per (node, file), not per
+  file across nodes (`docs/decisions/2026-11-27-batched-verify.md`). The instance's `item` is the group's smallest
+  finding id, `review_next` lists its members as `checks`, and its prompt lists every finding and asks for one verdict
+  each, judged on its own. A group of one keeps the one-finding prompt.
+- **Fix-scoped later rounds.** Round 2 (and 3) reviews `round_base_sha..head_sha`: the changed files are that diff's,
+  and every node's prompt says to review only the lines the fix commits changed and the direct callers of what they
+  changed. It runs `correctness`, the plain nodes that reported an `important` finding in the previous round, and every
+  `each` node; the other plain nodes count as complete with no findings. A flow without a `correctness` node runs every
+  node. A review started before migration 0029 has no `reviewed_sha` and keeps whole later rounds.
+
+Level 1 (no verify node, one round) is unchanged, byte for byte.
 
 ## Deferred
 

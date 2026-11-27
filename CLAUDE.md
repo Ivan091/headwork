@@ -152,7 +152,7 @@ only the temp folder and runs no git write, `gh pr` write or build) and the stop
 part's worktree is removed with `git worktree remove --force`, never the project's command.
 R3 is the loop (`ops/review_loop.rs`): the reviewer tools (only a task of kind `review` sees them) `review_next` (ready
 nodes with their model and exact prompt, marked running, at most `[reviews] parallel` at once), `review_node_done`
-(findings, an `each` node's verdict, or `failed`), `review_deliver` (refused while a node is open, `review-nodes-open`;
+(findings, an `each` instance's `verdict` or `verdicts` on its `checks`, or `failed`), `review_deliver` (refused while a node is open, `review-nodes-open`;
 findings a verify stage rejected stay back), `review_verdict` (fix accepted or rejected, dispute accepted or kept;
 `settle_dispute` applies the level: accept, argue back once, or ask) and `review_finish`; the lead tool `review_resolve`
 (every waiting finding fixed or disputed, committed, `review-dirty` otherwise; it pins the new HEAD and moves the review
@@ -180,7 +180,10 @@ kind `explore` too and report to the lead.
 The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
 floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for
 those below the floor), drops a later round's repeats of earlier findings, runs another round only after an important
-fix, and shows each review's fresh tokens on `board` and `status`.
+fix, and shows each review's fresh tokens on `board` and `status`. Section 14 (migration 0029): an `each` node starts on
+an input's findings once that input is over, verify batches per node (level 2) or per node and file (level 3), and a
+later round reviews only the fix commits (`round_base_sha..head_sha`) with `correctness`, the nodes that found an
+important defect and verify.
 The agent graph (`docs/dashboard.md`) starts with D1: `headwork graph` (`ops/graph.rs`) draws the orchestrator, tasks,
 leads and parts, subagents, helpers, jobs, pull requests, reviews and asks, with who spawned, called, messaged,
 reported to and asked whom, now or at a past instant (`--at`). The pure build is `core/src/graph/` (`Facts` in,
