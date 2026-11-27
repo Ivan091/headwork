@@ -1540,11 +1540,10 @@ impl<'a> Server<'a> {
             "backlog_block" => {
                 let reason = text(args, "reason")?.parse()?;
                 let note = text(args, "note")?;
-                let acting = self.acting_task();
                 to_text(&super::backlog::block(
                     self.store,
                     &self.env,
-                    acting,
+                    None,
                     backlog_id(args)?,
                     reason,
                     Some(&note),
@@ -1562,11 +1561,10 @@ impl<'a> Server<'a> {
         target: Target,
         reason: Option<&str>,
     ) -> Result<String> {
-        let acting = self.acting_task();
         to_text(&super::backlog::move_item(
             self.store,
             &self.env,
-            acting,
+            None,
             backlog_id(args)?,
             target,
             reason,
@@ -1712,16 +1710,6 @@ impl<'a> Server<'a> {
             .and_then(|row| row.task_id)
             .ok_or_else(|| anyhow!("this session has no task in headwork"))?;
         Ok(self.store.task(row)?)
-    }
-
-    /// The calling worker's own task, for the backlog guard's worker rows; none for the orchestrator.
-    fn acting_task(&self) -> Option<TaskId> {
-        match self.identity.managed() {
-            Some((session, Role::Worker)) => {
-                self.own_task(session).ok().map(|task| TaskId(task.id.0))
-            }
-            _ => None,
-        }
     }
 
     /// Whether the calling session is a worker whose task is a lead.
