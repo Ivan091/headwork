@@ -377,6 +377,9 @@ pub enum MoveRefusal {
     /// A note or reason that runs over several lines, which the file could not hold.
     #[error("the {0} must be one line")]
     MultiLine(&'static str),
+    /// A note or reason holding `[` or `]`, which would break the status tag it is written into.
+    #[error("the {0} must not hold `[` or `]`")]
+    Bracket(&'static str),
     /// The orchestrator cancelling without saying why.
     #[error("the orchestrator cancels an item only with a reason (the user's words)")]
     ReasonRequired,
@@ -462,6 +465,8 @@ fn one_line(field: &'static str, text: Option<&str>) -> Result<(), MoveRefusal> 
     };
     if text.contains(['\n', '\r']) {
         Err(MoveRefusal::MultiLine(field))
+    } else if text.contains(['[', ']']) {
+        Err(MoveRefusal::Bracket(field))
     } else {
         Ok(())
     }

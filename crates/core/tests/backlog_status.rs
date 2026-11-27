@@ -946,6 +946,33 @@ two",
         ),
         (
             Some(S::Backlog),
+            block_with("see [docs]"),
+            A::Orchestrator,
+            PLAIN,
+            MoveRefusal::Bracket("note"),
+        ),
+        (
+            Some(S::Backlog),
+            Target::Cancelled,
+            A::User,
+            MoveFacts {
+                reason: Some("not ]wanted"),
+                ..PLAIN
+            },
+            MoveRefusal::Bracket("reason"),
+        ),
+        (
+            Some(S::Backlog),
+            Target::Done,
+            A::User,
+            MoveFacts {
+                reason: Some("PR [#4"),
+                ..PLAIN
+            },
+            MoveRefusal::Bracket("reason"),
+        ),
+        (
+            Some(S::Backlog),
             Target::Cancelled,
             A::Orchestrator,
             MoveFacts {
