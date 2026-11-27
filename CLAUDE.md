@@ -193,7 +193,7 @@ fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built int
 `/api/events?since=` and `/api/stream` (server-sent `change` lines written straight to the socket when the event log
 grows), and the page's timeline: live, a slider over the log, play at 1x to 1000x, pulses on new talk, and "replay
 this task". D4 adds tokens (`Facts::spend`, `Store::spend_of`) for "size by cost" and the panel, and badges: open tick
-findings on a task, open asks on the user, review findings on a review and its flow nodes.
+findings on a task, open asks on the user, review findings on a review and its flow nodes. The header button `backlog` opens a read-only drawer (`/api/backlog`, `ops/dash.rs`; open items by project and section with owner, dates, linked task and "Waiting on you", the digest's own rule `core::digest::waiting_items`; a task chip selects its node; polled every 30 s).
 Migration notes (`docs/migrations.md`) tell another machine what a change asks of it: one TOML file per note in a repository's
 `migrations/`, read from the remote default branch (`adapters/src/notes.rs`: fetch in batch ssh mode, `git show`, never the working
 tree), parsed and checked by `core/src/migrate.rs`, recorded per machine in `migrations_applied` (migration 0023,

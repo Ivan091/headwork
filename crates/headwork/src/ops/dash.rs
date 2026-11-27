@@ -12,8 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow, bail};
+use headwork_core::backlog::{BacklogItem, BacklogOwner, BacklogState};
+use headwork_core::digest::waiting_items;
 use headwork_core::graph::{Edge, Node, Shape, task_node};
-use headwork_store::{SpendOf, Store, TaskId};
+use headwork_store::{BacklogFilter, SpendOf, Store, TaskId};
 
 use crate::ops::install::Stamp;
 use serde::Serialize;
@@ -114,6 +116,8 @@ pub enum Route {
     Range,
     /// The gate slots of each class, holders and waiters: `/api/gates`.
     Gates,
+    /// The backlog and the ids waiting on the user: `/api/backlog?state=&project=&owner=`.
+    Backlog(BacklogQuery),
     /// Server-sent events: a `change` naming the newest event id whenever the log grows: `/api/stream`.
     Stream,
     /// Anything else.
@@ -124,6 +128,27 @@ pub enum Route {
     BadHost,
     /// A query that does not parse.
     BadRequest(String),
+}
+
+/// What `/api/backlog` is asked for: the items of a state (open by default, `None` for all), of one project and one owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BacklogQuery {
+    /// The state wanted, `None` for every state.
+    pub state: Option<BacklogState>,
+    /// Only this project.
+    pub project: Option<String>,
+    /// Only this owner.
+    pub owner: Option<BacklogOwner>,
+}
+
+impl Default for BacklogQuery {
+    fn default() -> Self {
+        Self {
+            state: Some(BacklogState::Open),
+            project: None,
+            owner: None,
+        }
+    }
 }
 
 /// Whether something already listens on the loopback `port`.
@@ -207,6 +232,9 @@ pub fn route(method: &str, url: &str, host: Option<&str>, port: u16) -> Route {
     if path == "/api/gates" {
         return Route::Gates;
     }
+    if path == "/api/backlog" {
+        return backlog_query(query).map_or_else(Route::BadRequest, Route::Backlog);
+    }
     if path == "/api/stream" {
         return Route::Stream;
     }
@@ -250,6 +278,67 @@ fn graph_query(query: &str) -> Result<GraphQuery, String> {
         }
     }
     Ok(found)
+}
+
+fn backlog_query(query: &str) -> Result<BacklogQuery, String> {
+    let mut found = BacklogQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = decode(value).ok_or_else(|| format!("`{key}` does not decode"))?;
+        match key {
+            "state" => {
+                found.state = match value.as_str() {
+                    "" | "open" => Some(BacklogState::Open),
+                    "all" => None,
+                    other => Some(other.parse().map_err(|_| {
+                        format!("unknown state `{other}`: open, done, dropped or all")
+                    })?),
+                };
+            }
+            "project" if !value.is_empty() => found.project = Some(value),
+            "owner" if !value.is_empty() => {
+                found.owner = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("unknown owner `{value}`: user or agent"))?,
+                );
+            }
+            "project" | "owner" => {}
+            other => return Err(format!("unknown parameter `{other}`")),
+        }
+    }
+    Ok(found)
+}
+
+/// What `/api/backlog` answers: the items, the ids of the open ones that wait on the user, and the store's date.
+#[derive(Debug, Clone, Serialize)]
+pub struct BacklogAnswer {
+    /// The items asked for, in export order.
+    pub items: Vec<BacklogItem>,
+    /// The open items waiting on the user, by the digest's rule.
+    pub waiting: Vec<i64>,
+    /// The store's date, for the page's "not before" and "overdue" marks.
+    pub today: String,
+}
+
+fn backlog_answer(db: &Path, query: &BacklogQuery) -> Result<BacklogAnswer> {
+    let store = Store::open_read_only(db)?;
+    let today = store.backlog_today()?;
+    let open = store.backlog_items(&BacklogFilter {
+        state: Some(BacklogState::Open),
+        ..BacklogFilter::default()
+    })?;
+    let waiting = waiting_items(&open, &today);
+    let items = store.backlog_items(&BacklogFilter {
+        project: query.project.clone(),
+        owner: query.owner,
+        state: query.state,
+    })?;
+    Ok(BacklogAnswer {
+        items,
+        waiting,
+        today: today.to_string(),
+    })
 }
 
 /// The most events one `/api/events` answer holds.
@@ -381,6 +470,10 @@ pub fn answer(db: &Path, route: &Route) -> Answer {
             Some(Ok(home)) => Answer::json(200, &super::gate::status(&home)),
             Some(Err(error)) => Answer::error(500, &format!("{error:#}")),
             None => Answer::error(500, "the store has no home folder"),
+        },
+        Route::Backlog(query) => match backlog_answer(db, query) {
+            Ok(reply) => Answer::json(200, &reply),
+            Err(error) => Answer::error(500, &format!("{error:#}")),
         },
         Route::Stream => Answer::error(500, "the stream is served by its own thread"),
         Route::Node(id) => match node_details(db, id) {
@@ -977,6 +1070,7 @@ mod tests {
         let table = [
             ("/api/range", Route::Range),
             ("/api/gates", Route::Gates),
+            ("/api/backlog", Route::Backlog(BacklogQuery::default())),
             ("/api/stream", Route::Stream),
             (
                 "/api/events",
@@ -1142,5 +1236,101 @@ mod tests {
         assert_eq!(waiter["task"], "demo", "waiter task");
         assert!(waiter["age_s"].is_u64(), "waiter age");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn the_backlog_query_defaults_to_open_and_rejects_the_unknown() {
+        assert_eq!(backlog_query(""), Ok(BacklogQuery::default()));
+        let all = backlog_query("state=all&project=me-sim&owner=user").unwrap();
+        assert_eq!(all.state, None, "all states");
+        assert_eq!(all.project.as_deref(), Some("me-sim"), "project");
+        assert_eq!(all.owner, Some(BacklogOwner::User), "owner");
+        assert_eq!(
+            backlog_query("state=done").unwrap().state,
+            Some(BacklogState::Done),
+            "done"
+        );
+        for bad in ["state=late", "owner=nobody", "limit=3", "project=%zz"] {
+            assert!(backlog_query(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_backlog_route_needs_get_and_a_loopback_host() {
+        let host = Some("127.0.0.1:8740");
+        assert_eq!(
+            route("GET", "/api/backlog", host, 8740),
+            Route::Backlog(BacklogQuery::default())
+        );
+        assert!(matches!(
+            route("GET", "/api/backlog?x=1", host, 8740),
+            Route::BadRequest(_)
+        ));
+        assert_eq!(
+            route("POST", "/api/backlog", host, 8740),
+            Route::MethodNotAllowed
+        );
+        assert_eq!(route("GET", "/api/backlog", None, 8740), Route::BadHost);
+    }
+
+    #[test]
+    fn the_backlog_answer_holds_items_waiting_ids_and_today() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let mut store = Store::open(&db).unwrap();
+        let draft = |text: &str, owner, state| headwork_core::backlog::BacklogDraft {
+            project: "demo".to_owned(),
+            section: None,
+            text: text.to_owned(),
+            notes: Vec::new(),
+            state,
+            owner,
+            added: None,
+            not_before: None,
+            due: None,
+            done_on: None,
+            done_note: None,
+        };
+        let actor = headwork_core::Actor::User;
+        let mine = store
+            .add_backlog_item(
+                &draft("decide <b>this</b>", BacklogOwner::User, BacklogState::Open),
+                actor,
+            )
+            .unwrap();
+        store
+            .add_backlog_item(
+                &draft("build it", BacklogOwner::Agent, BacklogState::Open),
+                actor,
+            )
+            .unwrap();
+        store
+            .add_backlog_item(
+                &draft("old", BacklogOwner::Agent, BacklogState::Done),
+                actor,
+            )
+            .unwrap();
+        drop(store);
+        let reply = answer(&db, &Route::Backlog(BacklogQuery::default()));
+        assert_eq!(
+            reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(), 2, "open only");
+        assert_eq!(body["waiting"], serde_json::json!([mine.id]), "waiting");
+        assert_eq!(body["today"].as_str().unwrap().len(), 10, "today");
+        assert_eq!(body["items"][0]["text"], "decide <b>this</b>", "text");
+        let every = answer(
+            &db,
+            &Route::Backlog(BacklogQuery {
+                state: None,
+                ..BacklogQuery::default()
+            }),
+        );
+        let body: serde_json::Value = serde_json::from_slice(&every.body).unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(), 3, "all states");
     }
 }

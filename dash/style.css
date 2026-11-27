@@ -359,3 +359,168 @@ button.on {
   pointer-events: none;
   word-break: break-word;
 }
+
+#backlog {
+  width: 400px;
+  max-width: 45vw;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+#backlog[hidden] {
+  display: none;
+}
+
+#backlog .bl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#backlog .bl-head button {
+  margin-left: auto;
+}
+
+#backlog .bl-heading {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+#backlog .bl-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+#backlog .bl-controls input {
+  flex: 1;
+  min-width: 100px;
+}
+
+#backlog details {
+  margin: 6px 0;
+}
+
+#backlog summary {
+  display: flex;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+#backlog .bl-count {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+#backlog .bl-section {
+  display: block;
+  margin: 6px 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+#backlog .bl-row {
+  padding: 6px 4px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+
+#backlog .bl-row.waiting {
+  border-left: 3px solid var(--amber);
+  padding-left: 8px;
+}
+
+#backlog .bl-id {
+  color: var(--muted);
+}
+
+#backlog .bl-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+#backlog .bl-row.open .bl-text {
+  display: inline;
+}
+
+#backlog .bl-more {
+  display: none;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+#backlog .bl-row.open .bl-more {
+  display: block;
+}
+
+#backlog .bl-note {
+  display: block;
+  word-break: break-word;
+}
+
+#backlog .bl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+#backlog .chip {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+}
+
+#backlog .chip.owner-user {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+#backlog .chip.held {
+  opacity: 0.6;
+}
+
+#backlog .chip.overdue {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+#backlog button.chip.task {
+  color: var(--blue);
+  border-color: var(--blue);
+  cursor: pointer;
+}
+
+#backlog .note {
+  display: block;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+@media (max-width: 720px) {
+  #backlog {
+    width: auto;
+    max-width: none;
+    max-height: 85vh;
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+
+  #backlog .bl-row {
+    min-height: 44px;
+  }
+}
