@@ -68,6 +68,11 @@ fn world_removing(max_workers: u32, remove: &str) -> World {
 
 /// A world as [`world_removing`] whose config ends with these lines.
 fn world_of(max_workers: u32, remove: &str, extra: &str) -> World {
+    world_graced(max_workers, remove, extra, 2)
+}
+
+/// A world as [`world_of`] whose processes get `exit_grace_s` seconds to leave after each exit step.
+fn world_graced(max_workers: u32, remove: &str, extra: &str, exit_grace_s: u32) -> World {
     let dir = tempfile::tempdir().unwrap();
     let main = dir.path().join("demo");
     std::fs::create_dir(&main).unwrap();
@@ -78,7 +83,7 @@ fn world_of(max_workers: u32, remove: &str, extra: &str) -> World {
         "[machine]\nhost = \"wmux\"\nmax_workers = {max_workers}\n\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"{remove}\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
          deliver = \"pr\"\nmerge = \"deliver\"\nmain_only = [\"probe\"]\nallowed_repos = [\"acme/demo\"]\n\n\
-         [watch]\nexit_grace_s = 2\n{extra}"
+         [watch]\nexit_grace_s = {exit_grace_s}\n{extra}"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -221,6 +226,29 @@ fn closing_a_task_of_the_update_project_starts_an_update_and_a_failed_start_neve
     assert!(
         triggers[0]["error"].is_string() && triggers[0]["pid"].is_null(),
         "{EXE} does not exist, so the start fails and is logged: {triggers:?}"
+    );
+}
+
+#[test]
+fn dropping_a_queued_task_that_never_ran_starts_no_update() {
+    let mut w = world_of(
+        1,
+        "builtin",
+        "
+[update]
+enabled = true
+project = \"demo\"
+",
+    );
+    let (_running, _) = spawn_task(&mut w, "one", false, false);
+    let (queued, _) = spawn_task(&mut w, "two", false, false);
+    assert_eq!(queued.state, TaskState::Queued, "waits");
+    let env = env!(w);
+    let report = close(&mut w.store, &env, queued.id, None).unwrap();
+    assert_eq!(report.state, TaskState::Closed, "{report:?}");
+    assert!(
+        update_triggers(&w.store).is_empty(),
+        "no session, no update"
     );
 }
 
@@ -1196,8 +1224,8 @@ fn short_lived(seconds: u32) -> std::process::Child {
 
 #[test]
 fn close_types_exit_and_kills_only_a_claude_that_stays() {
-    let mut w = world(10);
     for (slug, stays) in [("stays", true), ("leaves", false)] {
+        let mut w = world_graced(10, "builtin", "", if stays { 2 } else { 20 });
         let (task, _) = spawn_task(&mut w, slug, false, false);
         let session = w.store.session_of(task.id).unwrap().unwrap();
         let surface = session.host_surface.clone().unwrap();
