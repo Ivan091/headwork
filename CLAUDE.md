@@ -35,7 +35,7 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
-backlog_list, backlog_add, backlog_done, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done, recap, job_start,
+backlog_list, backlog_add, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done, recap, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -208,13 +208,15 @@ claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `d
 finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
 `scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
 release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
-The backlog (`docs/backlog.md`, migrations 0026 and 0027; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
+The backlog (`docs/backlog.md`, migrations 0026, 0027 and 0031; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
 `store/src/backlog.rs` holds the rows (`backlog_items`) and `backlog_files`, `ops/backlog.rs` imports, exports and changes items for `headwork backlog` and
 the orchestrator's `backlog_*` tools. `[backlog] file` (machine-only) names the generated file: an export writes it after every
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/backlog-backups`
-first; pointing it at a new file moves the list there (`backlog-moved`, `configured_at`; the old file stays, with a pointer
-line under `[backlog] leave_pointer`). `spawn --backlog <id>` links an item to a task; `apply_in` finishes it when the task closes and frees it when the task
-is dropped or fails. The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
+first; pointing it at a new file moves the list there (`backlog-file-moved`, `configured_at`; the old file stays, with a pointer
+line under `[backlog] leave_pointer`). Each item has a stored status (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`;
+section 10) moved only through the pure guard `core::backlog::transition` and `Store::move_backlog_item`, which logs `backlog-moved`.
+`spawn --backlog <id>` links an item and moves it to `in_progress`; `apply_in` runs the task-end table on every linked in-progress
+item (merged or closed: done; dropped or failed: blocked `task_lost`). The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
 listed in `docs/backlog.md`, section 9.
 The "Needs you" digest (`docs/backlog.md`, section 8; `core/src/digest.rs` builds it, `store/src/digest.rs` reads, `ops/digest.rs` gathers) lists what waits on the user in at most ten lines: asks, backlog items due, migration notes the tick found, pull requests whose session ended, old findings, the user's open items. It leads the orchestrator's session start (deferred to its first prompt when the rules leave no room), `board`, `status`, the park recap and resume summary, and goes out once a day through the tick's `digest` stage (`[digest]`).
 Gates (`docs/decisions/2026-11-26-gates-in-headwork.md`): CPU-heavy work (cargo build, test, clippy and bench, `check.sh`,
@@ -276,8 +278,8 @@ cargo run -p headwork -- tick [--json]                 # reconcile the store wit
 cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
 cargo run -p headwork -- leftovers [--all] [--json] | clear (<rc name or session id>... | --all)   # ended sessions that left no `/exit`, still listed in the Claude app; clear after archiving them there
-cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--state open|done|dropped|all] [--json]   # the backlog kept in the store (docs/backlog.md)
-cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | done <id> [--note N] [--drop] | reopen <id> | edit <id> [...]
+cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--json]   # the backlog kept in the store (docs/backlog.md)
+cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | start | unblock | reopen <id> | block <id> --reason decision|event --note N | cancel <id> [--reason R] | done <id> [--note N] | edit <id> [...]
 cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file P]   # backlog.md into the store (never deletes) and back out (backs up a hand-edited file)
 cargo run -p headwork -- digest [--json]   # "Needs you": asks, backlog items due, migration notes, waiting pull requests, old findings (docs/backlog.md, section 8)
 cargo run -p headwork -- park [--deadline S] [--keep-orchestrator]   # recaps, jobs stopped at checkpoints, panes closed, the orchestrator last: safe to restart

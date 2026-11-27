@@ -56,8 +56,8 @@ ask. Send the plan with `SendUserFile` first, so the user decides with it in fro
 
 ## 6. After the go
 
-- Keep the plan in the backlog: `backlog_edit` items with their class and wave, `backlog_done` the dropped ones
-  (`drop`), `backlog_add` what the reading surfaced.
+- Keep the plan in the backlog: `backlog_edit` items with their class and wave, `backlog_cancel` the ones the user
+  dropped (with the user's reason), `backlog_add` what the reading surfaced.
 - Write the plan to `plan-<date>.md` in the notes folder (classes, waves, step lines, the user's decisions) and commit
   and push it there.
 - Hand wave 1 to `headwork:planning`. Groom again when the user asks, when new items pile up, or when a wave's results

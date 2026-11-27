@@ -1,7 +1,7 @@
 # The backlog in the store
 
-Status: built (the store, `headwork backlog`, the orchestrator's tools, import, export, the spawn link, and the "Needs you"
-digest of section 8).
+Status: built (the store, `headwork backlog`, the orchestrator's tools, import, export, the spawn link, the "Needs you"
+digest of section 8, and the stored statuses of section 10).
 
 The user's backlog of deferred work used to be one Markdown file, `S:/Code/todo.md`, edited by hand by the
 orchestrator. A session that read it had to re-parse prose; two sessions could overwrite each other; nothing tied an item
@@ -9,27 +9,31 @@ to the task that finished it. The list now lives in headwork's store and `backlo
 
 ## 1. The model
 
-Migration 0026 added two tables as `todos` and `todo_files`; migration 0027 renamed them (see "Renamed from todo") (`crates/store/src/backlog.rs`, pure types in `crates/core/src/backlog.rs`).
+Migration 0026 added two tables as `todos` and `todo_files`; migration 0027 renamed them (see "Renamed from todo") and
+migration 0031 replaced `state` with the stored status (section 10) (`crates/store/src/backlog.rs`, pure types in
+`crates/core/src/backlog.rs` and `crates/core/src/backlog/status.rs`).
 
 `backlog_items` holds one row per item:
 
 | Column | Meaning |
 |---|---|
-| `project` | The area heading: `me-sim`, `headwork`, `claude-config`, `me-studio`, `Setup`, `general` (items outside every heading, and everything that came from the Done and Dropped sections) |
+| `project` | The area heading: `me-sim`, `headwork`, `claude-config`, `me-studio`, `Setup`, `general` (items outside every heading, and everything that came from the Done and Cancelled or Dropped sections) |
 | `section` | A `###` subheading under the project, or none |
-| `text` | The item, one line, without the checkbox, the groups `added`, `not_before` and `due` came from, a trailing done or dropped group and a `For you:` prefix |
+| `text` | The item, one line, without the checkbox, the groups `added`, `not_before` and `due` came from, a trailing done or cancelled group, a status tag and a `For you:` prefix |
 | `notes` | The indented sub-bullets, one per line |
-| `state` | `open`, `done` or `dropped` |
+| `status` | `backlog`, `in_progress`, `blocked`, `done` or `cancelled` (section 10) |
+| `blocked_reason`, `blocked_note`, `status_before_block` | Only on a blocked item: why, a note, and where an unblock returns it (`backlog` or `in_progress`) |
 | `owner` | `user` or `agent`: the only place ownership lives. A leading `For you:` or `For you (...):` (any case) is removed from the text when an item is imported, added or edited, and sets `user` |
 | `added`, `not_before`, `due` | `YYYY-MM-DD` or none |
-| `done_on`, `done_note` | When an item was done or dropped, and what was said |
+| `done_on`, `done_note` | When an item was done or cancelled, and what was said |
 | `task_id` | The task spawned for it |
 | `position` | The export order: an import keeps file order, a new item goes last |
 
 `backlog_files` holds one row per `backlog.md` path: `imported_at`, and the `export_hash` and `exported_at` of the last export.
 
-Events: `backlog-added`, `backlog-done`, `backlog-dropped`, `backlog-edited` (also a reopen, a link and an unlink),
+Events: `backlog-added`, `backlog-moved` (every status move, section 10), `backlog-edited` (a change of the fields),
 `backlog-imported`, `backlog-exported`, and `backlog-export-overwrote` when an export replaced a file edited by hand.
+`backlog-done` and `backlog-dropped`, written before migration 0031, stay in the log as they are.
 
 ## 2. The file format
 
@@ -39,12 +43,14 @@ Events: `backlog-added`, `backlog-done`, `backlog-dropped`, `backlog-edited` (al
 |---|---|
 | `# Backlog` and prose right under it | Ignored, not reported |
 | `## <heading>` | The project; `### <heading>` the section, cleared by the next `##` |
-| `## Done`, `## Dropped` (also `## Done (last 20)`) | Every item below is done, or dropped; project `general` |
-| `- [ ] body` | Open |
-| `- [x] body` | Done, or dropped when its trailing group starts with `dropped` or `superseded` |
-| `- body` | Dropped under `## Dropped`, done under `## Done`; anywhere else it is reported |
+| `## Done`, `## Cancelled`, `## Dropped` (also `## Done (last 20)`) | Every item below is done, or cancelled; project `general` |
+| `- [ ] body` | In the backlog, or the status its tag names |
+| `- [ ] body [in progress]`, `[in progress: task <name> <state>]` | In progress; the task part is ignored |
+| `- [ ] body [blocked: <reason>]`, `[blocked: <reason> <note>]` | Blocked; back to in progress on unblock for `task_lost` and `partial`, else to the backlog |
+| `- [x] body` | Done, or cancelled when its trailing group starts with `cancelled`, `dropped` or `superseded` |
+| `- body` | Cancelled under `## Cancelled` or `## Dropped`, done under `## Done`; anywhere else it is reported |
 | An indented `  - note` right after an item | One of its notes |
-| `(done D: note)`, `(dropped D: note)`, `(superseded ...)` last on a checked item | `done_on` (the first date in it, if any) and `done_note`; removed from the text. In an open item it stays in the text |
+| `(done D: note)`, `(cancelled D: note)`, `(dropped D: note)`, `(superseded ...)` last on a checked item | `done_on` (the first date in it, if any) and `done_note`; removed from the text. In an open item it stays in the text |
 | `(added D)`, `(not before D)`, `(due D)`, `(by D)` | The date field; the group is removed from the text only when it is exactly that |
 | `added D` inside a longer group, `due D` anywhere | The date field; the text is left as it is |
 | Anything else non-blank | Reported as `Unparsed { line_no, line, reason }` |
@@ -55,9 +61,11 @@ Lines are split on `\n` only, so a stray `\r` inside a line stays and one at its
 The export (`render`) writes the title and one intro paragraph, then every open item by project (in the order of the
 projects' first items, `general` last) with the items that have no section first and each section after, then
 `## Done (last 20)` with the 20 most recent done items. An item prints `For you: ` when its owner is the user (and only then), and `(not before D) (due D) (added D)` unless the
-text already says that date. A linked open item ends with `(task <name>)`; the reader also takes the earlier
-`(task <name>, <state>)`, and the state is shown by `backlog_list` and the CLI list only. Dropped items are not written. The reader understands what the renderer
-writes: a test renders then parses and compares text, state, owner and dates.
+text already says that date. An item in progress ends with `[in progress]`, or `[in progress: task <name> <task state>]`
+when a task is linked; a blocked one with `[blocked: <reason>]` or `[blocked: <reason> <note>]`; an item in the backlog
+has no tag. The reader also takes the earlier `(task <name>)` and `(task <name>, <state>)`. Cancelled items are not
+written. The reader understands what the renderer writes: a test renders then parses and compares text, status, owner
+and dates.
 
 ## 3. Import
 
@@ -104,25 +112,31 @@ quiet there, since setting `[backlog] file` is followed by the import step of th
 ## 5. Commands and tools
 
 ```bash
-headwork backlog [list] [--project P] [--owner user|agent] [--state open|done|dropped|all] [--json]
+headwork backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--json]
 headwork backlog add <project> <text> [--section S] [--owner user|agent] [--not-before D] [--due D] [--note N]...
-headwork backlog done <id> [--note N] [--drop]
+headwork backlog start <id>
+headwork backlog block <id> --reason decision|event --note N
+headwork backlog unblock <id>
+headwork backlog cancel <id> [--reason R]
+headwork backlog done <id> [--note N]
 headwork backlog reopen <id>
 headwork backlog edit <id> [--text T] [--project P] [--section S|none] [--owner O] [--not-before D|none] [--due D|none] [--append T]
 headwork backlog import [--file P] [--dry-run] [--json]
 headwork backlog export [--file P] [--json]
 ```
 
-A list line is `#<id> [<project>/<section>] <text> (owner, dates, task <name>, <state>)`.
+A list line is `#<id> [<project>/<section>] <text> (owner, status, dates, task <name>, <state>)`; the status is left out
+for an item in the backlog. `--status` defaults to `open` (backlog, in progress and blocked).
 
 An item must be writable to the file: the text is non-empty and one line, the project is non-empty, one line, does not
-start with `#` and does not start with Done or Dropped (those headings hold finished items), the section is one line
+start with `#` and does not start with Done, Cancelled or Dropped (those headings hold finished items), the section is one line
 and does not start with `#`, and each note is one line (a leading `- ` is dropped). `add` and `edit` trim, read the text
 as an import reads a line (date groups become the fields, a `For you:` prefix the owner; an explicit option wins) and
 refuse what is left with the reason; the store refuses it too.
 
-The orchestrator has `backlog_list`, `backlog_add`, `backlog_done` and `backlog_edit` with the same filters and fields; each returns
-the item lines and the export outcome. Workers have none of them, except an explorer (a task of kind `explore`, not a part):
+The orchestrator has `backlog_list` (with `status`), `backlog_add`, `backlog_start`, `backlog_block`, `backlog_unblock`,
+`backlog_cancel` (its `reason` is required), `backlog_done`, `backlog_reopen` and `backlog_edit` with the same filters and
+fields; each returns the item lines and the export outcome. Workers have none of them, except an explorer (a task of kind `explore`, not a part):
 it has `backlog_list` and a narrow `backlog_add` that adds only what the user picked in its `Backlog` ask (`backlog-unasked`
 otherwise), logs `backlog-added` with its task and appends ` Source: <report>, task <name>` (`docs/decisions/2026-11-27-explore-kind.md`).
 
@@ -130,16 +144,15 @@ otherwise), logs `backlog-added` with its task and appends ` Source: <report>, t
 
 `headwork spawn ... --backlog <id>` and the `backlog` argument of the MCP `spawn` tool tie a task to an item.
 
-- Refused, before the task exists, when the item is unknown, not open or a live task already holds it (a live task is
-  one that is not closed, dropped or failed). A link refused after the task started leaves it running unlinked: the
-  spawn output and the MCP result (`backlog_unlinked`) say so and why.
-- `backlog_items.task_id` is set once the task exists; `backlog_list` shows the task and its state, and the export prints it.
+- The item moves to `in_progress`, linked to the task: from `backlog`, from `in_progress` when no live task holds it, or
+  from `blocked` for `task_lost` or `partial` (a respawn). Anything else is refused by the guard before the task exists
+  (a live task is one that is not closed, dropped or failed). A move refused after the task started leaves it running
+  unlinked: the spawn output and the MCP result (`backlog_unlinked`) say so and why.
+- `backlog_list` shows the task and its state, and the export prints it in the status tag.
 - Where a task's state changes (`apply_in` in `crates/store/src/queries.rs`, the one place every path goes through:
-  the finisher, the tick, `close --force`, a part's drop), a task that becomes `closed` finishes its item: `done` today
-  with the note `task <name>` (the link ends), and `merged <url>, <url>` after it when the task had merged pull requests. A task that
-  becomes `dropped` or `failed` frees the item, which stays open. The export follows every close
-  (`ops::close`, after `Cleaned`; a no-op when nothing changed).
-- A change of the item by hand (`backlog done`, a drop) unlinks it.
+  the finisher, the tick, `close --force`, a part's drop), the task-end table of section 10 moves every in-progress item
+  linked to it. The export follows every close (`ops::close`, after `Cleaned`; a no-op when nothing changed).
+- A hand finish or cancel of an item a live task holds is refused: the task finishes it, or is dropped first.
 
 ## 7. One machine
 
@@ -164,7 +177,7 @@ when nothing waits. In order:
    pending notes.
 6. `backlog #<id>: <text>`: the other open items of owner `user`.
 
-Items linked to a task, done or dropped, and items with a future `not_before` are left out. When more than nine items
+Items linked to a task, done or cancelled, and items with a future `not_before` are left out. When more than nine items
 wait, eight show and the last line is `... and N more: headwork digest`.
 
 A pull request waits for the user when it is open in the `prs` rows, its task is `in_review`, and the task's newest
@@ -204,6 +217,9 @@ name is (the old tools, like the new ones, by the orchestrator only), and is the
 | `headwork spawn --todo <id>`, the `todo` argument of the MCP `spawn` | `--backlog <id>`, `backlog` | accepted; the first of `backlog` and `todo` that is not null counts |
 | Config `[todo]` | `[backlog]` | folded into `[backlog]` before the config is read, so one layer may still say `[todo]` while another says `[backlog]`; a key the two give different values is refused (`todo.<key> and backlog.<key> differ`). `headwork doctor` (check `config-keys`) names each `todo.<key>`; `todo.file` and `todo.leave_pointer` stay machine-only |
 | The folder `<home>/todo-backups` | `<home>/backlog-backups` | left in place: never listed, pruned, moved or deleted; new copies go to the new folder |
+| Item state `open`, `done`, `dropped` (migration 0031) | status `backlog`, `in_progress`, `blocked`, `done`, `cancelled` | `--state` and the `state` argument of `backlog_list` and `/api/backlog` still read `open` (backlog, in progress, blocked), `done`, `dropped` (cancelled) and `all`; the parser reads `dropped` as `cancelled` |
+| `backlog done --drop`, `backlog_done` with `drop` | `backlog cancel`, `backlog_cancel` | accepted; the note is the reason |
+| Event `backlog-moved` for a move of the generated file | `backlog-file-moved` | events written before keep the old name |
 
 The spawn result carries `backlog_unlinked` and, for the same release, the same value as `todo_unlinked`; events are
 `backlog-*` with no alias. The earlier migration note `2026-11-26-todo-in-store` now uses the backlog names and points
@@ -218,10 +234,61 @@ records, per path, when it was last exported as the configured file (`configured
 while another path was, is a move from the path configured most recently (`move_source` in `core/src/backlog.rs`). An
 export to `--file` never moves anything and never marks its path configured.
 
-A move first deals with the old file, then writes and records the new one, then logs `backlog-moved` with both names;
+A move first deals with the old file, then writes and records the new one, then logs `backlog-file-moved` with both names;
 the output says "moved from ...". The old file is never deleted. It stays as it was, or, with `[backlog] leave_pointer =
 true` (machine-only, default off), its text is copied to `<home>/backlog-backups` and replaced by one line naming the new
 file. A failure in that step writes nothing new, so the next export tries the move again; a file already holding the
 pointer is not copied a second time. The pointer's hash becomes the old file's last export, so pointing `[backlog] file`
 back at it later writes the list there without taking the pointer for a hand edit. A new file that already exists and
 was never imported (a copy) is refused as in section 4 until `headwork backlog import`; the next export then moves.
+
+## 10. Stored statuses
+
+Each item's status is stored and written only through one pure guard, `transition(from, to, actor, facts)` in
+`crates/core/src/backlog/status.rs`, and one store call, `Store::move_backlog_item`, which writes the row and the event
+`backlog-moved` (`item`, `from`, `to`, `actor`, `reason`, `kind`, `task`) in one transaction. The design is
+`S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phase P1 (no epics, dependencies, worker item
+tools or respawn yet). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
+
+| Status | Meaning |
+|---|---|
+| `backlog` | Wanted, not started |
+| `in_progress` | Spun up: a task works on it, or is about to |
+| `blocked` | Cannot move until something happens; `blocked_reason` is `depends`, `task_lost`, `partial`, `decision`, `event` or `dep_cancelled`, with a note and the status to return to |
+| `done` | Finished |
+| `cancelled` | Not wanted any more; kept in the store, never exported (it replaces `dropped`) |
+
+Actors: the user (the CLI with no `HEADWORK_ROLE`), the orchestrator (its tools, or the CLI under `HEADWORK_ROLE=orchestrator`),
+an explorer (its epic's children only), a worker (its own linked item only) and headwork (close, tick, hooks).
+
+| From | To | Who |
+|---|---|---|
+| (new) | `backlog` | user, orchestrator, explorer, headwork |
+| (new) | `blocked` (`depends`) | explorer, on its epic's children |
+| `backlog` | `in_progress` | user (`backlog start`), orchestrator (`backlog_start`, `spawn --backlog`), headwork; refused for an item whose project headwork does not run |
+| `in_progress` (no live task) | `in_progress` | user, orchestrator, headwork: a new task linked |
+| `in_progress` | `done` | headwork: the task-end table |
+| `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
+| `in_progress` | `blocked` | worker on its own item and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
+| `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`dep_cancelled`) |
+| `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item, headwork |
+| `blocked` (`task_lost`, `partial`) | `in_progress` | user, orchestrator, headwork: a respawn |
+| `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children |
+| `done`, `cancelled` | `backlog` | user and orchestrator (`backlog reopen`, `backlog_reopen`), clearing `done_on` and `done_note` |
+
+Refused: a worker touching an item its task is not linked to; an explorer outside its epic; anyone but headwork
+finishing an item a live task works on; a cancel while a live task works on it (drop the task first); `cancelled` on a
+`done` item; the orchestrator cancelling without a reason; a move to the status the item already has.
+
+What a task's end does to each `in_progress` item linked to it (`on_task_end`, applied by the store's `task_ended` to
+every such item, inside the transition):
+
+| Task becomes | Item |
+|---|---|
+| `merged` | `done` today, note `task <name> merged <urls>`, link ended |
+| `closed` (the item never saw `merged`) | `done`, note `task <name> merged <urls>`, or `task <name>, no pull request` |
+| `dropped`, `failed` | `blocked` (`task_lost`), note `task <name> dropped` or `failed`, back to `in_progress` on unblock, link ended |
+| any other state | no change |
+
+An item already `cancelled`, `done` or `blocked` is not in progress, so a task's end leaves it alone. A move the guard
+refuses there is logged as `backlog-move-refused` and never fails the task's transition.
