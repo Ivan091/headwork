@@ -461,28 +461,28 @@ mode = \"workspaces\"
 }
 
 #[test]
-fn the_pane_title_is_a_template_of_name_model_and_effort() {
+fn the_pane_title_is_a_template_of_name_role_model_and_effort() {
     let default = Config::parse("[machine]\nhost = \"wmux\"\n", "title").unwrap();
     assert_eq!(
         default
             .layout
-            .title_for("me-sim-cars", "opus", Some("high")),
+            .title_for("me-sim-cars", "worker", "opus", Some("high")),
         "me-sim-cars",
         "default with an effort"
     );
     assert_eq!(
-        default.layout.title_for("headwork-m7", "sonnet", None),
+        default.layout.title_for("headwork-m7", "worker", "sonnet", None),
         "headwork-m7",
         "default without an effort"
     );
     let custom = Config::parse(
-        "[machine]\nhost = \"wmux\"\n\n[layout]\ntitle = \"[{model}/{effort}] {name}\"\n",
+        "[machine]\nhost = \"wmux\"\n\n[layout]\ntitle = \"[{role} {model}/{effort}] {name}\"\n",
         "title",
     )
     .unwrap();
     assert_eq!(
-        custom.layout.title_for("a-b", "haiku", Some("low")),
-        "[haiku/low] a-b",
+        custom.layout.title_for("a-b", "lead", "haiku", Some("low")),
+        "[lead haiku/low] a-b",
         "custom"
     );
 }

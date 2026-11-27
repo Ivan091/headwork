@@ -850,13 +850,13 @@ fn retitle_sets_every_live_pane_or_the_one_named_and_follows_the_layout_template
     let mut w = world_with(10, "builtin", "");
     let (sand, _) = w.spawn("sand", false);
     let (dune, _) = w.spawn("dune", false);
-    w.config.layout.title = "{effort}|{model}|{name}".to_owned();
+    w.config.layout.title = "{role}|{effort}|{model}|{name}".to_owned();
     let (all, failed) = headwork::ops::title::retitle(&w.store, &env(&w), None).unwrap();
     assert!(failed.is_empty(), "{failed:?}");
     let titles: Vec<&str> = all.iter().map(|item| item.title.as_str()).collect();
     assert_eq!(
         titles,
-        ["high|haiku|demo-sand", "high|haiku|demo-dune"],
+        ["worker|high|haiku|demo-sand", "worker|high|haiku|demo-dune"],
         "all live tasks"
     );
     let (one, _) = headwork::ops::title::retitle(&w.store, &env(&w), Some(&dune)).unwrap();

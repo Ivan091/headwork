@@ -558,8 +558,8 @@ pub struct LayoutConfig {
     /// The most panes headwork splits a workspace into before workers stack as tabs; above 4 it acts as 4, since no pane
     /// is cut smaller than a quarter.
     pub panes: NonZeroU32,
-    /// The title of a worker's pane or tab. `{name}` is `<project>-<slug>`, `{model}` the model, `{effort}` the effort
-    /// word, or `?` when it is unknown.
+    /// The title of a worker's pane or tab. `{name}` is `<project>-<slug>`, `{role}` the kind of session (`lead`, `part`,
+    /// `reviewer` or `worker`), `{model}` the model, `{effort}` the effort word, or `?` when it is unknown.
     pub title: String,
 }
 
@@ -577,15 +577,16 @@ impl Default for LayoutConfig {
 }
 
 impl LayoutConfig {
-    /// The title of a worker's pane or tab: the template with `{name}`, `{model}` and `{effort}` filled in.
+    /// The title of a worker's pane or tab: the template with `{name}`, `{role}`, `{model}` and `{effort}` filled in.
     #[must_use]
     #[expect(
         clippy::literal_string_with_formatting_args,
         reason = "the placeholders are the config template's own, not format arguments"
     )]
-    pub fn title_for(&self, name: &str, model: &str, effort: Option<&str>) -> String {
+    pub fn title_for(&self, name: &str, role: &str, model: &str, effort: Option<&str>) -> String {
         self.title
             .replace("{name}", name)
+            .replace("{role}", role)
             .replace("{model}", model)
             .replace("{effort}", effort.unwrap_or("?"))
     }
@@ -751,7 +752,7 @@ pub struct LeadsConfig {
     )]
     pub max_parts: Option<NonZeroU32>,
     /// The title of a part's tab. `{part}` is the part's own slug after its lead's, `{name}` the full task name,
-    /// `{model}` and `{effort}` as in `[layout] title`.
+    /// `{role}`, `{model}` and `{effort}` as in `[layout] title`.
     pub part_title: String,
     /// A lead asks the user before its task closes: its own close and the tick's merged-grace close wait for the
     /// user's go on an ask headed `Close` (`docs/decisions.md`, 2026-11-21, leads ask before closing).
@@ -825,10 +826,11 @@ impl LeadsConfig {
         clippy::literal_string_with_formatting_args,
         reason = "the placeholders are the config template's own, not format arguments"
     )]
-    pub fn title_for(&self, part: &str, name: &str, model: &str, effort: Option<&str>) -> String {
+    pub fn title_for(&self, part: &str, name: &str, role: &str, model: &str, effort: Option<&str>) -> String {
         self.part_title
             .replace("{part}", part)
             .replace("{name}", name)
+            .replace("{role}", role)
             .replace("{model}", model)
             .replace("{effort}", effort.unwrap_or("?"))
     }
