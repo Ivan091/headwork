@@ -16,6 +16,7 @@ use headwork_adapters::git::FakeGit;
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::TaskState;
 use headwork_core::backlog::{BacklogOwner, BacklogStatus, BlockReason, ItemStatus};
+use headwork_core::lifecycle::{SessionFacts, Trigger};
 use headwork_core::{Actor, Config, Role};
 use headwork_store::NewSession;
 use headwork_store::{BacklogFilter, Store};
@@ -407,8 +408,8 @@ fn the_status_tools_start_block_unblock_cancel_and_reopen() {
     );
     let task = w.store.find_task("demo-spun").unwrap().unwrap();
     assert!(
-        matches!(task.state, TaskState::Dropped | TaskState::Closed),
-        "cancelling the item drops its live task: {:?}",
+        task.state == TaskState::Closed,
+        "cancelling the item drops and closes its live task: {:?}",
         task.state
     );
 }
@@ -429,6 +430,18 @@ impl World {
                         host_workspace: None,
                         host_surface: None,
                     },
+                    Actor::Hook,
+                )
+                .unwrap();
+        }
+        if self.store.task(id).unwrap().state == TaskState::Spawning {
+            self.store
+                .transition(
+                    id,
+                    &Trigger::SessionStarted(SessionFacts {
+                        session_matches: true,
+                        launcher_alive: true,
+                    }),
                     Actor::Hook,
                 )
                 .unwrap();
@@ -564,5 +577,49 @@ next",
     assert_eq!(
         block.note.as_deref(),
         Some("task demo-half partial: the rest later next")
+    );
+}
+
+#[test]
+fn the_done_tool_with_outcome_partial_blocks_the_item_and_a_bad_outcome_is_refused() {
+    let mut w = world();
+    let id = w.spawn_plain(
+        "tool", "Do some
+",
+    );
+    let (is_error, text) = w.worker_tool(
+        "demo-tool",
+        "done",
+        &json!({ "summary": "half done", "outcome": "finished" }),
+    );
+    assert!(is_error && text.contains("task outcome"), "{text}");
+    assert_eq!(
+        w.store.backlog_item(id).unwrap().draft.status,
+        BacklogStatus::InProgress,
+        "a refused outcome changes nothing"
+    );
+    let task = w.store.find_task("demo-tool").unwrap().unwrap();
+    w.store
+        .append_event(
+            Actor::Hook,
+            Some(task.id),
+            None,
+            "tool-used",
+            &json!({ "tool": "SendMessage" }),
+        )
+        .unwrap();
+    let (is_error, text) = w.worker_tool(
+        "demo-tool",
+        "done",
+        &json!({ "summary": "half done", "outcome": "partial" }),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.contains("partial"), "{text}");
+    let item = w.store.backlog_item(id).unwrap();
+    let block = item.draft.status.block().unwrap();
+    assert_eq!(block.reason, BlockReason::Partial);
+    assert_eq!(
+        block.note.as_deref(),
+        Some("task demo-tool partial: half done")
     );
 }

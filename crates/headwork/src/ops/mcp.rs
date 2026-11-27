@@ -626,7 +626,10 @@ const TOOLS: &[ToolDef] = &[
                     "outcome": {
                         "type": "string",
                         "enum": ["done", "partial"],
-                        "description": concat!("`done` (default), or `partial` when the work is not finished: the backlog item your task works on ", "becomes blocked (`partial`) instead of done; say what is left in `summary`.")
+                        "description": concat!(
+                            "`done` (default), or `partial` when the work is not finished: the backlog item your task works on ",
+                            "becomes blocked (`partial`) instead of done; say what is left in `summary`.",
+                        ),
                     },
                     "scenes": {
                         "type": "array",
@@ -1596,16 +1599,20 @@ impl<'a> Server<'a> {
         task: &Task,
         session: &str,
         outcome: TaskOutcome,
-        summary: &str,
+        summary: Option<&str>,
     ) -> Result<Option<String>> {
         if outcome != TaskOutcome::Partial {
             return Ok(None);
         }
-        let blocked =
-            self.store
-                .record_partial_outcome(task, session, Some(summary), self.env.actor)?;
+        let blocked = self
+            .store
+            .record_partial_outcome(task, session, summary, self.env.actor)?;
         Ok(Some(format!(
-            "done recorded as partial: backlog item(s) {blocked:?} are blocked (partial); this session, its \n             pane and its worktree close now"
+            concat!(
+                "done recorded as partial: backlog item(s) {:?} are blocked (partial); this session, its pane ",
+                "and its worktree close now"
+            ),
+            blocked
         )))
     }
 
@@ -2440,7 +2447,8 @@ impl<'a> Server<'a> {
         begin_own_close(self.store, &self.env, self.git, task.id)?;
         self.store
             .record_report(task.id, session, "done", &summary, &[], None)?;
-        let partial = self.record_outcome(&task, session, outcome, &summary)?;
+        let said = args.get("summary").and_then(Value::as_str);
+        let partial = self.record_outcome(&task, session, outcome, said)?;
         self.closing = Some(task);
         if let Some(text) = partial {
             return Ok(text);
