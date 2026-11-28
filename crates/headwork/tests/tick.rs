@@ -3414,3 +3414,65 @@ fn an_epic_blocked_for_churn_is_a_standing_finding_until_it_is_unblocked() {
         "a block by hand with the same note raises nothing"
     );
 }
+
+#[test]
+fn an_epic_whose_runner_keeps_failing_is_a_standing_finding_logged_once() {
+    use headwork_core::backlog::{
+        BacklogActor, BacklogDraft, BacklogOwner, BacklogStatus, ItemKind, Target,
+    };
+    use headwork_store::{BacklogMove, ItemShape};
+    let mut w = world();
+    let draft = |text: &str| BacklogDraft {
+        project: "demo".to_owned(),
+        section: None,
+        text: text.to_owned(),
+        notes: Vec::new(),
+        status: BacklogStatus::Backlog,
+        owner: BacklogOwner::Agent,
+        added: None,
+        not_before: None,
+        due: None,
+        done_on: None,
+        done_note: None,
+    };
+    let shape = ItemShape {
+        kind: Some(ItemKind::Epic),
+        ..ItemShape::default()
+    };
+    let epic = w
+        .store
+        .add_backlog_item_shaped(
+            &draft("Failing epic"),
+            Actor::User,
+            BacklogActor::User,
+            None,
+            &shape,
+        )
+        .unwrap()
+        .id;
+    let start = BacklogMove::new(Target::InProgress, BacklogActor::User, Actor::User, true);
+    w.store.move_backlog_item(epic, &start).unwrap();
+    run_tick(&mut w);
+    run_tick(&mut w);
+    assert_eq!(
+        count(&w, "epic-runner-error"),
+        1,
+        "the same error is logged once"
+    );
+    assert_eq!(
+        w.store
+            .open_finding_keys(FindingId::EpicRunnerError)
+            .unwrap(),
+        [format!("epic-runner-error:{epic}")]
+    );
+    let done = BacklogMove::new(Target::Done, BacklogActor::User, Actor::User, true);
+    w.store.move_backlog_item(epic, &done).unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::EpicRunnerError)
+            .unwrap()
+            .is_empty(),
+        "swept once the epic is no longer in progress"
+    );
+}

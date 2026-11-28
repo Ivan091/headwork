@@ -24,6 +24,14 @@ pub const EVENT_EPIC_REPLAN: &str = "epic-replan";
 /// The event of an epic the runner blocked for the user's decision after too many re-plans (`epic`, `replans`).
 pub const EVENT_EPIC_CHURN: &str = "epic-churn";
 
+/// The event of a runner step that failed (`epic`, `child`, `error`); one is logged again only after a pass of that
+/// epic went through without an error ([`EVENT_EPIC_RUNNER_OK`]).
+pub const EVENT_EPIC_RUNNER_ERROR: &str = "epic-runner-error";
+
+/// The event of an epic's first pass without an error after one that failed (`epic`): it ends the tick's
+/// `epic-runner-error` finding and lets the same error be logged again.
+pub const EVENT_EPIC_RUNNER_OK: &str = "epic-runner-ok";
+
 /// The start of the block note of an epic blocked for churn: `epic-churn: <n> re-plans`. Only text for the user: the
 /// churn block is recorded in `epic_churn_blocks`, never read back from the note.
 const CHURN_NOTE: &str = "epic-churn";
@@ -453,6 +461,56 @@ impl Store {
             )
             .optional()?
             .map(TaskId))
+    }
+
+    /// Whether the runner already logged `error` for `epic` and `child` since the epic's last error-free pass, so it is
+    /// not logged again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn runner_error_logged(
+        &self,
+        epic: Option<i64>,
+        child: Option<i64>,
+        error: &str,
+    ) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE type = ?1 AND json_extract(data, '$.epic') IS ?3
+             AND json_extract(data, '$.child') IS ?4 AND json_extract(data, '$.error') = ?5
+             AND id > coalesce((SELECT max(id) FROM events WHERE type = ?2 AND json_extract(data, '$.epic') IS ?3), 0))",
+            params![EVENT_EPIC_RUNNER_ERROR, EVENT_EPIC_RUNNER_OK, epic, child, error],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The error of `epic`'s newest runner status event when that is an [`EVENT_EPIC_RUNNER_ERROR`] (not followed by an
+    /// [`EVENT_EPIC_RUNNER_OK`]): the epic's runner is failing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error, or the JSON error of a bad event.
+    pub fn runner_failing(&self, epic: i64) -> Result<Option<String>, StoreError> {
+        let latest: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT type, data FROM events WHERE type IN (?1, ?2) AND json_extract(data, '$.epic') = ?3
+                 ORDER BY id DESC LIMIT 1",
+                params![EVENT_EPIC_RUNNER_ERROR, EVENT_EPIC_RUNNER_OK, epic],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((kind, data)) = latest.filter(|(kind, _)| kind == EVENT_EPIC_RUNNER_ERROR) else {
+            return Ok(None);
+        };
+        drop(kind);
+        let data: serde_json::Value = serde_json::from_str(&data)?;
+        Ok(Some(
+            data.get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        ))
     }
 
     /// Whether an event of `kind` names backlog item `item` (`data.item`).

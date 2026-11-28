@@ -401,7 +401,8 @@ impl<'b> Run<'_, 'b> {
         }
     }
 
-    /// Keeps the standing finding `epic-churn` for each epic the runner blocked after `[epics] max_replans` re-plans, while
+    /// Keeps the standing finding `epic-runner-error` for each epic in progress whose runner step failed last, and
+    /// `epic-churn` for each epic the runner blocked after `[epics] max_replans` re-plans, while
     /// that churn block stands (`Store::epic_churn_blocked`, `docs/backlog.md`, section 13).
     fn epics(&mut self) -> Result<()> {
         let blocked = self.store.backlog_items(&headwork_store::BacklogFilter {
@@ -435,7 +436,31 @@ impl<'b> Run<'_, 'b> {
                 )),
             )?;
         }
-        self.sweep(FindingId::EpicChurn)
+        self.sweep(FindingId::EpicChurn)?;
+        let running = self.store.backlog_items(&headwork_store::BacklogFilter {
+            statuses: vec![headwork_core::backlog::ItemStatus::InProgress],
+            ..headwork_store::BacklogFilter::default()
+        })?;
+        for item in running
+            .into_iter()
+            .filter(|item| item.kind == headwork_core::backlog::ItemKind::Epic)
+        {
+            let Some(error) = self.store.runner_failing(item.id)? else {
+                continue;
+            };
+            self.standing(
+                &format!("epic-runner-error:{}", item.id),
+                FindingId::EpicRunnerError,
+                None,
+                Status::Standing,
+                &serde_json::json!({ "epic": item.id, "error": error }),
+                Some(&format!(
+                    "the epic runner fails on epic #{}: {error}",
+                    item.id
+                )),
+            )?;
+        }
+        self.sweep(FindingId::EpicRunnerError)
     }
 
     /// Copies the store once a day (`docs/store-backup.md`); quiet unless a copy is made or fails.

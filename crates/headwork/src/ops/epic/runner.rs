@@ -26,8 +26,10 @@ use crate::ops::Env;
 use crate::ops::backlog::export_after;
 use crate::ops::spawn::{Pumped, SpawnRequest, spawn};
 
-/// The event of a runner step that failed (`error`, and `epic` when one epic's step failed); the pump goes on.
-pub const EVENT_RUNNER_ERROR: &str = "epic-runner-error";
+/// The event of a runner step that failed (`error`, `epic` and `child` when they are known); the pump goes on.
+///
+/// The same error is not logged again until the epic has a pass without one ([`headwork_store::EVENT_EPIC_RUNNER_OK`]).
+pub const EVENT_RUNNER_ERROR: &str = headwork_store::EVENT_EPIC_RUNNER_ERROR;
 
 /// The event of a ready child whose project headwork does not run (`item`, `epic`, `project`), once per child.
 pub const EVENT_CHILD_SKIPPED: &str = "epic-child-skipped";
@@ -46,17 +48,28 @@ const NOTE_CHARS: usize = 300;
 pub fn run(store: &mut Store, env: &Env<'_>) -> Vec<Pumped> {
     let mut out = Vec::new();
     if let Err(error) = pass(store, env, &mut out) {
-        logged_error(store, env, None, &error);
+        log_error(store, env, None, None, &format!("{error:#}"), &mut false);
     }
     out
 }
 
-fn logged_error(store: &Store, env: &Env<'_>, epic: Option<i64>, error: &anyhow::Error) {
-    log_error(store, env, epic, None, &format!("{error:#}"));
-}
-
-/// Logs `epic-runner-error` with the epic and the child it concerns.
-fn log_error(store: &Store, env: &Env<'_>, epic: Option<i64>, child: Option<i64>, error: &str) {
+/// Logs `epic-runner-error` with the epic and the child it concerns, unless the same error was logged since the
+/// epic's last error-free pass; sets `failed` either way.
+fn log_error(
+    store: &Store,
+    env: &Env<'_>,
+    epic: Option<i64>,
+    child: Option<i64>,
+    error: &str,
+    failed: &mut bool,
+) {
+    *failed = true;
+    if store
+        .runner_error_logged(epic, child, error)
+        .unwrap_or(false)
+    {
+        return;
+    }
     drop(store.append_event(
         env.actor,
         None,
@@ -132,8 +145,25 @@ fn pass(store: &mut Store, env: &Env<'_>, out: &mut Vec<Pumped>) -> Result<()> {
         .collect();
     epics.sort_by_key(|item| item.id);
     for epic in &epics {
-        if let Err(error) = run_epic(store, env, epic, &mut state, out) {
-            logged_error(store, env, Some(epic.id), &error);
+        let mut failed = false;
+        if let Err(error) = run_epic(store, env, epic, &mut state, out, &mut failed) {
+            log_error(
+                store,
+                env,
+                Some(epic.id),
+                None,
+                &format!("{error:#}"),
+                &mut failed,
+            );
+        }
+        if !failed && store.runner_failing(epic.id)?.is_some() {
+            store.append_event(
+                env.actor,
+                None,
+                None,
+                headwork_store::EVENT_EPIC_RUNNER_OK,
+                &serde_json::json!({ "epic": epic.id }),
+            )?;
         }
     }
     Ok(())
@@ -145,9 +175,10 @@ fn run_epic(
     epic: &BacklogItem,
     state: &mut Pass,
     out: &mut Vec<Pumped>,
+    failed: &mut bool,
 ) -> Result<()> {
     let config = env.config;
-    reconcile(store, env, epic.id)?;
+    reconcile(store, env, epic.id, failed)?;
     for _ in 0..2 {
         let facts = store.epic_facts(epic.id, |project, kind| {
             child_skip(config, &epic.draft.project, project, kind)
@@ -196,7 +227,7 @@ fn run_epic(
                     )?;
                 }
                 for id in starts {
-                    if start_child(store, env, epic, id, out)?
+                    if start_child(store, env, epic, id, out, failed)?
                         && let Some(left) = state.room.as_mut()
                     {
                         *left = left.saturating_sub(1);
@@ -308,6 +339,7 @@ fn start_child(
     epic: &BacklogItem,
     id: i64,
     out: &mut Vec<Pumped>,
+    failed: &mut bool,
 ) -> Result<bool> {
     let claim = store.claim_epic_child(id, env.config.epics.max_parallel, env.actor)?;
     let EpicClaim::Claimed(child) = claim else {
@@ -316,14 +348,21 @@ fn start_child(
     let held = match spawn_child(store, env, epic, &child) {
         Ok((task, pumped)) => {
             out.extend(pumped);
-            settle(store, env, epic.id, id, Some(task), None)
+            settle(store, env, (epic.id, id), Some(task), None, failed)
         }
         Err(failure) => {
             let task = failure
                 .name
                 .as_deref()
                 .and_then(|name| store.find_task(name).ok().flatten());
-            settle(store, env, epic.id, id, task, Some(&failure.error))
+            settle(
+                store,
+                env,
+                (epic.id, id),
+                task,
+                Some(&failure.error),
+                failed,
+            )
         }
     };
     drop(export_after(store, env));
@@ -342,10 +381,10 @@ const fn is_over(state: TaskState) -> bool {
 fn settle(
     store: &mut Store,
     env: &Env<'_>,
-    epic: i64,
-    id: i64,
+    (epic, id): (i64, i64),
     task: Option<Task>,
     spawn_error: Option<&anyhow::Error>,
+    failed: &mut bool,
 ) -> bool {
     let spawn_text = spawn_error.map(|error| format!("{error:#}"));
     if let Some(text) = &spawn_text {
@@ -355,6 +394,7 @@ fn settle(
             Some(epic),
             Some(id),
             &format!("spawn failed: {text}"),
+            failed,
         );
     }
     let (moved, held) = match task {
@@ -386,7 +426,7 @@ fn settle(
             || format!("{error:#}"),
             |spawn| format!("{error:#} (after the spawn failed: {spawn})"),
         );
-        log_error(store, env, Some(epic), Some(id), &text);
+        log_error(store, env, Some(epic), Some(id), &text, failed);
     }
     held
 }
@@ -431,7 +471,7 @@ const NEVER_LINKED: &str = "claimed but never linked";
 
 /// Settles each child of `epic` the runner claimed over [`CLAIM_GRACE_S`] ago that no task holds: linked to the live
 /// task named for it (`e<epic>-<child>`, `-<words>`, `-2`), else blocked `task_lost` as [`NEVER_LINKED`].
-fn reconcile(store: &mut Store, env: &Env<'_>, epic: i64) -> Result<()> {
+fn reconcile(store: &mut Store, env: &Env<'_>, epic: i64, failed: &mut bool) -> Result<()> {
     for id in store.stale_epic_claims(epic, CLAIM_GRACE_S)? {
         let project = store.backlog_item(id)?.draft.project;
         let task = store.live_task_with_slug_prefix(&project, &format!("e{epic}-{id}"))?;
@@ -440,7 +480,14 @@ fn reconcile(store: &mut Store, env: &Env<'_>, epic: i64) -> Result<()> {
             None => lost(store, env, id, NEVER_LINKED),
         };
         if let Err(error) = moved {
-            log_error(store, env, Some(epic), Some(id), &format!("{error:#}"));
+            log_error(
+                store,
+                env,
+                Some(epic),
+                Some(id),
+                &format!("{error:#}"),
+                failed,
+            );
         }
     }
     Ok(())
