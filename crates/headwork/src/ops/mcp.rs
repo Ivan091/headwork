@@ -1614,7 +1614,7 @@ impl<'a> Server<'a> {
 
     fn backlog_done(&mut self, args: &Value) -> Result<String> {
         let note = args.get("note").and_then(Value::as_str);
-        let target = if flag(args, "drop") {
+        let target = if optional_bool(args, "drop")? {
             Target::Cancelled
         } else {
             Target::Done

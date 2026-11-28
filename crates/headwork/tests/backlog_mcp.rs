@@ -218,6 +218,19 @@ fn done_finishes_an_item_and_drop_cancels_it() {
 }
 
 #[test]
+fn a_drop_that_is_not_a_boolean_is_refused_and_the_item_stays() {
+    let mut w = world();
+    let id = w.add("alpha", "Keep me");
+    let (is_error, text) = w.tool("backlog_done", &json!({ "id": id, "drop": "true" }));
+    assert!(
+        is_error && text.contains("`drop` must be a boolean"),
+        "{text}"
+    );
+    let item = w.store.backlog_item(id).unwrap().draft;
+    assert_eq!(item.status, BacklogStatus::Backlog);
+}
+
+#[test]
 fn an_edit_changes_what_it_names_and_none_clears_a_date_or_a_section() {
     let mut w = world();
     w.ok(
