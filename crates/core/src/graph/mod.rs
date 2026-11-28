@@ -295,7 +295,7 @@ pub struct ItemFact {
     pub project: String,
     /// The item's text.
     pub text: String,
-    /// Where it stands now; item history is not logged, so a replay shows this.
+    /// Where it stands now; a replay shows this (the status is not yet replayed from the `backlog-moved` events).
     pub status: ItemStatus,
     /// Whether it is an epic.
     pub epic: bool,

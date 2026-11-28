@@ -1113,8 +1113,8 @@ fn short_text(text: &str, max: usize) -> String {
 }
 
 /// The backlog items drawn: those linked to a drawn task; and, outside a one-task view, open ones with a dependency or
-/// a dependant, and epics with an open child. Item history is not logged, so an instant shows the items added by then
-/// in their state now.
+/// a dependant, and epics with an open child. An instant shows the items and the dependencies added by then, each
+/// item in its status now.
 fn drawn_items<'f>(draw: &Draw<'f>) -> Vec<&'f super::ItemFact> {
     let existing: Vec<&super::ItemFact> = draw
         .facts
@@ -1129,7 +1129,12 @@ fn drawn_items<'f>(draw: &Draw<'f>) -> Vec<&'f super::ItemFact> {
         .map(|item| item.id)
         .collect();
     let mut tied: BTreeSet<i64> = BTreeSet::new();
-    for dep in &draw.facts.item_deps {
+    for dep in draw
+        .facts
+        .item_deps
+        .iter()
+        .filter(|dep| draw.until(&dep.created_at))
+    {
         if ids.contains(&dep.item) && ids.contains(&dep.depends_on) {
             tied.insert(dep.item);
             tied.insert(dep.depends_on);
@@ -1192,7 +1197,12 @@ fn items(draw: &Draw<'_>, canvas: &mut Canvas) {
             );
         }
     }
-    for dep in &draw.facts.item_deps {
+    for dep in draw
+        .facts
+        .item_deps
+        .iter()
+        .filter(|dep| draw.until(&dep.created_at))
+    {
         canvas.link(
             EdgeKind::Depends,
             &item_node(dep.item),

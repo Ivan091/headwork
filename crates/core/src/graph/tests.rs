@@ -1381,6 +1381,23 @@ fn items_are_drawn_by_their_rules() {
 }
 
 #[test]
+fn a_dependency_added_after_the_instant_is_not_drawn_in_the_replay() {
+    let facts = item_facts();
+    let before = build(&facts, Some("T15"), Scope::Live);
+    assert!(
+        edge(&before, EdgeKind::Depends, "item:2", "item:4").is_none(),
+        "the dependency is added at T20"
+    );
+    assert!(
+        before.node("item:2").is_none(),
+        "not tied yet, so not drawn"
+    );
+    let after = build(&facts, Some("T25"), Scope::Live);
+    assert!(edge(&after, EdgeKind::Depends, "item:2", "item:4").is_some());
+    assert!(after.node("item:2").is_some());
+}
+
+#[test]
 fn an_item_linked_to_a_task_of_the_all_view_is_drawn_whatever_its_status() {
     let graph = build(&item_facts(), None, Scope::All);
     assert_eq!(graph.node("item:3").map(Node::kind), Some(NodeKind::Item));
@@ -1442,7 +1459,11 @@ fn an_item_node_carries_its_label_status_and_kind() {
 
 #[test]
 fn a_replay_draws_the_items_added_by_the_instant() {
-    let graph = build(&item_facts(), Some("T05"), Scope::Live);
+    let mut facts = item_facts();
+    for dep in &mut facts.item_deps {
+        dep.created_at = "T04".to_owned();
+    }
+    let graph = build(&facts, Some("T05"), Scope::Live);
     assert_eq!(
         ids(&graph, NodeKind::Item),
         ["item:1", "item:2", "item:4"],
