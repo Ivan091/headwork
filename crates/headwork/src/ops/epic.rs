@@ -5,6 +5,8 @@
 //! (`tasks.epic_id`, written once at spawn from [`SpawnRequest::epic`]). Its tools act as [`BacklogActor::Explorer`] with the
 //! explorer's task and its epic, so the status guard keeps them to that epic's children, and the epic itself only for
 //! `plan_finish`; the tools that change anything need the epic in progress.
+//!
+//! The epic runner ([`run`], `docs/backlog.md`, section 13) starts the children once the plan is written.
 
 use std::fmt::Write as _;
 
@@ -23,6 +25,10 @@ use super::backlog::{AddRequest, Change, add_for, changed, edit_for, spawn_linke
 use super::explore::is_explorer;
 use super::spawn::{Pumped, SpawnRequest};
 use super::{Env, slashed};
+
+mod runner;
+
+pub use runner::{EVENT_CHILD_SKIPPED, EVENT_HELD, EVENT_RUNNER_ERROR, run};
 
 /// The folder under the first `[hooks] brief_writable` root that holds the epics' plan notes.
 pub const PLAN_DIR: &str = "epics";

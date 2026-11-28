@@ -198,7 +198,7 @@ pub fn spawn_shaped(
     };
     std::fs::write(&brief_path, brief)
         .with_context(|| format!("writing {}", brief_path.display()))?;
-    let pumped = pump(store, env)?;
+    let pumped = pump_queue(store, env)?;
     Ok((store.task(task.id)?, pumped))
 }
 
@@ -217,13 +217,27 @@ fn keeps_brief(path: &Path, brief: &str) -> Result<()> {
     Ok(())
 }
 
-/// Starts every queued task the start guard lets through, in queue order, and opens its pane. A task whose pane
-/// cannot be opened becomes `failed`; the rest of the queue still runs.
+/// Runs the queue ([`pump_queue`]), then the epic runner ([`super::epic::run`]), which starts the ready children of the
+/// epics in progress; its starts come back as further lines. The runner never fails the pump.
 ///
 /// # Errors
 ///
 /// Fails only when the store fails.
 pub fn pump(store: &mut Store, env: &Env<'_>) -> Result<Vec<Pumped>> {
+    let mut out = pump_queue(store, env)?;
+    out.extend(super::epic::run(store, env));
+    Ok(out)
+}
+
+/// Starts every queued task the start guard lets through, in queue order, and opens its pane.
+///
+/// A task whose pane cannot be opened becomes `failed`; the rest of the queue still runs. A spawn runs only this, so the
+/// runner's own spawns never run the runner again.
+///
+/// # Errors
+///
+/// Fails only when the store fails.
+pub fn pump_queue(store: &mut Store, env: &Env<'_>) -> Result<Vec<Pumped>> {
     let mut out = Vec::new();
     for id in store.queued()? {
         let task = store.task(id)?;

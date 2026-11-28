@@ -209,6 +209,7 @@ pub fn tick(store: &mut Store, tick_env: &TickEnv<'_>) -> Result<TickReport> {
     run.stage("config", Run::config)?;
     run.stage("migrations", Run::migrations)?;
     run.stage("backlog", Run::backlog)?;
+    run.stage("epics", Run::epics)?;
     run.stage("store_backup", Run::store_backup)?;
     run.stage("digest", Run::digest)?;
     run.stage("push_outbox", Run::push_outbox)?;
@@ -398,6 +399,42 @@ impl<'b> Run<'_, 'b> {
             | super::backlog::Export::Busy
             | super::backlog::Export::NotImported { .. } => Ok(()),
         }
+    }
+
+    /// Keeps the standing finding `epic-churn` for each epic the runner blocked after `[epics] max_replans` re-plans, while
+    /// it stays blocked with that note (`docs/backlog.md`, section 13).
+    fn epics(&mut self) -> Result<()> {
+        let blocked = self.store.backlog_items(&headwork_store::BacklogFilter {
+            statuses: vec![headwork_core::backlog::ItemStatus::Blocked],
+            ..headwork_store::BacklogFilter::default()
+        })?;
+        for item in blocked {
+            let Some(note) = item
+                .draft
+                .status
+                .block()
+                .filter(|block| block.reason == headwork_core::backlog::BlockReason::Decision)
+                .and_then(|block| block.note.clone())
+                .filter(|note| note.starts_with(headwork_store::CHURN_NOTE))
+            else {
+                continue;
+            };
+            if item.kind != headwork_core::backlog::ItemKind::Epic {
+                continue;
+            }
+            self.standing(
+                &format!("epic-churn:{}", item.id),
+                FindingId::EpicChurn,
+                None,
+                Status::Standing,
+                &serde_json::json!({ "epic": item.id, "note": note }),
+                Some(&format!(
+                    "epic #{} is blocked for your decision ({note}): unblock it to let the runner go on, or cancel it",
+                    item.id
+                )),
+            )?;
+        }
+        self.sweep(FindingId::EpicChurn)
     }
 
     /// Copies the store once a day (`docs/store-backup.md`); quiet unless a copy is made or fails.
