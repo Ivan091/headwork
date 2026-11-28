@@ -39,7 +39,7 @@ body[data-view="board"] #board {
 
 .kb-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  grid-template-columns: repeat(4, minmax(220px, 1fr));
   gap: 10px;
   align-items: start;
 }
@@ -58,10 +58,6 @@ body[data-view="board"] #board {
   padding-bottom: 3px;
 }
 
-.kb-head.clickable {
-  cursor: pointer;
-}
-
 .kb-head.status-in_progress {
   border-color: var(--green);
 }
@@ -75,7 +71,8 @@ body[data-view="board"] #board {
 }
 
 .kb-count,
-.kb-more-done {
+.kb-more-done,
+.kb-cancelled-count {
   color: var(--muted);
   font-weight: 400;
 }
@@ -233,4 +230,28 @@ body[data-view="board"] #board {
 
 .kb-epic-head h3 {
   margin: 0 8px 0 0;
+}
+
+.kb-card.kind-done {
+  border-left: 4px solid var(--blue);
+}
+
+.kb-card.kind-cancelled {
+  border-left: 4px solid var(--violet);
+  background: color-mix(in srgb, var(--violet) 10%, var(--surface));
+}
+
+.kb-card.kind-cancelled .kb-text {
+  text-decoration: line-through;
+  text-decoration-color: var(--violet);
+}
+
+#board .chip.kind-done {
+  color: var(--blue);
+  border-color: var(--blue);
+}
+
+#board .chip.kind-cancelled {
+  color: var(--violet);
+  border-color: var(--violet);
 }

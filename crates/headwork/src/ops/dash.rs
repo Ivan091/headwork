@@ -1617,10 +1617,39 @@ mod tests {
             String::from_utf8_lossy(&reply.body)
         );
         let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
-        assert_eq!(body["columns"].as_array().unwrap().len(), 5, "five columns");
+        assert_eq!(body["columns"].as_array().unwrap().len(), 4, "four columns");
         assert_eq!(body["columns"][0]["count"], 1, "one backlog item");
         assert_eq!(body["lanes"][0]["key"], "project:demo", "lane");
         assert_eq!(body["unlinked"].as_array().unwrap().len(), 0, "no tasks");
+    }
+
+    #[test]
+    fn the_board_marks_done_and_cancelled_cards_by_badge_and_colour() {
+        let find = |path: &str| ASSETS.iter().find(|asset| asset.path == path).unwrap().body;
+        let script = find("/kanban.js");
+        let css = find("/kanban.css");
+        for needle in [
+            "kind-done",
+            "kind-cancelled",
+            "✓ done",
+            "✕ cancelled",
+        ] {
+            assert!(script.contains(needle), "kanban.js lacks {needle}");
+        }
+        for needle in [
+            ".kb-card.kind-done",
+            ".kb-card.kind-cancelled",
+            "var(--blue)",
+            "var(--violet)",
+            "line-through",
+        ] {
+            assert!(css.contains(needle), "kanban.css lacks {needle}");
+        }
+        assert!(css.contains("repeat(4,"), "four grid columns");
+        assert!(
+            !script.contains("cancelledOpen"),
+            "no separate cancelled column"
+        );
     }
 
     #[test]
