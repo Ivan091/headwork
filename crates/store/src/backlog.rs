@@ -54,6 +54,9 @@ pub const EVENT_BACKLOG_UNDEPENDED: &str = "backlog-undepended";
 /// The event of an item's fields changed.
 pub const EVENT_BACKLOG_EDITED: &str = "backlog-edited";
 
+/// The event of a task recorded as the explorer of an epic (`epic`).
+pub const EVENT_TASK_EPIC: &str = "task-epic";
+
 /// The event of an import.
 pub const EVENT_BACKLOG_IMPORTED: &str = "backlog-imported";
 
@@ -493,6 +496,7 @@ fn facts<'a>(
             .is_some_and(|epic| item.parent == Some(epic)),
         is_actor_epic: request.actor_epic == Some(item.id),
         open_children,
+        is_epic: item.kind == ItemKind::Epic,
         has_project: request.has_project,
         links_another_task: request.link.is_some_and(|link| {
             item.task
@@ -1263,26 +1267,36 @@ impl Store {
         open_children(&self.conn, epic)
     }
 
-    /// The epic a task explores (`docs/backlog.md`, section 12): the open item linked to it when that is an epic, or the
-    /// epic of an open child linked to it (a re-plan child). `None` when it is linked to neither. Whether the task is an
-    /// explorer (kind `explore`, not a part) is the caller's to check.
+    /// Records that `task` was spun up to explore epic `epic` (`docs/backlog.md`, section 12) and logs `task-epic`.
     ///
     /// # Errors
     ///
-    /// Returns a read error.
-    pub fn epic_of_task(&self, task: TaskId) -> Result<Option<i64>, StoreError> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT CASE WHEN t.kind = 'epic' THEN t.id ELSE p.id END
-                 FROM backlog_items t LEFT JOIN backlog_items p ON p.id = t.parent_id AND p.kind = 'epic'
-                 WHERE t.task_id = ?1 AND t.status IN ('backlog', 'in_progress', 'blocked')
-                   AND (t.kind = 'epic' OR p.id IS NOT NULL)
-                 ORDER BY t.kind = 'epic' DESC, t.id LIMIT 1",
-                params![task.0],
-                |row| row.get(0),
-            )
-            .optional()?)
+    /// Returns [`StoreError::BacklogRefused`] when `epic` is not an epic, [`StoreError::UnknownBacklogItem`] when there is
+    /// no such item, or a write error.
+    pub fn set_task_epic(
+        &mut self,
+        task: TaskId,
+        epic: i64,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        if load(&tx, epic)?.kind != ItemKind::Epic {
+            return Err(refused(epic, "it is not an epic".to_owned()));
+        }
+        tx.execute(
+            &format!("UPDATE tasks SET epic_id = ?2, updated_at = {NOW} WHERE id = ?1"),
+            params![task.0, epic],
+        )?;
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            EVENT_TASK_EPIC,
+            &serde_json::json!({ "epic": epic }),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// What importing `drafts` would do: new items, items the store already holds by text, and repeats within the list.

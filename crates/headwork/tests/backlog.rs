@@ -489,6 +489,7 @@ fn request<'a>(brief: &'a Path, slug: &str) -> SpawnRequest<'a> {
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     }
 }
 

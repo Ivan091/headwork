@@ -312,6 +312,8 @@ pub struct MoveFacts<'a> {
     pub is_actor_epic: bool,
     /// How many of its children are open (backlog, in progress or blocked); 0 for an item that is not an epic.
     pub open_children: usize,
+    /// Whether it is an epic.
+    pub is_epic: bool,
     /// Whether a task can work on it: its project is one headwork runs, or a spawn names the project.
     pub has_project: bool,
     /// Whether the move names a task to link that is not the live task linked to it.
@@ -750,7 +752,9 @@ fn unlink(
         {
             Ok(())
         }
-        BacklogStatus::InProgress if actor == BacklogActor::Headwork && facts.linked_to_actor => {
+        BacklogStatus::InProgress
+            if actor == BacklogActor::Headwork && facts.is_epic && facts.linked_to_actor =>
+        {
             Ok(())
         }
         BacklogStatus::Done

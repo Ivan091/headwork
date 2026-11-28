@@ -170,25 +170,37 @@ fn moves(store: &Store) -> Vec<(Option<i64>, serde_json::Value)> {
 }
 
 #[test]
-fn the_epic_a_task_explores_is_its_linked_epic_or_the_epic_of_its_linked_child() {
+fn the_epic_a_task_explores_is_recorded_on_the_task_and_survives_the_epic_s_moves() {
     let (mut store, config) = store();
     let big = epic(&mut store, "Big epic");
     let replan = child(&mut store, big, "Re-plan the epic");
-    let plain = store
-        .add_backlog_item(&draft("Plain item"), Actor::Orchestrator)
-        .unwrap()
-        .id;
     let explorer = task(&mut store, &config, "epic-explorer");
     let replanner = task(&mut store, &config, "replanner");
-    let worker = task(&mut store, &config, "worker");
-    let idle = task(&mut store, &config, "idle");
-    link(&mut store, big, explorer.id);
+    assert_eq!(
+        store.task(explorer.id).unwrap().epic,
+        None,
+        "nothing recorded yet"
+    );
+    store.set_task_epic(explorer.id, big, Actor::User).unwrap();
     link(&mut store, replan, replanner.id);
-    link(&mut store, plain, worker.id);
-    assert_eq!(store.epic_of_task(explorer.id).unwrap(), Some(big));
-    assert_eq!(store.epic_of_task(replanner.id).unwrap(), Some(big));
-    assert_eq!(store.epic_of_task(worker.id).unwrap(), None);
-    assert_eq!(store.epic_of_task(idle.id).unwrap(), None);
+    assert_eq!(store.task(explorer.id).unwrap().epic, Some(big));
+    assert_eq!(
+        store.task(replanner.id).unwrap().epic,
+        None,
+        "a link to a child records nothing: the role comes only from the spawn"
+    );
+    let refused = store.set_task_epic(replanner.id, replan, Actor::User);
+    assert!(
+        matches!(&refused, Err(StoreError::BacklogRefused { reason, .. }) if reason.contains("not an epic")),
+        "{refused:?}"
+    );
+    link(&mut store, big, explorer.id);
+    close(&mut store, &explorer, &[Trigger::ForceClose]);
+    assert_eq!(
+        store.task(explorer.id).unwrap().epic,
+        Some(big),
+        "the role stays after the epic is released"
+    );
 }
 
 #[test]

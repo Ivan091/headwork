@@ -188,6 +188,7 @@ fn workers_split_panes_and_take_them_away_in_the_real_host() {
             depends_on: None,
             permission_mode: PermissionMode::Auto,
             allow_ask: &[],
+            epic: None,
         };
         spawn(store, &env, &request).unwrap().0
     };
@@ -338,6 +339,7 @@ fn open_two(layout: &str) -> Vec<(String, Shape)> {
             depends_on: None,
             permission_mode: PermissionMode::Auto,
             allow_ask: &[],
+            epic: None,
         };
         spawn(&mut store, &env, &request).unwrap();
     }
@@ -492,6 +494,7 @@ fn a_lead_gets_a_workspace_and_its_part_a_tab_in_the_real_cmux() {
             depends_on: None,
             permission_mode: PermissionMode::Auto,
             allow_ask: &[],
+            epic: None,
         },
     )
     .unwrap();

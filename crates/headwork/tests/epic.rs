@@ -17,7 +17,7 @@ use headwork_adapters::git::FakeGit;
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::backlog::{BacklogStatus, BlockReason, ItemStatus};
 use headwork_core::lifecycle::{SessionFacts, Trigger};
-use headwork_core::{Actor, CloseMode, Config, Model, Role, TaskState};
+use headwork_core::{Actor, CloseMode, Config, Model, Role, TaskShape, TaskState};
 use headwork_store::{NewSession, Store, Task};
 use serde_json::{Value, json};
 
@@ -59,7 +59,9 @@ fn world_with(writable: bool) -> World {
     let text = format!(
         "[machine]\nhost = \"wmux\"\nmax_workers = 8\n\n{hooks}[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
-         deliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/demo\"]\n"
+         deliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/demo\"]\n\n\
+         [project.beta]\nmain = \"{main_text}-beta\"\nworktree_new = \"builtin\"\nworktree_remove = \"builtin\"\n\
+         worktree_path = \"{{main}}-{{slug}}\"\ndeliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/beta\"]\n"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -275,7 +277,9 @@ fn spinning_up_an_epic_spawns_its_explorer_linked_to_it_with_the_plan_file_on_it
     assert!(brief.contains(&format!("Writes: {plan}")), "{brief}");
     assert!(brief.contains("- keep the store pure"), "{brief}");
     assert!(brief.contains("Project: demo"), "{brief}");
-    assert_eq!(w.store.epic_of_task(task.id).unwrap(), Some(epic));
+    assert_eq!(started["spawned"]["epic_in_progress"], json!(true));
+    assert_eq!(task.epic, Some(epic), "the role is recorded on the task");
+    assert_eq!(headwork::ops::epic::epic_of(&task), Some(epic));
 }
 
 #[test]
@@ -648,4 +652,268 @@ fn an_epic_explorer_s_rules_give_the_epic_section_instead_of_the_report_one() {
         !plain_rules.contains(EPIC_EXPLORER_HEADING),
         "{plain_rules}"
     );
+}
+
+#[test]
+fn a_respawn_after_a_lost_explorer_gets_a_task_name_of_its_own() {
+    let mut w = world();
+    let (epic, first) = w.spin_up("Lost once");
+    let task = w.store.find_task(&first).unwrap().unwrap();
+    w.store.drop_task(task.id, Actor::Orchestrator).unwrap();
+    assert_eq!(
+        w.status(epic).block().map(|block| block.reason),
+        Some(BlockReason::TaskLost)
+    );
+    let again = w.ok("backlog_start", &json!({ "id": epic }));
+    let second = again["spawned"]["task"].as_str().unwrap().to_owned();
+    assert_eq!(second, format!("{first}-2"), "{again}");
+    assert_eq!(w.status(epic), BacklogStatus::InProgress);
+    assert_eq!(w.explorer_of(epic).name.to_string(), second);
+    assert_eq!(w.explorer_of(epic).epic, Some(epic));
+}
+
+#[test]
+fn the_role_survives_the_finish_and_the_changing_tools_need_the_epic_in_progress() {
+    let mut w = world();
+    let (epic, explorer) = w.spin_up("Short epic");
+    w.worker_ok(
+        &explorer,
+        "plan_finish",
+        &json!({ "note": "nothing to do" }),
+    );
+    assert_eq!(w.status(epic), BacklogStatus::Done);
+    let names = w.tool_names(&explorer);
+    assert!(names.contains(&"plan_list".to_owned()), "{names:?}");
+    let listed = w.worker_ok(&explorer, "plan_list", &json!({}));
+    assert_eq!(listed["epic"]["status"], json!("done"));
+    for (tool, args) in [
+        ("plan_add", json!({ "text": "Late", "brief": "Goal: late" })),
+        ("plan_edit", json!({ "id": epic, "text": "x" })),
+        ("plan_depend", json!({ "id": epic, "on": [epic] })),
+        ("plan_undepend", json!({ "id": epic, "on": epic })),
+        ("plan_cancel", json!({ "id": epic })),
+        ("plan_finish", json!({})),
+    ] {
+        let (is_error, text) = w.worker(&explorer, tool, &args);
+        assert!(
+            is_error && text.contains("not in progress"),
+            "{tool}: {text}"
+        );
+    }
+}
+
+#[test]
+fn plan_edit_refuses_done_cancelled_and_blocked_children_a_live_task_works_on() {
+    let mut w = world();
+    let (_, explorer) = w.spin_up("Edit guard");
+    let child = |w: &mut World, text: &str| {
+        w.worker_ok(
+            &explorer,
+            "plan_add",
+            &json!({ "text": text, "brief": format!("# Goal: {text}\n") }),
+        );
+        w.last_item()
+    };
+    let done = child(&mut w, "Done child");
+    let cancelled = child(&mut w, "Cancelled child");
+    let held = child(&mut w, "Held child");
+    w.ok("backlog_done", &json!({ "id": done, "note": "by hand" }));
+    w.worker_ok(&explorer, "plan_cancel", &json!({ "id": cancelled }));
+    w.ok(
+        "spawn",
+        &json!({ "project": "demo", "slug": "held", "brief": "# Goal: held\n", "backlog": held }),
+    );
+    w.worker_ok(
+        "demo-held",
+        "item_block",
+        &json!({ "reason": "decision", "note": "which way" }),
+    );
+    assert_eq!(w.status(held).kind(), ItemStatus::Blocked);
+    for (id, word) in [(done, "done"), (cancelled, "cancelled")] {
+        let (is_error, text) = w.worker(&explorer, "plan_edit", &json!({ "id": id, "text": "x" }));
+        assert!(is_error && text.contains(word), "{word}: {text}");
+    }
+    let (is_error, text) = w.worker(&explorer, "plan_edit", &json!({ "id": held, "text": "x" }));
+    assert!(
+        is_error && text.contains("live task") && text.contains("demo-held"),
+        "{text}"
+    );
+    assert_eq!(w.store.backlog_item(held).unwrap().draft.text, "Held child");
+}
+
+#[test]
+fn plan_add_refuses_bad_dependencies_and_takes_project_section_and_owner_overrides() {
+    let mut w = world();
+    let (epic, explorer) = w.spin_up("Add guard");
+    w.ok("backlog_add", &json!({ "project": "demo", "text": "Gone" }));
+    let gone = w.last_item();
+    w.ok(
+        "backlog_cancel",
+        &json!({ "id": gone, "reason": "the user said no" }),
+    );
+    let count = |w: &World| {
+        w.store
+            .backlog_items(&headwork_store::BacklogFilter {
+                epic: Some(epic),
+                ..headwork_store::BacklogFilter::default()
+            })
+            .unwrap()
+            .len()
+    };
+    for (after, why) in [
+        (json!([gone]), "cancelled"),
+        (json!([9999]), "9999"),
+        (json!([epic]), "its own epic"),
+    ] {
+        let (is_error, text) = w.worker(
+            &explorer,
+            "plan_add",
+            &json!({ "text": "Waits", "brief": "Goal: w", "after": after }),
+        );
+        assert!(is_error && text.contains(why), "{why}: {text}");
+        assert_eq!(count(&w), 0, "nothing added for {why}");
+    }
+    let (is_error, text) = w.worker(
+        &explorer,
+        "plan_add",
+        &json!({ "text": "Elsewhere", "brief": "Goal: e", "project": "alpha" }),
+    );
+    assert!(
+        is_error && text.contains("not a project headwork runs"),
+        "{text}"
+    );
+    w.worker_ok(
+        &explorer,
+        "plan_add",
+        &json!({ "text": "First", "brief": "Goal: first", "project": "beta", "section": "Custom", "owner": "user" }),
+    );
+    let first = w.last_item();
+    let item = w.store.backlog_item(first).unwrap();
+    assert_eq!(
+        (
+            item.draft.project.as_str(),
+            item.draft.section.as_deref(),
+            item.draft.owner.as_str()
+        ),
+        ("beta", Some("Custom"), "user")
+    );
+    w.worker_ok(
+        &explorer,
+        "plan_add",
+        &json!({ "text": "Second", "brief": "Goal: second", "after": [first] }),
+    );
+    let second = w.last_item();
+    let (is_error, text) = w.worker(
+        &explorer,
+        "plan_depend",
+        &json!({ "id": first, "on": [second] }),
+    );
+    assert!(is_error && text.contains("cycle"), "{text}");
+    let (is_error, text) = w.worker(
+        &explorer,
+        "plan_depend",
+        &json!({ "id": first, "on": [epic] }),
+    );
+    assert!(is_error && text.contains("its own epic"), "{text}");
+    assert_eq!(
+        w.store.backlog_item(first).unwrap().deps,
+        Vec::<i64>::new(),
+        "nothing added"
+    );
+}
+
+#[test]
+fn an_explore_part_or_an_explorer_only_linked_to_a_child_gets_no_plan_tools() {
+    let mut w = world();
+    let (epic, explorer) = w.spin_up("Scoped epic");
+    w.worker_ok(
+        &explorer,
+        "plan_add",
+        &json!({ "text": "Child", "brief": "# Goal: child\n" }),
+    );
+    let child = w.last_item();
+    let notes = w.notes();
+    w.ok(
+        "spawn",
+        &json!({ "project": "demo", "slug": "replan", "kind": "explore", "backlog": child,
+                 "brief": format!("Look again.\nWrites: {notes}/replan.md") }),
+    );
+    let linked = w.store.find_task("demo-replan").unwrap().unwrap();
+    assert_eq!(linked.epic, None);
+    assert_eq!(headwork::ops::epic::epic_of(&linked), None);
+    let names = w.tool_names("demo-replan");
+    assert!(
+        !names.iter().any(|name| name.starts_with("plan_")),
+        "{names:?}"
+    );
+    let lead = w
+        .store
+        .create_task(
+            &w.config,
+            &new_task("lead", "task", TaskShape::Lead),
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    let part = w
+        .store
+        .create_task(
+            &w.config,
+            &new_task("lead-part", "explore", TaskShape::Part { parent: lead.id }),
+            Actor::Orchestrator,
+        )
+        .unwrap();
+    w.store
+        .set_task_epic(part.id, epic, Actor::Orchestrator)
+        .unwrap();
+    let part = w.store.task(part.id).unwrap();
+    assert_eq!(
+        headwork::ops::epic::epic_of(&part),
+        None,
+        "a part is no explorer"
+    );
+    let names = w.tool_names("demo-lead-part");
+    assert!(
+        !names.iter().any(|name| name.starts_with("plan_")),
+        "{names:?}"
+    );
+    let files = RuleFiles::load(&w.home, &w.config, &[], "orchestrator").unwrap();
+    let dir = w.dir.path().join("demo");
+    let rules = files.render(
+        Role::Worker,
+        &w.config,
+        Path::new(EXE),
+        Some(&Card {
+            task: &linked,
+            dir: &dir,
+            parent: None,
+            epic: headwork::ops::epic::epic_of(&linked).is_some(),
+        }),
+    );
+    assert!(rules.contains(EXPLORER_REPORT_HEADING), "{rules}");
+    assert!(!rules.contains(EPIC_EXPLORER_HEADING), "{rules}");
+}
+
+fn new_task(
+    slug: &str,
+    kind: &str,
+    shape: TaskShape<headwork_store::TaskId>,
+) -> headwork_store::NewTask {
+    headwork_store::NewTask {
+        request: headwork_core::TaskRequest {
+            project: headwork_core::ProjectName::new("demo").unwrap(),
+            slug: headwork_core::Slug::new(slug).unwrap(),
+            kind: kind.to_owned(),
+            model: Some(Model::Sonnet),
+            effort: None,
+            in_main: false,
+            keep: false,
+            close: CloseMode::Silent,
+            review: None,
+            decision: None,
+        },
+        brief_path: format!("briefs/demo-{slug}.md"),
+        depends_on: None,
+        permission_mode: headwork_core::PermissionMode::Auto,
+        shape,
+    }
 }

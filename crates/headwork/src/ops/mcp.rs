@@ -1328,7 +1328,7 @@ impl<'a> Server<'a> {
         let lead = self.is_lead();
         let reviewer = self.is_reviewer();
         let sees_backlog = role == Role::Orchestrator || self.is_explorer();
-        let plans = self.epic_explorer().is_some();
+        let plans = self.epic_explorer().ok().flatten().is_some();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
@@ -1522,20 +1522,27 @@ impl<'a> Server<'a> {
     }
 
     /// The calling session's task and the epic it explores, when it is an epic explorer.
-    fn epic_explorer(&self) -> Option<(Task, i64)> {
+    fn epic_explorer(&self) -> Result<Option<(Task, i64)>> {
         let Some((session, Role::Worker)) = self.identity.managed() else {
-            return None;
+            return Ok(None);
         };
-        let task = self.own_task(session).ok()?;
-        let epic = super::epic::epic_of(self.store, &task).ok().flatten()?;
-        Some((task, epic))
+        let Some(id) = self
+            .store
+            .hook_session(session)?
+            .filter(|row| row.role == Role::Worker)
+            .and_then(|row| row.task_id)
+        else {
+            return Ok(None);
+        };
+        let task = self.store.task(id)?;
+        Ok(super::epic::epic_of(&task).map(|epic| (task, epic)))
     }
 
     fn epic_tool(&mut self, name: &str, args: &Value) -> Result<String> {
         use super::epic::{self, Explorer, PlanAdd, PlanFields};
-        let Some((task, epic_id)) = self.epic_explorer() else {
+        let Some((task, epic_id)) = self.epic_explorer()? else {
             bail!(
-                "`{name}` is an epic explorer's tool (a task of kind `explore`, not a part, linked to an epic); your task is not one"
+                "`{name}` is an epic explorer's tool (a task of kind `explore`, not a part, spun up for an epic); your task is not one"
             );
         };
         let explorer = Explorer {
@@ -2317,6 +2324,7 @@ impl<'a> Server<'a> {
             depends_on,
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
+            epic: None,
         };
         let item = match ["backlog", "todo"]
             .iter()
@@ -2411,6 +2419,7 @@ impl<'a> Server<'a> {
             depends_on,
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
+            epic: None,
         };
         reap(self.store, &self.env)?;
         let result = spawn_shaped(

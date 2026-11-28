@@ -179,6 +179,7 @@ fn spawn_task(w: &mut World, slug: &str) -> Task {
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let env = Env {
         home: &w.home,
@@ -2293,6 +2294,7 @@ fn a_dependency_closed_from_review_counts_merged_once_its_pull_request_merged() 
         depends_on: Some(first.id),
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let second = spawn(&mut w.store, &env, &request).unwrap().0;
     run_tick(&mut w);
@@ -2678,6 +2680,7 @@ fn a_queued_task_on_a_gone_dependency_is_told_once_and_logged_once() {
         depends_on: Some(gone.id),
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let env = Env {
         home: &w.home,

@@ -1,9 +1,12 @@
 //! The epic explorer (`docs/backlog.md`, section 12): the explore task a spin-up of an epic spawns, and the `plan_*`
 //! tools it plans the epic's children with.
 //!
-//! An epic explorer is a task of kind `explore`, not a part, linked to an open epic, or to an open child of an epic (a
-//! re-plan child, whose epic is the parent). Its tools act as [`BacklogActor::Explorer`] with the explorer's task and its
-//! epic, so the status guard keeps them to that epic's children, and the epic itself only for `plan_finish`.
+//! An epic explorer is a task of kind `explore`, not a part, whose row records the epic it was spun up for
+//! (`tasks.epic_id`, written once at spawn from [`SpawnRequest::epic`]). Its tools act as [`BacklogActor::Explorer`] with the
+//! explorer's task and its epic, so the status guard keeps them to that epic's children, and the epic itself only for
+//! `plan_finish`; the tools that change anything need the epic in progress.
+
+use std::fmt::Write as _;
 
 use anyhow::{Context, Result, anyhow, bail};
 use headwork_core::backlog::{
@@ -30,18 +33,14 @@ pub const DEFAULT_CHILD_KIND: &str = "code";
 /// The refusal of a spin-up when no `[hooks] brief_writable` root can hold the plan notes.
 pub const NO_PLAN_PATH: &str = "epic-no-plan-path";
 
-/// The epic `task` explores: `None` unless it is an explorer (kind `explore`, not a part) linked to an open epic, or to an
-/// open child of one.
-///
-/// # Errors
-///
-/// Fails when the store does.
-pub fn epic_of(store: &Store, task: &Task) -> Result<Option<i64>> {
-    if !is_explorer(task) {
-        return Ok(None);
-    }
-    Ok(store.epic_of_task(task.id)?)
+/// The epic `task` explores: the epic recorded on it at spawn, when it is an explorer (kind `explore`, not a part).
+#[must_use]
+pub fn epic_of(task: &Task) -> Option<i64> {
+    task.epic.filter(|_| is_explorer(task))
 }
+
+/// How many explorer slugs a spin-up tries before it gives up: `epic-<id>-<words>`, then `-2` up to this.
+const SLUG_TRIES: usize = 100;
 
 /// What the spin-up of an epic started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -58,6 +57,8 @@ pub struct StartedExplorer {
     pub queue: Vec<Pumped>,
     /// Why the epic was not linked to the task, when the link was refused after the task started.
     pub unlinked: Option<String>,
+    /// Whether the epic moved to in progress, linked to the task; false exactly when `unlinked` says why.
+    pub epic_in_progress: bool,
 }
 
 impl StartedExplorer {
@@ -69,9 +70,11 @@ impl StartedExplorer {
             self.task, self.state, self.epic, self.plan
         );
         if let Some(why) = &self.unlinked {
-            out.push_str("the task runs unlinked: ");
-            out.push_str(why);
-            out.push('\n');
+            let _infallible = writeln!(
+                out,
+                "epic #{} was NOT moved to in progress and is not linked to {}; the explorer runs anyway: {why}",
+                self.epic, self.task
+            );
         }
         out
     }
@@ -137,14 +140,14 @@ pub fn spin_up(store: &mut Store, env: &Env<'_>, epic: &BacklogItem) -> Result<S
         project: project.as_str(),
         plan_path: &plan,
     });
+    let slug = free_slug(store, &project, &epic_slug(epic.id, &epic.draft.text))?;
     let incoming = env.home.root().join("incoming");
     std::fs::create_dir_all(&incoming).context("creating the incoming briefs folder")?;
-    let file = incoming.join(format!("epic-{}.md", epic.id));
-    std::fs::write(&file, brief).with_context(|| format!("writing {}", file.display()))?;
+    let file = write_new(&incoming, &format!("{project}-{slug}"), &brief)?;
     let request = SpawnRequest {
         request: TaskRequest {
             project,
-            slug: Slug::new(epic_slug(epic.id, &epic.draft.text))?,
+            slug,
             kind: EXPLORE_KIND.to_owned(),
             model: None,
             effort: None,
@@ -158,6 +161,7 @@ pub fn spin_up(store: &mut Store, env: &Env<'_>, epic: &BacklogItem) -> Result<S
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: Some(epic.id),
     };
     let spawned = spawn_linked(store, env, &request, Some(epic.id));
     std::fs::remove_file(&file).ok();
@@ -168,8 +172,55 @@ pub fn spin_up(store: &mut Store, env: &Env<'_>, epic: &BacklogItem) -> Result<S
         state: spawned.task.state,
         plan,
         queue: spawned.pumped,
+        epic_in_progress: spawned.unlinked.is_none(),
         unlinked: spawned.unlinked,
     })
+}
+
+/// The first of `base`, `base-2`, `base-3`, ... that no task of `project` has ever used, so each spin-up of an epic gets a
+/// task name (and brief file) of its own.
+fn free_slug(store: &Store, project: &ProjectName, base: &str) -> Result<Slug> {
+    for n in 1..=SLUG_TRIES {
+        let text = if n == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{n}")
+        };
+        if store.find_task(&format!("{project}/{text}"))?.is_none() {
+            return Ok(Slug::new(text)?);
+        }
+    }
+    bail!("every explorer slug from `{base}` to `{base}-{SLUG_TRIES}` is taken in `{project}`")
+}
+
+/// Writes `text` to a file in `dir` named after `stem` that did not exist before (`<stem>.md`, else `<stem>-2.md`, ...),
+/// so the removal after the spawn only ever removes a file this spin-up wrote.
+fn write_new(dir: &std::path::Path, stem: &str, text: &str) -> Result<std::path::PathBuf> {
+    use std::io::Write as _;
+    for n in 1..=SLUG_TRIES {
+        let name = if n == 1 {
+            format!("{stem}.md")
+        } else {
+            format!("{stem}-{n}.md")
+        };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())
+                    .with_context(|| format!("writing {}", path.display()))?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", path.display()));
+            }
+        }
+    }
+    bail!("no free brief file name for `{stem}` in {}", dir.display())
 }
 
 /// The epic an explorer plans, with the explorer's task.
@@ -193,6 +244,30 @@ impl Explorer<'_> {
             actor_epic: Some(self.epic),
             ..BacklogMove::new(target, BacklogActor::Explorer, env.actor, true).with_reason(reason)
         }
+    }
+
+    /// Refuses a change while the epic is not in progress: finished, cancelled, blocked or back in the backlog.
+    fn in_progress(&self, store: &Store) -> Result<()> {
+        let status = store.backlog_item(self.epic)?.draft.status;
+        if status != BacklogStatus::InProgress {
+            bail!(
+                "epic #{} is {status}, not in progress: its plan changes only while it is in progress (`plan_list` still \
+                 shows it)",
+                self.epic
+            );
+        }
+        Ok(())
+    }
+
+    /// Refuses the epic itself as a dependency of its child: the epic is done only after its children.
+    fn not_on_itself(&self, on: &[i64]) -> Result<()> {
+        if on.contains(&self.epic) {
+            bail!(
+                "a child cannot wait for its own epic #{}: the epic is done only after its children",
+                self.epic
+            );
+        }
+        Ok(())
     }
 
     fn child(&self, store: &Store, id: i64) -> Result<BacklogItem> {
@@ -389,16 +464,24 @@ pub fn add(
     explorer: &Explorer<'_>,
     request: PlanAdd,
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     if request.plan.brief.is_none() {
         bail!("`brief` is required: a child carries everything its spawn needs");
     }
+    explorer.not_on_itself(&request.after)?;
     let mut plan = request.plan.checked()?;
     plan.task_kind = plan
         .task_kind
         .or_else(|| Some(DEFAULT_CHILD_KIND.to_owned()));
     let epic = store.backlog_item(explorer.epic)?;
+    let project = request.project.unwrap_or(epic.draft.project);
+    let runs =
+        ProjectName::new(project.trim()).is_ok_and(|name| env.config.project(&name).is_some());
+    if !runs {
+        bail!("`{project}` is not a project headwork runs: a child is work a task can do");
+    }
     let add = AddRequest {
-        project: request.project.unwrap_or(epic.draft.project),
+        project,
         text: request.text,
         section: request.section.or(epic.draft.section),
         owner: request.owner,
@@ -435,6 +518,7 @@ pub fn edit(
     text: Option<String>,
     fields: &PlanFields,
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     let item = explorer.child(store, id)?;
     if !matches!(
         item.draft.status.kind(),
@@ -471,7 +555,9 @@ pub fn depend(
     id: i64,
     on: &[i64],
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     explorer.child(store, id)?;
+    explorer.not_on_itself(on)?;
     let item = store.add_backlog_dependencies(id, on, env.actor, Some(explorer.task.id))?;
     Ok(changed(store, env, &[item]))
 }
@@ -488,6 +574,7 @@ pub fn undepend(
     id: i64,
     on: i64,
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     explorer.child(store, id)?;
     let item = store.remove_backlog_dependency(id, on, env.actor, Some(explorer.task.id))?;
     Ok(changed(store, env, &[item]))
@@ -505,6 +592,7 @@ pub fn cancel(
     id: i64,
     reason: Option<&str>,
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     explorer.child(store, id)?;
     let reason = reason.map(str::trim).filter(|reason| !reason.is_empty());
     let item = store.move_backlog_item(id, &explorer.moving(env, Target::Cancelled, reason))?;
@@ -522,6 +610,7 @@ pub fn finish(
     explorer: &Explorer<'_>,
     note: Option<&str>,
 ) -> Result<Change> {
+    explorer.in_progress(store)?;
     let open = store.backlog_open_children(explorer.epic)?;
     if !open.is_empty() {
         let mut named = Vec::with_capacity(open.len());

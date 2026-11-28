@@ -713,7 +713,8 @@ enum BacklogAction {
         #[arg(long)]
         json: bool,
     },
-    /// Spin an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
+    /// Spin an item up: backlog to in progress. A plain item spawns nothing (`spawn --backlog` links a task); an epic spawns
+    /// its explorer, an `explore` task linked to it that plans its children.
     Start {
         /// The item's id.
         id: i64,
@@ -1788,6 +1789,7 @@ fn spawn_command(
         depends_on,
         permission_mode: args.mode,
         allow_ask: &args.allow_ask,
+        epic: None,
     };
     let spawned = ctx.with_env(|env| {
         reap(store, env)?;

@@ -14,6 +14,7 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     in_actor_epic: false,
     is_actor_epic: false,
     open_children: 0,
+    is_epic: false,
     has_project: true,
     links_another_task: false,
     open_dependencies: 0,
@@ -286,6 +287,7 @@ fn releasing_an_epic_unlinks_it_in_progress_only_for_its_own_ending_task() {
             &MoveFacts {
                 live_task,
                 linked_to_actor: true,
+                is_epic: true,
                 reason: Some("task t ended, the epic stays in progress"),
                 ..PLAIN
             },
@@ -308,12 +310,32 @@ fn releasing_an_epic_unlinks_it_in_progress_only_for_its_own_ending_task() {
         &PLAIN,
     );
     assert!(refused.is_err(), "not the ending task's item: {refused:?}");
+    let plain_item = transition(
+        Some(&BacklogStatus::InProgress),
+        &Target::Unlink,
+        A::Headwork,
+        &MoveFacts {
+            live_task: None,
+            linked_to_actor: true,
+            ..PLAIN
+        },
+    );
+    assert_eq!(
+        plain_item,
+        Err(MoveRefusal::NotAllowed {
+            actor: A::Headwork,
+            from: "in_progress".to_owned(),
+            to: "unlinked",
+        }),
+        "a plain in-progress item is never unlinked, even for its own ending task"
+    );
     let by_user = transition(
         Some(&BacklogStatus::InProgress),
         &Target::Unlink,
         A::User,
         &MoveFacts {
             linked_to_actor: true,
+            is_epic: true,
             ..PLAIN
         },
     );

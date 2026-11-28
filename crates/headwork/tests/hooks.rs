@@ -151,6 +151,7 @@ fn world_flagged(
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let env = Env {
         home: &home,
@@ -3550,6 +3551,7 @@ fn a_freed_slot_runs_the_queue_when_a_task_waits() {
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let env = Env {
         home: &w.home,

@@ -35,6 +35,7 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     in_actor_epic: false,
     is_actor_epic: false,
     open_children: 0,
+    is_epic: false,
     has_project: true,
     links_another_task: false,
     open_dependencies: 0,
