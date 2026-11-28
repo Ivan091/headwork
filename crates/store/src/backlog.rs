@@ -303,7 +303,7 @@ impl RawBacklogItem {
     }
 }
 
-fn load(conn: &Connection, id: i64) -> Result<BacklogItem, StoreError> {
+pub(crate) fn load(conn: &Connection, id: i64) -> Result<BacklogItem, StoreError> {
     conn.query_row(
         &format!(
             "SELECT {COLUMNS} FROM backlog_items t LEFT JOIN tasks k ON k.id = t.task_id WHERE t.id = ?1"
@@ -354,7 +354,7 @@ fn dependency_statuses(conn: &Connection, id: i64) -> Result<Vec<(i64, ItemStatu
         .collect()
 }
 
-fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
+pub(crate) fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
     Ok(conn
         .prepare(
             "SELECT id FROM backlog_items WHERE parent_id = ?1 AND status IN ('backlog', 'in_progress', 'blocked')
@@ -364,7 +364,7 @@ fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
         .collect::<Result<_, _>>()?)
 }
 
-fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
+pub(crate) fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
     let text: String = conn.query_row(&format!("SELECT {TODAY}"), [], |row| row.get(0))?;
     Ok(BacklogDate::parse(&text)?)
 }
@@ -509,7 +509,7 @@ fn facts<'a>(
     }
 }
 
-fn check(
+pub(crate) fn check(
     conn: &Connection,
     item: &BacklogItem,
     request: &BacklogMove<'_>,
@@ -543,7 +543,7 @@ fn check(
 }
 
 /// Writes an allowed move and its `backlog-moved` event, applying the move's link and date effects ([`ItemMove`]).
-fn write_move(
+pub(crate) fn write_move(
     tx: &Transaction<'_>,
     before: &BacklogItem,
     step: &ItemMove,
@@ -822,6 +822,45 @@ pub(crate) fn task_ended(
     Ok(())
 }
 
+/// Adds an item of `shape` inside `tx`, as [`Store::add_backlog_item_shaped`] describes, and logs `backlog-added`.
+pub(crate) fn add_shaped(
+    tx: &Transaction<'_>,
+    draft: &BacklogDraft,
+    by: Actor,
+    mover: BacklogActor,
+    task: Option<TaskId>,
+    shape: &ItemShape,
+) -> Result<BacklogItem, StoreError> {
+    if draft.status != BacklogStatus::Backlog {
+        return Err(StoreError::BacklogAddRefused(format!(
+            "a new item is added to the backlog, not as {}",
+            draft.status.kind()
+        )));
+    }
+    transition(None, &Target::Backlog, mover, &MoveFacts::default())
+        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+    let kind = shape.kind.unwrap_or(ItemKind::Item);
+    let parent = shape
+        .parent
+        .map(|parent| {
+            load(tx, parent).map(|row| ParentFacts {
+                id: row.id,
+                kind: row.kind,
+                parent: row.parent,
+            })
+        })
+        .transpose()?;
+    check_parent(kind, parent)
+        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+    let id = insert(tx, draft, kind, shape.parent, &shape.plan)?;
+    for dep in &shape.after {
+        add_dependency(tx, id, *dep, by, task)?;
+    }
+    let item = load(tx, id)?;
+    event(tx, by, task, EVENT_BACKLOG_ADDED, &item)?;
+    Ok(item)
+}
+
 impl Store {
     /// Today's date on this machine's clock, the day an item is added or done.
     ///
@@ -994,35 +1033,8 @@ impl Store {
         task: Option<TaskId>,
         shape: &ItemShape,
     ) -> Result<BacklogItem, StoreError> {
-        if draft.status != BacklogStatus::Backlog {
-            return Err(StoreError::BacklogAddRefused(format!(
-                "a new item is added to the backlog, not as {}",
-                draft.status.kind()
-            )));
-        }
-        transition(None, &Target::Backlog, mover, &MoveFacts::default())
-            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let actor = by;
         let tx = self.conn.transaction()?;
-        let kind = shape.kind.unwrap_or(ItemKind::Item);
-        let parent = shape
-            .parent
-            .map(|parent| {
-                load(&tx, parent).map(|row| ParentFacts {
-                    id: row.id,
-                    kind: row.kind,
-                    parent: row.parent,
-                })
-            })
-            .transpose()?;
-        check_parent(kind, parent)
-            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let id = insert(&tx, draft, kind, shape.parent, &shape.plan)?;
-        for dep in &shape.after {
-            add_dependency(&tx, id, *dep, actor, task)?;
-        }
-        let item = load(&tx, id)?;
-        event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
+        let item = add_shaped(&tx, draft, by, mover, task, shape)?;
         tx.commit()?;
         Ok(item)
     }
