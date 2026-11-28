@@ -618,6 +618,7 @@ mod tests {
             &[],
             &[site, sim],
             &[],
+            &BTreeMap::new(),
             &date("2026-11-28"),
             &Options {
                 project: Some("me-sim".to_owned()),
