@@ -601,3 +601,100 @@ fn a_stale_claim_is_linked_to_its_task_or_blocked_as_never_linked() {
     assert_eq!(rig.task_of(found).map(|linked| linked.id), Some(task.id));
     assert_eq!(rig.status(found), BacklogStatus::InProgress);
 }
+
+#[test]
+fn nothing_starts_while_the_machine_parks() {
+    let mut rig = world();
+    let epic = rig.epic("Parked epic");
+    let piece = rig.child(epic, "Parked piece", &[]);
+    rig.store
+        .set_machine_mode(headwork_core::MachineMode::Parking, Actor::User)
+        .unwrap();
+    assert_eq!(started(&rig.pump()), Vec::<String>::new());
+    assert_eq!(rig.status(piece), BacklogStatus::Backlog);
+    rig.store
+        .set_machine_mode(headwork_core::MachineMode::Normal, Actor::User)
+        .unwrap();
+    assert_eq!(
+        started(&rig.pump()).len(),
+        1,
+        "it starts once the machine is normal again"
+    );
+}
+
+#[test]
+fn the_session_room_is_shared_by_every_epic_of_a_pass_and_held_is_logged_once() {
+    let mut rig = world_with("max_parallel = 0\n", "[watch]\nmany_sessions = 1\n");
+    let mut pieces = Vec::new();
+    for n in 1..=3 {
+        let epic = rig.epic(&format!("Roomy epic {n}"));
+        pieces.push(rig.child(epic, &format!("Roomy piece {n}"), &[]));
+    }
+    let first = rig.pump();
+    assert_eq!(started(&first).len(), 1, "{first:?}");
+    assert_eq!(rig.status(pieces[0]), BacklogStatus::InProgress);
+    assert_eq!(rig.status(pieces[1]), BacklogStatus::Backlog);
+    assert_eq!(rig.status(pieces[2]), BacklogStatus::Backlog);
+    let held = rig.events("epic-held");
+    assert_eq!(held.len(), 1, "two held epics, one event: {held:?}");
+    assert_eq!(held[0]["reason"], serde_json::json!("many-sessions"));
+    assert_eq!(held[0]["limit"], serde_json::json!(1));
+}
+
+#[test]
+fn two_epics_start_in_one_pass_and_a_planned_review_model_and_flag_decision_reach_the_task() {
+    let mut rig = world();
+    let first = rig.epic("First epic");
+    let second = rig.epic("Second epic");
+    let planned = rig.add(
+        "Planned piece",
+        &ItemShape {
+            parent: Some(first),
+            plan: ItemPlan {
+                brief: Some("Goal: planned".to_owned()),
+                task_kind: Some("code".to_owned()),
+                model: Some("sonnet".to_owned()),
+                review: Some(2),
+            },
+            ..ItemShape::default()
+        },
+    );
+    let plain = rig.child(second, "Plain piece", &[]);
+    let pumped = rig.pump();
+    assert_eq!(started(&pumped).len(), 2, "{pumped:?}");
+    let task = rig.task_of(planned).unwrap();
+    assert_eq!(task.model, headwork_core::Model::Sonnet);
+    assert_eq!(task.review_plan.map(headwork_core::review::Level::number), Some(2));
+    let created = rig
+        .store
+        .events(headwork_store::EventFilter {
+            task: Some(task.id),
+            limit: 100,
+        })
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "task-created")
+        .unwrap();
+    assert_eq!(created.data["decided_by"], serde_json::json!("judged"));
+    assert_eq!(
+        created.data["reason"],
+        serde_json::json!("planned by the epic explorer")
+    );
+    let other = rig.task_of(plain).unwrap();
+    assert_eq!(other.review_plan, None);
+    let created = rig
+        .store
+        .events(headwork_store::EventFilter {
+            task: Some(other.id),
+            limit: 100,
+        })
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "task-created")
+        .unwrap();
+    assert_eq!(
+        created.data["decided_by"],
+        serde_json::Value::Null,
+        "no review planned, no decision"
+    );
+}
