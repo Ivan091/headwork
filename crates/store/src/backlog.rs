@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use headwork_core::backlog::{
     BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason,
     DateEffect, DepNode, ItemKind, ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask,
-    MoveFacts, ParentFacts, Target, TaskEndEffect, TaskOutcome, check_dependency, check_parent,
-    identity, on_linked_end, on_task_end, transition,
+    MoveFacts, MoveRefusal, ParentFacts, Target, TaskEndEffect, TaskOutcome, check_dependency,
+    check_parent, identity, on_linked_end, on_task_end, transition,
 };
 use headwork_core::{Actor, TaskState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -314,13 +314,19 @@ fn edges(conn: &Connection) -> Result<Vec<(i64, i64)>, StoreError> {
         .collect::<Result<_, _>>()?)
 }
 
-fn open_dependencies(conn: &Connection, id: i64) -> Result<i64, StoreError> {
-    Ok(conn.query_row(
-        "SELECT count(*) FROM backlog_deps d JOIN backlog_items t ON t.id = d.depends_on_id
-         WHERE d.item_id = ?1 AND t.status <> 'done'",
-        params![id],
-        |row| row.get(0),
-    )?)
+fn dependency_statuses(conn: &Connection, id: i64) -> Result<Vec<(i64, ItemStatus)>, StoreError> {
+    let rows = conn
+        .prepare(
+            "SELECT t.id, t.status FROM backlog_deps d JOIN backlog_items t ON t.id = d.depends_on_id
+             WHERE d.item_id = ?1 ORDER BY t.id",
+        )?
+        .query_map(params![id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(dep, status)| Ok((dep, status.parse::<ItemStatus>()?)))
+        .collect()
 }
 
 fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
@@ -428,7 +434,11 @@ fn counts(
     Ok((counts, fresh))
 }
 
-fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'a>) -> MoveFacts<'a> {
+fn facts<'a>(
+    item: &'a BacklogItem,
+    request: &BacklogMove<'a>,
+    dependencies: &[(i64, ItemStatus)],
+) -> MoveFacts<'a> {
     let live_task = item
         .task
         .as_ref()
@@ -446,20 +456,49 @@ fn facts<'a>(item: &'a BacklogItem, request: &BacklogMove<'a>) -> MoveFacts<'a> 
                 .as_ref()
                 .is_some_and(|task| task.is_live() && task.id != link.0)
         }),
+        open_dependencies: dependencies
+            .iter()
+            .filter(|(_, status)| !matches!(status, ItemStatus::Done | ItemStatus::Cancelled))
+            .count(),
+        cancelled_dependencies: dependencies
+            .iter()
+            .filter(|(_, status)| *status == ItemStatus::Cancelled)
+            .count(),
         reason: request.reason,
     }
 }
 
-fn check(item: &BacklogItem, request: &BacklogMove<'_>) -> Result<ItemMove, StoreError> {
+fn waiting_on(dependencies: &[(i64, ItemStatus)]) -> String {
+    dependencies
+        .iter()
+        .filter(|(_, status)| *status != ItemStatus::Done)
+        .map(|(dep, _)| format!("#{dep}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn check(
+    conn: &Connection,
+    item: &BacklogItem,
+    request: &BacklogMove<'_>,
+) -> Result<ItemMove, StoreError> {
+    let dependencies = dependency_statuses(conn, item.id)?;
     transition(
         Some(&item.draft.status),
         &request.target,
         request.actor,
-        &facts(item, request),
+        &facts(item, request, &dependencies),
     )
-    .map_err(|refusal| StoreError::BacklogRefused {
-        id: item.id,
-        reason: refusal.to_string(),
+    .map_err(|refusal| {
+        let reason = if matches!(refusal, MoveRefusal::Dependencies { .. }) {
+            format!("{refusal} ({})", waiting_on(&dependencies))
+        } else {
+            refusal.to_string()
+        };
+        StoreError::BacklogRefused {
+            id: item.id,
+            reason,
+        }
     })
 }
 
@@ -525,7 +564,10 @@ fn write_move(
         EVENT_BACKLOG_MOVED,
         &data,
     )?;
-    cascade(tx, id, &step.to, request.by)?;
+    for dependant in dependants(tx, id)? {
+        settle_dependency_block(tx, dependant, request.by)?;
+    }
+    settle_dependency_block(tx, id, request.by)?;
     load(tx, id)
 }
 
@@ -539,7 +581,7 @@ fn cascade_move(
 ) -> Result<(), StoreError> {
     let item = load(tx, id)?;
     let request = BacklogMove::new(target, BacklogActor::Headwork, by, true);
-    match check(&item, &request) {
+    match check(tx, &item, &request) {
         Ok(step) => write_move(tx, &item, &step, &request).map(drop),
         Err(error) => insert_event(
             tx,
@@ -552,40 +594,51 @@ fn cascade_move(
     }
 }
 
-/// What the new status of an item does to the items that depend on it: done frees a dependant blocked for `depends` once
-/// nothing else it waits for is open; cancelled blocks a dependant in the backlog, or turns its `depends` block, into
-/// `dep_cancelled`. Nothing else moves, and reopening a done item re-blocks nobody.
-fn cascade(tx: &Transaction<'_>, id: i64, to: &BacklogStatus, by: Actor) -> Result<(), StoreError> {
-    if !matches!(to, BacklogStatus::Done | BacklogStatus::Cancelled) {
-        return Ok(());
-    }
-    for dependant in dependants(tx, id)? {
-        let status = load(tx, dependant)?.draft.status;
-        match (to, &status) {
-            (BacklogStatus::Done, BacklogStatus::Blocked(block))
-                if block.reason == BlockReason::Depends
-                    && open_dependencies(tx, dependant)? == 0 =>
-            {
-                cascade_move(tx, dependant, Target::Unblock, by)?;
-            }
-            (BacklogStatus::Cancelled, BacklogStatus::Backlog) => {
-                cascade_move(tx, dependant, cancelled_dependency(id), by)?;
-            }
-            (BacklogStatus::Cancelled, BacklogStatus::Blocked(block))
-                if block.reason == BlockReason::Depends =>
-            {
-                cascade_move(tx, dependant, cancelled_dependency(id), by)?;
-            }
-            _ => {}
+/// Makes the block of an item match its dependencies, as headwork, in the transaction that changed them: an item in the
+/// backlog, or blocked for `depends` or `dep_cancelled`, is blocked `dep_cancelled` while a dependency is cancelled, else
+/// blocked `depends` while one is not done, else it goes back to the status it had. Items in progress, done, cancelled or
+/// blocked for another reason are left alone. Called after every move of an item (for its dependants and itself), after
+/// a dependency is added or removed.
+fn settle_dependency_block(tx: &Transaction<'_>, id: i64, by: Actor) -> Result<(), StoreError> {
+    let status = load(tx, id)?.draft.status;
+    let current = match &status {
+        BacklogStatus::Backlog => None,
+        BacklogStatus::Blocked(block)
+            if matches!(
+                block.reason,
+                BlockReason::Depends | BlockReason::DepCancelled
+            ) =>
+        {
+            Some(block.reason)
         }
-    }
-    Ok(())
-}
-
-fn cancelled_dependency(id: i64) -> Target {
-    Target::Blocked {
-        reason: BlockReason::DepCancelled,
-        note: Some(format!("#{id} cancelled")),
+        BacklogStatus::Blocked(_)
+        | BacklogStatus::InProgress
+        | BacklogStatus::Done
+        | BacklogStatus::Cancelled => return Ok(()),
+    };
+    let dependencies = dependency_statuses(tx, id)?;
+    let wanted = dependencies
+        .iter()
+        .find(|(_, status)| *status == ItemStatus::Cancelled)
+        .map(|(dep, _)| (BlockReason::DepCancelled, format!("#{dep} cancelled")))
+        .or_else(|| {
+            dependencies
+                .iter()
+                .find(|(_, status)| *status != ItemStatus::Done)
+                .map(|(dep, _)| (BlockReason::Depends, format!("#{dep}")))
+        });
+    match (wanted, current) {
+        (Some((reason, note)), held) if held != Some(reason) => cascade_move(
+            tx,
+            id,
+            Target::Blocked {
+                reason,
+                note: Some(note),
+            },
+            by,
+        ),
+        (None, Some(_)) => cascade_move(tx, id, Target::Unblock, by),
+        _ => Ok(()),
     }
 }
 
@@ -629,10 +682,12 @@ fn add_dependency(
         DepNode {
             id: item,
             status: from.draft.status.kind(),
+            returns_to: from.draft.status.block().map(|block| block.before),
         },
         DepNode {
             id: dep,
             status: to.draft.status.kind(),
+            returns_to: to.draft.status.block().map(|block| block.before),
         },
     )
     .map_err(|refusal| refused(item, refusal.to_string()))?;
@@ -643,13 +698,7 @@ fn add_dependency(
         params![item, dep, task.map(|task| task.0)],
     )?;
     dep_event(tx, by, task, EVENT_BACKLOG_DEPENDED, item, dep)?;
-    if to.draft.status != BacklogStatus::Done && from.draft.status == BacklogStatus::Backlog {
-        let target = Target::Blocked {
-            reason: BlockReason::Depends,
-            note: Some(format!("#{dep}")),
-        };
-        cascade_move(tx, item, target, by)?;
-    }
+    settle_dependency_block(tx, item, by)?;
     Ok(())
 }
 
@@ -662,7 +711,7 @@ fn remove_dependency(
     by: Actor,
     task: Option<TaskId>,
 ) -> Result<(), StoreError> {
-    let from = load(tx, item)?;
+    load(tx, item)?;
     load(tx, dep)?;
     let removed = tx.execute(
         "DELETE FROM backlog_deps WHERE item_id = ?1 AND depends_on_id = ?2",
@@ -672,14 +721,7 @@ fn remove_dependency(
         return Err(refused(item, format!("it does not depend on #{dep}")));
     }
     dep_event(tx, by, task, EVENT_BACKLOG_UNDEPENDED, item, dep)?;
-    let gated = matches!(
-        &from.draft.status,
-        BacklogStatus::Blocked(block)
-            if matches!(block.reason, BlockReason::Depends | BlockReason::DepCancelled)
-    );
-    if gated && open_dependencies(tx, item)? == 0 {
-        cascade_move(tx, item, Target::Unblock, by)?;
-    }
+    settle_dependency_block(tx, item, by)?;
     Ok(())
 }
 
@@ -702,7 +744,7 @@ fn headwork_move(
     request: &BacklogMove<'_>,
 ) -> Result<(), StoreError> {
     let item = load(tx, id)?;
-    match check(&item, request) {
+    match check(tx, &item, request) {
         Ok(step) => write_move(tx, &item, &step, request).map(drop),
         Err(error) => insert_event(
             tx,
@@ -1008,7 +1050,7 @@ impl Store {
     ) -> Result<BacklogItem, StoreError> {
         let tx = self.conn.transaction()?;
         let before = load(&tx, id)?;
-        let step = check(&before, request)?;
+        let step = check(&tx, &before, request)?;
         let item = write_move(&tx, &before, &step, request)?;
         tx.commit()?;
         Ok(item)
@@ -1030,6 +1072,27 @@ impl Store {
     ) -> Result<BacklogItem, StoreError> {
         let tx = self.conn.transaction()?;
         add_dependency(&tx, item, dep, by, task)?;
+        let item = load(&tx, item)?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// As [`Store::add_backlog_dependency`] for each of `deps`, in one transaction: when one is refused nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::add_backlog_dependency`].
+    pub fn add_backlog_dependencies(
+        &mut self,
+        item: i64,
+        deps: &[i64],
+        by: Actor,
+        task: Option<TaskId>,
+    ) -> Result<BacklogItem, StoreError> {
+        let tx = self.conn.transaction()?;
+        for dep in deps {
+            add_dependency(&tx, item, *dep, by, task)?;
+        }
         let item = load(&tx, item)?;
         tx.commit()?;
         Ok(item)
@@ -1062,7 +1125,7 @@ impl Store {
     ///
     /// As [`Store::move_backlog_item`], and nothing is written.
     pub fn check_backlog_move(&self, id: i64, request: &BacklogMove<'_>) -> Result<(), StoreError> {
-        check(&load(&self.conn, id)?, request).map(drop)
+        check(&self.conn, &load(&self.conn, id)?, request).map(drop)
     }
 
     /// Changes an item and logs `backlog-edited`.

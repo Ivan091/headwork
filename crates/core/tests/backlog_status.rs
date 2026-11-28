@@ -35,6 +35,8 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     in_actor_epic: false,
     has_project: true,
     links_another_task: false,
+    open_dependencies: 0,
+    cancelled_dependencies: 0,
     reason: None,
 };
 
@@ -1631,5 +1633,59 @@ fn only_headwork_swaps_a_depends_block_and_no_other_block_is_swapped() {
             Err(MoveRefusal::Already(ItemStatus::Blocked)),
             "{reason}"
         );
+    }
+}
+
+#[test]
+fn headwork_swaps_dep_cancelled_back_to_depends_and_no_one_else_does() {
+    let from = blocked(R::DepCancelled, ReturnTo::Backlog);
+    let step = transition(Some(&from), &block(R::Depends), A::Headwork, &PLAIN)
+        .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+    assert_eq!(step.to, blocked(R::Depends, ReturnTo::Backlog));
+    for actor in [A::User, A::Orchestrator, A::Explorer] {
+        assert!(
+            transition(Some(&from), &block(R::Depends), actor, &PLAIN).is_err(),
+            "{actor}"
+        );
+    }
+    assert_eq!(
+        transition(
+            Some(&blocked(R::Depends, ReturnTo::Backlog)),
+            &block(R::Depends),
+            A::Headwork,
+            &PLAIN
+        ),
+        Err(MoveRefusal::Already(ItemStatus::Blocked))
+    );
+}
+
+#[test]
+fn a_start_or_respawn_is_refused_for_any_actor_while_a_dependency_is_open_or_cancelled() {
+    let waiting = [
+        MoveFacts {
+            open_dependencies: 1,
+            ..PLAIN
+        },
+        MoveFacts {
+            cancelled_dependencies: 1,
+            ..PLAIN
+        },
+    ];
+    let lost = blocked(R::TaskLost, ReturnTo::InProgress);
+    for facts in &waiting {
+        for actor in [A::User, A::Orchestrator, A::Headwork] {
+            for from in [&BacklogStatus::Backlog, &lost] {
+                assert!(
+                    matches!(
+                        transition(Some(from), &Target::InProgress, actor, facts),
+                        Err(MoveRefusal::Dependencies { .. })
+                    ),
+                    "{actor} from {from}"
+                );
+            }
+        }
+    }
+    for from in [&BacklogStatus::Backlog, &lost] {
+        assert!(transition(Some(from), &Target::InProgress, A::User, &PLAIN).is_ok());
     }
 }

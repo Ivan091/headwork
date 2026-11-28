@@ -9,7 +9,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::UnknownWord;
-use crate::backlog::ItemStatus;
+use crate::backlog::{ItemStatus, ReturnTo};
 use crate::vocabulary::text_enum;
 
 text_enum!(
@@ -29,6 +29,8 @@ pub struct DepNode {
     pub id: i64,
     /// Where it stands.
     pub status: ItemStatus,
+    /// Where it returns to when unblocked, for a blocked item.
+    pub returns_to: Option<ReturnTo>,
 }
 
 /// What the epic guard knows about the parent a new item names.
@@ -59,6 +61,9 @@ pub enum DepRefusal {
         /// Its status.
         status: ItemStatus,
     },
+    /// An item blocked out of progress, which takes no dependency.
+    #[error("#{0} is blocked from in progress: an item in progress takes no dependency")]
+    BlockedInProgress(i64),
     /// A dependency that was cancelled and will never be done.
     #[error("#{0} is cancelled and will never be done")]
     DependencyCancelled(i64),
@@ -136,6 +141,9 @@ pub fn check_dependency(
             status: item.status,
         });
     }
+    if item.status == ItemStatus::Blocked && item.returns_to != Some(ReturnTo::Backlog) {
+        return Err(DepRefusal::BlockedInProgress(item.id));
+    }
     if dep.status == ItemStatus::Cancelled {
         return Err(DepRefusal::DependencyCancelled(dep.id));
     }
@@ -174,7 +182,31 @@ mod tests {
     use super::*;
 
     const fn node(id: i64, status: ItemStatus) -> DepNode {
-        DepNode { id, status }
+        DepNode {
+            id,
+            status,
+            returns_to: Some(ReturnTo::Backlog),
+        }
+    }
+
+    #[test]
+    fn an_item_blocked_out_of_progress_takes_no_dependency() {
+        let blocked = DepNode {
+            returns_to: Some(ReturnTo::InProgress),
+            ..node(1, ItemStatus::Blocked)
+        };
+        assert_eq!(
+            check_dependency(&[], blocked, node(2, ItemStatus::Backlog)),
+            Err(DepRefusal::BlockedInProgress(1))
+        );
+        let back = DepNode {
+            returns_to: Some(ReturnTo::Backlog),
+            ..blocked
+        };
+        assert_eq!(
+            check_dependency(&[], back, node(2, ItemStatus::Backlog)),
+            Ok(())
+        );
     }
 
     #[test]

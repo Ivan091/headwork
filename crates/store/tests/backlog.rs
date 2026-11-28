@@ -1300,50 +1300,266 @@ fn cancelling_a_dependency_blocks_a_backlog_dependant_and_swaps_a_depends_block(
 }
 
 #[test]
-fn a_backlog_dependant_with_no_block_yet_is_blocked_when_its_dependency_is_cancelled() {
+fn unblocking_a_dependant_by_hand_blocks_it_again_while_a_dependency_is_open() {
     let (mut store, _) = store();
     let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
     depend(&mut store, b, a).unwrap();
     by_user(&mut store, b, Target::Unblock, None).unwrap();
-    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
-    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
     assert_eq!(
         status_of(&store, b),
-        blocked_for(
-            BlockReason::DepCancelled,
-            &format!("#{a} cancelled"),
-            ReturnTo::Backlog
-        )
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog)
     );
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
 }
 
 #[test]
-fn cancelling_a_dependency_leaves_started_and_finished_dependants_alone() {
+fn unblocking_a_decision_block_while_a_dependency_is_open_blocks_it_for_depends() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    by_user(
+        &mut store,
+        b,
+        Target::Blocked {
+            reason: BlockReason::Decision,
+            note: Some("pick".to_owned()),
+        },
+        None,
+    )
+    .unwrap();
+    depend(&mut store, b, a).unwrap();
+    assert_eq!(
+        status_of(&store, b).block().unwrap().reason,
+        BlockReason::Decision
+    );
+    by_user(&mut store, b, Target::Unblock, None).unwrap();
+    assert_eq!(
+        status_of(&store, b),
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog)
+    );
+    assert!(by_user(&mut store, b, Target::InProgress, None).is_err());
+}
+
+#[test]
+fn an_item_waiting_for_dependencies_cannot_be_started_by_anyone() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    let request = BacklogMove::new(
+        Target::InProgress,
+        BacklogActor::Headwork,
+        Actor::Tick,
+        true,
+    );
+    assert!(store.move_backlog_item(b, &request).is_err());
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    by_user(&mut store, b, Target::InProgress, None).unwrap();
+}
+
+#[test]
+fn a_dependant_stays_gated_through_a_reopen_of_its_cancelled_dependency() {
     let (mut store, _) = store();
     let (a, b, c) = (
         add(&mut store, "a"),
         add(&mut store, "b"),
         add(&mut store, "c"),
     );
+    depend(&mut store, c, a).unwrap();
+    depend(&mut store, c, b).unwrap();
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    assert_eq!(
+        status_of(&store, c),
+        blocked_for(
+            BlockReason::DepCancelled,
+            &format!("#{a} cancelled"),
+            ReturnTo::Backlog
+        )
+    );
+    by_user(&mut store, a, Target::Backlog, None).unwrap();
+    assert_eq!(
+        status_of(&store, c),
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog),
+        "reopened: open again"
+    );
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    assert_eq!(
+        status_of(&store, c).block().unwrap().reason,
+        BlockReason::Depends
+    );
+    by_user(&mut store, b, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, c), BacklogStatus::Backlog);
+}
+
+#[test]
+fn removing_the_cancelled_edge_with_an_open_one_left_swaps_back_to_depends() {
+    let (mut store, _) = store();
+    let (x, y, z) = (
+        add(&mut store, "x"),
+        add(&mut store, "y"),
+        add(&mut store, "z"),
+    );
+    depend(&mut store, z, x).unwrap();
+    depend(&mut store, z, y).unwrap();
+    by_user(&mut store, x, Target::Cancelled, Some("no")).unwrap();
+    assert_eq!(
+        status_of(&store, z).block().unwrap().reason,
+        BlockReason::DepCancelled
+    );
+    let item = store
+        .remove_backlog_dependency(z, x, Actor::User, None)
+        .unwrap();
+    assert_eq!(
+        item.draft.status,
+        blocked_for(BlockReason::Depends, &format!("#{y}"), ReturnTo::Backlog)
+    );
+    by_user(&mut store, y, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, z), BacklogStatus::Backlog);
+}
+
+#[test]
+fn a_cancelled_dependency_reopened_and_finished_with_the_other_done_frees_the_dependant() {
+    let (mut store, _) = store();
+    let (n3, n4) = (add(&mut store, "n3"), add(&mut store, "n4"));
+    let n5 = add(&mut store, "n5");
+    depend(&mut store, n5, n3).unwrap();
+    depend(&mut store, n5, n4).unwrap();
+    by_user(&mut store, n3, Target::Cancelled, Some("no")).unwrap();
+    by_user(&mut store, n3, Target::Backlog, None).unwrap();
+    by_user(&mut store, n3, Target::Done, None).unwrap();
+    by_user(&mut store, n4, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, n5), BacklogStatus::Backlog);
+}
+
+#[test]
+fn mixed_done_and_cancelled_dependencies_in_both_orders_stay_blocked_until_the_edge_goes() {
+    for done_first in [true, false] {
+        let (mut store, _) = store();
+        let (a, b, c) = (
+            add(&mut store, "a"),
+            add(&mut store, "b"),
+            add(&mut store, "c"),
+        );
+        depend(&mut store, c, a).unwrap();
+        depend(&mut store, c, b).unwrap();
+        if done_first {
+            by_user(&mut store, a, Target::Done, None).unwrap();
+            by_user(&mut store, b, Target::Cancelled, Some("no")).unwrap();
+        } else {
+            by_user(&mut store, b, Target::Cancelled, Some("no")).unwrap();
+            by_user(&mut store, a, Target::Done, None).unwrap();
+        }
+        assert_eq!(
+            status_of(&store, c),
+            blocked_for(
+                BlockReason::DepCancelled,
+                &format!("#{b} cancelled"),
+                ReturnTo::Backlog
+            ),
+            "done_first {done_first}"
+        );
+        let item = store
+            .remove_backlog_dependency(c, b, Actor::User, None)
+            .unwrap();
+        assert_eq!(item.draft.status, BacklogStatus::Backlog);
+    }
+}
+
+#[test]
+fn reopening_a_done_dependency_blocks_its_backlog_dependants_again() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+    by_user(&mut store, a, Target::Backlog, None).unwrap();
+    assert_eq!(
+        status_of(&store, b),
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog)
+    );
+}
+
+#[test]
+fn started_and_finished_dependants_are_left_alone_when_their_dependency_changes() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    by_user(&mut store, a, Target::Done, None).unwrap();
     depend(&mut store, b, a).unwrap();
     depend(&mut store, c, a).unwrap();
-    by_user(&mut store, b, Target::Unblock, None).unwrap();
     by_user(&mut store, b, Target::InProgress, None).unwrap();
-    by_user(&mut store, c, Target::Unblock, None).unwrap();
     by_user(&mut store, c, Target::Done, None).unwrap();
+    by_user(&mut store, a, Target::Backlog, None).unwrap();
     by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
     assert_eq!(status_of(&store, b), BacklogStatus::InProgress);
     assert_eq!(status_of(&store, c), BacklogStatus::Done);
 }
 
 #[test]
-fn reopening_a_done_dependency_does_not_block_its_dependants_again() {
+fn an_item_blocked_out_of_progress_takes_no_dependency() {
     let (mut store, _) = store();
     let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
-    depend(&mut store, b, a).unwrap();
-    by_user(&mut store, a, Target::Done, None).unwrap();
-    by_user(&mut store, a, Target::Backlog, None).unwrap();
-    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+    by_user(&mut store, b, Target::InProgress, None).unwrap();
+    by_user(
+        &mut store,
+        b,
+        Target::Blocked {
+            reason: BlockReason::Decision,
+            note: Some("pick".to_owned()),
+        },
+        None,
+    )
+    .unwrap();
+    let error = depend(&mut store, b, a).unwrap_err().to_string();
+    assert!(error.contains("in progress"), "{error}");
+}
+
+#[test]
+fn several_dependencies_are_added_all_or_nothing() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    by_user(&mut store, b, Target::Cancelled, Some("no")).unwrap();
+    let error = store
+        .add_backlog_dependencies(c, &[a, b], Actor::User, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cancelled"), "{error}");
+    let item = store.backlog_item(c).unwrap();
+    assert_eq!(item.deps, Vec::<i64>::new());
+    assert_eq!(item.draft.status, BacklogStatus::Backlog);
+    let item = store
+        .add_backlog_dependencies(c, &[a], Actor::User, None)
+        .unwrap();
+    assert_eq!(item.deps, [a]);
+}
+
+#[test]
+fn a_merged_task_frees_the_dependants_of_its_item_and_a_dropped_one_leaves_them_blocked() {
+    let (mut store, config) = store();
+    let (worker, merged_item) = linked(&mut store, &config, "dep-merged", "merged item");
+    let (dropped, dropped_item) = linked(&mut store, &config, "dep-dropped", "dropped item");
+    let after_merged = add(&mut store, "after merged");
+    let after_dropped = add(&mut store, "after dropped");
+    depend(&mut store, after_merged, merged_item).unwrap();
+    depend(&mut store, after_dropped, dropped_item).unwrap();
+    to_merged(&mut store, &config, &worker);
+    assert_eq!(status_of(&store, merged_item), BacklogStatus::Done);
+    assert_eq!(status_of(&store, after_merged), BacklogStatus::Backlog);
+    store.drop_task(dropped.id, Actor::Orchestrator).unwrap();
+    assert_eq!(
+        status_of(&store, dropped_item).block().unwrap().reason,
+        BlockReason::TaskLost
+    );
+    assert_eq!(
+        status_of(&store, after_dropped).block().unwrap().reason,
+        BlockReason::Depends
+    );
 }
 
 #[test]

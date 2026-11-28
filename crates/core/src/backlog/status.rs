@@ -295,6 +295,10 @@ pub struct MoveFacts<'a> {
     pub has_project: bool,
     /// Whether the move names a task to link that is not the live task linked to it.
     pub links_another_task: bool,
+    /// How many items it depends on that are neither done nor cancelled.
+    pub open_dependencies: usize,
+    /// How many items it depends on that are cancelled.
+    pub cancelled_dependencies: usize,
     /// The note of a finish or the reason of a cancel the move came with.
     pub reason: Option<&'a str>,
 }
@@ -384,6 +388,16 @@ pub enum MoveRefusal {
     /// A cancel of an item a live task works on, at the store; the ops-level cancel drops the task first.
     #[error("task {0} works on it: drop the task first, then cancel the item")]
     DropTaskFirst(String),
+    /// A start of an item that still waits for dependencies.
+    #[error(
+        "it waits for {open} open and {cancelled} cancelled dependencies: finish them, or remove the dependencies"
+    )]
+    Dependencies {
+        /// Dependencies not yet done or cancelled.
+        open: usize,
+        /// Dependencies that were cancelled.
+        cancelled: usize,
+    },
     /// A start or link while a live task already works on it.
     #[error("task {0} already works on it")]
     TaskWorks(String),
@@ -636,10 +650,15 @@ fn block(
         BacklogStatus::Backlog => ReturnTo::Backlog,
         BacklogStatus::InProgress => ReturnTo::InProgress,
         BacklogStatus::Blocked(Block {
-            reason: BlockReason::Depends,
+            reason: current @ (BlockReason::Depends | BlockReason::DepCancelled),
             before,
             ..
-        }) if actor == BacklogActor::Headwork && reason == BlockReason::DepCancelled => *before,
+        }) if actor == BacklogActor::Headwork
+            && matches!(reason, BlockReason::Depends | BlockReason::DepCancelled)
+            && *current != reason =>
+        {
+            *before
+        }
         BacklogStatus::Blocked(_) => return Err(MoveRefusal::Already(ItemStatus::Blocked)),
         BacklogStatus::Done | BacklogStatus::Cancelled => {
             return Err(not_allowed(
@@ -724,6 +743,14 @@ fn start(
     }
     if !facts.has_project {
         return Err(MoveRefusal::NoProject);
+    }
+    if matches!(kind, MoveKind::Start | MoveKind::Respawn)
+        && (facts.open_dependencies > 0 || facts.cancelled_dependencies > 0)
+    {
+        return Err(MoveRefusal::Dependencies {
+            open: facts.open_dependencies,
+            cancelled: facts.cancelled_dependencies,
+        });
     }
     Ok(kind)
 }

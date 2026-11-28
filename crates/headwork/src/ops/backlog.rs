@@ -671,22 +671,18 @@ pub fn add_for(
     Ok(changed(store, env, &[item]))
 }
 
-/// Makes `id` depend on each of `deps`, in one transaction each, and exports. An item in the backlog is blocked for
+/// Makes `id` depend on each of `deps`, in one transaction (all or nothing), and exports. An item in the backlog is blocked for
 /// `depends` while a dependency is not done.
 ///
 /// # Errors
 ///
 /// Fails when a worker asks (only the user and the orchestrator order the backlog), the dependency guard refuses (itself, a
-/// cycle, an item not in the backlog or blocked, a cancelled dependency) or the store fails; dependencies before the
-/// refused one stay.
+/// cycle, an item not in the backlog or blocked, a cancelled dependency) or the store fails; nothing changes then.
 pub fn depend(store: &mut Store, env: &Env<'_>, id: i64, deps: &[i64]) -> Result<Change> {
     if backlog_actor(env.actor) == BacklogActor::Worker {
         bail!("a worker does not change dependencies: ask the orchestrator");
     }
-    let mut item = store.backlog_item(id)?;
-    for dep in deps {
-        item = store.add_backlog_dependency(id, *dep, env.actor, None)?;
-    }
+    let item = store.add_backlog_dependencies(id, deps, env.actor, None)?;
     Ok(changed(store, env, &[item]))
 }
 
