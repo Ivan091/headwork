@@ -35,6 +35,14 @@ pub const EXPLORER_RULES: &str = include_str!("../../../../rules/explorer.md");
 /// The heading of `explorer.md`'s section for a part of an exploration; the other sections are left out for a part.
 pub const EXPLORER_PART_HEADING: &str = "## You are a part of an exploration";
 
+/// The heading of `explorer.md`'s section for an exploration that ends in a report and the `Backlog` ask; an epic explorer
+/// gets [`EPIC_EXPLORER_HEADING`] instead.
+pub const EXPLORER_REPORT_HEADING: &str = "## You explore: a report, then the Backlog ask";
+
+/// The heading of `explorer.md`'s section for an epic explorer (`docs/backlog.md`, section 12), given instead of
+/// [`EXPLORER_REPORT_HEADING`].
+pub const EPIC_EXPLORER_HEADING: &str = "## You explore an epic";
+
 /// The built-in `reviewer.md`, added to the rules of a part of kind `review`.
 pub const REVIEWER_RULES: &str = include_str!("../../../../rules/reviewer.md");
 
@@ -76,6 +84,8 @@ pub struct Card<'a> {
     pub dir: &'a Path,
     /// For a part, its lead's address (the lead's task name); `None` reports to the orchestrator.
     pub parent: Option<&'a str>,
+    /// Whether the task explores an epic: its explorer rules are the epic section instead of the report one.
+    pub epic: bool,
 }
 
 impl RuleFiles {
@@ -254,8 +264,8 @@ impl RuleFiles {
                 if card.is_some_and(|card| card.task.kind == REVIEW_KIND) {
                     parts.push(self.reviewer.clone());
                 }
-                if card.is_some_and(|card| card.task.kind == EXPLORE_KIND) {
-                    parts.push(explorer_rules(&self.explorer, shape));
+                if let Some(card) = card.filter(|card| card.task.kind == EXPLORE_KIND) {
+                    parts.push(explorer_rules(&self.explorer, shape, card.epic));
                 }
                 if let Some(card) = card
                     && let Some((_, text)) = self
@@ -346,8 +356,9 @@ pub fn without_closing(text: &str) -> String {
     without_section(text, CLOSING_HEADING)
 }
 
-/// `explorer.md` for a task of kind `explore`: a part gets only its own section, a lead or plain task all the others.
-fn explorer_rules(text: &str, shape: TaskShape<TaskId>) -> String {
+/// `explorer.md` for a task of kind `explore`: a part gets only its own section; an epic explorer the epic section and
+/// not the report one; any other lead or plain task the report section and not the epic one.
+fn explorer_rules(text: &str, shape: TaskShape<TaskId>, epic: bool) -> String {
     if matches!(shape, TaskShape::Part { .. }) {
         let mut out = String::new();
         let mut keep = false;
@@ -362,8 +373,39 @@ fn explorer_rules(text: &str, shape: TaskShape<TaskId>) -> String {
         }
         out
     } else {
-        without_section(text, EXPLORER_PART_HEADING)
+        let other = if epic {
+            EXPLORER_REPORT_HEADING
+        } else {
+            EPIC_EXPLORER_HEADING
+        };
+        let kept = without_section(&without_section(text, EXPLORER_PART_HEADING), other);
+        if epic && !has_section(text, EPIC_EXPLORER_HEADING) {
+            format!("{kept}\n{}", section(EXPLORER_RULES, EPIC_EXPLORER_HEADING))
+        } else {
+            kept
+        }
     }
+}
+
+fn has_section(text: &str, heading: &str) -> bool {
+    text.lines().any(|line| line.trim_end() == heading)
+}
+
+/// The `## ` section headed `heading` with its heading line, up to the next heading of the same level or the end; empty
+/// when there is none. An epic explorer takes its section from the built-in rules when a rules folder copy predates it.
+fn section(text: &str, heading: &str) -> String {
+    let mut out = String::new();
+    let mut keep = false;
+    for line in text.lines() {
+        if line.starts_with("## ") {
+            keep = line.trim_end() == heading;
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Drops the `## ` section headed `heading`, up to the next heading of the same level or the end.
@@ -440,4 +482,29 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 /// A placeholder as the rules files spell it: `{name}`.
 fn slot(name: &str) -> String {
     ["{", name, "}"].concat()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_epic_explorer_gets_the_built_in_epic_section_when_the_rules_folder_copy_lacks_it() {
+        let old =
+            format!("{EXPLORER_REPORT_HEADING}\n\n- report\n\n{EXPLORER_PART_HEADING}\n\n- part\n");
+        let epic = explorer_rules(&old, TaskShape::Plain, true);
+        assert!(
+            epic.contains(EPIC_EXPLORER_HEADING),
+            "built-in epic section added: {epic}"
+        );
+        assert!(
+            !epic.contains(EXPLORER_REPORT_HEADING),
+            "report section dropped: {epic}"
+        );
+        let plain = explorer_rules(&old, TaskShape::Plain, false);
+        assert!(
+            !plain.contains(EPIC_EXPLORER_HEADING),
+            "a plain explorer gets no epic section: {plain}"
+        );
+    }
 }

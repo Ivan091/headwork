@@ -265,24 +265,28 @@ skips the guard (section 3). A move is written by one store call, `Store::move_b
 | `cancelled` | Not wanted any more; kept in the store, never exported (it replaces `dropped`) |
 
 Actors: the user (the CLI with no `HEADWORK_ROLE`), the orchestrator (its tools, or the CLI under `HEADWORK_ROLE=orchestrator`),
-an explorer (its epic's children only), a worker (its own linked item only) and headwork (close, tick, hooks).
+an explorer (an epic explorer's `plan_*` tools, section 12: its epic's children, and its epic itself only for `plan_finish`;
+an exploration adding its picks with `backlog_add` adds plain items), a worker (its own linked item only) and headwork (close,
+tick, hooks).
 
 | From | To | Who |
 |---|---|---|
-| (new) | `backlog` | user, orchestrator, explorer, headwork |
-| (new) | `blocked` (`depends`) | explorer, on its epic's children |
-| `backlog` | `in_progress` | user (`backlog start`), orchestrator (`backlog_start`, `spawn --backlog`), headwork; refused for an item whose project headwork does not run |
+| (new) | `backlog` | user, orchestrator, explorer (`plan_add` for its epic's children, `backlog_add` for picks), headwork |
+| (new) | `blocked` (`depends`) | explorer, on its epic's children (a `plan_add` with an open dependency is added, then settled to `depends`) |
+| `backlog` | `in_progress` | user (`backlog start`), orchestrator (`backlog_start`, `spawn --backlog`), headwork; refused for an item whose project headwork does not run; for an epic, the start spawns its explorer (section 12) |
+| `in_progress` (an epic) | `done` | its explorer (`plan_finish`), only while none of its children is open; the link to the explorer ends |
 | `in_progress` (no live task) | `in_progress` | user, orchestrator, headwork: a new task linked |
 | `in_progress` | `done` | headwork: the task-end table |
 | `done` (linked to a live task) | `in_progress` | headwork: the task, merged, opened another pull request; refused when the move names another task or the item's project has no task path |
 | `done`, `blocked` (linked to a task that is over) | the same | headwork: the link ends (`Unlink`) |
+| `in_progress` (an epic linked to the ending task) | the same | headwork: its explorer merged or closed, the link ends (`Unlink`, section 12) |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
 | `in_progress` | `blocked` | worker on its own item (`item_block`) and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
-| `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`depends`, `dep_cancelled`) |
+| `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`, its epic's children); headwork (`depends`, `dep_cancelled`) |
 | `blocked` (`depends`) | `blocked` (`dep_cancelled`), and back | headwork only, keeping the status before the block (section 11) |
 | `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item (`item_unblock`), headwork |
 | `blocked` (`task_lost`, `partial`) | `in_progress` | user, orchestrator, headwork: a respawn |
-| `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children |
+| `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children (`plan_cancel`) |
 | `done`, `cancelled` | `backlog` | user and orchestrator (`backlog reopen`, `backlog_reopen`), clearing `done_on` and `done_note` and ending the link (a done item may still be linked to its merged task) |
 
 Refused: a worker touching an item its task is not linked to; an explorer outside its epic; anyone but headwork
@@ -414,5 +418,72 @@ item dependencies `--after` still works.
 
 ### Out of scope
 
-The epic explorer and its `plan_*` tools (P4), the epic runner that spawns children when their dependencies are done (P5)
-and the kanban board are later phases. The dashboard graph draws item nodes and edges in its own change.
+The epic explorer and its `plan_*` tools came with P4 (section 12). The epic runner that spawns children when their
+dependencies are done (P5) and the kanban board are later phases. The dashboard graph draws item nodes and edges in its own
+change.
+
+## 12. The epic explorer (P4)
+
+Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 2 (lifecycle steps 1, 2 and 6). Decisions:
+`docs/decisions/2026-11-28-epic-explorer.md`. No store migration: the plan fields are migration 0032's columns.
+
+### Spin-up
+
+`backlog start <id>` (the user, at the CLI) and the orchestrator's `backlog_start` on an item of kind `epic` spawn its
+explorer through `ops::backlog::spawn_linked` (`ops::epic::spin_up`), so the epic moves to `in_progress` linked to the new
+task by the same guard as any spawn for an item: project the epic's, kind `explore`, the kind's model (Opus) and close mode
+(silent), slug `epic-<id>-<first words of the text>` (`core::backlog::epic_slug`, at most four words and 24 characters, or
+`epic-<id>`). The brief is generated (`core::backlog::epic_brief`): a `Goal:` line `Plan epic #<id>: <text>`, the epic's text
+and notes, the project and a `Writes:` line naming the plan notes file `<first [hooks] brief_writable root>/epics/<id>-<first
+words>.md` (`plan_file_name`). With no `brief_writable` root the spin-up is refused before anything moves
+(`epic-no-plan-path`). The output (CLI) and the tool's JSON carry `spawned`: the epic, the task, its state (queued or
+spawning), the plan path, the queue and `unlinked` when the link was refused after the task started. A plain item keeps the
+status move only.
+
+### Who is an epic explorer
+
+A task of kind `explore`, not a part, whose linked open item is an epic (that epic is "its epic"), or a child of an epic (a
+re-plan child, for P5; its epic is the parent): `Store::epic_of_task` and `ops::epic::epic_of`. Its rules get the section
+"You explore an epic" instead of "You explore: a report, then the Backlog ask" (`rules/explorer.md`). It keeps the
+exploration's `backlog_list` and `backlog_add`, but its rules give it no `Backlog` ask: the spin-up was the user's go for
+the whole epic (decision D4).
+
+### Tools (`EPIC_TOOLS`)
+
+Listed and callable only for an epic explorer; any other session is refused. Each acts as `BacklogActor::Explorer` with the
+explorer's task as the acting task and `actor_epic` its epic, logs its events with the task, and exports `backlog.md`.
+
+| Tool | What it does |
+|---|---|
+| `plan_list` | the epic (id, text, project, status) and every child: status with its block, `deps`, `task_kind`, `model`, `review`, `has_brief`, the linked task and its state |
+| `plan_add` | a child of the epic (`text`, required `brief`, `kind` default `code`, `model`, `review` 0 to 3, `after`, `project` and `section` default the epic's, `owner`); a dependency may be any item, and an open one leaves the child blocked `depends`; the `Backlog` pick cap does not apply |
+| `plan_edit` | the text, brief, kind, model or review of a child in `backlog` or `blocked` with no live task |
+| `plan_depend`, `plan_undepend` | a child's dependencies, through the dependency guard, with the task as `added_by_task` |
+| `plan_cancel` | a child in `backlog` or `blocked` with no live task, through the guard; never drops a task |
+| `plan_finish` | the epic to `done`, its link ended; refused while a child is open, naming each (`#4 (backlog), #5 (in_progress)`) |
+
+A `kind` is a kebab-case word (no list of task kinds exists to check it against) and a `model` a known model name.
+
+### Guard rows
+
+`BacklogMove::actor_epic` fills `MoveFacts::in_actor_epic` (the item's parent is the explorer's epic) and `is_actor_epic`
+(the item is that epic); `open_children` counts an epic's children in `backlog`, `in_progress` or `blocked`. Every explorer
+row needs `in_actor_epic`, except one on the epic itself: `in_progress` to `done` while `open_children` is 0 (move kind
+`finish`, link ended though the live task is the explorer's own), refused with `ChildrenOpen(n)` otherwise. Any other move
+of its epic by the explorer is `NotAllowed`, and an item outside the epic is `OutsideEpic`.
+
+### Task end of an epic
+
+Only `plan_finish` or the user finishes an epic. `on_task_end` takes the item's kind: for an epic linked to the ending
+task, `merged` or `closed`, whatever the outcome, leave it `in_progress` and end the link (`TaskEndEffect::Release`, target
+`Unlink`, logged `backlog-moved` with the same `from` and `to`; the guard allows it to headwork for the ending task's own
+item, `linked_to_actor`), so a later explorer or P5's runner can relink it; `dropped` or `failed` block it as `task_lost`, as
+any item, even when the task had merged pull requests. `Store::record_partial_outcome` skips epics: an explorer's `done`
+with `partial` never blocks its epic.
+
+### Plan notes file
+
+The file on the brief's `Writes:` line, under the first `[hooks] brief_writable` root, so the existing grant lets the
+explorer write, commit and push it (`explore-write`). It holds the goal, the children in order with why, the dependency
+graph and open questions; the explorer sends it with `SendUserFile` and tells the orchestrator
+`finished: plan <path>, N children`.

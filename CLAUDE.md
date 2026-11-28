@@ -36,7 +36,7 @@ docs/                   design, research, trials, decisions
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
 backlog_list, backlog_add, backlog_depend, backlog_undepend, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done (with `outcome` `done` or `partial`), recap, item_block, item_unblock, job_start,
-job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
+job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop; an epic explorer also gets plan_list, plan_add, plan_edit, plan_depend, plan_undepend, plan_cancel and plan_finish) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
 Milestone 5 is the tick (`ops/tick.rs`, pure decisions in
@@ -176,7 +176,9 @@ the guard rule `explore-write` (shadow unless in `enforce_rules`) keeps it to th
 `Backlog`; `ops/explore.rs` records the answer as the event `backlog-picked` (from the `PostToolUse` hook) and lets the explorer, and
 only it, use `EXPLORER_TOOLS` (`backlog_list`, `backlog_add`, `ops/mcp.rs`): headwork caps its adds at the number of picks (`adds_left`,
 `Store::backlog_pick_counts`) and refuses more as `backlog-unasked`; adding exactly the picked candidates is the explorer's rule. An add logs
-`backlog-added` with the task and gets a `Source:` suffix. The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
+`backlog-added` with the task and gets a `Source:` suffix. An epic explorer (`docs/backlog.md`, section 12; `ops/epic.rs`) is the explorer
+`backlog start` of an epic spawns, linked to it, with a generated brief whose `Writes:` line is the plan notes file under the first
+`[hooks] brief_writable` root; it plans the epic's children with `EPIC_TOOLS` (no `Backlog` ask), and its task's end leaves the epic in progress. The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
 kind `explore` too and report to the lead.
 The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
 floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for

@@ -10,6 +10,7 @@ use std::str::FromStr;
 use serde::ser::SerializeStruct as _;
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::backlog::ItemKind;
 use crate::vocabulary::text_enum;
 use crate::{TaskState, UnknownWord};
 
@@ -258,7 +259,8 @@ pub enum Target {
     Done,
     /// Not wanted any more.
     Cancelled,
-    /// The link to a task that is over ends and the status stays; headwork only, for a done or blocked item.
+    /// The link to a task that is over ends and the status stays; headwork only, for a done or blocked item and an
+    /// in-progress epic whose explorer ended.
     Unlink,
 }
 
@@ -301,10 +303,15 @@ fn waiting_text(open: usize, cancelled: usize) -> String {
 pub struct MoveFacts<'a> {
     /// The name of the live task linked to it (any state but closed, dropped and failed).
     pub live_task: Option<&'a str>,
-    /// Whether the acting worker's own task is the one linked to it.
+    /// Whether the acting worker's own task is the one linked to it; for headwork at a task's end, whether the ending task
+    /// is.
     pub linked_to_actor: bool,
-    /// Whether it is a child of the acting explorer's epic (always false until epics exist).
+    /// Whether it is a child of the acting explorer's epic.
     pub in_actor_epic: bool,
+    /// Whether it is the acting explorer's epic itself.
+    pub is_actor_epic: bool,
+    /// How many of its children are open (backlog, in progress or blocked); 0 for an item that is not an epic.
+    pub open_children: usize,
     /// Whether a task can work on it: its project is one headwork runs, or a spawn names the project.
     pub has_project: bool,
     /// Whether the move names a task to link that is not the live task linked to it.
@@ -396,6 +403,9 @@ pub enum MoveRefusal {
     /// An explorer touched an item outside its epic.
     #[error("an explorer may change only its own epic's children")]
     OutsideEpic,
+    /// An explorer finishing its epic while children are still open.
+    #[error("the epic has {0} open children: finish or cancel them first")]
+    ChildrenOpen(usize),
     /// Anyone but headwork finishing an item a live task works on.
     #[error("task {0} works on it: only headwork finishes it, when the task finishes")]
     FinishedByTask(String),
@@ -604,6 +614,9 @@ fn decide(
             _ => Err(refuse()),
         };
     };
+    if actor == A::Explorer && facts.is_actor_epic {
+        return finish_epic(from, to, facts);
+    }
     if actor == A::Explorer && !facts.in_actor_epic {
         return Err(MoveRefusal::OutsideEpic);
     }
@@ -662,6 +675,26 @@ fn decide(
     }
 }
 
+/// The one move an explorer makes on its epic itself: in progress to done once no child is open (`plan_finish`). The link
+/// ends even though the live task is the explorer's own.
+fn finish_epic(
+    from: &BacklogStatus,
+    to: &Target,
+    facts: &MoveFacts<'_>,
+) -> Result<ItemMove, MoveRefusal> {
+    match (from, to) {
+        (BacklogStatus::InProgress, Target::Done) if facts.open_children > 0 => {
+            Err(MoveRefusal::ChildrenOpen(facts.open_children))
+        }
+        (BacklogStatus::InProgress, Target::Done) => Ok(moved(
+            Some(ItemStatus::InProgress),
+            BacklogStatus::Done,
+            MoveKind::Finish,
+        )),
+        _ => Err(not_allowed(BacklogActor::Explorer, Some(from.kind()), to)),
+    }
+}
+
 fn block(
     from: &BacklogStatus,
     reason: BlockReason,
@@ -704,7 +737,8 @@ fn block(
     ))
 }
 
-/// Headwork ends the link of a done or blocked item whose task is over; the status stays.
+/// Headwork ends the link of a done or blocked item whose task is over, and of an in-progress epic whose explorer, the
+/// task linked to it, ended (merged, while that task still lives, or closed); the status stays.
 fn unlink(
     from: &BacklogStatus,
     actor: BacklogActor,
@@ -714,6 +748,9 @@ fn unlink(
         BacklogStatus::Done | BacklogStatus::Blocked(_)
             if actor == BacklogActor::Headwork && facts.live_task.is_none() =>
         {
+            Ok(())
+        }
+        BacklogStatus::InProgress if actor == BacklogActor::Headwork && facts.linked_to_actor => {
             Ok(())
         }
         BacklogStatus::Done
@@ -911,6 +948,11 @@ pub enum TaskEndEffect {
         /// `task <name> partial`, then the worker's note.
         note: String,
     },
+    /// An epic whose explorer merged or closed: it stays in progress and the link ends, so a later explorer can take it.
+    Release {
+        /// `task <name> ended, the epic stays in progress`.
+        note: String,
+    },
 }
 
 impl TaskEndEffect {
@@ -927,6 +969,7 @@ impl TaskEndEffect {
                 reason: BlockReason::Partial,
                 note: Some(note.clone()),
             },
+            Self::Release { .. } => Target::Unlink,
         }
     }
 }
@@ -937,13 +980,20 @@ impl TaskEndEffect {
 /// pull requests or saying there was none; `dropped` and `failed` block it as `task_lost`, unless the task already merged
 /// work (an item a merged task took back when it opened another pull request), which finishes it; any other state leaves
 /// it alone. `merged_urls` are the task's merged pull requests, oldest first.
+///
+/// An epic (`kind`) is never finished by its explorer's end, only by `plan_finish` or the user: merged or closed, whatever
+/// the outcome, it is released (in progress, link ended); dropped or failed, it is blocked as `task_lost`.
 #[must_use]
 pub fn on_task_end(
     state: TaskState,
     outcome: TaskOutcome,
+    kind: ItemKind,
     merged_urls: &[String],
     task_name: &str,
 ) -> Option<TaskEndEffect> {
+    if kind == ItemKind::Epic {
+        return epic_task_end(state, task_name);
+    }
     let merged = || {
         if merged_urls.is_empty() {
             format!("task {task_name} merged")
@@ -986,6 +1036,29 @@ pub fn on_task_end(
             | TaskState::Parked,
             _,
         ) => None,
+    }
+}
+
+fn epic_task_end(state: TaskState, task_name: &str) -> Option<TaskEndEffect> {
+    match state {
+        TaskState::Merged | TaskState::Closed => Some(TaskEndEffect::Release {
+            note: format!("task {task_name} ended, the epic stays in progress"),
+        }),
+        TaskState::Dropped => Some(TaskEndEffect::Lost {
+            note: format!("task {task_name} dropped"),
+        }),
+        TaskState::Failed => Some(TaskEndEffect::Lost {
+            note: format!("task {task_name} failed"),
+        }),
+        TaskState::Queued
+        | TaskState::Spawning
+        | TaskState::Working
+        | TaskState::NeedsUser
+        | TaskState::InReview
+        | TaskState::Closing
+        | TaskState::Interrupted
+        | TaskState::Parking
+        | TaskState::Parked => None,
     }
 }
 

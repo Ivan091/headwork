@@ -1902,6 +1902,7 @@ fn backlog_list_command(
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per backlog action")]
 fn backlog_change_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
@@ -1937,6 +1938,7 @@ fn backlog_change_command(
                     kind: epic.then_some(headwork_core::backlog::ItemKind::Epic),
                     parent,
                     after,
+                    plan: headwork_store::ItemPlan::default(),
                 },
             };
             (act(&mut |env| list::add(store, env, &request))?, json)
@@ -1992,6 +1994,7 @@ fn backlog_change_command(
                 due: due.as_deref().map(date_or_none).transpose()?,
                 append,
                 added: None,
+                plan: headwork_store::ItemPlan::default(),
             };
             (act(&mut |env| list::edit(store, env, id, &edit))?, json)
         }

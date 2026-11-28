@@ -1667,7 +1667,7 @@ fn epics_hold_children_one_level_deep() {
     let kind = |kind, parent| ItemShape {
         kind,
         parent,
-        after: Vec::new(),
+        ..ItemShape::default()
     };
     let epic = shaped_add(&mut store, "epic", &kind(Some(ItemKind::Epic), None)).unwrap();
     assert_eq!(epic.kind, ItemKind::Epic);

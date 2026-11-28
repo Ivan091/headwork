@@ -185,6 +185,7 @@ pub fn spawn_shaped(
                 task: &task,
                 dir: &dir,
                 parent: parent.as_deref(),
+                epic: false,
             }),
         );
         format!("{}\n\n{rules}", brief.trim_end())

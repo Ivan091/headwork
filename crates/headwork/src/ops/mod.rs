@@ -10,6 +10,7 @@ pub mod digest;
 pub mod doctor;
 pub mod done_check;
 pub mod effort;
+pub mod epic;
 pub mod exit;
 pub mod explore;
 pub mod flags;

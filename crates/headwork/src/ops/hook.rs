@@ -326,10 +326,15 @@ fn rules_for(store: &mut Store, call: &Call<'_>) -> Result<(String, i64)> {
         .and_then(|task| task.shape.parent())
         .map(|lead| store.task(lead).map(|lead| lead.name.to_string()))
         .transpose()?;
+    let epic = match call.task {
+        Some(task) => super::epic::epic_of(store, task)?.is_some(),
+        None => false,
+    };
     let card = call.task.zip(dir.as_deref()).map(|(task, dir)| Card {
         task,
         dir,
         parent: parent.as_deref(),
+        epic,
     });
     let text = files.render(call.session.role, env.config, env.exe, card.as_ref());
     Ok((text, version))

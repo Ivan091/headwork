@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use headwork_core::backlog::{
     self, BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus,
-    BlockReason, ExportFacts, ExportPlan, ItemStatus, Target, Unparsed, clean_note,
+    BlockReason, ExportFacts, ExportPlan, ItemKind, ItemStatus, Target, Unparsed, clean_note,
 };
 use headwork_core::{Actor, Config};
 use headwork_store::{
@@ -20,6 +20,7 @@ use headwork_store::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::epic::StartedExplorer;
 use super::spawn::{Pumped, SpawnRequest, spawn};
 use super::{Env, slashed, stage_file};
 use crate::home::Home;
@@ -213,6 +214,9 @@ pub struct Change {
     pub items: Vec<String>,
     /// The export that followed.
     pub export: Export,
+    /// The explorer the spin-up of an epic started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned: Option<StartedExplorer>,
 }
 
 impl Change {
@@ -223,6 +227,9 @@ impl Change {
         for line in &self.items {
             out.push_str(line);
             out.push('\n');
+        }
+        if let Some(spawned) = &self.spawned {
+            out.push_str(&spawned.text());
         }
         out.push_str(&self.export.summary());
         out.push('\n');
@@ -583,10 +590,12 @@ pub fn after_close(store: &mut Store, env: &Env<'_>) {
     }
 }
 
-fn changed(store: &mut Store, env: &Env<'_>, items: &[BacklogItem]) -> Change {
+/// The change of `items`, with the export that follows it.
+pub(super) fn changed(store: &mut Store, env: &Env<'_>, items: &[BacklogItem]) -> Change {
     Change {
         items: items.iter().map(BacklogItem::line).collect(),
         export: export_after(store, env),
+        spawned: None,
     }
 }
 
@@ -802,12 +811,21 @@ pub fn cancel(store: &mut Store, env: &Env<'_>, id: i64, reason: Option<&str>) -
     move_item(store, env, None, id, Target::Cancelled, reason)
 }
 
-/// Spins an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
+/// Spins an item up: backlog to in progress. A plain item spawns nothing (`spawn --backlog` links a task); an epic spawns
+/// its explorer, linked to it ([`super::epic::spin_up`]), and the change names the task.
 ///
 /// # Errors
 ///
-/// As [`move_item`].
+/// As [`move_item`]; for an epic, as [`super::epic::spin_up`].
 pub fn start(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
+    let item = store.backlog_item(id)?;
+    if item.kind == ItemKind::Epic {
+        let started = super::epic::spin_up(store, env, &item)?;
+        let item = store.backlog_item(id)?;
+        let mut change = changed(store, env, &[item]);
+        change.spawned = Some(started);
+        return Ok(change);
+    }
     move_item(store, env, None, id, Target::InProgress, None)
 }
 
@@ -865,6 +883,21 @@ pub fn reopen(store: &mut Store, env: &Env<'_>, id: i64) -> Result<Change> {
 ///
 /// Fails when the item is unknown, a field cannot be written to the file, or the store fails.
 pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &BacklogEdit) -> Result<Change> {
+    edit_for(store, env, id, edit, None)
+}
+
+/// [`edit`] logged with `task`, the explorer that changed its epic's child.
+///
+/// # Errors
+///
+/// As [`edit`].
+pub fn edit_for(
+    store: &mut Store,
+    env: &Env<'_>,
+    id: i64,
+    edit: &BacklogEdit,
+    task: Option<TaskId>,
+) -> Result<Change> {
     let mut edit = edit.clone();
     if let Some(text) = &edit.text {
         let found = backlog::normalize(text.trim());
@@ -879,7 +912,7 @@ pub fn edit(store: &mut Store, env: &Env<'_>, id: i64, edit: &BacklogEdit) -> Re
         .section
         .map(|section| section.map(|section| section.trim().to_owned()));
     edit.append = edit.append.map(|note| clean_note(&note));
-    let item = store.edit_backlog_item(id, &edit, env.actor)?;
+    let item = store.edit_backlog_item_for(id, &edit, env.actor, task)?;
     Ok(changed(store, env, &[item]))
 }
 
