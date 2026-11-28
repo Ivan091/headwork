@@ -607,6 +607,8 @@ pub fn cancel(
 
 /// Finishes the explorer's epic: in progress to done, its link ended; refused while a child is open, naming them.
 ///
+/// The child linked to the explorer's own task (a re-plan explorer's item) does not count: its task's end finishes it.
+///
 /// # Errors
 ///
 /// Fails when a child is open, the guard refuses, or the store fails.
@@ -617,7 +619,7 @@ pub fn finish(
     note: Option<&str>,
 ) -> Result<Change> {
     explorer.in_progress(store)?;
-    let open = store.backlog_open_children(explorer.epic)?;
+    let open = store.backlog_open_children_except(explorer.epic, explorer.task.id)?;
     if !open.is_empty() {
         let mut named = Vec::with_capacity(open.len());
         for id in &open {

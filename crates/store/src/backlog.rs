@@ -364,6 +364,22 @@ pub(crate) fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, St
         .collect::<Result<_, _>>()?)
 }
 
+/// The open children of an epic, leaving out those linked to `own_task`: an explorer's own re-plan child is open while
+/// its explorer runs, and must not stop that explorer's `plan_finish`.
+pub(crate) fn open_children_except(
+    conn: &Connection,
+    epic: i64,
+    own_task: Option<TaskId>,
+) -> Result<Vec<i64>, StoreError> {
+    Ok(conn
+        .prepare(
+            "SELECT id FROM backlog_items WHERE parent_id = ?1 AND status IN ('backlog', 'in_progress', 'blocked')
+             AND (?2 IS NULL OR task_id IS NOT ?2) ORDER BY position, id",
+        )?
+        .query_map(params![epic, own_task.map(|task| task.0)], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
 pub(crate) fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
     let text: String = conn.query_row(&format!("SELECT {TODAY}"), [], |row| row.get(0))?;
     Ok(BacklogDate::parse(&text)?)
@@ -515,8 +531,11 @@ pub(crate) fn check(
     request: &BacklogMove<'_>,
 ) -> Result<ItemMove, StoreError> {
     let waiting = WaitingDependencies::of(&dependency_statuses(conn, item.id)?);
+    let own_task = request
+        .actor_task
+        .filter(|_| request.actor == BacklogActor::Explorer);
     let children = if item.kind == ItemKind::Epic {
-        open_children(conn, item.id)?.len()
+        open_children_except(conn, item.id, own_task)?.len()
     } else {
         0
     };
@@ -1277,6 +1296,20 @@ impl Store {
     /// Returns a read error.
     pub fn backlog_open_children(&self, epic: i64) -> Result<Vec<i64>, StoreError> {
         open_children(&self.conn, epic)
+    }
+
+    /// The open children of an epic that block `own_task`'s `plan_finish`: every open child but the ones linked to that
+    /// task (a re-plan explorer's own child), in export order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn backlog_open_children_except(
+        &self,
+        epic: i64,
+        own_task: TaskId,
+    ) -> Result<Vec<i64>, StoreError> {
+        open_children_except(&self.conn, epic, Some(own_task))
     }
 
     /// Records that `task` was spun up to explore epic `epic` (`docs/backlog.md`, section 12) and logs `task-epic`.

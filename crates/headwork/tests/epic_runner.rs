@@ -12,13 +12,15 @@ use std::process::Command;
 
 use headwork::home::Home;
 use headwork::ops::Env;
+use headwork::ops::mcp::{Identity, Server};
 use headwork::ops::spawn::{Outcome, Pumped, pump};
+use headwork_adapters::git::FakeGit;
 use headwork_adapters::host::fake::FakeHost;
 use headwork_core::backlog::{
     BacklogActor, BacklogDraft, BacklogOwner, BacklogStatus, BlockReason, ItemKind, Target,
 };
 use headwork_core::lifecycle::{MergePolicy, MergeSource, SessionFacts, Trigger};
-use headwork_core::{Actor, Config, EXPLORE_KIND, TaskState};
+use headwork_core::{Actor, Config, EXPLORE_KIND, Role, TaskState};
 use headwork_store::{BacklogMove, ItemPlan, ItemShape, Store, Task, TaskId};
 
 const EXE: &str = "S:/bin/headwork.exe";
@@ -43,6 +45,10 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn world() -> World {
+    world_with("max_parallel = 2\nmax_replans = 1\n", "")
+}
+
+fn world_with(epics: &str, extra: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let dir_text = dir.path().display().to_string().replace('\\', "/");
     let main = dir.path().join("demo");
@@ -52,9 +58,9 @@ fn world() -> World {
     let main_text = main.display().to_string().replace('\\', "/");
     let text = format!(
         "[machine]\nhost = \"wmux\"\n\n[hooks]\nbrief_writable = [\"{dir_text}/notes\"]\n\n\
-         [epics]\nmax_parallel = 2\nmax_replans = 1\n\n[project.demo]\nmain = \"{main_text}\"\n\
+         [epics]\n{epics}\n[project.demo]\nmain = \"{main_text}\"\n\
          worktree_new = \"builtin\"\nworktree_remove = \"builtin\"\nworktree_path = \"{{main}}-{{slug}}\"\n\
-         deliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/demo\"]\n"
+         deliver = \"pr\"\nmerge = \"deliver\"\nallowed_repos = [\"acme/demo\"]\n\n{extra}"
     );
     let config = Config::parse(&text, "test").unwrap();
     let home = Home::at(Some(dir.path().join("home")))
@@ -164,6 +170,59 @@ impl World {
             Some(BlockReason::TaskLost),
             "#{id}"
         );
+    }
+
+    fn worker_tool(
+        &mut self,
+        task: &Task,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> (bool, String) {
+        let session = self.store.session_of(task.id).unwrap().unwrap().id;
+        let env = Env {
+            home: &self.home,
+            config: &self.config,
+            host: &self.host,
+            exe: Path::new(EXE),
+            actor: Actor::Worker,
+        };
+        let identity = Identity {
+            session: Some(session),
+            role: Some(Role::Worker),
+        };
+        let message = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        let prs = FakeGit::new();
+        let reply = Server::new(&mut self.store, env, &prs, identity)
+            .handle(&message)
+            .unwrap();
+        let result = reply["result"].clone();
+        let text = result["content"][0]["text"].as_str().unwrap().to_owned();
+        (result["isError"].as_bool().unwrap(), text)
+    }
+
+    fn epic(&mut self, text: &str) -> i64 {
+        let epic = self.add(
+            text,
+            &ItemShape {
+                kind: Some(ItemKind::Epic),
+                ..ItemShape::default()
+            },
+        );
+        let start = BacklogMove::new(Target::InProgress, BacklogActor::User, Actor::User, true);
+        self.store.move_backlog_item(epic, &start).unwrap();
+        epic
+    }
+
+    fn children(&self, epic: i64) -> Vec<headwork_core::backlog::BacklogItem> {
+        self.store
+            .backlog_items(&headwork_store::BacklogFilter {
+                epic: Some(epic),
+                ..headwork_store::BacklogFilter::default()
+            })
+            .unwrap()
     }
 
     fn tasks(&self) -> usize {
@@ -327,5 +386,32 @@ fn the_runner_starts_children_in_order_re_plans_a_lost_one_and_blocks_on_churn()
     assert_eq!(
         rig.store.task(explorer.id).unwrap().state,
         TaskState::Dropped
+    );
+}
+
+#[test]
+fn a_plan_complete_re_plan_explorer_finishes_the_epic_though_its_own_child_is_open() {
+    let mut rig = world();
+    let epic = rig.epic("Finished epic");
+    let only = rig.child(epic, "Only piece", &[]);
+    let done = BacklogMove::new(Target::Done, BacklogActor::User, Actor::User, true);
+    rig.store.move_backlog_item(only, &done).unwrap();
+    let pumped = rig.pump();
+    assert_eq!(started(&pumped).len(), 1, "{pumped:?}");
+    let replan = rig.children(epic).last().unwrap().clone();
+    assert_eq!(replan.draft.text, "Re-plan: plan complete?");
+    let explorer = rig.task_of(replan.id).unwrap();
+    assert_eq!(explorer.epic, Some(epic));
+    let (is_error, text) = rig.worker_tool(
+        &explorer,
+        "plan_finish",
+        &serde_json::json!({ "note": "all done" }),
+    );
+    assert!(!is_error, "{text}");
+    assert_eq!(rig.status(epic), BacklogStatus::Done);
+    assert_eq!(
+        rig.status(replan.id),
+        BacklogStatus::InProgress,
+        "its own child stays with its task until the task ends"
     );
 }
