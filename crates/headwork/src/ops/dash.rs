@@ -1628,22 +1628,34 @@ mod tests {
         let find = |path: &str| ASSETS.iter().find(|asset| asset.path == path).unwrap().body;
         let script = find("/kanban.js");
         let css = find("/kanban.css");
-        for needle in ["kind-done", "kind-cancelled", "✓ done", "✕ cancelled"] {
+        for needle in [
+            r#"make("div", "kb-card kind-" + item.status"#,
+            r#"chip("✓ done" + (item.done_on ? " " + item.done_on : ""), "kind-done")"#,
+            r#"chip("✕ cancelled", "kind-cancelled")"#,
+            r#"if (item.status === "cancelled") {"#,
+        ] {
             assert!(script.contains(needle), "kanban.js lacks {needle}");
         }
-        for needle in [
-            ".kb-card.kind-done",
-            ".kb-card.kind-cancelled",
-            "var(--blue)",
-            "var(--violet)",
-            "line-through",
+        for rule in [
+            ".kb-card.kind-done {\n  border-left: 4px solid var(--blue);",
+            ".kb-card.kind-cancelled {\n  border-left: 4px solid var(--violet);",
+            ".kb-card.kind-cancelled .kb-text {\n  text-decoration: line-through;",
+            "#board .chip.kind-done {\n  color: var(--blue);",
+            "#board .chip.kind-cancelled {\n  color: var(--violet);",
+            "grid-template-columns: repeat(4, minmax(220px, 1fr));",
         ] {
-            assert!(css.contains(needle), "kanban.css lacks {needle}");
+            assert!(
+                css.replace("\r\n", "\n").contains(rule),
+                "kanban.css lacks {rule}"
+            );
         }
-        assert!(css.contains("repeat(4,"), "four grid columns");
         assert!(
             !script.contains("cancelledOpen"),
             "no separate cancelled column"
+        );
+        assert!(
+            !script.contains("cancelled: \"Cancelled\""),
+            "no cancelled column title"
         );
     }
 
