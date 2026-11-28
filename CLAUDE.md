@@ -35,7 +35,7 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
-backlog_list, backlog_add, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done (with `outcome` `done` or `partial`), recap, item_block, item_unblock, job_start,
+backlog_list, backlog_add, backlog_depend, backlog_undepend, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done (with `outcome` `done` or `partial`), recap, item_block, item_unblock, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -279,8 +279,8 @@ cargo run -p headwork -- tick [--json]                 # reconcile the store wit
 cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
 cargo run -p headwork -- leftovers [--all] [--json] | clear (<rc name or session id>... | --all)   # ended sessions that left no `/exit`, still listed in the Claude app; clear after archiving them there
-cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--json]   # the backlog kept in the store (docs/backlog.md)
-cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | start | unblock | reopen <id> | block <id> --reason decision|event --note N | cancel <id> [--reason R] | done <id> [--note N] | edit <id> [...]
+cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--epic ID] [--json]   # the backlog kept in the store (docs/backlog.md)
+cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... [--after ID]... [--epic | --parent ID] | depend <id> --on <id>... | undepend <id> --on <id> | start | unblock | reopen <id> | block <id> --reason decision|event --note N | cancel <id> [--reason R] | done <id> [--note N] | edit <id> [...]
 cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file P]   # backlog.md into the store (never deletes) and back out (backs up a hand-edited file)
 cargo run -p headwork -- digest [--json]   # "Needs you": asks, backlog items due, migration notes, waiting pull requests, old findings (docs/backlog.md, section 8)
 cargo run -p headwork -- park [--deadline S] [--keep-orchestrator]   # recaps, jobs stopped at checkpoints, panes closed, the orchestrator last: safe to restart

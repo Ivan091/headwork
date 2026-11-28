@@ -342,6 +342,7 @@ fn backlog_answer(db: &Path, query: &BacklogQuery) -> Result<BacklogAnswer> {
         project: query.project.clone(),
         owner: query.owner,
         statuses: query.statuses.clone(),
+        ..BacklogFilter::default()
     })?;
     Ok(BacklogAnswer {
         items,

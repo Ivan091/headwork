@@ -1598,6 +1598,8 @@ fn mcp_tools_follow_the_role() {
             "migrate_mark",
             "backlog_list",
             "backlog_add",
+            "backlog_depend",
+            "backlog_undepend",
             "backlog_done",
             "backlog_start",
             "backlog_cancel",

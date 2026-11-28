@@ -186,6 +186,11 @@ pub fn add(
             task.name
         );
     }
+    if request.shape != headwork_store::ItemShape::default() {
+        bail!(
+            "an exploration adds plain items: an epic, a parent and dependencies are the orchestrator's"
+        );
+    }
     let (picked, added) = store.backlog_pick_counts(task.id)?;
     if adds_left(picked, added) == 0 {
         bail!(

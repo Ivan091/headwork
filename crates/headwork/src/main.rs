@@ -628,6 +628,9 @@ struct BacklogListArgs {
     /// The old filter, read for one release: `open`, `done`, `dropped` (cancelled) or `all`.
     #[arg(long, conflicts_with = "status")]
     state: Option<String>,
+    /// Only the children of this epic (its id).
+    #[arg(long, value_name = "ID")]
+    epic: Option<i64>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -659,6 +662,38 @@ enum BacklogAction {
         /// A sub-bullet under the item; repeatable.
         #[arg(long = "note", value_name = "NOTE")]
         notes: Vec<String>,
+        /// An item this one waits for; repeatable. The new item is blocked until each is done.
+        #[arg(long = "after", value_name = "ID")]
+        after: Vec<i64>,
+        /// Add an epic, which groups items one level deep, instead of an item.
+        #[arg(long, conflicts_with = "parent")]
+        epic: bool,
+        /// Add the item as a child of this epic (its id).
+        #[arg(long, value_name = "EPIC")]
+        parent: Option<i64>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make an item wait for others: it is blocked until each is done. Refused for itself, a cycle, an item not in the
+    /// backlog or blocked, and a cancelled dependency.
+    Depend {
+        /// The item that waits.
+        id: i64,
+        /// The items it waits for; repeatable.
+        #[arg(long = "on", value_name = "ID", required = true)]
+        on: Vec<i64>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a dependency; an item that waits for nothing else open goes back to what it was.
+    Undepend {
+        /// The item that waited.
+        id: i64,
+        /// The item it no longer waits for.
+        #[arg(long = "on", value_name = "ID")]
+        on: i64,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -1826,6 +1861,9 @@ fn backlog_command(
                 return Ok(ExitCode::FAILURE);
             }
         }
+        ordering @ (BacklogAction::Depend { .. } | BacklogAction::Undepend { .. }) => {
+            backlog_order_command(store, ctx, ordering, out)?;
+        }
         changing @ (BacklogAction::Add { .. }
         | BacklogAction::Done { .. }
         | BacklogAction::Start { .. }
@@ -1849,6 +1887,7 @@ fn backlog_list_command(
         filter.owner,
         filter.status.as_deref(),
         filter.state.as_deref(),
+        filter.epic,
     )?;
     if filter.json {
         json_out(out, &items)?;
@@ -1880,6 +1919,9 @@ fn backlog_change_command(
             not_before,
             due,
             notes,
+            after,
+            epic,
+            parent,
             json,
         } => {
             let request = AddRequest {
@@ -1890,6 +1932,11 @@ fn backlog_change_command(
                 not_before,
                 due,
                 notes,
+                shape: headwork_store::ItemShape {
+                    kind: epic.then_some(headwork_core::backlog::ItemKind::Epic),
+                    parent,
+                    after,
+                },
             };
             (act(&mut |env| list::add(store, env, &request))?, json)
         }
@@ -1947,9 +1994,48 @@ fn backlog_change_command(
             };
             (act(&mut |env| list::edit(store, env, id, &edit))?, json)
         }
-        BacklogAction::List(_) | BacklogAction::Import { .. } | BacklogAction::Export { .. } => {
+        BacklogAction::List(_)
+        | BacklogAction::Depend { .. }
+        | BacklogAction::Undepend { .. }
+        | BacklogAction::Import { .. }
+        | BacklogAction::Export { .. } => {
             return Ok(());
         }
+    };
+    if json {
+        json_out(out, &done)
+    } else {
+        Ok(out.write_all(done.text().as_bytes())?)
+    }
+}
+
+fn backlog_order_command(
+    store: &mut Store,
+    ctx: &Ctx<'_>,
+    action: BacklogAction,
+    out: &mut impl Write,
+) -> Result<()> {
+    use headwork::ops::backlog as list;
+    let actor = Identity::from_env().actor();
+    let act = |act: &mut dyn FnMut(&Env<'_>) -> Result<list::Change>| ctx.with_actor(actor, act);
+    let (done, json) = match action {
+        BacklogAction::Depend { id, on, json } => {
+            (act(&mut |env| list::depend(store, env, id, &on))?, json)
+        }
+        BacklogAction::Undepend { id, on, json } => {
+            (act(&mut |env| list::undepend(store, env, id, on))?, json)
+        }
+        BacklogAction::List(_)
+        | BacklogAction::Add { .. }
+        | BacklogAction::Done { .. }
+        | BacklogAction::Start { .. }
+        | BacklogAction::Cancel { .. }
+        | BacklogAction::Block { .. }
+        | BacklogAction::Unblock { .. }
+        | BacklogAction::Reopen { .. }
+        | BacklogAction::Edit { .. }
+        | BacklogAction::Import { .. }
+        | BacklogAction::Export { .. } => return Ok(()),
     };
     if json {
         json_out(out, &done)

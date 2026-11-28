@@ -623,3 +623,83 @@ fn the_done_tool_with_outcome_partial_blocks_the_item_and_a_bad_outcome_is_refus
         Some("task demo-tool partial: half done")
     );
 }
+
+#[test]
+fn the_tools_depend_undepend_and_add_epics_and_children() {
+    let mut w = world();
+    let first = w.add("demo", "first");
+    let second = w.add("demo", "second");
+    w.ok("backlog_depend", &json!({ "id": second, "on": [first] }));
+    let item = w.store.backlog_item(second).unwrap();
+    assert_eq!(item.deps, [first]);
+    assert_eq!(item.draft.status.kind(), ItemStatus::Blocked);
+    let (is_error, text) = w.tool("backlog_depend", &json!({ "id": first, "on": [second] }));
+    assert!(is_error && text.contains("cycle"), "{text}");
+    w.ok("backlog_undepend", &json!({ "id": second, "on": first }));
+    assert_eq!(
+        w.store.backlog_item(second).unwrap().draft.status,
+        BacklogStatus::Backlog
+    );
+    w.ok(
+        "backlog_add",
+        &json!({ "project": "demo", "text": "the epic", "epic": true }),
+    );
+    let epic = w
+        .store
+        .backlog_items(&BacklogFilter::default())
+        .unwrap()
+        .last()
+        .unwrap()
+        .id;
+    w.ok(
+        "backlog_add",
+        &json!({ "project": "demo", "text": "child", "parent": epic, "after": [first] }),
+    );
+    let children = w.listed(&json!({ "epic": epic }));
+    assert!(
+        children.len() == 1 && children[0].contains("child"),
+        "{children:?}"
+    );
+    assert!(
+        children[0].contains(&format!("after #{first}")),
+        "{children:?}"
+    );
+    let (is_error, text) = w.tool(
+        "backlog_add",
+        &json!({ "project": "demo", "text": "deep", "parent": second }),
+    );
+    assert!(is_error && text.contains("not an epic"), "{text}");
+}
+
+#[test]
+fn spawn_with_after_is_refused_for_an_item_that_has_item_dependencies() {
+    let mut w = world();
+    let first = w.add("demo", "first");
+    let second = w.add("demo", "second");
+    w.ok("backlog_depend", &json!({ "id": second, "on": [first] }));
+    w.ok("backlog_unblock", &json!({ "id": second }));
+    w.ok(
+        "spawn",
+        &json!({ "project": "demo", "slug": "early", "brief": "# Task\n" }),
+    );
+    let (is_error, text) = w.tool(
+        "spawn",
+        &json!({
+            "project": "demo",
+            "slug": "late",
+            "brief": "# Task\n",
+            "backlog": second,
+            "depends_on": "demo-early",
+        }),
+    );
+    assert!(is_error, "{text}");
+    assert!(
+        text.contains(&format!("depends on #{first}")) && text.contains("--after"),
+        "{text}"
+    );
+    let spawned = w.ok(
+        "spawn",
+        &json!({ "project": "demo", "slug": "plain", "brief": "# Task\n", "backlog": second }),
+    );
+    assert_eq!(spawned["backlog_unlinked"], Value::Null);
+}

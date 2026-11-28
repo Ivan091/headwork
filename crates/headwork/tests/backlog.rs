@@ -19,7 +19,7 @@ use headwork_core::backlog::BacklogStatus;
 use headwork_core::{
     Actor, Config, Model, PermissionMode, ProjectName, Slug, TaskRequest, TaskState,
 };
-use headwork_store::{BacklogFilter, EventFilter, Store};
+use headwork_store::{BacklogFilter, EventFilter, ItemShape, Store};
 
 fn fixture() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/backlog.md");
@@ -508,6 +508,7 @@ fn a_task_spawned_for_an_item_finishes_it_when_the_task_closes_and_the_file_foll
             not_before: None,
             due: None,
             notes: Vec::new(),
+            shape: ItemShape::default(),
         },
     )
     .unwrap();
@@ -597,6 +598,7 @@ fn add_item(store: &mut Store, env: &Env<'_>, text: &str) -> i64 {
         not_before: None,
         due: None,
         notes: Vec::new(),
+        shape: ItemShape::default(),
     };
     backlog::add(store, env, &item).unwrap();
     store
@@ -673,6 +675,7 @@ fn an_export_that_keeps_failing_to_commit_makes_one_copy_and_one_event() {
         not_before: None,
         due: None,
         notes: Vec::new(),
+        shape: ItemShape::default(),
     };
     let change = backlog::add(&mut w.store, &env, &second).unwrap();
     assert!(matches!(change.export, Export::Failed { .. }), "{change:?}");
@@ -1002,4 +1005,56 @@ fn a_managed_session_without_a_known_role_may_only_list() {
         let listed = m.run_in_session(role, &["backlog", "list"]);
         assert!(listed.status.success(), "{role:?}: a listing still works");
     }
+}
+
+fn json_items(m: &Machine, extra: &[&str]) -> serde_json::Value {
+    let mut args = vec!["backlog", "list", "--status", "all", "--json"];
+    args.extend_from_slice(extra);
+    serde_json::from_str(&m.ok(&args)).unwrap()
+}
+
+#[test]
+fn the_cli_adds_epics_children_and_dependencies_and_lists_them() {
+    let m = Machine::new(false);
+    m.ok(&["backlog", "add", "demo", "the epic", "--epic"]);
+    m.ok(&["backlog", "add", "demo", "first", "--parent", "1"]);
+    m.ok(&[
+        "backlog", "add", "demo", "second", "--parent", "1", "--after", "2",
+    ]);
+    m.ok(&["backlog", "add", "demo", "outside"]);
+    let all = json_items(&m, &[]);
+    assert_eq!(all[0]["kind"], "epic");
+    assert_eq!(all[1]["parent"], 1);
+    assert_eq!(all[2]["deps"], serde_json::json!([2]));
+    assert_eq!(all[2]["status"], "blocked");
+    assert_eq!(all[2]["blocked_reason"], "depends");
+    let children = json_items(&m, &["--epic", "1"]);
+    assert_eq!(children.as_array().unwrap().len(), 2, "{children}");
+
+    m.ok(&["backlog", "depend", "4", "--on", "2", "--on", "3"]);
+    assert_eq!(json_items(&m, &[])[3]["deps"], serde_json::json!([2, 3]));
+    let cycle = m.run(&["backlog", "depend", "2", "--on", "4"]);
+    assert!(!cycle.status.success());
+    assert!(
+        String::from_utf8_lossy(&cycle.stderr).contains("cycle"),
+        "{}",
+        String::from_utf8_lossy(&cycle.stderr)
+    );
+    m.ok(&["backlog", "undepend", "4", "--on", "3"]);
+    m.ok(&["backlog", "done", "2", "--note", "built"]);
+    let all = json_items(&m, &[]);
+    assert_eq!(all[2]["status"], "backlog", "freed when the first is done");
+    assert_eq!(all[3]["status"], "backlog");
+    let line = m.ok(&["backlog", "list"]);
+    assert!(line.contains("after #2"), "{line}");
+
+    let worker = m.run_as(
+        m.dir.path(),
+        Some("worker"),
+        &["backlog", "depend", "4", "--on", "1"],
+    );
+    assert!(
+        !worker.status.success(),
+        "a worker does not order the backlog"
+    );
 }
