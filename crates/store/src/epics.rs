@@ -16,7 +16,7 @@ use crate::backlog::{
     write_move,
 };
 use crate::queries::insert_event;
-use crate::{NOW, Store, StoreError};
+use crate::{NOW, Store, StoreError, TaskId};
 
 /// The event of a re-plan child the runner added (`epic`, `child`, `reason`, `causes`).
 pub const EVENT_EPIC_REPLAN: &str = "epic-replan";
@@ -406,6 +406,53 @@ impl Store {
             params![epic, event],
             |row| row.get(0),
         )?)
+    }
+
+    /// The children of `epic` headwork claimed more than `grace_s` seconds ago that are still in progress with no task:
+    /// the newest move of each into `in_progress` was headwork's, and no link followed. A child a user moved there by
+    /// hand is not one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn stale_epic_claims(&self, epic: i64, grace_s: u32) -> Result<Vec<i64>, StoreError> {
+        Ok(self
+            .conn
+            .prepare(
+                "SELECT t.id FROM backlog_items t
+                 JOIN events e ON e.id = (
+                     SELECT max(id) FROM events WHERE type = ?2 AND json_extract(data, '$.item') = t.id
+                     AND json_extract(data, '$.to') = 'in_progress')
+                 WHERE t.parent_id = ?1 AND t.status = 'in_progress' AND t.task_id IS NULL
+                 AND json_extract(e.data, '$.actor') = 'headwork'
+                 AND e.at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ?3 || ' seconds')
+                 ORDER BY t.id",
+            )?
+            .query_map(params![epic, EVENT_BACKLOG_MOVED, grace_s], |row| row.get(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// The newest live task of `project` whose slug is `prefix` or starts with `<prefix>-`: the task the runner named
+    /// for a child (`e<epic>-<child>`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn live_task_with_slug_prefix(
+        &self,
+        project: &str,
+        prefix: &str,
+    ) -> Result<Option<TaskId>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM tasks WHERE project = ?1 AND (slug = ?2 OR slug LIKE ?2 || '-%')
+                 AND state NOT IN ('closed', 'dropped', 'failed') ORDER BY id DESC LIMIT 1",
+                params![project, prefix],
+                |row| row.get(0),
+            )
+            .optional()?
+            .map(TaskId))
     }
 
     /// Whether an event of `kind` names backlog item `item` (`data.item`).

@@ -52,12 +52,17 @@ pub fn run(store: &mut Store, env: &Env<'_>) -> Vec<Pumped> {
 }
 
 fn logged_error(store: &Store, env: &Env<'_>, epic: Option<i64>, error: &anyhow::Error) {
+    log_error(store, env, epic, None, &format!("{error:#}"));
+}
+
+/// Logs `epic-runner-error` with the epic and the child it concerns.
+fn log_error(store: &Store, env: &Env<'_>, epic: Option<i64>, child: Option<i64>, error: &str) {
     drop(store.append_event(
         env.actor,
         None,
         None,
         EVENT_RUNNER_ERROR,
-        &serde_json::json!({ "epic": epic, "error": format!("{error:#}") }),
+        &serde_json::json!({ "epic": epic, "child": child, "error": error }),
     ));
 }
 
@@ -142,6 +147,7 @@ fn run_epic(
     out: &mut Vec<Pumped>,
 ) -> Result<()> {
     let config = env.config;
+    reconcile(store, env, epic.id)?;
     for _ in 0..2 {
         let facts = store.epic_facts(epic.id, |project, kind| {
             child_skip(config, &epic.draft.project, project, kind)
@@ -190,8 +196,9 @@ fn run_epic(
                     )?;
                 }
                 for id in starts {
-                    start_child(store, env, epic, id, out)?;
-                    if let Some(left) = state.room.as_mut() {
+                    if start_child(store, env, epic, id, out)?
+                        && let Some(left) = state.room.as_mut()
+                    {
                         *left = left.saturating_sub(1);
                     }
                 }
@@ -280,44 +287,112 @@ fn add_replan(
     Ok(added.is_some())
 }
 
-/// Claims child `id`, spawns its task and links it; a failed spawn, or a task already failed, blocks the child
-/// `task_lost` instead.
+/// A spawn of a child that did not come back with its task.
+#[derive(Debug)]
+struct SpawnFailure {
+    /// `<project>/<slug>` once the runner chose the task's name: a task row of that name may exist.
+    name: Option<String>,
+    /// What failed.
+    error: anyhow::Error,
+}
+
+/// Claims child `id`, spawns its task and links it. Returns whether a task now holds the child.
+///
+/// A spawn that fails after its task row exists (the brief written, the queue pumped) links the child to that task, so
+/// the task's lifecycle settles it; with no row, or a task already over, the child is blocked `task_lost`. The spawn
+/// error is logged with the child either way, and a link or block that fails is logged with it and left to
+/// [`reconcile`].
 fn start_child(
     store: &mut Store,
     env: &Env<'_>,
     epic: &BacklogItem,
     id: i64,
     out: &mut Vec<Pumped>,
-) -> Result<()> {
+) -> Result<bool> {
     let claim = store.claim_epic_child(id, env.config.epics.max_parallel, env.actor)?;
     let EpicClaim::Claimed(child) = claim else {
-        return Ok(());
+        return Ok(false);
     };
-    match spawn_child(store, env, epic, &child) {
+    let held = match spawn_child(store, env, epic, &child) {
         Ok((task, pumped)) => {
             out.extend(pumped);
-            if task.state == TaskState::Failed {
-                lost(
-                    store,
-                    env,
-                    id,
-                    &format!("task {} failed to start", task.name),
-                )?;
-            } else {
-                let link = BacklogMove {
-                    link: Some(TaskId(task.id.0)),
-                    ..BacklogMove::new(Target::InProgress, BacklogActor::Headwork, env.actor, true)
-                };
-                store.move_backlog_item(id, &link)?;
-            }
+            settle(store, env, epic.id, id, Some(task), None)
         }
-        Err(error) => lost(store, env, id, &format!("spawn failed: {error:#}"))?,
-    }
+        Err(failure) => {
+            let task = failure
+                .name
+                .as_deref()
+                .and_then(|name| store.find_task(name).ok().flatten());
+            settle(store, env, epic.id, id, task, Some(&failure.error))
+        }
+    };
     drop(export_after(store, env));
-    Ok(())
+    Ok(held)
 }
 
-/// Blocks a claimed child `task_lost` with `note` cut to one line the status tag can hold.
+const fn is_over(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Closed | TaskState::Dropped | TaskState::Failed
+    )
+}
+
+/// Links claimed child `id` to `task` while it is live, else blocks it `task_lost`; logs `spawn_error` and any failure
+/// of the move with the child. Returns whether a task holds the child.
+fn settle(
+    store: &mut Store,
+    env: &Env<'_>,
+    epic: i64,
+    id: i64,
+    task: Option<Task>,
+    spawn_error: Option<&anyhow::Error>,
+) -> bool {
+    let spawn_text = spawn_error.map(|error| format!("{error:#}"));
+    if let Some(text) = &spawn_text {
+        log_error(
+            store,
+            env,
+            Some(epic),
+            Some(id),
+            &format!("spawn failed: {text}"),
+        );
+    }
+    let (moved, held) = match task {
+        Some(task) if !is_over(task.state) => (link(store, env, id, task.id), true),
+        Some(task) => (
+            lost(
+                store,
+                env,
+                id,
+                &format!("task {} failed to start", task.name),
+            ),
+            false,
+        ),
+        None => (
+            lost(
+                store,
+                env,
+                id,
+                &format!(
+                    "spawn failed: {}",
+                    spawn_text.as_deref().unwrap_or("no task")
+                ),
+            ),
+            false,
+        ),
+    };
+    if let Err(error) = moved {
+        let text = spawn_text.as_ref().map_or_else(
+            || format!("{error:#}"),
+            |spawn| format!("{error:#} (after the spawn failed: {spawn})"),
+        );
+        log_error(store, env, Some(epic), Some(id), &text);
+    }
+    held
+}
+
+/// Blocks a claimed child `task_lost` with `note` cut to one line the status tag can hold; the whole error is in the
+/// `epic-runner-error` event.
 fn lost(store: &mut Store, env: &Env<'_>, id: i64, note: &str) -> Result<()> {
     let flat = note
         .replace(['\n', '\r', '[', ']'], " ")
@@ -338,12 +413,85 @@ fn lost(store: &mut Store, env: &Env<'_>, id: i64, note: &str) -> Result<()> {
     Ok(())
 }
 
+fn link(store: &mut Store, env: &Env<'_>, id: i64, task: TaskId) -> Result<()> {
+    let link = BacklogMove {
+        link: Some(task),
+        ..BacklogMove::new(Target::InProgress, BacklogActor::Headwork, env.actor, true)
+    };
+    store.move_backlog_item(id, &link)?;
+    Ok(())
+}
+
+/// The grace a claim gets before [`reconcile`] settles it: a spawn takes seconds, so a claim older than this was cut
+/// off (a crash, a killed tick, a failed link).
+const CLAIM_GRACE_S: u32 = 600;
+
+/// The note of a claim [`reconcile`] found with no task.
+const NEVER_LINKED: &str = "claimed but never linked";
+
+/// Settles each child of `epic` the runner claimed over [`CLAIM_GRACE_S`] ago that no task holds: linked to the live
+/// task named for it (`e<epic>-<child>`, `-<words>`, `-2`), else blocked `task_lost` as [`NEVER_LINKED`].
+fn reconcile(store: &mut Store, env: &Env<'_>, epic: i64) -> Result<()> {
+    for id in store.stale_epic_claims(epic, CLAIM_GRACE_S)? {
+        let project = store.backlog_item(id)?.draft.project;
+        let task = store.live_task_with_slug_prefix(&project, &format!("e{epic}-{id}"))?;
+        let moved = match task {
+            Some(task) => link(store, env, id, task),
+            None => lost(store, env, id, NEVER_LINKED),
+        };
+        if let Err(error) = moved {
+            log_error(store, env, Some(epic), Some(id), &format!("{error:#}"));
+        }
+    }
+    Ok(())
+}
+
+/// What a child's spawn needs: the request's parts, its brief and its task's name.
+#[derive(Debug)]
+struct ChildSpawn {
+    request: TaskRequest,
+    brief: String,
+    explore: bool,
+}
+
 fn spawn_child(
     store: &mut Store,
     env: &Env<'_>,
     epic: &BacklogItem,
     child: &BacklogItem,
-) -> Result<(Task, Vec<Pumped>)> {
+) -> Result<(Task, Vec<Pumped>), SpawnFailure> {
+    let unnamed = |error| SpawnFailure { name: None, error };
+    let prepared = prepare(store, env, epic, child).map_err(unnamed)?;
+    let name = format!("{}/{}", prepared.request.project, prepared.request.slug);
+    let named = |error| SpawnFailure {
+        name: Some(name.clone()),
+        error,
+    };
+    let incoming = env.home.root().join("incoming");
+    std::fs::create_dir_all(&incoming)
+        .map_err(anyhow::Error::from)
+        .map_err(unnamed)?;
+    let stem = format!("{}-{}", prepared.request.project, prepared.request.slug);
+    let file = write_new(&incoming, &stem, &prepared.brief).map_err(unnamed)?;
+    let request = SpawnRequest {
+        request: prepared.request,
+        brief: &file,
+        depends_on: None,
+        permission_mode: PermissionMode::Auto,
+        allow_ask: &[],
+        epic: prepared.explore.then_some(epic.id),
+    };
+    let spawned = spawn(store, env, &request);
+    std::fs::remove_file(&file).ok();
+    spawned.map_err(named)
+}
+
+fn prepare(
+    store: &Store,
+    env: &Env<'_>,
+    epic: &BacklogItem,
+    child: &BacklogItem,
+) -> Result<ChildSpawn> {
     let plan = store.backlog_plan(child.id)?;
     if let Some(why) = child_skip(
         env.config,
@@ -406,10 +554,7 @@ fn spawn_child(
         &project,
         &child_slug(epic.id, child.id, &child.draft.text),
     )?;
-    let incoming = env.home.root().join("incoming");
-    std::fs::create_dir_all(&incoming)?;
-    let file = write_new(&incoming, &format!("{project}-{slug}"), &brief)?;
-    let request = SpawnRequest {
+    Ok(ChildSpawn {
         request: TaskRequest {
             project,
             slug,
@@ -422,13 +567,7 @@ fn spawn_child(
             review,
             decision,
         },
-        brief: &file,
-        depends_on: None,
-        permission_mode: PermissionMode::Auto,
-        allow_ask: &[],
-        epic: explore.then_some(epic.id),
-    };
-    let spawned = spawn(store, env, &request);
-    std::fs::remove_file(&file).ok();
-    spawned
+        brief,
+        explore,
+    })
 }

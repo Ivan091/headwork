@@ -242,6 +242,16 @@ impl World {
             .collect()
     }
 
+    fn backdate_claim(&self, id: i64) {
+        let conn = rusqlite::Connection::open(self.home.root().join("state.db")).unwrap();
+        conn.execute(
+            "UPDATE events SET at = '2000-01-01T00:00:00.000Z' WHERE type = 'backlog-moved'
+             AND json_extract(data, '$.item') = ?1",
+            [id],
+        )
+        .unwrap();
+    }
+
     fn tasks(&self) -> usize {
         TaskState::ALL
             .iter()
@@ -468,4 +478,126 @@ fn the_runner_skips_kinds_it_does_not_start_and_children_of_other_projects_once_
     for id in [review, scene, away] {
         assert_eq!(rig.status(id), BacklogStatus::Backlog);
     }
+}
+
+#[test]
+fn a_spawn_that_fails_before_its_task_exists_blocks_the_child_and_logs_the_error() {
+    let mut rig = world();
+    let epic = rig.epic("Failing epic");
+    let bad = rig.add(
+        "Bad model",
+        &ItemShape {
+            parent: Some(epic),
+            plan: ItemPlan {
+                brief: Some("Goal: bad".to_owned()),
+                task_kind: Some("code".to_owned()),
+                model: Some("no-such-model".to_owned()),
+                ..ItemPlan::default()
+            },
+            ..ItemShape::default()
+        },
+    );
+    let tasks = rig.tasks();
+    assert_eq!(started(&rig.pump()), Vec::<String>::new());
+    assert_eq!(rig.tasks(), tasks, "no task row");
+    let block = rig.status(bad).block().cloned().unwrap();
+    assert_eq!(block.reason, BlockReason::TaskLost);
+    let note = block.note.unwrap();
+    assert!(
+        note.starts_with("spawn failed: ") && note.contains("model"),
+        "{note}"
+    );
+    let errors = rig.events("epic-runner-error");
+    assert!(
+        errors
+            .iter()
+            .any(|event| event["child"] == serde_json::json!(bad)
+                && event["epic"] == serde_json::json!(epic)
+                && event["error"].as_str().unwrap().contains("model")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_spawn_that_fails_after_its_task_exists_links_the_child_to_that_task() {
+    let mut rig = world();
+    let epic = rig.epic("Half failing epic");
+    let piece = rig.child(epic, "Row piece", &[]);
+    let name = headwork_core::TaskName::new(
+        headwork_core::ProjectName::new("demo").unwrap(),
+        headwork_core::Slug::new(format!("e{epic}-{piece}-row-piece")).unwrap(),
+    );
+    std::fs::create_dir_all(rig.home.brief_path(&name)).unwrap();
+    rig.pump();
+    let task = rig.task_of(piece).unwrap();
+    assert_eq!(task.name.to_string(), name.to_string());
+    assert_eq!(rig.status(piece), BacklogStatus::InProgress);
+    let errors = rig.events("epic-runner-error");
+    assert!(
+        errors
+            .iter()
+            .any(|event| event["child"] == serde_json::json!(piece)
+                && event["error"].as_str().unwrap().starts_with("spawn failed")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_stale_claim_is_linked_to_its_task_or_blocked_as_never_linked() {
+    let mut rig = world_with("max_parallel = 0\n", "");
+    let epic = rig.epic("Stale epic");
+    let lone = rig.child(epic, "Lone piece", &[]);
+    let found = rig.child(epic, "Found piece", &[]);
+    for id in [lone, found] {
+        let claim = rig.store.claim_epic_child(id, 0, Actor::Tick).unwrap();
+        assert!(
+            matches!(claim, headwork_store::EpicClaim::Claimed(_)),
+            "{claim:?}"
+        );
+    }
+    rig.pump();
+    assert_eq!(
+        rig.status(lone),
+        BacklogStatus::InProgress,
+        "a fresh claim is left alone"
+    );
+    let brief = rig.home.root().join("found.md");
+    std::fs::write(&brief, "Goal: found\n").unwrap();
+    let env = Env {
+        home: &rig.home,
+        config: &rig.config,
+        host: &rig.host,
+        exe: Path::new(EXE),
+        actor: Actor::Tick,
+    };
+    let request = headwork::ops::spawn::SpawnRequest {
+        request: headwork_core::TaskRequest {
+            project: headwork_core::ProjectName::new("demo").unwrap(),
+            slug: headwork_core::Slug::new(format!("e{epic}-{found}-found-piece")).unwrap(),
+            kind: "code".to_owned(),
+            model: None,
+            effort: None,
+            in_main: false,
+            keep: false,
+            close: headwork_core::CloseMode::Confirm,
+            review: None,
+            decision: None,
+        },
+        brief: &brief,
+        depends_on: None,
+        permission_mode: headwork_core::PermissionMode::Auto,
+        allow_ask: &[],
+        epic: None,
+    };
+    let (task, _) = headwork::ops::spawn::spawn(&mut rig.store, &env, &request).unwrap();
+    rig.backdate_claim(lone);
+    rig.backdate_claim(found);
+    rig.pump();
+    let block = rig.status(lone).block().cloned().unwrap();
+    assert_eq!(
+        (block.reason, block.note.as_deref()),
+        (BlockReason::TaskLost, Some("claimed but never linked"))
+    );
+    assert_eq!(rig.task_of(found).map(|linked| linked.id), Some(task.id));
+    assert_eq!(rig.status(found), BacklogStatus::InProgress);
 }
