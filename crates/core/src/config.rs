@@ -1010,13 +1010,16 @@ impl Default for DigestConfig {
 }
 
 /// `[epics]`: the epic runner (`docs/backlog.md`, section 13). Any layer may set it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct EpicsConfig {
     /// Children of one epic in progress at once, explore children aside; 0 is no limit.
     pub max_parallel: u32,
     /// Re-plans of one epic before the runner blocks it for the user's decision (`epic-churn`); 0 is no limit.
     pub max_replans: u32,
+    /// The task kinds the runner starts and an explorer may plan; `review`, `silent`, a kind main-only in the child's
+    /// project and a kind of that project's `extra_writable` are never started, even when listed.
+    pub kinds: Vec<String>,
 }
 
 impl Default for EpicsConfig {
@@ -1024,6 +1027,7 @@ impl Default for EpicsConfig {
         Self {
             max_parallel: 3,
             max_replans: 5,
+            kinds: vec!["code".to_owned(), EXPLORE_KIND.to_owned()],
         }
     }
 }

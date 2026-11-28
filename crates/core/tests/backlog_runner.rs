@@ -23,7 +23,7 @@ fn child(id: i64, status: BacklogStatus) -> EpicChild {
         explore: false,
         agent: true,
         not_before: None,
-        has_project: true,
+        skip: None,
         block_event: None,
         block_replanned: false,
     }
@@ -157,14 +157,14 @@ fn not_before_owner_and_project_decide_which_backlog_children_are_ready() {
         ..child(4, BacklogStatus::Backlog)
     };
     let elsewhere = EpicChild {
-        has_project: false,
+        skip: Some("project elsewhere".to_owned()),
         ..child(5, BacklogStatus::Backlog)
     };
     assert_eq!(
         epic_step(&facts(vec![later, today, users, elsewhere]), &LIMITS),
         EpicStep::Run {
             starts: vec![3],
-            skipped: vec![5],
+            skipped: vec![(5, "project elsewhere".to_owned())],
             held: false,
         }
     );
@@ -572,5 +572,28 @@ fn headwork_blocks_an_in_progress_epic_and_only_an_epic_for_a_decision() {
             .is_err(),
             "{reason}"
         );
+    }
+}
+
+#[test]
+fn the_runner_starts_only_listed_kinds_that_widen_nothing() {
+    use headwork_core::backlog::child_kind_refusal;
+    let allowed = vec![
+        "code".to_owned(),
+        "explore".to_owned(),
+        "review".to_owned(),
+        "silent".to_owned(),
+    ];
+    assert_eq!(child_kind_refusal("code", &allowed, false, false), None);
+    assert_eq!(child_kind_refusal("explore", &allowed, false, false), None);
+    for (kind, main_only, extra, why) in [
+        ("review", false, false, "never"),
+        ("silent", false, false, "never"),
+        ("code2", false, false, "not in `[epics] kinds`"),
+        ("code", true, false, "main-only"),
+        ("code", false, true, "extra_writable"),
+    ] {
+        let refusal = child_kind_refusal(kind, &allowed, main_only, extra).unwrap();
+        assert!(refusal.contains(why), "{kind}: {refusal}");
     }
 }

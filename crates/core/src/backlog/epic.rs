@@ -281,10 +281,6 @@ pub fn replan_brief(brief: &ReplanBrief<'_>) -> String {
 
 /// One child of an epic, as the runner sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts the runner reads, one per condition of a start"
-)]
 pub struct EpicChild {
     /// Its id.
     pub id: i64,
@@ -298,8 +294,9 @@ pub struct EpicChild {
     pub agent: bool,
     /// The first day it may start.
     pub not_before: Option<BacklogDate>,
-    /// Whether its project is one headwork runs.
-    pub has_project: bool,
+    /// Why the runner may not start it, when it may not: its project is not one headwork runs or not the epic's, or
+    /// its task kind is not one the runner starts ([`child_kind_refusal`]).
+    pub skip: Option<String>,
     /// The id of the `backlog-moved` event into its current block, when blocked.
     pub block_event: Option<i64>,
     /// Whether its current block already caused a re-plan.
@@ -341,8 +338,8 @@ pub enum EpicStep {
     Run {
         /// The children to start.
         starts: Vec<i64>,
-        /// Ready children whose project headwork does not run.
-        skipped: Vec<i64>,
+        /// Ready children the runner may not start, each with why.
+        skipped: Vec<(i64, String)>,
         /// Whether a ready child waits for room under `[watch] many_sessions`.
         held: bool,
     },
@@ -353,6 +350,33 @@ pub enum EpicStep {
         /// The counted re-plans.
         replans: u32,
     },
+}
+
+/// Why the runner does not start a child of task kind `kind`, if it does not.
+///
+/// `review` and `silent` never (a reviewer's forced worktree removal, a close without the `Close` ask), nor a kind outside `[epics] kinds` (`allowed`), nor one
+/// main-only in the child's project (`main_only`) or among the kinds of its `extra_writable` (`extra_writable`): those
+/// widen what a worker may do, and an explorer's plan alone is no go for that.
+#[must_use]
+pub fn child_kind_refusal(
+    kind: &str,
+    allowed: &[String],
+    main_only: bool,
+    extra_writable: bool,
+) -> Option<String> {
+    if kind == crate::config::REVIEW_KIND || kind == crate::config::SILENT_KIND {
+        Some(format!("kind `{kind}` is never started by the epic runner"))
+    } else if !allowed.iter().any(|own| own == kind) {
+        Some(format!("kind `{kind}` is not in `[epics] kinds`"))
+    } else if main_only {
+        Some(format!("kind `{kind}` is main-only in the child's project"))
+    } else if extra_writable {
+        Some(format!(
+            "kind `{kind}` gets the project's `extra_writable` paths"
+        ))
+    } else {
+        None
+    }
 }
 
 /// Whether a child counts against `[epics] max_parallel`: every task kind but `explore`.
@@ -445,8 +469,11 @@ pub fn epic_step(facts: &EpicFacts, limits: &EpicLimits) -> EpicStep {
         .children
         .iter()
         .filter(|child| ready(child, &facts.today))
-        .partition(|child| child.has_project);
-    let skipped = skipped.iter().map(|child| child.id).collect();
+        .partition(|child| child.skip.is_none());
+    let skipped = skipped
+        .iter()
+        .map(|child| (child.id, child.skip.clone().unwrap_or_default()))
+        .collect();
     let room = limits.room.unwrap_or(usize::MAX);
     if let Some(explore) = ready.iter().find(|child| child.explore) {
         let starts = if room == 0 {

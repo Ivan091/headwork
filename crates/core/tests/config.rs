@@ -1078,6 +1078,16 @@ fn epics_defaults_parse_and_any_value_is_taken() {
         (0, 2),
         "set values"
     );
+    assert_eq!(
+        config.epics.kinds,
+        vec!["code".to_owned(), "explore".to_owned()],
+        "default kinds"
+    );
+    let kinds = format!("{base}\n[epics]\nkinds = [\"code\", \"scene\"]\n");
+    assert_eq!(
+        Config::parse(&kinds, "kinds").unwrap().epics.kinds,
+        vec!["code".to_owned(), "scene".to_owned()]
+    );
     let unknown = format!("{base}\n[epics]\nmax_children = 1\n");
     assert!(Config::parse(&unknown, "unknown").is_err(), "unknown key");
 }

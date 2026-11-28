@@ -288,6 +288,17 @@ impl Explorer<'_> {
     }
 }
 
+/// Refuses a planned task kind outside `[epics] kinds`: the runner would never start it.
+fn plannable_kind(env: &Env<'_>, kind: Option<&str>) -> Result<()> {
+    match kind {
+        Some(kind) if !env.config.epics.kinds.iter().any(|own| own == kind) => bail!(
+            "`kind` `{kind}` is not in `[epics] kinds` ({}): the epic runner starts only those",
+            env.config.epics.kinds.join(", ")
+        ),
+        Some(_) | None => Ok(()),
+    }
+}
+
 /// The epic in [`PlanView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanEpic {
@@ -479,12 +490,21 @@ pub fn add(
     plan.task_kind = plan
         .task_kind
         .or_else(|| Some(DEFAULT_CHILD_KIND.to_owned()));
+    plannable_kind(env, plan.task_kind.as_deref())?;
     let epic = store.backlog_item(explorer.epic)?;
-    let project = request.project.unwrap_or(epic.draft.project);
+    let project = request
+        .project
+        .unwrap_or_else(|| epic.draft.project.clone());
     let runs =
         ProjectName::new(project.trim()).is_ok_and(|name| env.config.project(&name).is_some());
     if !runs {
         bail!("`{project}` is not a project headwork runs: a child is work a task can do");
+    }
+    if project.trim() != epic.draft.project {
+        bail!(
+            "`{project}` is not the epic's project `{}`: the epic runner starts children of the epic's project only",
+            epic.draft.project
+        );
     }
     let add = AddRequest {
         project,
@@ -541,9 +561,11 @@ pub fn edit(
             task.name
         );
     }
+    let plan = fields.checked()?;
+    plannable_kind(env, plan.task_kind.as_deref())?;
     let edit = BacklogEdit {
         text,
-        plan: fields.checked()?,
+        plan,
         ..BacklogEdit::default()
     };
     edit_for(store, env, id, &edit, Some(explorer.task.id))

@@ -22,9 +22,9 @@ pub use deps::{
 };
 pub use epic::{
     ChildBrief, EpicBrief, EpicChild, EpicFacts, EpicLimits, EpicStep, ReplanBrief, ReplanCause,
-    ReplanTrigger, child_brief, child_slug, counts_against_parallel, epic_brief, epic_slug,
-    epic_step, holds_epic, holds_triggers, plan_file_name, replan_brief, short_slug,
-    with_writes_line,
+    ReplanTrigger, child_brief, child_kind_refusal, child_slug, counts_against_parallel,
+    epic_brief, epic_slug, epic_step, holds_epic, holds_triggers, plan_file_name, replan_brief,
+    short_slug, with_writes_line,
 };
 pub use status::{
     BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,

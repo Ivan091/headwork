@@ -120,6 +120,10 @@ impl World {
     }
 
     fn child(&mut self, epic: i64, text: &str, after: &[i64]) -> i64 {
+        self.child_of_kind(epic, text, "code", after)
+    }
+
+    fn child_of_kind(&mut self, epic: i64, text: &str, kind: &str, after: &[i64]) -> i64 {
         self.add(
             text,
             &ItemShape {
@@ -127,7 +131,7 @@ impl World {
                 after: after.to_vec(),
                 plan: ItemPlan {
                     brief: Some(format!("Goal: {text}\n\nDone when tests pass.")),
-                    task_kind: Some("code".to_owned()),
+                    task_kind: Some(kind.to_owned()),
                     ..ItemPlan::default()
                 },
                 ..ItemShape::default()
@@ -223,6 +227,19 @@ impl World {
                 ..headwork_store::BacklogFilter::default()
             })
             .unwrap()
+    }
+
+    fn events(&self, kind: &str) -> Vec<serde_json::Value> {
+        self.store
+            .events(headwork_store::EventFilter {
+                task: None,
+                limit: 1000,
+            })
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == kind)
+            .map(|event| event.data)
+            .collect()
     }
 
     fn tasks(&self) -> usize {
@@ -414,4 +431,41 @@ fn a_plan_complete_re_plan_explorer_finishes_the_epic_though_its_own_child_is_op
         BacklogStatus::InProgress,
         "its own child stays with its task until the task ends"
     );
+}
+
+#[test]
+fn the_runner_skips_kinds_it_does_not_start_and_children_of_other_projects_once_each() {
+    let mut rig = world();
+    let epic = rig.epic("Guarded epic");
+    let review = rig.child_of_kind(epic, "Review piece", "review", &[]);
+    let scene = rig.child_of_kind(epic, "Scene piece", "scene", &[]);
+    let away = rig.child(epic, "Away piece", &[]);
+    let edit = headwork_store::BacklogEdit {
+        project: Some("elsewhere".to_owned()),
+        ..headwork_store::BacklogEdit::default()
+    };
+    rig.store
+        .edit_backlog_item(away, &edit, Actor::User)
+        .unwrap();
+    assert_eq!(started(&rig.pump()), Vec::<String>::new());
+    assert_eq!(started(&rig.pump()), Vec::<String>::new());
+    let skipped = rig.events("epic-child-skipped");
+    assert_eq!(skipped.len(), 3, "once per child: {skipped:?}");
+    let reason = |id: i64| {
+        skipped
+            .iter()
+            .find(|event| event["item"] == serde_json::json!(id))
+            .map(|event| event["reason"].as_str().unwrap().to_owned())
+            .unwrap()
+    };
+    assert!(
+        reason(review).contains("never started"),
+        "{}",
+        reason(review)
+    );
+    assert!(reason(scene).contains("[epics] kinds"), "{}", reason(scene));
+    assert!(reason(away).contains("elsewhere"), "{}", reason(away));
+    for id in [review, scene, away] {
+        assert_eq!(rig.status(id), BacklogStatus::Backlog);
+    }
 }

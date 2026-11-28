@@ -220,14 +220,18 @@ fn the_facts_carry_kinds_projects_block_causes_and_counted_re_plans() {
     let x = child(&mut db, ep, "X", EXPLORE_KIND, &[]);
     assert!(claimed(&db.claim_epic_child(a, 3, Actor::Tick).unwrap()));
     lose(&mut db, a);
-    let facts = db.epic_facts(ep, |project| project == "demo").unwrap();
+    let facts = db
+        .epic_facts(ep, |project, _| {
+            (project != "demo").then(|| "elsewhere".to_owned())
+        })
+        .unwrap();
     assert_eq!(facts.epic, ep);
     assert!(!facts.explorer_live);
     assert_eq!(facts.replans, 0);
     let ids: Vec<(i64, bool, bool)> = facts
         .children
         .iter()
-        .map(|child| (child.id, child.explore, child.has_project))
+        .map(|child| (child.id, child.explore, child.skip.is_none()))
         .collect();
     assert_eq!(ids, vec![(a, false, true), (x, true, true)]);
     let lost = &facts.children[0];
@@ -257,10 +261,10 @@ fn the_facts_carry_kinds_projects_block_causes_and_counted_re_plans() {
         .unwrap()
         .unwrap();
     assert_eq!(added.parent, Some(ep));
-    let facts = db.epic_facts(ep, |_| false).unwrap();
+    let facts = db.epic_facts(ep, |_, _| Some("never".to_owned())).unwrap();
     assert_eq!(facts.replans, 1);
     assert!(facts.children[0].block_replanned, "the cause is recorded");
-    assert!(!facts.children[0].has_project);
+    assert_eq!(facts.children[0].skip.as_deref(), Some("never"));
     assert!(
         db.add_epic_replan(
             &NewReplan {
@@ -295,7 +299,7 @@ fn a_block_again_later_is_a_new_cause() {
     let a = child(&mut db, ep, "A", "code", &[]);
     assert!(claimed(&db.claim_epic_child(a, 3, Actor::Tick).unwrap()));
     lose(&mut db, a);
-    let first = db.epic_facts(ep, |_| true).unwrap().children[0].block_event;
+    let first = db.epic_facts(ep, |_, _| None).unwrap().children[0].block_event;
     let shape = replan_shape(ep);
     let replan = db
         .add_epic_replan(
@@ -318,7 +322,7 @@ fn a_block_again_later_is_a_new_cause() {
     let respawn = BacklogMove::new(Target::InProgress, BacklogActor::User, Actor::User, true);
     db.move_backlog_item(a, &respawn).unwrap();
     lose(&mut db, a);
-    let facts = db.epic_facts(ep, |_| true).unwrap();
+    let facts = db.epic_facts(ep, |_, _| None).unwrap();
     assert_ne!(facts.children[0].block_event, first);
     assert!(
         !facts.children[0].block_replanned,
@@ -346,7 +350,7 @@ fn the_churn_block_holds_the_epic_for_a_decision_and_clears_the_count() {
         .unwrap();
     let cancel = BacklogMove::new(Target::Cancelled, BacklogActor::User, Actor::User, true);
     db.move_backlog_item(replan.id, &cancel).unwrap();
-    assert_eq!(db.epic_facts(ep, |_| true).unwrap().replans, 1);
+    assert_eq!(db.epic_facts(ep, |_, _| None).unwrap().replans, 1);
     assert!(!db.epic_churn_blocked(ep).unwrap());
     let blocked = db.block_epic_churn(ep, 1, Actor::Tick).unwrap().unwrap();
     assert!(db.epic_churn_blocked(ep).unwrap(), "recorded by its event");
@@ -377,7 +381,7 @@ fn the_churn_block_holds_the_epic_for_a_decision_and_clears_the_count() {
     );
     db.move_backlog_item(ep, &unblock).unwrap();
     assert_eq!(
-        db.epic_facts(ep, |_| true).unwrap().replans,
+        db.epic_facts(ep, |_, _| None).unwrap().replans,
         0,
         "a fresh count"
     );

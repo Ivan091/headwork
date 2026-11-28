@@ -139,7 +139,8 @@ fn trigger_holders(conn: &Connection, epic: i64) -> Result<usize, StoreError> {
 
 impl Store {
     /// What the runner decides epic `epic`'s step from: whether an explorer of it is live, each child with its status,
-    /// kind, owner, first day and block cause, the counted re-plans and today. `runs` says whether headwork runs a project.
+    /// kind, owner, first day and block cause, the counted re-plans and today. `skip` says why the runner may not start a
+    /// child of a project and task kind (as stored, none when unset), or nothing when it may.
     ///
     /// # Errors
     ///
@@ -147,7 +148,7 @@ impl Store {
     pub fn epic_facts(
         &self,
         epic: i64,
-        runs: impl Fn(&str) -> bool,
+        skip: impl Fn(&str, Option<&str>) -> Option<String>,
     ) -> Result<EpicFacts, StoreError> {
         let item = load(&self.conn, epic)?;
         let filter = BacklogFilter {
@@ -162,12 +163,13 @@ impl Store {
             } else {
                 None
             };
+            let kind = task_kind(&self.conn, child.id)?;
             children.push(EpicChild {
                 id: child.id,
-                explore: is_explore(task_kind(&self.conn, child.id)?.as_deref()),
+                explore: is_explore(kind.as_deref()),
                 agent: child.draft.owner == BacklogOwner::Agent,
                 not_before: child.draft.not_before.clone(),
-                has_project: runs(&child.draft.project),
+                skip: skip(&child.draft.project, kind.as_deref()),
                 block_replanned: blocked && block_replanned(&self.conn, child.id, block_event)?,
                 block_event,
                 text: child.draft.text,

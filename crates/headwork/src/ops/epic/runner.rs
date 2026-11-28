@@ -5,11 +5,11 @@
 //! Each start is a claim ([`Store::claim_epic_child`]), the ordinary [`spawn`], then the link; the pure decision is
 //! [`epic_step`]. The runner is best effort: an error is logged as [`EVENT_RUNNER_ERROR`] and never fails the pump.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use headwork_core::backlog::{
     BacklogActor, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason, ChildBrief,
     EpicLimits, EpicStep, ItemKind, ItemStatus, ReplanBrief, ReplanTrigger, Target, child_brief,
-    child_slug, epic_step, replan_brief, with_writes_line,
+    child_kind_refusal, child_slug, epic_step, replan_brief, with_writes_line,
 };
 use headwork_core::flags::review_from_number;
 use headwork_core::{
@@ -61,8 +61,37 @@ fn logged_error(store: &Store, env: &Env<'_>, epic: Option<i64>, error: &anyhow:
     ));
 }
 
-fn runs(config: &Config, project: &str) -> bool {
-    ProjectName::new(project).is_ok_and(|name| config.project(&name).is_some())
+/// Why the runner does not start a child of `project` and task `kind` (its stored kind, `code` when unset) in an epic of
+/// `epic_project`, if it does not: a project headwork does not run, one other than the epic's, or a kind
+/// [`child_kind_refusal`] refuses.
+#[must_use]
+fn child_skip(
+    config: &Config,
+    epic_project: &str,
+    project: &str,
+    kind: Option<&str>,
+) -> Option<String> {
+    let Some(project_config) = ProjectName::new(project)
+        .ok()
+        .and_then(|name| config.project(&name))
+    else {
+        return Some(format!("project `{project}` is not one headwork runs"));
+    };
+    if project != epic_project {
+        return Some(format!(
+            "project `{project}` is not the epic's project `{epic_project}`"
+        ));
+    }
+    let kind = kind.unwrap_or(DEFAULT_CHILD_KIND);
+    child_kind_refusal(
+        kind,
+        &config.epics.kinds,
+        project_config.is_main_only(kind),
+        project_config
+            .extra_writable
+            .iter()
+            .any(|entry| !entry.kinds.is_empty() && entry.applies_to(kind)),
+    )
 }
 
 /// What one pass carries from epic to epic.
@@ -114,7 +143,9 @@ fn run_epic(
 ) -> Result<()> {
     let config = env.config;
     for _ in 0..2 {
-        let facts = store.epic_facts(epic.id, |project| runs(config, project))?;
+        let facts = store.epic_facts(epic.id, |project, kind| {
+            child_skip(config, &epic.draft.project, project, kind)
+        })?;
         let limits = EpicLimits {
             max_parallel: config.epics.max_parallel,
             max_replans: config.epics.max_replans,
@@ -141,8 +172,8 @@ fn run_epic(
                 skipped,
                 held,
             } => {
-                for id in skipped {
-                    skip_once(store, env, epic.id, id)?;
+                for (id, why) in skipped {
+                    skip_once(store, env, epic.id, id, &why)?;
                 }
                 if held && !state.held_logged {
                     state.held_logged = true;
@@ -171,7 +202,7 @@ fn run_epic(
     Ok(())
 }
 
-fn skip_once(store: &Store, env: &Env<'_>, epic: i64, id: i64) -> Result<()> {
+fn skip_once(store: &Store, env: &Env<'_>, epic: i64, id: i64, why: &str) -> Result<()> {
     if store.item_event_logged(EVENT_CHILD_SKIPPED, id)? {
         return Ok(());
     }
@@ -181,7 +212,7 @@ fn skip_once(store: &Store, env: &Env<'_>, epic: i64, id: i64) -> Result<()> {
         None,
         None,
         EVENT_CHILD_SKIPPED,
-        &serde_json::json!({ "item": id, "epic": epic, "project": project }),
+        &serde_json::json!({ "item": id, "epic": epic, "project": project, "reason": why }),
     )?;
     Ok(())
 }
@@ -314,6 +345,14 @@ fn spawn_child(
     child: &BacklogItem,
 ) -> Result<(Task, Vec<Pumped>)> {
     let plan = store.backlog_plan(child.id)?;
+    if let Some(why) = child_skip(
+        env.config,
+        &epic.draft.project,
+        &child.draft.project,
+        plan.task_kind.as_deref(),
+    ) {
+        bail!("the runner does not start #{}: {why}", child.id);
+    }
     let project = ProjectName::new(child.draft.project.clone())
         .ok()
         .filter(|project| env.config.project(project).is_some())
