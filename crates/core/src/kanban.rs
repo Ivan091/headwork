@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::TaskState;
 use crate::TaskStatus;
-use crate::backlog::{BacklogDate, BacklogItem, BacklogStatus, ItemStatus};
+use crate::backlog::{BacklogDate, BacklogItem, BacklogStatus, ItemKind, ItemStatus};
 
 /// The key of the group of In progress cards whose task is gone or never was.
 pub const NO_TASK: &str = "no-task";
@@ -89,6 +89,15 @@ impl Default for Options {
     }
 }
 
+/// One dependency of a card: the item it waits on and where that item stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DepLabel {
+    /// The item's id.
+    pub id: i64,
+    /// Its status; an item that is gone is left out.
+    pub status: ItemStatus,
+}
+
 /// One item on the board.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Card {
@@ -104,6 +113,28 @@ pub struct Card {
     pub drift: bool,
     /// The task working on it, when it is on the board.
     pub task: Option<TaskCard>,
+    /// The items it waits on, `after #12, #14`, each with its status.
+    pub deps: Vec<DepLabel>,
+}
+
+/// How many children of an epic stand in one status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StatusCount {
+    /// The status.
+    pub status: ItemStatus,
+    /// The children in it.
+    pub count: usize,
+}
+
+/// The header of an epic's lane: the epic and what its children add up to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EpicHead {
+    /// The epic item.
+    pub item: BacklogItem,
+    /// Its children by status, the statuses that hold none left out.
+    pub counts: Vec<StatusCount>,
+    /// The tokens its children's tasks spent.
+    pub tokens: u64,
 }
 
 /// A run of In progress cards that share a task status.
@@ -130,13 +161,15 @@ pub struct Column {
     pub more: usize,
 }
 
-/// A swimlane.
+/// A swimlane: a project, or an epic holding its children.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Lane {
-    /// `project:<name>`.
+    /// `project:<name>`, or `epic:<id>`.
     pub key: String,
     /// What the lane is called.
     pub title: String,
+    /// For an epic's lane, its header.
+    pub epic: Option<EpicHead>,
 }
 
 /// The whole board.
@@ -185,12 +218,22 @@ pub fn lane_key(project: &str) -> String {
     format!("project:{project}")
 }
 
-/// Builds the board from every item, the top-level tasks on the board and the ids waiting on the user.
+/// The lane key of an epic.
+#[must_use]
+pub fn epic_lane_key(id: i64) -> String {
+    format!("epic:{id}")
+}
+
+/// Builds the board from every item, the top-level tasks on the board, the ids waiting on the user and the tokens
+/// each task spent (`spend`, by task id).
+///
+/// An epic is a lane, not a card: its children sit in its lane, in the column of their own status.
 #[must_use]
 pub fn build(
     items: &[BacklogItem],
     tasks: &[TaskCard],
     waiting: &[i64],
+    spend: &BTreeMap<i64, u64>,
     today: &BacklogDate,
     options: &Options,
 ) -> Kanban {
@@ -199,27 +242,70 @@ pub fn build(
         .iter()
         .filter_map(|item| item.task.as_ref().map(|task| task.id))
         .collect();
+    let epics: BTreeMap<i64, &BacklogItem> = items
+        .iter()
+        .filter(|item| item.kind == ItemKind::Epic)
+        .map(|item| (item.id, item))
+        .collect();
+    let epic_of = |item: &BacklogItem| item.parent.filter(|parent| epics.contains_key(parent));
+    let project_ok = |project: &str| {
+        options
+            .project
+            .as_ref()
+            .is_none_or(|wanted| wanted == project)
+    };
+    let shown = |item: &BacklogItem| {
+        project_ok(&item.draft.project)
+            || epic_of(item)
+                .and_then(|parent| epics.get(&parent))
+                .is_some_and(|epic| project_ok(&epic.draft.project))
+    };
     let mut cards: Vec<Card> = items
         .iter()
-        .filter(|item| {
-            options
-                .project
-                .as_ref()
-                .is_none_or(|project| *project == item.draft.project)
-        })
-        .map(|item| card(item, &by_id, waiting, today))
+        .filter(|item| item.kind == ItemKind::Item && shown(item))
+        .map(|item| card(item, &by_id, waiting, today, items, epic_of(item)))
         .collect();
     cards.sort_by_key(|card| card.held);
-    let lanes: Vec<Lane> = cards
-        .iter()
-        .map(|card| card.item.draft.project.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|project| Lane {
+    let mut lanes: BTreeMap<(String, i64), Lane> = BTreeMap::new();
+    for card in &cards {
+        if !card.lane.starts_with("project:") {
+            continue;
+        }
+        let project = card.item.draft.project.clone();
+        lanes.entry((project.clone(), 0)).or_insert_with(|| Lane {
             key: lane_key(&project),
             title: project,
-        })
-        .collect();
+            epic: None,
+        });
+    }
+    for epic in epics.values() {
+        let children: Vec<&BacklogItem> = items
+            .iter()
+            .filter(|item| item.parent == Some(epic.id) && item.kind == ItemKind::Item)
+            .collect();
+        if !project_ok(&epic.draft.project) && !children.iter().any(|child| shown(child)) {
+            continue;
+        }
+        lanes.insert(
+            (epic.draft.project.clone(), epic.id),
+            Lane {
+                key: epic_lane_key(epic.id),
+                title: format!("#{} {}", epic.id, epic.draft.text),
+                epic: Some(EpicHead {
+                    item: (*epic).clone(),
+                    counts: counts(&children),
+                    tokens: children
+                        .iter()
+                        .filter_map(|child| child.task.as_ref().map(|task| task.id))
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .map(|task| spend.get(&task).copied().unwrap_or(0))
+                        .sum(),
+                }),
+            },
+        );
+    }
+    let lanes: Vec<Lane> = lanes.into_values().collect();
     let columns = [
         ItemStatus::Backlog,
         ItemStatus::InProgress,
@@ -250,11 +336,33 @@ pub fn build(
     }
 }
 
+fn counts(children: &[&BacklogItem]) -> Vec<StatusCount> {
+    [
+        ItemStatus::Backlog,
+        ItemStatus::InProgress,
+        ItemStatus::Blocked,
+        ItemStatus::Done,
+        ItemStatus::Cancelled,
+    ]
+    .into_iter()
+    .map(|status| StatusCount {
+        status,
+        count: children
+            .iter()
+            .filter(|child| child.draft.status.kind() == status)
+            .count(),
+    })
+    .filter(|entry| entry.count > 0)
+    .collect()
+}
+
 fn card(
     item: &BacklogItem,
     tasks: &BTreeMap<i64, &TaskCard>,
     waiting: &[i64],
     today: &BacklogDate,
+    all: &[BacklogItem],
+    epic: Option<i64>,
 ) -> Card {
     let task = item
         .task
@@ -267,7 +375,16 @@ fn card(
             .as_ref()
             .is_none_or(|task| group_of(task.status).is_none());
     Card {
-        lane: lane_key(&item.draft.project),
+        lane: epic.map_or_else(|| lane_key(&item.draft.project), epic_lane_key),
+        deps: item
+            .deps
+            .iter()
+            .filter_map(|id| all.iter().find(|other| other.id == *id))
+            .map(|other| DepLabel {
+                id: other.id,
+                status: other.draft.status.kind(),
+            })
+            .collect(),
         waiting: waiting.contains(&item.id),
         held: item
             .draft
@@ -446,6 +563,7 @@ mod tests {
                 &items,
                 &[task(7, status)],
                 &[],
+                &BTreeMap::new(),
                 &date("2026-11-28"),
                 &Options::default(),
             );
@@ -470,7 +588,14 @@ mod tests {
                 Some((9, TaskState::Closed)),
             ),
         ];
-        let board = build(&items, &[], &[], &date("2026-11-28"), &Options::default());
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
         assert_eq!(group(&board, NO_TASK), vec![1, 2], "both under no task");
         assert!(
             board.columns[1].groups[6]
@@ -493,6 +618,7 @@ mod tests {
             &[],
             &[site, sim],
             &[],
+            &BTreeMap::new(),
             &date("2026-11-28"),
             &Options {
                 project: Some("me-sim".to_owned()),
@@ -521,6 +647,7 @@ mod tests {
             &items,
             &[task(7, TaskStatus::Working), task(8, TaskStatus::Queued)],
             &[],
+            &BTreeMap::new(),
             &date("2026-11-28"),
             &Options::default(),
         );
@@ -544,7 +671,14 @@ mod tests {
             })
             .collect();
         items.push(item(30, "headwork", BacklogStatus::Cancelled, None));
-        let board = build(&items, &[], &[], &date("2026-11-28"), &Options::default());
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
         let done = &board.columns[3];
         assert_eq!(
             (done.count, done.cards.len(), done.more),
@@ -564,7 +698,14 @@ mod tests {
             item(2, "headwork", BacklogStatus::Backlog, None),
             item(3, "headwork", blocked(), None),
         ];
-        let board = build(&items, &[], &[], &date("2026-11-28"), &Options::default());
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
         let ids: Vec<i64> = board.columns[0]
             .cards
             .iter()
@@ -581,7 +722,14 @@ mod tests {
             item(1, "me-sim", BacklogStatus::Backlog, None),
             item(2, "headwork", BacklogStatus::Backlog, None),
         ];
-        let all = build(&items, &[], &[2], &date("2026-11-28"), &Options::default());
+        let all = build(
+            &items,
+            &[],
+            &[2],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
         let keys: Vec<&str> = all.lanes.iter().map(|lane| lane.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -600,6 +748,7 @@ mod tests {
             &items,
             &[],
             &[],
+            &BTreeMap::new(),
             &date("2026-11-28"),
             &Options {
                 project: Some("me-sim".to_owned()),
@@ -608,6 +757,162 @@ mod tests {
         );
         assert_eq!(one.lanes.len(), 1, "one lane");
         assert_eq!(one.columns[0].count, 1, "one card");
+    }
+
+    fn epic(id: i64, project: &str) -> BacklogItem {
+        let mut epic = item(id, project, BacklogStatus::Backlog, None);
+        epic.kind = ItemKind::Epic;
+        epic
+    }
+
+    fn child(
+        id: i64,
+        project: &str,
+        parent: i64,
+        status: BacklogStatus,
+        task: Option<i64>,
+    ) -> BacklogItem {
+        let mut child = item(
+            id,
+            project,
+            status,
+            task.map(|task| (task, TaskState::Working)),
+        );
+        child.parent = Some(parent);
+        child
+    }
+
+    #[test]
+    fn an_epic_is_a_lane_with_its_children_counted_and_their_tokens_summed() {
+        let items = [
+            epic(1, "headwork"),
+            child(2, "headwork", 1, BacklogStatus::Backlog, None),
+            child(3, "me-sim", 1, BacklogStatus::InProgress, Some(7)),
+            child(4, "headwork", 1, BacklogStatus::Done, Some(8)),
+            item(5, "headwork", BacklogStatus::Backlog, None),
+        ];
+        let spend = BTreeMap::from([(7, 300), (8, 1200), (9, 5)]);
+        let board = build(
+            &items,
+            &[task(7, TaskStatus::Working)],
+            &[],
+            &spend,
+            &date("2026-11-28"),
+            &Options::default(),
+        );
+        let keys: Vec<&str> = board.lanes.iter().map(|lane| lane.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["project:headwork", "epic:1"],
+            "project lane, then its epic"
+        );
+        let head = board.lanes[1].epic.as_ref().expect("epic head");
+        assert_eq!(head.tokens, 1500, "summed tokens");
+        let mut shared = items.to_vec();
+        shared.push(child(6, "headwork", 1, BacklogStatus::Done, Some(8)));
+        let again = build(
+            &shared,
+            &[],
+            &[],
+            &spend,
+            &date("2026-11-28"),
+            &Options::default(),
+        );
+        assert_eq!(
+            again.lanes[1].epic.as_ref().expect("head").tokens,
+            1500,
+            "a task shared by two children counts once"
+        );
+        let counts: Vec<(ItemStatus, usize)> = head
+            .counts
+            .iter()
+            .map(|entry| (entry.status, entry.count))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                (ItemStatus::Backlog, 1),
+                (ItemStatus::InProgress, 1),
+                (ItemStatus::Done, 1)
+            ],
+            "counts by status"
+        );
+        let lane_of = |id: i64| {
+            board
+                .columns
+                .iter()
+                .flat_map(|column| {
+                    column
+                        .cards
+                        .iter()
+                        .chain(column.groups.iter().flat_map(|group| group.cards.iter()))
+                })
+                .find(|card| card.item.id == id)
+                .map(|card| card.lane.clone())
+        };
+        assert_eq!(
+            lane_of(3).as_deref(),
+            Some("epic:1"),
+            "child outside the epic's project"
+        );
+        assert_eq!(
+            lane_of(5).as_deref(),
+            Some("project:headwork"),
+            "loose item"
+        );
+        assert_eq!(lane_of(1), None, "the epic is no card");
+    }
+
+    #[test]
+    fn a_project_filter_keeps_the_epic_of_a_child_it_shows() {
+        let items = [
+            epic(1, "headwork"),
+            child(3, "me-sim", 1, BacklogStatus::Backlog, None),
+        ];
+        let options = Options {
+            project: Some("me-sim".to_owned()),
+            ..Options::default()
+        };
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &options,
+        );
+        assert_eq!(board.lanes.len(), 1, "one lane");
+        assert_eq!(board.lanes[0].key, "epic:1", "the epic's lane");
+        assert_eq!(board.columns[0].count, 1, "the child shows");
+    }
+
+    #[test]
+    fn a_card_carries_its_dependencies_with_their_status() {
+        let mut waiting = item(1, "headwork", BacklogStatus::Backlog, None);
+        waiting.deps = vec![2, 3, 99];
+        let items = [
+            waiting,
+            item(2, "headwork", BacklogStatus::Done, None),
+            item(3, "headwork", BacklogStatus::InProgress, None),
+        ];
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
+        let labels: Vec<(i64, ItemStatus)> = board.columns[0].cards[0]
+            .deps
+            .iter()
+            .map(|dep| (dep.id, dep.status))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![(2, ItemStatus::Done), (3, ItemStatus::InProgress)],
+            "gone item left out"
+        );
     }
 
     mod every_item_once {
@@ -634,7 +939,7 @@ mod tests {
                     })
                     .collect();
                 let options = Options { project: None, done: usize::MAX };
-                let board = build(&items, &[], &[], &date("2026-11-28"), &options);
+                let board = build(&items, &[], &[], &BTreeMap::new(), &date("2026-11-28"), &options);
                 let mut seen: Vec<i64> = Vec::new();
                 for column in &board.columns {
                     seen.extend(column.cards.iter().map(|card| card.item.id));

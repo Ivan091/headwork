@@ -1,15 +1,18 @@
 //! `/api/kanban`: the facts of the board read from the store, the pure build in [`headwork_core::kanban`].
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use headwork_core::digest::waiting_items;
 use headwork_core::gate::GateClass;
 use headwork_core::kanban::{CardReview, Kanban, Options, TaskCard, build};
 use headwork_core::usage::UsageConfig;
-use headwork_store::{BacklogFilter, Store};
+use headwork_store::{BacklogFilter, Store, TaskId, all_models};
 
 use crate::ops::status::{StatusLine, lines_waiting};
 
-/// The board: every item, the top-level tasks not closed, and the ids waiting on the user.
+/// The board: every item (an epic as a lane, its children's tokens summed), the top-level tasks not closed,
+/// and the ids waiting on the user.
 ///
 /// `waiting` holds the live gate waiters as `(task id, class)`; `prices` makes the estimate.
 ///
@@ -35,7 +38,13 @@ pub fn kanban(
         .into_iter()
         .map(card)
         .collect();
-    Ok(build(&items, &tasks, &waiting_ids, &today, options))
+    let usage = store.usage_task_tokens()?;
+    let spend: BTreeMap<i64, u64> = items
+        .iter()
+        .filter_map(|item| item.task.as_ref())
+        .map(|task| (task.id, all_models(&usage.tree(TaskId(task.id))).total()))
+        .collect();
+    Ok(build(&items, &tasks, &waiting_ids, &spend, &today, options))
 }
 
 fn card(line: StatusLine) -> TaskCard {

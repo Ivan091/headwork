@@ -526,6 +526,9 @@ pub struct NodeDetails {
     /// For a task (its own), a session or a subagent, the tokens spent by type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend: Option<headwork_core::usage::Tokens>,
+    /// For a task, the backlog items it works on: `(id, status)`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<(i64, String)>,
 }
 
 /// The answer to a route, read from the store at `db` through a read-only connection.
@@ -640,12 +643,21 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         | Shape::External => None,
     };
     let spend = whose.map(|whose| store.spend_of(whose)).transpose()?;
+    let items = match task {
+        Some(task) => store
+            .backlog_items_of_task(TaskId(task))?
+            .into_iter()
+            .map(|item| (item.id, item.draft.status.kind().to_string()))
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(Some(NodeDetails {
         node,
         edges,
         history,
         recap,
         spend,
+        items,
     }))
 }
 
@@ -1207,6 +1219,79 @@ mod tests {
                 matches!(route("GET", bad, HOST, PORT), Route::BadRequest(_)),
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn a_tasks_details_list_its_linked_items_and_other_nodes_omit_the_key() {
+        use headwork_core::backlog::{BacklogActor, Target};
+        use headwork_core::{
+            Actor, Config, PermissionMode, ProjectName, Slug, TaskRequest, TaskShape,
+        };
+        use headwork_store::{BacklogMove, NewTask};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let mut store = Store::open(&db).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/config.toml");
+        let config =
+            Config::parse(&std::fs::read_to_string(fixture).unwrap(), "config.toml").unwrap();
+        store.sync_projects(&config).unwrap();
+        let new = NewTask {
+            request: TaskRequest {
+                project: ProjectName::new("me-sim").unwrap(),
+                slug: Slug::new("linked").unwrap(),
+                kind: "scene".to_owned(),
+                model: None,
+                effort: None,
+                in_main: false,
+                keep: false,
+                close: headwork_core::CloseMode::Confirm,
+                review: None,
+                decision: None,
+            },
+            brief_path: "brief.md".to_owned(),
+            depends_on: None,
+            permission_mode: PermissionMode::Auto,
+            shape: TaskShape::Plain,
+        };
+        let task = store
+            .create_task(&config, &new, Actor::Orchestrator)
+            .unwrap();
+        let mut draft = headwork_core::backlog::parse(
+            "## me-sim
+
+- [ ] For you: linked
+",
+        )
+        .items
+        .remove(0);
+        draft.status = headwork_core::backlog::BacklogStatus::Backlog;
+        let item = store.add_backlog_item(&draft, Actor::User).unwrap();
+        store
+            .move_backlog_item(
+                item.id,
+                &BacklogMove {
+                    link: Some(task.id),
+                    ..BacklogMove::new(
+                        Target::InProgress,
+                        BacklogActor::Orchestrator,
+                        Actor::Orchestrator,
+                        true,
+                    )
+                },
+            )
+            .unwrap();
+        let id = format!("task:{}", task.id.0);
+        let details = node_details(&db, &id).unwrap().unwrap();
+        assert_eq!(details.items, vec![(item.id, "in_progress".to_owned())]);
+        let json = serde_json::to_value(&details).unwrap();
+        assert!(json.get("items").is_some(), "{json}");
+        let other = node_details(&db, "user").unwrap();
+        if let Some(other) = other {
+            let json = serde_json::to_value(&other).unwrap();
+            assert!(json.get("items").is_none(), "{json}");
         }
     }
 

@@ -2597,3 +2597,141 @@ fn the_kanban_board_joins_an_item_to_its_linked_lead_by_task_id() {
         "only the other task has no item"
     );
 }
+
+fn kanban_draft(text: &str) -> headwork_core::backlog::BacklogDraft {
+    let mut draft = headwork_core::backlog::parse(&format!(
+        "## demo
+
+- [ ] For you: {text}
+"
+    ))
+    .items
+    .remove(0);
+    draft.status = headwork_core::backlog::BacklogStatus::Backlog;
+    draft
+}
+
+fn epic_child_with_tokens(w: &mut World, epic: i64, slug: &str, input: u64) -> (i64, u64) {
+    use headwork_core::UsageRole;
+    use headwork_core::backlog::{BacklogActor, Target};
+    use headwork_core::usage::{Tokens, UsageLine};
+    use headwork_store::{BacklogMove, FileMark, ItemShape, UsageBatch, UsageTag};
+
+    let (task, session, _) = w.working(slug);
+    let child = w
+        .store
+        .add_backlog_item_shaped(
+            &kanban_draft(slug),
+            Actor::User,
+            BacklogActor::User,
+            None,
+            &ItemShape {
+                parent: Some(epic),
+                ..ItemShape::default()
+            },
+        )
+        .unwrap();
+    w.store
+        .move_backlog_item(
+            child.id,
+            &BacklogMove {
+                link: Some(task.id),
+                ..BacklogMove::new(
+                    Target::InProgress,
+                    BacklogActor::Orchestrator,
+                    Actor::Orchestrator,
+                    true,
+                )
+            },
+        )
+        .unwrap();
+    let line = UsageLine {
+        message_id: format!("m-{slug}"),
+        at: "2026-11-28T10:00:00Z".to_owned(),
+        model: "claude-opus-5-5".to_owned(),
+        effort: None,
+        speed: None,
+        service_tier: None,
+        cwd: None,
+        tokens: Tokens {
+            input,
+            output: 7,
+            ..Tokens::default()
+        },
+    };
+    w.store
+        .record_usage(&UsageBatch {
+            path: &format!("{slug}.jsonl"),
+            session_id: &session,
+            agent_id: None,
+            agent_meta: None,
+            tag: UsageTag {
+                task: Some(task.id),
+                role: UsageRole::Worker,
+            },
+            dir: "S:/Code/x",
+            lines: std::slice::from_ref(&line),
+            mark: FileMark {
+                read_to: 1,
+                size: 1,
+                mtime_ms: 1,
+            },
+        })
+        .unwrap();
+    (child.id, line.tokens.total())
+}
+
+#[test]
+fn the_kanban_epic_lane_sums_the_tokens_of_its_children_tasks() {
+    use headwork::ops::kanban::kanban;
+    use headwork_core::backlog::{BacklogActor, ItemKind};
+    use headwork_core::kanban::{Options, epic_lane_key};
+    use headwork_store::ItemShape;
+
+    let mut w = world("never");
+    let epic = w
+        .store
+        .add_backlog_item_shaped(
+            &kanban_draft("the epic"),
+            Actor::User,
+            BacklogActor::User,
+            None,
+            &ItemShape {
+                kind: Some(ItemKind::Epic),
+                ..ItemShape::default()
+            },
+        )
+        .unwrap();
+    let children = [
+        epic_child_with_tokens(&mut w, epic.id, "one", 100),
+        epic_child_with_tokens(&mut w, epic.id, "two", 250),
+    ];
+    let board = kanban(
+        &w.store,
+        &headwork_core::usage::UsageConfig::default(),
+        &[],
+        &Options::default(),
+    )
+    .unwrap();
+    let key = epic_lane_key(epic.id);
+    let lane = board.lanes.iter().find(|lane| lane.key == key).unwrap();
+    assert_eq!(
+        lane.epic.as_ref().unwrap().tokens,
+        children.iter().map(|(_, total)| total).sum::<u64>(),
+        "the sum of both tasks"
+    );
+    let cards: Vec<_> = board
+        .columns
+        .iter()
+        .flat_map(|column| {
+            column
+                .cards
+                .iter()
+                .chain(column.groups.iter().flat_map(|group| group.cards.iter()))
+        })
+        .collect();
+    for (id, _) in &children {
+        let card = cards.iter().find(|card| card.item.id == *id).unwrap();
+        assert_eq!(card.lane, key, "a child sits in its epic's lane");
+    }
+}
