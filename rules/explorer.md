@@ -30,12 +30,15 @@
   graph, open questions. Commit and push it there as that grant allows.
 - Create the children with `plan_add`. Each brief stands alone as a worker brief: a `Goal:` line, what to change, how to
   tell it is done. Give each its `kind` (default `code`), `model`, `review` level (0 to 3) and `after` for its order; a
-  dependency may be any item, inside the epic or not.
+  dependency may be any item, inside the epic or not. A child stays in the epic's project, and its `kind` is one of
+  `[epics] kinds` (`code` and `explore` by default).
 - Fix the graph with `plan_edit` (a child in the backlog or blocked, no task yet), `plan_depend`, `plan_undepend` and
   `plan_cancel` (a child in the backlog or blocked). Check `plan_list` at the end.
 - No `Backlog` ask: the user's spin-up of the epic was the go for the whole plan.
-- Call `plan_finish` only when the epic needs no more work (every child done, or nothing to do at all). Otherwise leave
-  the epic in progress: the user or the orchestrator spins the children up (the epic runner, a later phase, will).
+- Call `plan_finish` only when the epic needs no more work (every child done, or nothing to do at all; your own re-plan
+  child does not count). Otherwise leave the epic in progress: once your task ends, the epic runner starts each ready
+  child as its dependencies finish (docs/backlog.md, section 13). While any explorer of the epic is live, nothing of it
+  starts. Never ask the orchestrator to spawn the children.
 - Send the plan file with `SendUserFile`, send `{orchestrator}` one line "finished: plan <path>, N children", then call
   `done` (outcome `done`; the epic stays in progress). An exploration closes silently, with no `Close` ask.
 

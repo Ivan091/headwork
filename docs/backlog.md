@@ -283,7 +283,7 @@ tick, hooks).
 | `done`, `blocked` (linked to a task that is over) | the same | headwork: the link ends (`Unlink`) |
 | `in_progress` (an epic linked to the ending task) | the same | headwork: its explorer merged or closed, the link ends (`Unlink`, section 12) |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
-| `in_progress` | `blocked` | worker on its own item (`item_block`) and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
+| `in_progress` | `blocked` | worker on its own item (`item_block`) and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`); headwork (`decision`) on an epic, the runner's churn cap (section 13) |
 | `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`, its epic's children); headwork (`depends`, `dep_cancelled`) |
 | `blocked` (`depends`) | `blocked` (`dep_cancelled`), and back | headwork only, keeping the status before the block (section 11) |
 | `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item (`item_unblock`), headwork |
