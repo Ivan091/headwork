@@ -664,7 +664,10 @@ fn two_epics_start_in_one_pass_and_a_planned_review_model_and_flag_decision_reac
     assert_eq!(started(&pumped).len(), 2, "{pumped:?}");
     let task = rig.task_of(planned).unwrap();
     assert_eq!(task.model, headwork_core::Model::Sonnet);
-    assert_eq!(task.review_plan.map(headwork_core::review::Level::number), Some(2));
+    assert_eq!(
+        task.review_plan.map(headwork_core::review::Level::number),
+        Some(2)
+    );
     let created = rig
         .store
         .events(headwork_store::EventFilter {

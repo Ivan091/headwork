@@ -354,9 +354,9 @@ pub enum EpicStep {
 
 /// Why the runner does not start a child of task kind `kind`, if it does not.
 ///
-/// `review` and `silent` never (a reviewer's forced worktree removal, a close without the `Close` ask), nor a kind outside `[epics] kinds` (`allowed`), nor one
-/// main-only in the child's project (`main_only`) or among the kinds of its `extra_writable` (`extra_writable`): those
-/// widen what a worker may do, and an explorer's plan alone is no go for that.
+/// `review` and `silent` never (a reviewer's forced worktree removal, a close without the `Close` ask), nor a kind
+/// outside `[epics] kinds` (`allowed`), nor one main-only in the child's project (`main_only`) or among the kinds of its
+/// `extra_writable` (`extra_writable`): those widen what a worker may do, and an explorer's plan alone is no go for that.
 #[must_use]
 pub fn child_kind_refusal(
     kind: &str,
@@ -387,8 +387,8 @@ pub const fn counts_against_parallel(child: &EpicChild) -> bool {
 
 /// Whether a child holds the epic's re-plan triggers: an `explore` child in the backlog or in progress.
 ///
-/// That is a re-plan about to run or running. A blocked explore child (lost, partial, waiting on a dependency) holds nothing, and its block is a
-/// cause like any child's. The store's re-plan recheck uses the same rule.
+/// That is a re-plan about to run or running. A blocked explore child (lost, partial, waiting on a dependency) holds
+/// nothing, and its block is a cause like any child's. The store's re-plan recheck uses the same rule.
 #[must_use]
 pub const fn holds_triggers(explore: bool, status: ItemStatus) -> bool {
     explore && matches!(status, ItemStatus::Backlog | ItemStatus::InProgress)
