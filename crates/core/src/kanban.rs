@@ -688,7 +688,14 @@ mod tests {
             .collect();
         items.push(item(30, "headwork", BacklogStatus::Cancelled, None));
         items.push(item(31, "headwork", BacklogStatus::Cancelled, None));
-        let board = build(&items, &[], &[], &BTreeMap::new(), &date("2026-11-28"), &Options::default());
+        let board = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options::default(),
+        );
         assert_eq!(board.columns.len(), 4, "four columns");
         let done = &board.columns[3];
         assert_eq!(done.status, ItemStatus::Done, "merged column");
@@ -703,6 +710,7 @@ mod tests {
             &items,
             &[],
             &[],
+            &BTreeMap::new(),
             &date("2026-11-28"),
             &Options {
                 done: 1,
