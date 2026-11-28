@@ -336,3 +336,56 @@ a cancel reason is never exported, so only its line count is checked.
   and `event` blocks wait on something else and do not.
 - **Drawer**: every row carries its status chip (a blocked one with its reason and note), and a status filter beside the
   project and owner filters.
+
+## 11. Dependencies and epics (P3)
+
+Migration 0032 gave items a `kind` (`item` or `epic`), a `parent_id`, and the columns `brief`, `task_kind`, `model`, `review`
+and `respawns`; the table `backlog_deps (item_id, depends_on_id, added_by_task, created_at)` holds the edges. Only `kind`,
+`parent_id` and the edges are used here: the other columns are stored for the epic explorer (P4) and the epic runner (P5).
+Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 3.
+
+### Dependencies
+
+`item` depends on `dep` ("`item` waits for `dep`"). Many to many, across projects and epics. The pure guard
+`core::backlog::check_dependency` refuses, in this order: an item that depends on itself; an item that is not in `backlog` or
+`blocked` (`in_progress`, `done` and `cancelled` take no dependency, so a started task is never stopped by a new edge); a
+`cancelled` dependency; and a cycle (`would_cycle` returns the path, the refusal prints `#1 -> #2 -> #1`). A dependency that
+is already `done` is allowed and gates nothing. Adding an edge that exists changes nothing.
+
+Everything is stored and event-driven, in the transaction of the move that causes it (`write_move`, so the CLI, the MCP
+tools, `task_ended` and close all cascade), and logged as `backlog-moved` by headwork:
+
+| Change | Effect on the dependant |
+|---|---|
+| add a dependency that is not done | in `backlog`: blocked `depends`, note `#<dep>`, returns to `backlog`; already blocked: keeps its block; logs `backlog-depended` |
+| add a dependency that is done | no change; logs `backlog-depended` |
+| the dependency becomes `done` | blocked `depends` with no other not-done dependency: unblocked to its `status_before_block` |
+| the dependency becomes `cancelled` | in `backlog`: blocked `dep_cancelled`, note `#<dep> cancelled`; blocked `depends`: the reason becomes `dep_cancelled` and `status_before_block` is kept (a headwork-only row of the guard); `in_progress`, `done`, `cancelled` and every other block are left alone |
+| remove a dependency (`backlog-undepended`) | blocked `depends` or `dep_cancelled` with no other not-done dependency: unblocked |
+| a done dependency is reopened (or unfinished by its task) | nothing: dependants already freed stay free |
+
+A block that is not `depends` is never lifted by a dependency: a `decision` or `event` block stays until its own cause ends.
+Only the user and the orchestrator change dependencies (`backlog depend`, `backlog undepend`, `backlog add --after`, and the
+tools `backlog_depend`, `backlog_undepend`, `backlog_add` with `after`); a worker is refused, and an explorer adds plain items
+only.
+
+### Epics
+
+An epic is an item of kind `epic` that groups items: `backlog add --epic`, `backlog_add` with `epic`. A child is added with
+`--parent <epic>` (`parent`). One level only (`core::backlog::check_parent`): a parent must be an epic, an epic has no parent.
+The kind and the parent are fixed at add time. `backlog list --epic N` and `backlog_list` with `epic` show an epic's
+children; a line shows `epic`, `in epic #N` and `after #a, #b`, and the JSON of an item carries `kind`, `parent` and `deps`
+(the ids it depends on). An epic is otherwise an ordinary item: its status moves like any other, and nothing yet starts,
+finishes or cancels its children.
+
+### The bridge to the task `depends_on`
+
+`tasks.depends_on` (`spawn --after`, "merged first") stays for ad-hoc tasks. For backlog work the item graph is the order: an
+item is unblocked when its dependencies are `done`, which happens when their tasks merge, the same moment the task gate
+opens. So `spawn --backlog N --after <task>` is refused when item N has item dependencies (two sources of order); without
+item dependencies `--after` still works.
+
+### Out of scope
+
+The epic explorer and its `plan_*` tools (P4), the epic runner that spawns children when their dependencies are done (P5)
+and the kanban board are later phases. The dashboard graph draws item nodes and edges in its own change.
