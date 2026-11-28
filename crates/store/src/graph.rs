@@ -4,9 +4,9 @@
 use std::str::FromStr;
 
 use headwork_core::graph::{
-    AgentFact, AskFact, Change, Facts, FindingFact, HelperFact, JobFact, MessageFact, PrFact,
-    ReceivedFact, ReportFact, ReviewFact, ReviewFindingFact, ReviewNodeFact, SessionFact, Spend,
-    TaskFact,
+    AgentFact, AskFact, Change, DepFact, Facts, FindingFact, HelperFact, ItemFact, JobFact,
+    MessageFact, PrFact, ReceivedFact, ReportFact, ReviewFact, ReviewFindingFact, ReviewNodeFact,
+    SessionFact, Spend, TaskFact,
 };
 use headwork_core::review::Level;
 use headwork_core::usage::Tokens;
@@ -151,11 +151,68 @@ fn read_facts(conn: &Connection) -> Result<Facts, StoreError> {
         review_changes,
         findings: rows(conn, FINDINGS, [], finding)?,
         review_findings: review_findings(conn)?,
+        items: items(conn)?,
+        item_deps: rows(conn, ITEM_DEPS, [], item_dep)?,
         spend: spend(conn)?,
         skipped,
     })
 }
 
+const ITEM_DEPS: &str = "SELECT item_id, depends_on_id, created_at FROM backlog_deps ORDER BY created_at, item_id, depends_on_id";
+
+fn item_dep(row: &Row<'_>) -> rusqlite::Result<DepFact> {
+    Ok(DepFact {
+        item: row.get(0)?,
+        depends_on: row.get(1)?,
+        created_at: row.get(2)?,
+    })
+}
+
+fn items(conn: &Connection) -> Result<Vec<ItemFact>, StoreError> {
+    type Raw = (
+        i64,
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        String,
+    );
+    let raw: Vec<Raw> = rows(
+        conn,
+        "SELECT id, project, text, status, kind, parent_id, task_id, created_at FROM backlog_items ORDER BY id",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    )?;
+    raw.into_iter()
+        .map(
+            |(id, project, text, status, kind, parent, task, created_at)| {
+                Ok(ItemFact {
+                    id,
+                    project,
+                    text,
+                    status: word(&status, || format!("backlog item {id}"))?,
+                    epic: kind == "epic",
+                    parent,
+                    task,
+                    created_at,
+                })
+            },
+        )
+        .collect()
+}
 const FINDINGS: &str = "SELECT task_id, rule, detail, first_at, resolved_at FROM findings
      WHERE task_id IS NOT NULL ORDER BY id";
 
@@ -892,6 +949,44 @@ mod tests {
         assert_eq!(
             facts.prs[0].first_at, facts.tasks[0].queued_at,
             "the task's start"
+        );
+    }
+
+    #[test]
+    fn items_and_their_dependencies_are_read_with_status_epic_parent_and_task() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO backlog_items (id, project, text, status, owner, position, created_at, updated_at, kind)
+                 VALUES (1, 'me-sim', 'the epic', 'in_progress', 'agent', 1, 'T1', 'T1', 'epic');
+                 INSERT INTO backlog_items (id, project, text, status, owner, position, created_at, updated_at, parent_id)
+                 VALUES (2, 'me-sim', 'a child', 'cancelled', 'user', 2, 'T2', 'T2', 1);
+                 INSERT INTO backlog_deps (item_id, depends_on_id, created_at) VALUES (2, 1, 'T3');",
+            )
+            .unwrap();
+        let facts = store.graph_facts().unwrap();
+        assert_eq!(facts.items.len(), 2, "both items");
+        let epic = &facts.items[0];
+        assert!(epic.epic, "kind epic");
+        assert_eq!(epic.status, headwork_core::backlog::ItemStatus::InProgress);
+        assert_eq!(
+            (epic.project.as_str(), epic.text.as_str()),
+            ("me-sim", "the epic")
+        );
+        let child = &facts.items[1];
+        assert!(!child.epic, "kind defaults to item");
+        assert_eq!(child.parent, Some(1), "its epic");
+        assert_eq!(child.task, None, "no task");
+        assert_eq!(child.status, headwork_core::backlog::ItemStatus::Cancelled);
+        assert_eq!(facts.item_deps.len(), 1, "one dependency");
+        assert_eq!(
+            (
+                facts.item_deps[0].item,
+                facts.item_deps[0].depends_on,
+                facts.item_deps[0].created_at.as_str()
+            ),
+            (2, 1, "T3")
         );
     }
 

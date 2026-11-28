@@ -546,6 +546,8 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         | Shape::Job(_)
         | Shape::Pr(_)
         | Shape::Ask(_)
+        | Shape::Item(_)
+        | Shape::Epic(_)
         | Shape::External => None,
     };
     let spend = whose.map(|whose| store.spend_of(whose)).transpose()?;

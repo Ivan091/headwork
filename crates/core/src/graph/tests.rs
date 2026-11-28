@@ -296,6 +296,8 @@ fn a_shape_is_written_as_its_kind_and_state() {
         (Shape::Job(JobState::Parked), "job", Some("parked")),
         (Shape::Pr(PullState::Merged), "pr", Some("merged")),
         (Shape::Ask(AskState::Pending), "ask", Some("pending")),
+        (Shape::Item(ItemStatus::Blocked), "item", Some("blocked")),
+        (Shape::Epic(ItemStatus::Backlog), "epic", Some("backlog")),
         (Shape::External, "external", None),
     ];
     assert_eq!(table.len(), NodeKind::ALL.len(), "every kind has a shape");
@@ -1241,4 +1243,228 @@ fn a_silent_task_carries_the_silent_badge() {
         .node("task:2")
         .and_then(|node| node.badges.get("silent").copied());
     assert_eq!(then_silent, Some(1), "the badge holds in a replayed view");
+}
+
+fn item(
+    id: i64,
+    text: &str,
+    status: ItemStatus,
+    epic: bool,
+    parent: Option<i64>,
+    task: Option<i64>,
+) -> ItemFact {
+    ItemFact {
+        id,
+        project: "headwork".to_owned(),
+        text: text.to_owned(),
+        status,
+        epic,
+        parent,
+        task,
+        created_at: format!("T{id:02}"),
+    }
+}
+
+fn dep(item: i64, depends_on: i64) -> DepFact {
+    DepFact {
+        item,
+        depends_on,
+        created_at: "T20".to_owned(),
+    }
+}
+
+fn item_facts() -> Facts {
+    let mut facts = facts();
+    facts.items = vec![
+        item(
+            1,
+            "linked to a drawn task",
+            ItemStatus::InProgress,
+            false,
+            None,
+            Some(1),
+        ),
+        item(
+            2,
+            "waits for four",
+            ItemStatus::Backlog,
+            false,
+            Some(6),
+            None,
+        ),
+        item(
+            3,
+            "linked to a closed task",
+            ItemStatus::Done,
+            false,
+            None,
+            Some(3),
+        ),
+        item(
+            4,
+            "needed by two",
+            ItemStatus::Blocked,
+            false,
+            Some(6),
+            None,
+        ),
+        item(
+            5,
+            "lonely open item",
+            ItemStatus::Backlog,
+            false,
+            None,
+            None,
+        ),
+        item(6, "the epic", ItemStatus::Backlog, true, None, None),
+        item(
+            7,
+            "an epic with nothing open",
+            ItemStatus::Backlog,
+            true,
+            None,
+            None,
+        ),
+        item(8, "a done child", ItemStatus::Done, false, Some(7), None),
+        item(
+            9,
+            "cancelled but tied",
+            ItemStatus::Cancelled,
+            false,
+            None,
+            None,
+        ),
+        item(
+            10,
+            "waits for a cancelled one",
+            ItemStatus::Backlog,
+            false,
+            None,
+            None,
+        ),
+    ];
+    facts.item_deps = vec![dep(2, 4), dep(10, 9)];
+    facts
+}
+
+fn ids(graph: &Graph, kind: NodeKind) -> Vec<&str> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind() == kind)
+        .map(|node| node.id.as_str())
+        .collect()
+}
+
+#[test]
+fn items_are_drawn_by_their_rules() {
+    let graph = build(&item_facts(), None, Scope::Live);
+    assert_eq!(
+        ids(&graph, NodeKind::Item),
+        ["item:1", "item:10", "item:2", "item:4"],
+        "linked, or open and tied"
+    );
+    assert_eq!(
+        ids(&graph, NodeKind::Epic),
+        ["item:6"],
+        "only the epic with open children"
+    );
+    assert!(
+        graph.node("item:5").is_none(),
+        "a lonely open item stays out"
+    );
+    assert!(
+        graph.node("item:3").is_none(),
+        "its task is over, so it is not drawn in the live view"
+    );
+    assert!(graph.node("item:9").is_none(), "a cancelled item stays out");
+}
+
+#[test]
+fn an_item_linked_to_a_task_of_the_all_view_is_drawn_whatever_its_status() {
+    let graph = build(&item_facts(), None, Scope::All);
+    assert_eq!(graph.node("item:3").map(Node::kind), Some(NodeKind::Item));
+    assert_eq!(
+        state(&graph, "item:3"),
+        Some("done"),
+        "its status is its state"
+    );
+}
+
+#[test]
+fn item_edges_follow_links_epics_and_dependencies() {
+    let graph = build(&item_facts(), None, Scope::Live);
+    assert!(
+        edge(&graph, EdgeKind::Tracks, "task:1", "item:1").is_some(),
+        "task to item"
+    );
+    assert!(
+        edge(&graph, EdgeKind::Depends, "item:2", "item:4").is_some(),
+        "depends on"
+    );
+    assert!(
+        edge(&graph, EdgeKind::PartOf, "item:2", "item:6").is_some(),
+        "part of its epic"
+    );
+    assert!(
+        edge(&graph, EdgeKind::PartOf, "item:4", "item:6").is_some(),
+        "part of its epic"
+    );
+    assert!(
+        edge(&graph, EdgeKind::Depends, "item:10", "item:9").is_none(),
+        "no edge to an item that is not drawn"
+    );
+    assert!(
+        edge(&graph, EdgeKind::PartOf, "item:8", "item:7").is_none(),
+        "no edge from an item that is not drawn"
+    );
+}
+
+#[test]
+fn an_item_node_carries_its_label_status_and_kind() {
+    let mut facts = item_facts();
+    facts.items[5].text = "x".repeat(60);
+    let graph = build(&facts, None, Scope::Live);
+    let epic = graph.node("item:6").unwrap();
+    assert_eq!(epic.label, format!("#6 {}…", "x".repeat(39)), "shortened");
+    assert_eq!(epic.shape, Shape::Epic(ItemStatus::Backlog));
+    assert_eq!(
+        epic.details.get("project").map(String::as_str),
+        Some("headwork")
+    );
+    assert_eq!(
+        graph.node("item:1").unwrap().label,
+        "#1 linked to a drawn task"
+    );
+    assert_eq!(state(&graph, "item:1"), Some("in_progress"));
+    assert_eq!(state(&graph, "item:4"), Some("blocked"));
+}
+
+#[test]
+fn a_replay_draws_the_items_added_by_the_instant() {
+    let graph = build(&item_facts(), Some("T05"), Scope::Live);
+    assert_eq!(
+        ids(&graph, NodeKind::Item),
+        ["item:1", "item:2", "item:4"],
+        "items 6 and later did not exist"
+    );
+    assert!(
+        edge(&graph, EdgeKind::PartOf, "item:2", "item:6").is_none(),
+        "its epic was not added yet"
+    );
+}
+
+#[test]
+fn a_one_task_view_draws_only_the_items_its_tasks_track() {
+    let graph = build(&item_facts(), None, Scope::Task(1));
+    assert_eq!(ids(&graph, NodeKind::Item), ["item:1"]);
+    assert_eq!(ids(&graph, NodeKind::Epic).len(), 0, "no epic");
+}
+
+#[test]
+fn item_nodes_serialize_with_kind_and_state() {
+    let graph = build(&item_facts(), None, Scope::Live);
+    let json = serde_json::to_value(graph.node("item:6").unwrap()).unwrap();
+    assert_eq!(json["kind"], "epic");
+    assert_eq!(json["state"], "backlog");
 }
