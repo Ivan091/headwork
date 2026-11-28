@@ -139,6 +139,7 @@ All `GET`, JSON, read only:
 | `/api/stream` | server-sent events: the same changes as `/api/events`, pushed as they land |
 | `/api/gates` | the cpu and gpu slots, holders and waiters, read from the slot folders |
 | `/api/backlog?status=&project=&owner=` | the backlog items (status `open` by default: backlog, in progress and blocked; or one status, or `all`; the old `state` with `dropped` for cancelled is read for one release), each with `status`, `blocked_reason`, `blocked_note` and `status_before_block`, `waiting`: the ids of the open items that wait on the user by the "Needs you" digest's own rule (`core::digest::waiting_items`), and `today`; the page's read-only backlog drawer polls it every 30 s while open |
+| `/api/kanban?project=&done=<n>` | the kanban board (section 7a): five columns (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`), each with its `count` and `cards`; In progress holds `groups` by the linked task's rolled-up status (`needs-you`, `working`, `in-review`, `merged`, `queued`, `paused`, `no-task`); a card is the item as `/api/backlog` serialises it plus its `lane`, `waiting`, `held`, `drift` and `task` (id, state, status, model, effort, review, open pull requests, parts, tokens, estimate, findings, `waiting_for`, `silent`); also `lanes` (one per project), `waiting` (the digest's ids), `unlinked` (live tasks no item links) and `today`; `done` (default 20, at most 1000) cuts the Done column, `more` counts the rest; `GET` only, no store write, no replay |
 
 **Live:** the page opens `/api/stream`; the server polls the `events` table every second for ids above the last one it
 sent (cheap: the primary key) and pushes the mapped changes. A dropped stream falls back to polling `/api/events`.
@@ -170,6 +171,28 @@ messages pulse and nodes appear in the order they happened.
   places with another of its own connected component, or moves beside a neighbour, only while that lowers the crossings of its
   edges. It stops after 15 rounds or 150 ms, and does nothing above 120 nodes or on a bad position. A failure keeps the force
   result. Relayouts animate from the old positions. `node dash/untangle.test.js` tests it.
+
+## 7a. The board
+
+`graph | board` buttons at the left of the header switch the page between the graph and the kanban board (`#board` in
+the URL, remembered in localStorage). The board is read only: no button changes anything. Its code is `core/src/kanban.rs`
+(pure: items, tasks and the waiting ids in, columns out), `ops/kanban.rs` (the facts from the read-only store and the
+status lines of `ops/status.rs`) and the page files `dash/kanban.js` and `dash/kanban.css`; `app.js` only dispatches a
+`dash-change` event on each stream `change` and exposes `dashSelect`.
+
+- **Columns** are the item statuses: Backlog, In progress, Blocked, Done (the newest 20 by `done_on`, the rest counted), Cancelled
+  (a count; a click on its header shows the cards). Held items (a future `not_before`) are dimmed and sorted last.
+- **Groups** inside In progress, by the linked task's rolled-up status: Needs you, Working, In review, Merged, Queued,
+  Paused, No task (an in progress item whose task is gone or over: the card is marked as drift).
+- **Lanes** are projects; the header's project filter narrows the board to one. The search box filters cards by id,
+  text or task name.
+- **Needs you strip** at the top: the cards in the Needs you group and the items the digest says wait on the user
+  (`core::digest::waiting_items`), each card once.
+- **Cards** show the id, text, owner, dates, the block reason and, for a linked task, a task chip (opens the shared side
+  panel), a `graph` chip (switches to the graph and selects the task), model and effort, review, open pull requests,
+  parts, tokens, findings, `waiting for cpu` and `silent`. A click expands the notes. Live tasks no item links are listed
+  under "No item".
+- **Live:** the board reloads `/api/kanban` on the stream's `change` line, at most once a second, and only while shown.
 
 ## 8. Security
 

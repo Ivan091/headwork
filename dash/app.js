@@ -655,6 +655,7 @@
         clearInterval(fallbackTimer);
         fallbackTimer = null;
       }
+      document.dispatchEvent(new Event("dash-change"));
       if (replayAt === null) {
         slider.max = String(Date.now());
         slider.value = slider.max;
@@ -1454,6 +1455,7 @@
     }
   });
 
+  window.dashSelect = select;
   showInstant();
   loadRange().then(load);
   listen();

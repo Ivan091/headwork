@@ -90,6 +90,16 @@ pub const ASSETS: &[Asset] = &[
         body: include_str!("../../../../dash/vendor/cytoscape-fcose.js"),
     },
     Asset {
+        path: "/kanban.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: include_str!("../../../../dash/kanban.js"),
+    },
+    Asset {
+        path: "/kanban.css",
+        content_type: "text/css; charset=utf-8",
+        body: include_str!("../../../../dash/kanban.css"),
+    },
+    Asset {
         path: "/untangle.js",
         content_type: "text/javascript; charset=utf-8",
         body: include_str!("../../../../dash/untangle.js"),
@@ -118,6 +128,8 @@ pub enum Route {
     Gates,
     /// The backlog and the ids waiting on the user: `/api/backlog?state=&project=&owner=`.
     Backlog(BacklogQuery),
+    /// The kanban board: `/api/kanban?project=&done=<n>`.
+    Kanban(KanbanQuery),
     /// Server-sent events: a `change` naming the newest event id whenever the log grows: `/api/stream`.
     Stream,
     /// Anything else.
@@ -129,6 +141,27 @@ pub enum Route {
     /// A query that does not parse.
     BadRequest(String),
 }
+
+/// What `/api/kanban` is asked for: one project, and how many Done cards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KanbanQuery {
+    /// Only this project.
+    pub project: Option<String>,
+    /// How many Done cards to show.
+    pub done: usize,
+}
+
+impl Default for KanbanQuery {
+    fn default() -> Self {
+        Self {
+            project: None,
+            done: headwork_core::backlog::DONE_KEPT,
+        }
+    }
+}
+
+/// The most Done cards `/api/kanban` shows.
+const DONE_MAX: usize = 1000;
 
 /// What `/api/backlog` is asked for: the items of some statuses (the open ones by default, every status when empty), of one
 /// project and one owner.
@@ -236,6 +269,9 @@ pub fn route(method: &str, url: &str, host: Option<&str>, port: u16) -> Route {
     if path == "/api/backlog" {
         return backlog_query(query).map_or_else(Route::BadRequest, Route::Backlog);
     }
+    if path == "/api/kanban" {
+        return kanban_query(query).map_or_else(Route::BadRequest, Route::Kanban);
+    }
     if path == "/api/stream" {
         return Route::Stream;
     }
@@ -279,6 +315,55 @@ fn graph_query(query: &str) -> Result<GraphQuery, String> {
         }
     }
     Ok(found)
+}
+
+fn kanban_query(query: &str) -> Result<KanbanQuery, String> {
+    let mut found = KanbanQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = decode(value).ok_or_else(|| format!("`{key}` does not decode"))?;
+        match key {
+            "project" if !value.is_empty() => found.project = Some(value),
+            "project" => {}
+            "done" => {
+                found.done = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| (1..=DONE_MAX).contains(count))
+                    .ok_or_else(|| {
+                        format!("`done` is not a count from 1 to {DONE_MAX}: {value}")
+                    })?;
+            }
+            other => return Err(format!("unknown parameter `{other}`")),
+        }
+    }
+    Ok(found)
+}
+
+fn kanban_answer(db: &Path, query: &KanbanQuery) -> Result<headwork_core::kanban::Kanban> {
+    let store = Store::open_read_only(db)?;
+    let home = db
+        .parent()
+        .and_then(|root| crate::home::Home::at(Some(root.to_path_buf())).ok());
+    let config = home.as_ref().and_then(|home| home.load_config().ok());
+    let (prices, waiting) = config.as_ref().zip(home.as_ref()).map_or_else(
+        || (headwork_core::usage::UsageConfig::default(), Vec::new()),
+        |(config, home)| {
+            (
+                config.usage.clone(),
+                super::gate::waiting_tasks(home, &config.gates),
+            )
+        },
+    );
+    super::kanban::kanban(
+        &store,
+        &prices,
+        &waiting,
+        &headwork_core::kanban::Options {
+            project: query.project.clone(),
+            done: query.done,
+        },
+    )
 }
 
 fn backlog_query(query: &str) -> Result<BacklogQuery, String> {
@@ -483,6 +568,10 @@ pub fn answer(db: &Path, route: &Route) -> Answer {
         },
         Route::Backlog(query) => match backlog_answer(db, query) {
             Ok(reply) => Answer::json(200, &reply),
+            Err(error) => Answer::error(500, &format!("{error:#}")),
+        },
+        Route::Kanban(query) => match kanban_answer(db, query) {
+            Ok(board) => Answer::json(200, &board),
             Err(error) => Answer::error(500, &format!("{error:#}")),
         },
         Route::Stream => Answer::error(500, "the stream is served by its own thread"),
@@ -1377,5 +1466,122 @@ mod tests {
         );
         let body: serde_json::Value = serde_json::from_slice(&every.body).unwrap();
         assert_eq!(body["items"].as_array().unwrap().len(), 3, "all states");
+    }
+
+    #[test]
+    fn the_kanban_route_takes_its_query_and_is_get_only() {
+        let host = Some("127.0.0.1:8740");
+        assert_eq!(
+            route("GET", "/api/kanban", host, 8740),
+            Route::Kanban(KanbanQuery::default())
+        );
+        assert_eq!(
+            route("GET", "/api/kanban?project=me-sim&done=5", host, 8740),
+            Route::Kanban(KanbanQuery {
+                project: Some("me-sim".to_owned()),
+                done: 5,
+            })
+        );
+        for bad in [
+            "/api/kanban?x=1",
+            "/api/kanban?done=0",
+            "/api/kanban?done=abc",
+            "/api/kanban?done=5000",
+        ] {
+            assert!(
+                matches!(route("GET", bad, host, 8740), Route::BadRequest(_)),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            route("POST", "/api/kanban", host, 8740),
+            Route::MethodNotAllowed
+        );
+        assert_eq!(route("GET", "/api/kanban", None, 8740), Route::BadHost);
+    }
+
+    #[test]
+    fn the_kanban_answer_has_columns_lanes_and_the_waiting_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let mut store = Store::open(&db).unwrap();
+        store
+            .add_backlog_item(
+                &headwork_core::backlog::BacklogDraft {
+                    project: "demo".to_owned(),
+                    section: None,
+                    text: "wanted".to_owned(),
+                    notes: Vec::new(),
+                    status: headwork_core::backlog::BacklogStatus::Backlog,
+                    owner: BacklogOwner::User,
+                    added: None,
+                    not_before: None,
+                    due: None,
+                    done_on: None,
+                    done_note: None,
+                },
+                headwork_core::Actor::User,
+            )
+            .unwrap();
+        drop(store);
+        let reply = answer(&db, &Route::Kanban(KanbanQuery::default()));
+        assert_eq!(
+            reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!(body["columns"].as_array().unwrap().len(), 5, "five columns");
+        assert_eq!(body["columns"][0]["count"], 1, "one backlog item");
+        assert_eq!(body["lanes"][0]["key"], "project:demo", "lane");
+        assert_eq!(body["unlinked"].as_array().unwrap().len(), 0, "no tasks");
+    }
+
+    #[test]
+    fn the_board_script_writes_text_only_and_encodes_what_it_fetches() {
+        let script = ASSETS
+            .iter()
+            .find(|asset| asset.path == "/kanban.js")
+            .unwrap()
+            .body;
+        for banned in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+        ] {
+            assert!(!script.contains(banned), "kanban.js uses {banned}");
+        }
+        assert!(!script.contains("method:"), "the board never writes");
+        for (at, _) in script.match_indices("fetch(") {
+            let rest = script.get(at + "fetch(".len()..).unwrap_or_default();
+            let argument = rest.split([',', ')']).next().unwrap_or_default();
+            assert!(
+                !argument.contains('+'),
+                "a fetch builds its path inline: {argument}"
+            );
+        }
+        let url = script
+            .split("function url()")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split(
+                    "
+  }",
+                )
+                .next()
+            })
+            .unwrap();
+        assert!(url.contains("encodeURIComponent"), "the project is encoded");
+        let page = ASSETS[0].body;
+        for file in ["/kanban.css", "/kanban.js"] {
+            assert!(page.contains(file), "the page loads {file}");
+        }
+        assert!(
+            page.find("/app.js").unwrap() < page.find("/kanban.js").unwrap(),
+            "kanban.js loads after app.js"
+        );
     }
 }

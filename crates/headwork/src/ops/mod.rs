@@ -21,6 +21,7 @@ pub mod hook;
 pub mod import;
 pub mod install;
 pub mod jobs;
+pub mod kanban;
 pub mod launch;
 pub mod launchd;
 pub mod leftovers;
