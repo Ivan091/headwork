@@ -351,7 +351,7 @@ a cancel reason is never exported, so only its line count is checked.
 Migration 0032 gave items a `kind` (`item` or `epic`), a `parent_id`, and the columns `brief`, `task_kind`, `model`, `review`
 and `respawns`; the table `backlog_deps (item_id, depends_on_id, added_by_task, created_at)` holds the edges. Only `kind`,
 `parent_id` and the edges are used by this phase; the epic explorer (P4, section 12) writes and reads `brief`, `task_kind`,
-`model` and `review`, and `respawns` waits for the epic runner (P5).
+`model` and `review`, the epic runner (P5, section 13) reads them, and `respawns` waits for the respawn (P6).
 Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 3.
 
 ### Dependencies
@@ -411,8 +411,8 @@ An epic is an item of kind `epic` that groups items: `backlog add --epic`, `back
 The kind and the parent are fixed at add time. `backlog list --epic N` and `backlog_list` with `epic` show an epic's
 children; a line shows `epic`, `in epic #N` and `after #a, #b`, and the JSON of an item carries `kind`, `parent` and `deps`
 (the ids it depends on). Since P4 (section 12) a start of an epic spawns its explorer, which adds, orders and cancels the
-children (`plan_add`, `plan_depend`, `plan_cancel`) and finishes the epic (`plan_finish`); nothing yet starts the children
-(the epic runner, P5).
+children (`plan_add`, `plan_depend`, `plan_cancel`) and finishes the epic (`plan_finish`); since P5 the epic runner
+(section 13) starts the children as their dependencies finish.
 
 ### The bridge to the task `depends_on`
 
@@ -423,9 +423,8 @@ item dependencies `--after` still works.
 
 ### Out of scope
 
-The epic explorer and its `plan_*` tools came with P4 (section 12). The epic runner that spawns children when their
-dependencies are done (P5) and the kanban board are later phases. The dashboard graph draws item nodes and edges in its own
-change.
+The epic explorer and its `plan_*` tools came with P4 (section 12), and the epic runner that spawns children when their
+dependencies are done with P5 (section 13). The dashboard graph draws item nodes and edges in its own change.
 
 ## 12. The epic explorer (P4)
 
@@ -452,8 +451,8 @@ only.
 
 A task of kind `explore`, not a part, whose row records an epic (`tasks.epic_id`, migration 0033), written once by the
 spawn: `ops::epic::epic_of`. The role is not read from the item link, so it survives `plan_finish` and the release of the
-epic at a merge, and a task merely linked to an epic's child gets no `plan_*` tools. P5's re-plan children will be spawned
-with `epic` set through the same spawn path. The tools that change the plan (`plan_add`, `plan_edit`, `plan_depend`,
+epic at a merge, and a task merely linked to an epic's child gets no `plan_*` tools. The epic runner (section 13) spawns
+every `explore` child, re-plans among them, with `epic` set through the same spawn path. The tools that change the plan (`plan_add`, `plan_edit`, `plan_depend`,
 `plan_undepend`, `plan_cancel`, `plan_finish`) are refused while the epic is not `in_progress`; `plan_list` always works.
 The `SessionStart` hook reads the same field for the rules, so they never change after the session starts. Its rules get the section
 "You explore an epic" instead of "You explore: a report, then the Backlog ask" (`rules/explorer.md`). It keeps the
@@ -501,3 +500,80 @@ The file on the brief's `Writes:` line, under the first `[hooks] brief_writable`
 explorer write, commit and push it (`explore-write`). It holds the goal, the children in order with why, the dependency
 graph and open questions; the explorer sends it with `SendUserFile` and tells the orchestrator
 `finished: plan <path>, N children`.
+
+## 13. The epic runner (P5)
+
+Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 2 (lifecycle steps 3 to 5) and the churn cap of
+section 10. Decisions: `docs/decisions/2026-11-28-epic-runner.md`. Migration 0034 adds `epic_replans`.
+
+### Where it runs
+
+`spawn::pump` is `pump_queue` (the queue, as before) followed by `ops::epic::run`, so every caller of `pump` runs it: the
+tick's `queue` stage, a close's finish, `headwork queue`, resume and the orchestrator's tools. A spawn (`spawn_shaped`)
+calls only `pump_queue`, so the runner's own spawns never re-enter it. It does nothing while the machine is not in `normal`
+mode, its starts come back as `Pumped` lines like any queued start, and an error is logged as `epic-runner-error` (with the
+epic when one epic's step failed) and never fails the pump.
+
+### What starts
+
+For each epic `in_progress`, in id order, `Store::epic_facts` gathers the facts and the pure `core::backlog::epic_step`
+decides:
+
+| Facts | Step |
+|---|---|
+| a live explorer of the epic: a live task whose `epic_id` is the epic (its spun-up explorer or a re-plan child), or the live task linked to the epic | hold: nothing starts, no re-plan fires; running children keep running |
+| a re-plan trigger (below) and `[epics] max_replans` re-plans already counted | churn: the epic is blocked `decision` |
+| a re-plan trigger | a re-plan child is added and started in the same pass |
+| a ready `explore` child | it starts alone, unless another `explore` child is `in_progress` |
+| otherwise | ready children start in export order while fewer than `[epics] max_parallel` non-`explore` children are `in_progress` |
+
+A child is ready when it is in `backlog` (so every dependency is done: one open or cancelled blocks it `depends` or
+`dep_cancelled`), owned by an agent (a child the user owns is theirs to do), past its `not_before` (that day counts), and in
+a project headwork runs; a ready child of another project is skipped and logged once per child as `epic-child-skipped`.
+`max_parallel` (default 3, 0 for no limit) counts children of every task kind but `explore`, including a child whose task
+waits in `queued`. With `[watch] many_sessions` set, a pass starts at most `many_sessions` minus the live sessions; when
+that leaves no room for a ready child it logs `epic-held` (reason `many-sessions`) once per pass. Worker caps and gates
+apply as for any spawn.
+
+### A start: claim, spawn, link
+
+`Store::claim_epic_child` reads the child again in an immediate transaction and moves it from `backlog` to `in_progress`
+with no task, as headwork through the guard, only while its epic is `in_progress` and the limit holds (another `explore`
+child in progress for an explore child, `max_parallel` for the rest). A second runner in another process (a tick, a close's
+finish) waits for the first and then finds the child `in_progress` and skips it. Then the ordinary `spawn` runs and the
+task is linked (`Relink`, allowed to headwork while no live task holds the item). A spawn that fails, or a task already
+`failed` when it returns, blocks the child `task_lost` with the error as its note, which is a re-plan trigger. A crash between
+claim and link leaves an `in_progress` child with no task that nothing restarts and that counts against `max_parallel`.
+
+The spawn: project the child's; kind its `task_kind`, else `code`; model its `model`, else the kind's; review its `review`
+(decided by `judged`, reason `planned by the epic explorer`); close mode and main-only from the kind; slug
+`e<epic>-<child>-<first words>` (`core::backlog::child_slug`, then `-2`, `-3`). The brief is the stored one, else one made
+from the child's text and notes and the epic's text (`core::backlog::child_brief`). An `explore` child is spawned with
+`epic` set, so it is an epic explorer with the `plan_*` tools, and gets a `Writes:` line naming the epic's plan notes file
+when its brief has none (`with_writes_line`).
+
+### Re-plans
+
+With no live explorer and no `explore` child open (`backlog`, `in_progress`, `blocked`), the step looks for a trigger, in
+this order:
+
+1. children blocked `task_lost`, `partial` or `dep_cancelled` whose block caused no re-plan yet: the cause is the id of the
+   `backlog-moved` event into that block, kept in `epic_replans.cause_event` with the child in `cause_item`, so an unchanged
+   block triggers once and a child blocked again later triggers again;
+2. no open child at all: "plan complete?".
+
+`Store::add_epic_replan` adds, in one immediate transaction that checks again that the epic is in progress and no `explore`
+child is open, a child (actor headwork) of kind `explore` with text `Re-plan: <reason>` (`#12 task_lost, #14 partial` or
+`plan complete?`) and a generated brief (`core::backlog::replan_brief`: the epic, the reason, each cause with its note, the
+plan notes file on a `Writes:` line), one `epic_replans` row per cause (or one with no cause), and logs `epic-replan`. The
+runner then starts it in the same pass. An explicit re-plan needs nothing new: an explorer adds an `explore` child whose
+`after` names the children to look at, and the runner spawns it as an epic explorer once they are done.
+
+### The churn cap
+
+`epic_replans` rows count (one per re-plan child) until they are cleared. When a trigger fires while the epic already has
+`[epics] max_replans` (default 5, 0 for no limit) counted re-plans, `Store::block_epic_churn` blocks the epic `decision` with
+the note `epic-churn: <n> re-plans` (a guard row: headwork may block an `in_progress` epic, and only an epic, for
+`decision`), clears its rows (`cleared_at`) and logs `epic-churn`. The digest lists the block, and the tick stage `epics`
+keeps the standing finding `epic-churn` with a notice while an epic is blocked with that note. When the user unblocks it, the
+epic is `in_progress` with a fresh count, and a trigger still standing fires a re-plan at the next pass.

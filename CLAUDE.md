@@ -179,7 +179,11 @@ only it, use `EXPLORER_TOOLS` (`backlog_list`, `backlog_add`, `ops/mcp.rs`): hea
 `backlog-added` with the task and gets a `Source:` suffix. An epic explorer (`docs/backlog.md`, section 12; `ops/epic.rs`) is the explorer
 `backlog start` or the orchestrator's `backlog_start` of an epic spawns, linked to it and recorded on its task (`tasks.epic_id`, migration
 0033), with a generated brief whose `Writes:` line is the plan notes file under the first `[hooks] brief_writable` root; it plans the
-epic's children with `EPIC_TOOLS` (no `Backlog` ask; `plan_add` is exempt from the pick cap), and its task's end leaves the epic in progress. The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
+epic's children with `EPIC_TOOLS` (no `Backlog` ask; `plan_add` is exempt from the pick cap), and its task's end leaves the epic in progress.
+The epic runner (`docs/backlog.md`, section 13; `ops/epic/runner.rs`, `ops::epic::run` after every `pump`'s queue, pure step
+`core::backlog::epic_step`, migration 0034 `epic_replans`; `docs/decisions/2026-11-28-epic-runner.md`) claims, spawns and links each
+ready child of an epic in progress up to `[epics] max_parallel`, adds and starts an `explore` re-plan child when children are lost or none
+is open, and blocks the epic `decision` at `[epics] max_replans` re-plans (tick finding `epic-churn`). The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
 kind `explore` too and report to the lead.
 The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
 floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for
@@ -211,7 +215,7 @@ claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `d
 finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
 `scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
 release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
-The backlog (`docs/backlog.md`, migrations 0026, 0027, 0031, 0032 and 0033; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
+The backlog (`docs/backlog.md`, migrations 0026, 0027, 0031, 0032, 0033 and 0034; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
 `store/src/backlog.rs` holds the rows (`backlog_items`) and `backlog_files`, `ops/backlog.rs` imports, exports and changes items for `headwork backlog` and
 the orchestrator's `backlog_*` tools. `[backlog] file` (machine-only) names the generated file: an export writes it after every
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/backlog-backups`
