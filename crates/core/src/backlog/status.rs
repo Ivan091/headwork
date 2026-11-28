@@ -639,7 +639,9 @@ fn decide(
         Target::InProgress => {
             start(from, actor, facts).map(|kind_of| moved(kind, BacklogStatus::InProgress, kind_of))
         }
-        Target::Blocked { reason, note } => block(from, *reason, note.as_ref(), actor),
+        Target::Blocked { reason, note } => {
+            block(from, *reason, note.as_ref(), actor, facts.is_epic)
+        }
         Target::Unblock => match from {
             BacklogStatus::Blocked(block)
                 if matches!(actor, A::Headwork | A::Worker | A::Orchestrator | A::User) =>
@@ -702,6 +704,7 @@ fn block(
     reason: BlockReason,
     note: Option<&String>,
     actor: BacklogActor,
+    is_epic: bool,
 ) -> Result<ItemMove, MoveRefusal> {
     let before = match from {
         BacklogStatus::Backlog => ReturnTo::Backlog,
@@ -726,7 +729,7 @@ fn block(
         }
     };
     if !matches!(from, BacklogStatus::Blocked(_)) {
-        block_allowed(before, reason, actor)?;
+        block_allowed(before, reason, actor, is_epic)?;
     }
     Ok(moved(
         Some(from.kind()),
@@ -818,10 +821,14 @@ fn start(
     Ok(kind)
 }
 
+/// Who may block an item for which reason, by the status it is blocked from. headwork blocks an in-progress item for a
+/// lost or partial task, and an in-progress epic, and only an epic, for `decision` (the epic runner's churn cap,
+/// `docs/backlog.md`, section 13).
 fn block_allowed(
     before: ReturnTo,
     reason: BlockReason,
     actor: BacklogActor,
+    is_epic: bool,
 ) -> Result<(), MoveRefusal> {
     use BacklogActor as A;
     use BlockReason as R;
@@ -830,7 +837,9 @@ fn block_allowed(
         | (ReturnTo::Backlog, A::Orchestrator | A::User) => {
             matches!(reason, R::Decision | R::Event)
         }
-        (ReturnTo::InProgress, A::Headwork) => matches!(reason, R::TaskLost | R::Partial),
+        (ReturnTo::InProgress, A::Headwork) => {
+            matches!(reason, R::TaskLost | R::Partial) || (is_epic && reason == R::Decision)
+        }
         (ReturnTo::Backlog, A::Headwork) => matches!(reason, R::Depends | R::DepCancelled),
         (ReturnTo::Backlog, A::Explorer) => matches!(reason, R::Depends),
         (ReturnTo::InProgress, A::Explorer) | (ReturnTo::Backlog, A::Worker) => {
