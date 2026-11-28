@@ -8,9 +8,10 @@
 use std::collections::HashSet;
 
 use headwork_core::backlog::{
-    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, DateEffect,
-    ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask, MoveFacts, Target, TaskEndEffect,
-    TaskOutcome, identity, on_linked_end, on_task_end, transition,
+    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason,
+    DateEffect, DepNode, ItemKind, ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask,
+    MoveFacts, ParentFacts, Target, TaskEndEffect, TaskOutcome, check_dependency, check_parent,
+    identity, on_linked_end, on_task_end, transition,
 };
 use headwork_core::{Actor, TaskState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -43,6 +44,12 @@ pub const EVENT_BACKLOG_MOVE_REFUSED: &str = "backlog-move-refused";
 /// The event of a worker's `done` that said it did not finish the work (`outcome`, `note`, `items`).
 pub(crate) const EVENT_TASK_OUTCOME: &str = "task-outcome";
 
+/// The event of a dependency added (`item`, `depends_on`).
+pub const EVENT_BACKLOG_DEPENDED: &str = "backlog-depended";
+
+/// The event of a dependency removed (`item`, `depends_on`).
+pub const EVENT_BACKLOG_UNDEPENDED: &str = "backlog-undepended";
+
 /// The event of an item's fields changed.
 pub const EVENT_BACKLOG_EDITED: &str = "backlog-edited";
 
@@ -56,7 +63,7 @@ const TODAY: &str = "date('now', 'localtime')";
 
 const COLUMNS: &str = "t.id, t.project, t.section, t.text, t.notes, t.status, t.owner, t.added, t.not_before, t.due, \
                        t.done_on, t.done_note, t.task_id, k.project, k.slug, k.state, t.position, t.blocked_reason, \
-                       t.blocked_note, t.status_before_block";
+                       t.blocked_note, t.status_before_block, t.kind, t.parent_id";
 
 /// Which items to list; an absent field matches everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -67,6 +74,19 @@ pub struct BacklogFilter {
     pub owner: Option<BacklogOwner>,
     /// Only these statuses; empty matches every status.
     pub statuses: Vec<ItemStatus>,
+    /// Only the children of this epic.
+    pub epic: Option<i64>,
+}
+
+/// Where a new item sits: its kind, its epic, and the items it waits for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ItemShape {
+    /// An item, or an epic.
+    pub kind: Option<ItemKind>,
+    /// The epic it belongs to.
+    pub parent: Option<i64>,
+    /// The items it depends on.
+    pub after: Vec<i64>,
 }
 
 /// A move of an item's status, checked by [`transition`].
@@ -171,6 +191,8 @@ struct RawBacklogItem {
     done_note: Option<String>,
     task: Option<(i64, String, String, String)>,
     position: i64,
+    kind: String,
+    parent: Option<i64>,
 }
 
 impl RawBacklogItem {
@@ -193,15 +215,19 @@ impl RawBacklogItem {
             done_note: row.get(11)?,
             task,
             position: row.get(16)?,
+            kind: row.get(20)?,
+            parent: row.get(21)?,
         })
     }
 
-    fn into_backlog_item(self) -> Result<BacklogItem, StoreError> {
+    fn into_backlog_item(self, conn: &Connection) -> Result<BacklogItem, StoreError> {
         let id = self.id;
-        self.parse().map_err(|source| StoreError::BadBacklogRow {
+        let mut item = self.parse().map_err(|source| StoreError::BadBacklogRow {
             id,
             source: Box::new(source),
-        })
+        })?;
+        item.deps = dependencies(conn, id)?;
+        Ok(item)
     }
 
     fn parse(self) -> Result<BacklogItem, StoreError> {
@@ -221,6 +247,9 @@ impl RawBacklogItem {
             id: self.id,
             position: self.position,
             task,
+            kind: self.kind.parse()?,
+            parent: self.parent,
+            deps: Vec::new(),
             draft: BacklogDraft {
                 project: self.project,
                 section: self.section,
@@ -259,7 +288,39 @@ fn load(conn: &Connection, id: i64) -> Result<BacklogItem, StoreError> {
     )
     .optional()?
     .ok_or(StoreError::UnknownBacklogItem(id))?
-    .into_backlog_item()
+    .into_backlog_item(conn)
+}
+
+fn dependencies(conn: &Connection, id: i64) -> Result<Vec<i64>, StoreError> {
+    Ok(conn
+        .prepare(
+            "SELECT depends_on_id FROM backlog_deps WHERE item_id = ?1 ORDER BY depends_on_id",
+        )?
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+fn dependants(conn: &Connection, id: i64) -> Result<Vec<i64>, StoreError> {
+    Ok(conn
+        .prepare("SELECT item_id FROM backlog_deps WHERE depends_on_id = ?1 ORDER BY item_id")?
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+fn edges(conn: &Connection) -> Result<Vec<(i64, i64)>, StoreError> {
+    Ok(conn
+        .prepare("SELECT item_id, depends_on_id FROM backlog_deps")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?)
+}
+
+fn open_dependencies(conn: &Connection, id: i64) -> Result<i64, StoreError> {
+    Ok(conn.query_row(
+        "SELECT count(*) FROM backlog_deps d JOIN backlog_items t ON t.id = d.depends_on_id
+         WHERE d.item_id = ?1 AND t.status <> 'done'",
+        params![id],
+        |row| row.get(0),
+    )?)
 }
 
 fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
@@ -279,7 +340,12 @@ fn block_columns(
     })
 }
 
-fn insert(tx: &Transaction<'_>, draft: &BacklogDraft) -> Result<i64, StoreError> {
+fn insert(
+    tx: &Transaction<'_>,
+    draft: &BacklogDraft,
+    kind: ItemKind,
+    parent: Option<i64>,
+) -> Result<i64, StoreError> {
     draft.validate().map_err(StoreError::InvalidBacklogItem)?;
     let position: i64 = tx.query_row(
         "SELECT COALESCE(MAX(position), 0) + 1 FROM backlog_items",
@@ -291,8 +357,8 @@ fn insert(tx: &Transaction<'_>, draft: &BacklogDraft) -> Result<i64, StoreError>
     tx.execute(
         &format!(
             "INSERT INTO backlog_items (project, section, text, notes, status, owner, added, not_before, due, done_on, done_note,
-                                position, blocked_reason, blocked_note, status_before_block, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, {NOW}, {NOW})"
+                                position, blocked_reason, blocked_note, status_before_block, kind, parent_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, {NOW}, {NOW})"
         ),
         params![
             draft.project,
@@ -310,6 +376,8 @@ fn insert(tx: &Transaction<'_>, draft: &BacklogDraft) -> Result<i64, StoreError>
             reason,
             note,
             before,
+            kind.as_str(),
+            parent,
         ],
     )?;
     Ok(tx.last_insert_rowid())
@@ -457,7 +525,162 @@ fn write_move(
         EVENT_BACKLOG_MOVED,
         &data,
     )?;
+    cascade(tx, id, &step.to, request.by)?;
     load(tx, id)
+}
+
+/// Moves a dependant as headwork, in the transaction of the move that caused it; a refusal is logged as
+/// `backlog-move-refused` and never fails the move.
+fn cascade_move(
+    tx: &Transaction<'_>,
+    id: i64,
+    target: Target,
+    by: Actor,
+) -> Result<(), StoreError> {
+    let item = load(tx, id)?;
+    let request = BacklogMove::new(target, BacklogActor::Headwork, by, true);
+    match check(&item, &request) {
+        Ok(step) => write_move(tx, &item, &step, &request).map(drop),
+        Err(error) => insert_event(
+            tx,
+            by,
+            None,
+            None,
+            EVENT_BACKLOG_MOVE_REFUSED,
+            &serde_json::json!({ "item": id, "reason": error.to_string() }),
+        ),
+    }
+}
+
+/// What the new status of an item does to the items that depend on it: done frees a dependant blocked for `depends` once
+/// nothing else it waits for is open; cancelled blocks a dependant in the backlog, or turns its `depends` block, into
+/// `dep_cancelled`. Nothing else moves, and reopening a done item re-blocks nobody.
+fn cascade(tx: &Transaction<'_>, id: i64, to: &BacklogStatus, by: Actor) -> Result<(), StoreError> {
+    if !matches!(to, BacklogStatus::Done | BacklogStatus::Cancelled) {
+        return Ok(());
+    }
+    for dependant in dependants(tx, id)? {
+        let status = load(tx, dependant)?.draft.status;
+        match (to, &status) {
+            (BacklogStatus::Done, BacklogStatus::Blocked(block))
+                if block.reason == BlockReason::Depends
+                    && open_dependencies(tx, dependant)? == 0 =>
+            {
+                cascade_move(tx, dependant, Target::Unblock, by)?;
+            }
+            (BacklogStatus::Cancelled, BacklogStatus::Backlog) => {
+                cascade_move(tx, dependant, cancelled_dependency(id), by)?;
+            }
+            (BacklogStatus::Cancelled, BacklogStatus::Blocked(block))
+                if block.reason == BlockReason::Depends =>
+            {
+                cascade_move(tx, dependant, cancelled_dependency(id), by)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn cancelled_dependency(id: i64) -> Target {
+    Target::Blocked {
+        reason: BlockReason::DepCancelled,
+        note: Some(format!("#{id} cancelled")),
+    }
+}
+
+fn dep_event(
+    tx: &Transaction<'_>,
+    by: Actor,
+    task: Option<TaskId>,
+    kind: &str,
+    item: i64,
+    dep: i64,
+) -> Result<(), StoreError> {
+    insert_event(
+        tx,
+        by,
+        task,
+        None,
+        kind,
+        &serde_json::json!({ "item": item, "depends_on": dep }),
+    )
+}
+
+const fn refused(id: i64, reason: String) -> StoreError {
+    StoreError::BacklogRefused { id, reason }
+}
+
+/// Records "`item` depends on `dep`" after the dependency guard, and blocks an item in the backlog for `depends` while the
+/// dependency is not done. An item already blocked keeps its block; an edge that exists is left as it is.
+fn add_dependency(
+    tx: &Transaction<'_>,
+    item: i64,
+    dep: i64,
+    by: Actor,
+    task: Option<TaskId>,
+) -> Result<(), StoreError> {
+    let (from, to) = (load(tx, item)?, load(tx, dep)?);
+    if from.deps.contains(&dep) {
+        return Ok(());
+    }
+    check_dependency(
+        &edges(tx)?,
+        DepNode {
+            id: item,
+            status: from.draft.status.kind(),
+        },
+        DepNode {
+            id: dep,
+            status: to.draft.status.kind(),
+        },
+    )
+    .map_err(|refusal| refused(item, refusal.to_string()))?;
+    tx.execute(
+        &format!(
+            "INSERT INTO backlog_deps (item_id, depends_on_id, added_by_task, created_at) VALUES (?1, ?2, ?3, {NOW})"
+        ),
+        params![item, dep, task.map(|task| task.0)],
+    )?;
+    dep_event(tx, by, task, EVENT_BACKLOG_DEPENDED, item, dep)?;
+    if to.draft.status != BacklogStatus::Done && from.draft.status == BacklogStatus::Backlog {
+        let target = Target::Blocked {
+            reason: BlockReason::Depends,
+            note: Some(format!("#{dep}")),
+        };
+        cascade_move(tx, item, target, by)?;
+    }
+    Ok(())
+}
+
+/// Removes "`item` depends on `dep`"; an item blocked for `depends` or `dep_cancelled` with nothing else open to wait for
+/// goes back to the status it had.
+fn remove_dependency(
+    tx: &Transaction<'_>,
+    item: i64,
+    dep: i64,
+    by: Actor,
+    task: Option<TaskId>,
+) -> Result<(), StoreError> {
+    let from = load(tx, item)?;
+    load(tx, dep)?;
+    let removed = tx.execute(
+        "DELETE FROM backlog_deps WHERE item_id = ?1 AND depends_on_id = ?2",
+        params![item, dep],
+    )?;
+    if removed == 0 {
+        return Err(refused(item, format!("it does not depend on #{dep}")));
+    }
+    dep_event(tx, by, task, EVENT_BACKLOG_UNDEPENDED, item, dep)?;
+    let gated = matches!(
+        &from.draft.status,
+        BacklogStatus::Blocked(block)
+            if matches!(block.reason, BlockReason::Depends | BlockReason::DepCancelled)
+    );
+    if gated && open_dependencies(tx, item)? == 0 {
+        cascade_move(tx, item, Target::Unblock, by)?;
+    }
+    Ok(())
 }
 
 fn linked_ids(
@@ -581,7 +804,7 @@ impl Store {
         let rows = statement.query_map(params![task.0], RawBacklogItem::read)?;
         let mut items = Vec::new();
         for row in rows {
-            items.push(row?.into_backlog_item()?);
+            items.push(row?.into_backlog_item(&self.conn)?);
         }
         Ok(items)
     }
@@ -640,16 +863,20 @@ impl Store {
     pub fn backlog_items(&self, filter: &BacklogFilter) -> Result<Vec<BacklogItem>, StoreError> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {COLUMNS} FROM backlog_items t LEFT JOIN tasks k ON k.id = t.task_id
-             WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.owner = ?2)
+             WHERE (?1 IS NULL OR t.project = ?1) AND (?2 IS NULL OR t.owner = ?2) AND (?3 IS NULL OR t.parent_id = ?3)
              ORDER BY t.position, t.id"
         ))?;
         let rows = statement.query_map(
-            params![filter.project, filter.owner.map(BacklogOwner::as_str)],
+            params![
+                filter.project,
+                filter.owner.map(BacklogOwner::as_str),
+                filter.epic
+            ],
             RawBacklogItem::read,
         )?;
         let mut items = Vec::new();
         for row in rows {
-            let item = row?.into_backlog_item()?;
+            let item = row?.into_backlog_item(&self.conn)?;
             if filter.statuses.is_empty() || filter.statuses.contains(&item.draft.status.kind()) {
                 items.push(item);
             }
@@ -687,6 +914,24 @@ impl Store {
         mover: BacklogActor,
         task: Option<TaskId>,
     ) -> Result<BacklogItem, StoreError> {
+        self.add_backlog_item_shaped(draft, by, mover, task, &ItemShape::default())
+    }
+
+    /// As [`Store::add_backlog_item_for`], for an item of `shape`: an epic or an item, the epic it belongs to
+    /// ([`check_parent`]) and the items it waits for (each through [`check_dependency`], so the item starts blocked for
+    /// `depends` while one is not done). Nothing is written when any part is refused.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::add_backlog_item_for`], and [`StoreError::BacklogRefused`] naming a dependency the guards refuse.
+    pub fn add_backlog_item_shaped(
+        &mut self,
+        draft: &BacklogDraft,
+        by: Actor,
+        mover: BacklogActor,
+        task: Option<TaskId>,
+        shape: &ItemShape,
+    ) -> Result<BacklogItem, StoreError> {
         if draft.status != BacklogStatus::Backlog {
             return Err(StoreError::BacklogAddRefused(format!(
                 "a new item is added to the backlog, not as {}",
@@ -697,7 +942,23 @@ impl Store {
             .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
         let actor = by;
         let tx = self.conn.transaction()?;
-        let id = insert(&tx, draft)?;
+        let kind = shape.kind.unwrap_or(ItemKind::Item);
+        let parent = shape
+            .parent
+            .map(|parent| {
+                load(&tx, parent).map(|row| ParentFacts {
+                    id: row.id,
+                    kind: row.kind,
+                    parent: row.parent,
+                })
+            })
+            .transpose()?;
+        check_parent(kind, parent)
+            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+        let id = insert(&tx, draft, kind, shape.parent)?;
+        for dep in &shape.after {
+            add_dependency(&tx, id, *dep, actor, task)?;
+        }
         let item = load(&tx, id)?;
         event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
         tx.commit()?;
@@ -749,6 +1010,48 @@ impl Store {
         let before = load(&tx, id)?;
         let step = check(&before, request)?;
         let item = write_move(&tx, &before, &step, request)?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// Makes `item` depend on `dep` and logs `backlog-depended`; an item in the backlog is blocked for `depends` in the same
+    /// transaction while `dep` is not done.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::BacklogRefused`] with the dependency guard reason, [`StoreError::UnknownBacklogItem`], or a
+    /// write error.
+    pub fn add_backlog_dependency(
+        &mut self,
+        item: i64,
+        dep: i64,
+        by: Actor,
+        task: Option<TaskId>,
+    ) -> Result<BacklogItem, StoreError> {
+        let tx = self.conn.transaction()?;
+        add_dependency(&tx, item, dep, by, task)?;
+        let item = load(&tx, item)?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// Removes the dependency and logs `backlog-undepended`; an item blocked for `depends` that waits for nothing else open
+    /// is unblocked in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::BacklogRefused`] when `item` does not depend on `dep`, [`StoreError::UnknownBacklogItem`], or
+    /// a write error.
+    pub fn remove_backlog_dependency(
+        &mut self,
+        item: i64,
+        dep: i64,
+        by: Actor,
+        task: Option<TaskId>,
+    ) -> Result<BacklogItem, StoreError> {
+        let tx = self.conn.transaction()?;
+        remove_dependency(&tx, item, dep, by, task)?;
+        let item = load(&tx, item)?;
         tx.commit()?;
         Ok(item)
     }
@@ -849,7 +1152,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         let (counts, fresh) = counts(&tx, drafts)?;
         for (draft, _) in drafts.iter().zip(&fresh).filter(|(_, fresh)| **fresh) {
-            insert(&tx, draft)?;
+            insert(&tx, draft, ItemKind::Item, None)?;
         }
         tx.execute(
             &format!(

@@ -2768,3 +2768,28 @@ fn a_backlog_block_is_all_or_nothing_and_a_bad_row_names_its_item() {
     let error = store.backlog_item(10).unwrap_err().to_string();
     assert!(error.starts_with("backlog item 10: "), "{error}");
 }
+
+#[test]
+fn migration_32_reads_existing_items_as_plain_items_with_no_dependencies() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    old_store(&path, 31);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO backlog_items (id, project, text, status, owner, position, created_at, updated_at)
+             VALUES (1, 'me-sim', 'old one', 'backlog', 'agent', 1, 't', 't'),
+                    (2, 'me-sim', 'old two', 'done', 'agent', 2, 't', 't');",
+        )
+        .unwrap();
+    let store = Store::open(&path).unwrap();
+    for id in [1, 2] {
+        let item = store.backlog_item(id).unwrap();
+        assert_eq!(item.kind, headwork_core::backlog::ItemKind::Item, "#{id}");
+        assert_eq!(item.parent, None, "#{id}");
+        assert!(item.deps.is_empty(), "#{id}");
+    }
+    let json = serde_json::to_value(store.backlog_item(1).unwrap()).unwrap();
+    assert_eq!(json["kind"], "item");
+    assert_eq!(json["deps"], serde_json::json!([]));
+}

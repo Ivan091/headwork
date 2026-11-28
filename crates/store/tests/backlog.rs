@@ -9,8 +9,8 @@
 use std::path::Path;
 
 use headwork_core::backlog::{
-    BacklogActor, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason, ItemStatus,
-    ReturnTo, Target, parse,
+    BacklogActor, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason, ItemKind,
+    ItemStatus, ReturnTo, Target, parse,
 };
 use headwork_core::lifecycle::{CleanupFacts, MergePolicy, MergeSource, SessionFacts, WorktreeEnd};
 use headwork_core::{
@@ -18,8 +18,8 @@ use headwork_core::{
 };
 use headwork_store::{
     BacklogEdit, BacklogFilter, BacklogMove, EVENT_BACKLOG_ADDED, EVENT_BACKLOG_EXPORTED,
-    EVENT_BACKLOG_IMPORTED, EVENT_BACKLOG_MOVED, EVENT_BACKLOG_PICKED, EventFilter, NewTask,
-    PrSeen, Store, StoreError, Task, TaskId,
+    EVENT_BACKLOG_IMPORTED, EVENT_BACKLOG_MOVED, EVENT_BACKLOG_PICKED, EventFilter, ItemShape,
+    NewTask, PrSeen, Store, StoreError, Task, TaskId,
 };
 
 fn store() -> (Store, Config) {
@@ -1095,5 +1095,362 @@ fn an_unlink_at_a_task_end_is_a_logged_move() {
             Some("unlink"),
             Some("headwork")
         )
+    );
+}
+
+fn add(store: &mut Store, text: &str) -> i64 {
+    store
+        .add_backlog_item(&draft(text), Actor::Orchestrator)
+        .unwrap()
+        .id
+}
+
+fn depend(store: &mut Store, item: i64, dep: i64) -> Result<BacklogItem, StoreError> {
+    store.add_backlog_dependency(item, dep, Actor::Orchestrator, None)
+}
+
+fn status_of(store: &Store, id: i64) -> BacklogStatus {
+    store.backlog_item(id).unwrap().draft.status
+}
+
+fn blocked_for(reason: BlockReason, note: &str, before: ReturnTo) -> BacklogStatus {
+    BacklogStatus::Blocked(headwork_core::backlog::Block {
+        reason,
+        note: Some(note.to_owned()),
+        before,
+    })
+}
+
+fn event_kinds(store: &Store) -> Vec<String> {
+    store
+        .events(EventFilter {
+            task: None,
+            limit: 200,
+        })
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
+}
+
+fn shaped_add(store: &mut Store, text: &str, shape: &ItemShape) -> Result<BacklogItem, StoreError> {
+    store.add_backlog_item_shaped(
+        &draft(text),
+        Actor::Orchestrator,
+        BacklogActor::Orchestrator,
+        None,
+        shape,
+    )
+}
+
+#[test]
+fn a_dependency_blocks_an_item_in_the_backlog_and_done_frees_it() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    let item = depend(&mut store, b, a).unwrap();
+    assert_eq!(item.deps, [a]);
+    assert_eq!(
+        item.draft.status,
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog)
+    );
+    by_user(&mut store, a, Target::Done, Some("shipped")).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+    let kinds = event_kinds(&store);
+    assert!(kinds.contains(&"backlog-depended".to_owned()), "{kinds:?}");
+}
+
+#[test]
+fn an_item_waits_until_every_dependency_is_done() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    depend(&mut store, c, a).unwrap();
+    depend(&mut store, c, b).unwrap();
+    assert_eq!(
+        status_of(&store, c),
+        blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog),
+        "the first block stays"
+    );
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    assert_eq!(
+        status_of(&store, c).kind(),
+        ItemStatus::Blocked,
+        "b is still open"
+    );
+    by_user(&mut store, b, Target::Done, None).unwrap();
+    assert_eq!(status_of(&store, c), BacklogStatus::Backlog);
+}
+
+#[test]
+fn a_done_dependency_blocks_nothing_and_a_blocked_item_keeps_its_own_block() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    assert_eq!(
+        depend(&mut store, b, a).unwrap().draft.status,
+        BacklogStatus::Backlog
+    );
+    by_user(
+        &mut store,
+        c,
+        Target::Blocked {
+            reason: BlockReason::Decision,
+            note: Some("pick".to_owned()),
+        },
+        None,
+    )
+    .unwrap();
+    let d = add(&mut store, "d");
+    depend(&mut store, c, d).unwrap();
+    by_user(&mut store, d, Target::Done, None).unwrap();
+    assert_eq!(
+        status_of(&store, c),
+        blocked_for(BlockReason::Decision, "pick", ReturnTo::Backlog),
+        "a decision block is lifted by the user only"
+    );
+}
+
+#[test]
+fn a_cycle_a_self_dependency_and_an_item_in_progress_are_refused() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    depend(&mut store, b, a).unwrap();
+    depend(&mut store, c, b).unwrap();
+    let error = depend(&mut store, a, c).unwrap_err().to_string();
+    assert!(error.contains("cycle"), "{error}");
+    assert!(
+        error.contains(&format!("#{a} -> #{c} -> #{b} -> #{a}")),
+        "{error}"
+    );
+    assert!(
+        depend(&mut store, a, a)
+            .unwrap_err()
+            .to_string()
+            .contains("itself")
+    );
+    by_user(&mut store, a, Target::InProgress, None).unwrap();
+    let d = add(&mut store, "d");
+    let error = depend(&mut store, a, d).unwrap_err().to_string();
+    assert!(error.contains("in_progress"), "{error}");
+    assert!(
+        store.backlog_item(a).unwrap().deps.is_empty(),
+        "nothing was written"
+    );
+}
+
+#[test]
+fn a_done_or_cancelled_item_takes_no_dependency_and_a_cancelled_one_is_no_dependency() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    by_user(&mut store, b, Target::Cancelled, Some("no")).unwrap();
+    assert!(depend(&mut store, a, c).is_err(), "done item");
+    assert!(depend(&mut store, b, c).is_err(), "cancelled item");
+    let error = depend(&mut store, c, b).unwrap_err().to_string();
+    assert!(error.contains("cancelled"), "{error}");
+}
+
+#[test]
+fn cancelling_a_dependency_blocks_a_backlog_dependant_and_swaps_a_depends_block() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    let child = shaped_add(
+        &mut store,
+        "child",
+        &ItemShape {
+            after: vec![a],
+            ..ItemShape::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(child.draft.status.kind(), ItemStatus::Blocked);
+    let loose = add(&mut store, "loose");
+    by_user(&mut store, loose, Target::InProgress, None).unwrap();
+    store
+        .add_backlog_dependency(b, a, Actor::User, None)
+        .unwrap();
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    for id in [child.id, b] {
+        assert_eq!(
+            status_of(&store, id),
+            blocked_for(
+                BlockReason::DepCancelled,
+                &format!("#{a} cancelled"),
+                ReturnTo::Backlog
+            ),
+            "#{id}"
+        );
+    }
+    assert_eq!(status_of(&store, loose), BacklogStatus::InProgress);
+}
+
+#[test]
+fn a_backlog_dependant_with_no_block_yet_is_blocked_when_its_dependency_is_cancelled() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    by_user(&mut store, b, Target::Unblock, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    assert_eq!(
+        status_of(&store, b),
+        blocked_for(
+            BlockReason::DepCancelled,
+            &format!("#{a} cancelled"),
+            ReturnTo::Backlog
+        )
+    );
+}
+
+#[test]
+fn cancelling_a_dependency_leaves_started_and_finished_dependants_alone() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    depend(&mut store, b, a).unwrap();
+    depend(&mut store, c, a).unwrap();
+    by_user(&mut store, b, Target::Unblock, None).unwrap();
+    by_user(&mut store, b, Target::InProgress, None).unwrap();
+    by_user(&mut store, c, Target::Unblock, None).unwrap();
+    by_user(&mut store, c, Target::Done, None).unwrap();
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::InProgress);
+    assert_eq!(status_of(&store, c), BacklogStatus::Done);
+}
+
+#[test]
+fn reopening_a_done_dependency_does_not_block_its_dependants_again() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    by_user(&mut store, a, Target::Backlog, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+}
+
+#[test]
+fn removing_the_last_open_dependency_unblocks_the_item() {
+    let (mut store, _) = store();
+    let (a, b, c) = (
+        add(&mut store, "a"),
+        add(&mut store, "b"),
+        add(&mut store, "c"),
+    );
+    depend(&mut store, c, a).unwrap();
+    depend(&mut store, c, b).unwrap();
+    let item = store
+        .remove_backlog_dependency(c, a, Actor::User, None)
+        .unwrap();
+    assert_eq!(item.deps, [b]);
+    assert_eq!(
+        item.draft.status.kind(),
+        ItemStatus::Blocked,
+        "b is still open"
+    );
+    let item = store
+        .remove_backlog_dependency(c, b, Actor::User, None)
+        .unwrap();
+    assert_eq!(item.draft.status, BacklogStatus::Backlog);
+    let error = store
+        .remove_backlog_dependency(c, b, Actor::User, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not depend"), "{error}");
+    assert!(event_kinds(&store).contains(&"backlog-undepended".to_owned()));
+}
+
+#[test]
+fn a_dependant_of_a_cancelled_item_is_freed_when_that_dependency_is_removed() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    let item = store
+        .remove_backlog_dependency(b, a, Actor::User, None)
+        .unwrap();
+    assert_eq!(item.draft.status, BacklogStatus::Backlog);
+}
+
+#[test]
+fn epics_hold_children_one_level_deep() {
+    let (mut store, _) = store();
+    let kind = |kind, parent| ItemShape {
+        kind,
+        parent,
+        after: Vec::new(),
+    };
+    let epic = shaped_add(&mut store, "epic", &kind(Some(ItemKind::Epic), None)).unwrap();
+    assert_eq!(epic.kind, ItemKind::Epic);
+    let child = shaped_add(&mut store, "child", &kind(None, Some(epic.id))).unwrap();
+    assert_eq!((child.kind, child.parent), (ItemKind::Item, Some(epic.id)));
+    shaped_add(&mut store, "other", &kind(None, None)).unwrap();
+    assert!(
+        shaped_add(&mut store, "grandchild", &kind(None, Some(child.id))).is_err(),
+        "the parent is an item"
+    );
+    assert!(
+        shaped_add(
+            &mut store,
+            "sub epic",
+            &kind(Some(ItemKind::Epic), Some(epic.id))
+        )
+        .is_err(),
+        "an epic has no parent"
+    );
+    assert!(
+        shaped_add(&mut store, "orphan", &kind(None, Some(999))).is_err(),
+        "unknown parent"
+    );
+    let children = store
+        .backlog_items(&BacklogFilter {
+            epic: Some(epic.id),
+            ..BacklogFilter::default()
+        })
+        .unwrap();
+    assert_eq!(
+        children.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [child.id]
+    );
+}
+
+#[test]
+fn a_refused_dependency_at_add_writes_nothing() {
+    let (mut store, _) = store();
+    let a = add(&mut store, "a");
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    let result = shaped_add(
+        &mut store,
+        "child",
+        &ItemShape {
+            after: vec![a],
+            ..ItemShape::default()
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        store
+            .backlog_items(&BacklogFilter::default())
+            .unwrap()
+            .len(),
+        1,
+        "the new item was rolled back"
     );
 }
