@@ -182,8 +182,10 @@ only it, use `EXPLORER_TOOLS` (`backlog_list`, `backlog_add`, `ops/mcp.rs`): hea
 epic's children with `EPIC_TOOLS` (no `Backlog` ask; `plan_add` is exempt from the pick cap), and its task's end leaves the epic in progress.
 The epic runner (`docs/backlog.md`, section 13; `ops/epic/runner.rs`, `ops::epic::run` after every `pump`'s queue, pure step
 `core::backlog::epic_step`, migration 0034 `epic_replans`; `docs/decisions/2026-11-28-epic-runner.md`) claims, spawns and links each
-ready child of an epic in progress up to `[epics] max_parallel`, adds and starts an `explore` re-plan child when children are lost or none
-is open, and blocks the epic `decision` at `[epics] max_replans` re-plans (tick finding `epic-churn`). The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
+ready child of an epic in progress up to `[epics] max_parallel`, adds and starts an `explore` re-plan child when a child is blocked
+`task_lost`, `partial` or `dep_cancelled` or none is open, starts only `[epics] kinds` of the epic's project, reconciles claims left
+without a task, and blocks the epic `decision` at `[epics] max_replans` re-plans (migration 0034 `epic_churn_blocks`; tick findings
+`epic-churn` and `epic-runner-error`). The kind's models come from `ModelsConfig::for_kind` and `for_part`. Parts of an explore lead are
 kind `explore` too and report to the lead.
 The delivery policy (`docs/review-flows.md`, section 13; `core/src/review/policy.rs`) lists findings below `[reviews]
 floor` or over `max_round_findings`/`max_task_findings` for information instead of delivering them (no verify node for
