@@ -6,8 +6,7 @@
     backlog: "Backlog",
     in_progress: "In progress",
     blocked: "Blocked",
-    done: "Done",
-    cancelled: "Cancelled",
+    done: "Done and cancelled",
   };
   const GROUPS = {
     "needs-you": "Needs you",
@@ -31,7 +30,6 @@
   let loading = false;
   let again = false;
   let lastLoad = 0;
-  let cancelledOpen = false;
 
   function make(tag, className, text) {
     const element = document.createElement(tag);
@@ -158,7 +156,7 @@
 
   function renderCard(card, today) {
     const item = card.item;
-    const element = make("div", "kb-card" + (card.waiting ? " waiting" : "") + (card.held ? " held" : "") + (card.drift ? " drift" : ""));
+    const element = make("div", "kb-card kind-" + item.status + (card.waiting ? " waiting" : "") + (card.held ? " held" : "") + (card.drift ? " drift" : ""));
     element.tabIndex = 0;
     const title = make("div", "kb-title");
     title.append(make("span", "kb-id", "#" + item.id + " "), make("span", "kb-text", item.text));
@@ -188,8 +186,11 @@
     if (card.drift) {
       chips.append(chip("no live task", "overdue"));
     }
-    if (item.status === "done" && item.done_on) {
-      chips.append(chip("done " + item.done_on));
+    if (item.status === "done") {
+      chips.append(chip("✓ done" + (item.done_on ? " " + item.done_on : ""), "kind-done"));
+    }
+    if (item.status === "cancelled") {
+      chips.append(chip("✕ cancelled", "kind-cancelled"));
     }
     if (item.status === "backlog" && item.added) {
       chips.append(chip("added " + item.added));
@@ -297,9 +298,6 @@
       }
       return body;
     }
-    if (column.status === "cancelled" && !cancelledOpen) {
-      return body;
-    }
     column.cards.filter(mine).forEach((card) => body.append(renderCard(card, board.today)));
     return body;
   }
@@ -315,13 +313,8 @@
     for (const column of board.columns) {
       const head = make("div", "kb-head status-" + column.status);
       head.append(make("span", "", COLUMNS[column.status] + " "), make("span", "kb-count", String(column.count)));
-      if (column.status === "cancelled") {
-        head.classList.add("clickable");
-        head.title = "show or hide the cancelled items";
-        head.addEventListener("click", () => {
-          cancelledOpen = !cancelledOpen;
-          render();
-        });
+      if (column.cancelled) {
+        head.append(make("span", "kb-cancelled-count", " · " + column.cancelled + " cancelled"));
       }
       if (column.more) {
         head.append(make("span", "kb-more-done", " · " + column.more + " older not shown"));

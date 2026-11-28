@@ -1,7 +1,8 @@
 //! The kanban board of the dashboard (`docs/dashboard.md`, section 6a): backlog items and the tasks that work on them in,
 //! columns, groups and lanes out.
 //!
-//! Columns are the item statuses. The tasks' statuses nest inside the In progress column as groups, in the order the
+//! Columns are the item statuses, Done and Cancelled merged into one column (`status` Done, its cards told apart by their
+//! item status). The tasks' statuses nest inside the In progress column as groups, in the order the
 //! user should look at them. [`build`] is pure: facts in, board out.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,7 +77,7 @@ pub struct TaskCard {
 pub struct Options {
     /// Only this project.
     pub project: Option<String>,
-    /// How many Done cards to show, the newest first.
+    /// How many Done cards and how many Cancelled cards to show in the merged column, the newest first.
     pub done: usize,
 }
 
@@ -157,8 +158,10 @@ pub struct Column {
     pub cards: Vec<Card>,
     /// The groups, for In progress.
     pub groups: Vec<Group>,
-    /// How many Done cards the limit left out.
+    /// How many Done and Cancelled cards the limit left out.
     pub more: usize,
+    /// How many of the column's items are cancelled, shown or not (only the merged Done column).
+    pub cancelled: usize,
 }
 
 /// A swimlane: a project, or an epic holding its children.
@@ -177,7 +180,7 @@ pub struct Lane {
 pub struct Kanban {
     /// The store's date.
     pub today: String,
-    /// The five columns, in order.
+    /// The four columns, in order: Backlog, In progress, Blocked, and Done with Cancelled.
     pub columns: Vec<Column>,
     /// The lanes that hold a card, by name.
     pub lanes: Vec<Lane>,
@@ -311,7 +314,6 @@ pub fn build(
         ItemStatus::InProgress,
         ItemStatus::Blocked,
         ItemStatus::Done,
-        ItemStatus::Cancelled,
     ]
     .into_iter()
     .map(|status| column(status, &cards, options))
@@ -400,11 +402,15 @@ fn card(
 fn column(status: ItemStatus, cards: &[Card], options: &Options) -> Column {
     let mut mine: Vec<Card> = cards
         .iter()
-        .filter(|card| card.item.draft.status.kind() == status)
+        .filter(|card| {
+            let kind = card.item.draft.status.kind();
+            kind == status || (status == ItemStatus::Done && kind == ItemStatus::Cancelled)
+        })
         .cloned()
         .collect();
     let count = mine.len();
     let mut more = 0;
+    let mut cancelled = 0;
     let mut groups = Vec::new();
     match status {
         ItemStatus::InProgress => {
@@ -421,14 +427,23 @@ fn column(status: ItemStatus, cards: &[Card], options: &Options) -> Column {
                 .collect();
             mine.clear();
         }
-        ItemStatus::Done => {
-            mine.sort_by(|a, b| {
+        ItemStatus::Done | ItemStatus::Cancelled => {
+            let (mut gone, mut done): (Vec<Card>, Vec<Card>) = mine
+                .into_iter()
+                .partition(|card| card.item.draft.status.kind() == ItemStatus::Cancelled);
+            cancelled = gone.len();
+            done.sort_by(|a, b| {
                 (&b.item.draft.done_on, b.item.id).cmp(&(&a.item.draft.done_on, a.item.id))
             });
-            more = count.saturating_sub(options.done);
-            mine.truncate(options.done);
+            gone.sort_by_key(|card| std::cmp::Reverse(card.item.id));
+            more =
+                done.len().saturating_sub(options.done) + gone.len().saturating_sub(options.done);
+            done.truncate(options.done);
+            gone.truncate(options.done);
+            done.extend(gone);
+            mine = done;
         }
-        ItemStatus::Backlog | ItemStatus::Blocked | ItemStatus::Cancelled => {}
+        ItemStatus::Backlog | ItemStatus::Blocked => {}
     }
     Column {
         status,
@@ -436,6 +451,7 @@ fn column(status: ItemStatus, cards: &[Card], options: &Options) -> Column {
         cards: mine,
         groups,
         more,
+        cancelled,
     }
 }
 
@@ -662,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn done_shows_the_newest_and_counts_the_rest_and_cancelled_is_a_count() {
+    fn done_and_cancelled_share_one_column_trimmed_by_kind() {
         let mut items: Vec<BacklogItem> = (1..=25)
             .map(|id| {
                 let mut done = item(id, "headwork", BacklogStatus::Done, None);
@@ -671,6 +687,7 @@ mod tests {
             })
             .collect();
         items.push(item(30, "headwork", BacklogStatus::Cancelled, None));
+        items.push(item(31, "headwork", BacklogStatus::Cancelled, None));
         let board = build(
             &items,
             &[],
@@ -679,14 +696,29 @@ mod tests {
             &date("2026-11-28"),
             &Options::default(),
         );
+        assert_eq!(board.columns.len(), 4, "four columns");
         let done = &board.columns[3];
+        assert_eq!(done.status, ItemStatus::Done, "merged column");
         assert_eq!(
-            (done.count, done.cards.len(), done.more),
-            (25, 20, 5),
-            "done trimmed"
+            (done.count, done.cards.len(), done.more, done.cancelled),
+            (27, 22, 5, 2),
+            "done trimmed, cancelled kept"
         );
-        assert_eq!(done.cards[0].item.id, 25, "newest first");
-        assert_eq!(board.columns[4].count, 1, "cancelled count");
+        assert_eq!(done.cards[0].item.id, 25, "newest done first");
+        assert_eq!(done.cards[20].item.id, 31, "cancelled after, newest first");
+        let few = build(
+            &items,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            &date("2026-11-28"),
+            &Options {
+                done: 1,
+                ..Options::default()
+            },
+        );
+        assert_eq!(few.columns[3].cards.len(), 2, "one of each kind");
+        assert_eq!(few.columns[3].more, 25, "the rest counted");
     }
 
     #[test]

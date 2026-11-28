@@ -1617,10 +1617,46 @@ mod tests {
             String::from_utf8_lossy(&reply.body)
         );
         let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
-        assert_eq!(body["columns"].as_array().unwrap().len(), 5, "five columns");
+        assert_eq!(body["columns"].as_array().unwrap().len(), 4, "four columns");
         assert_eq!(body["columns"][0]["count"], 1, "one backlog item");
         assert_eq!(body["lanes"][0]["key"], "project:demo", "lane");
         assert_eq!(body["unlinked"].as_array().unwrap().len(), 0, "no tasks");
+    }
+
+    #[test]
+    fn the_board_marks_done_and_cancelled_cards_by_badge_and_colour() {
+        let find = |path: &str| ASSETS.iter().find(|asset| asset.path == path).unwrap().body;
+        let script = find("/kanban.js");
+        let css = find("/kanban.css");
+        for needle in [
+            r#"make("div", "kb-card kind-" + item.status"#,
+            r#"chip("✓ done" + (item.done_on ? " " + item.done_on : ""), "kind-done")"#,
+            r#"chip("✕ cancelled", "kind-cancelled")"#,
+            r#"if (item.status === "cancelled") {"#,
+        ] {
+            assert!(script.contains(needle), "kanban.js lacks {needle}");
+        }
+        for rule in [
+            ".kb-card.kind-done {\n  border-left: 4px solid var(--blue);",
+            ".kb-card.kind-cancelled {\n  border-left: 4px solid var(--violet);",
+            ".kb-card.kind-cancelled .kb-text {\n  text-decoration: line-through;",
+            "#board .chip.kind-done {\n  color: var(--blue);",
+            "#board .chip.kind-cancelled {\n  color: var(--violet);",
+            "grid-template-columns: repeat(4, minmax(220px, 1fr));",
+        ] {
+            assert!(
+                css.replace("\r\n", "\n").contains(rule),
+                "kanban.css lacks {rule}"
+            );
+        }
+        assert!(
+            !script.contains("cancelledOpen"),
+            "no separate cancelled column"
+        );
+        assert!(
+            !script.contains("cancelled: \"Cancelled\""),
+            "no cancelled column title"
+        );
     }
 
     #[test]
