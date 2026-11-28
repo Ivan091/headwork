@@ -28,6 +28,10 @@ pub const EVENT_EPIC_CHURN: &str = "epic-churn";
 /// churn block is recorded in `epic_churn_blocks`, never read back from the note.
 const CHURN_NOTE: &str = "epic-churn";
 
+/// The reason recorded for an explore child an explorer planned itself, which counts toward `max_replans` like a
+/// re-plan a trigger added.
+const PLANNED_EXPLORE: &str = "explore child planned by an explorer";
+
 /// What a claim of a child found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpicClaim {
@@ -189,7 +193,8 @@ impl Store {
     /// backlog to in progress with no task, as headwork, through the status guard. It skips (and changes nothing) unless
     /// the child is in the backlog, its epic is in progress, no explore child of the epic is in progress (it holds the
     /// epic, its task perhaps not yet created), and, for a child that is not `explore`, fewer than `max_parallel` (0: no
-    /// limit) non-explore children are.
+    /// limit) non-explore children are. An explore child no trigger added (an explorer planned it) records an
+    /// `epic_replans` row with no cause, so a chain of explorers counts toward `max_replans`.
     ///
     /// # Errors
     ///
@@ -227,7 +232,8 @@ impl Store {
                 "an explore child of epic #{epic} is in progress: it holds the epic"
             )));
         }
-        if !is_explore(task_kind(&tx, child)?.as_deref())
+        let explore = is_explore(task_kind(&tx, child)?.as_deref());
+        if !explore
             && max_parallel != 0
             && others_running >= usize::try_from(max_parallel).unwrap_or(usize::MAX)
         {
@@ -244,6 +250,16 @@ impl Store {
             Err(error) => return Err(error),
         };
         let claimed = write_move(&tx, &item, &step, &request)?;
+        if explore {
+            tx.execute(
+                &format!(
+                    "INSERT INTO epic_replans (epic_id, child_id, cause_item, cause_event, reason, created_at)
+                     SELECT ?1, ?2, NULL, NULL, ?3, {NOW}
+                     WHERE NOT EXISTS (SELECT 1 FROM epic_replans WHERE child_id = ?2)"
+                ),
+                params![epic, child, PLANNED_EXPLORE],
+            )?;
+        }
         tx.commit()?;
         Ok(EpicClaim::Claimed(Box::new(claimed)))
     }

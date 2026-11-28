@@ -393,3 +393,42 @@ fn the_churn_block_holds_the_epic_for_a_decision_and_clears_the_count() {
         .unwrap();
     assert!(events.iter().any(|event| event.kind == EVENT_EPIC_CHURN));
 }
+
+#[test]
+fn every_explore_child_the_runner_starts_counts_once_toward_the_churn_cap() {
+    let mut db = store();
+    let ep = epic(&mut db);
+    let planned = child(&mut db, ep, "Planned look", EXPLORE_KIND, &[]);
+    assert!(claimed(
+        &db.claim_epic_child(planned, 3, Actor::Tick).unwrap()
+    ));
+    assert_eq!(
+        db.epic_facts(ep, |_, _| None).unwrap().replans,
+        1,
+        "a planned explore child counts"
+    );
+    let cancel = BacklogMove::new(Target::Cancelled, BacklogActor::User, Actor::User, true);
+    db.move_backlog_item(planned, &cancel).unwrap();
+    let shape = replan_shape(ep);
+    let replan = db
+        .add_epic_replan(
+            &NewReplan {
+                epic: ep,
+                draft: &draft("Re-plan: plan complete?"),
+                shape: &shape,
+                reason: "plan complete?",
+                causes: &[],
+            },
+            Actor::Tick,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(claimed(
+        &db.claim_epic_child(replan.id, 3, Actor::Tick).unwrap()
+    ));
+    assert_eq!(
+        db.epic_facts(ep, |_, _| None).unwrap().replans,
+        2,
+        "a trigger's re-plan counts once, not again at its claim"
+    );
+}
