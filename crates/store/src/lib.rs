@@ -6,6 +6,7 @@
 mod backlog;
 mod backup;
 mod digest;
+mod epics;
 mod error;
 mod graph;
 mod hooks;
@@ -37,6 +38,10 @@ pub use backlog::{
 };
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use digest::EVENT_DIGEST_PUSHED;
+pub use epics::{
+    EVENT_EPIC_CHURN, EVENT_EPIC_REPLAN, EVENT_EPIC_RUNNER_ERROR, EVENT_EPIC_RUNNER_OK, EpicClaim,
+    NewReplan, ReplanRow,
+};
 pub use error::StoreError;
 pub use graph::{EventMark, EventRange, SpendOf};
 pub use hooks::{

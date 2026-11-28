@@ -303,7 +303,7 @@ impl RawBacklogItem {
     }
 }
 
-fn load(conn: &Connection, id: i64) -> Result<BacklogItem, StoreError> {
+pub(crate) fn load(conn: &Connection, id: i64) -> Result<BacklogItem, StoreError> {
     conn.query_row(
         &format!(
             "SELECT {COLUMNS} FROM backlog_items t LEFT JOIN tasks k ON k.id = t.task_id WHERE t.id = ?1"
@@ -354,7 +354,7 @@ fn dependency_statuses(conn: &Connection, id: i64) -> Result<Vec<(i64, ItemStatu
         .collect()
 }
 
-fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
+pub(crate) fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
     Ok(conn
         .prepare(
             "SELECT id FROM backlog_items WHERE parent_id = ?1 AND status IN ('backlog', 'in_progress', 'blocked')
@@ -364,7 +364,23 @@ fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
         .collect::<Result<_, _>>()?)
 }
 
-fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
+/// The open children of an epic, leaving out those linked to `own_task`: an explorer's own re-plan child is open while
+/// its explorer runs, and must not stop that explorer's `plan_finish`.
+pub(crate) fn open_children_except(
+    conn: &Connection,
+    epic: i64,
+    own_task: Option<TaskId>,
+) -> Result<Vec<i64>, StoreError> {
+    Ok(conn
+        .prepare(
+            "SELECT id FROM backlog_items WHERE parent_id = ?1 AND status IN ('backlog', 'in_progress', 'blocked')
+             AND (?2 IS NULL OR task_id IS NOT ?2) ORDER BY position, id",
+        )?
+        .query_map(params![epic, own_task.map(|task| task.0)], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
+pub(crate) fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
     let text: String = conn.query_row(&format!("SELECT {TODAY}"), [], |row| row.get(0))?;
     Ok(BacklogDate::parse(&text)?)
 }
@@ -509,14 +525,17 @@ fn facts<'a>(
     }
 }
 
-fn check(
+pub(crate) fn check(
     conn: &Connection,
     item: &BacklogItem,
     request: &BacklogMove<'_>,
 ) -> Result<ItemMove, StoreError> {
     let waiting = WaitingDependencies::of(&dependency_statuses(conn, item.id)?);
+    let own_task = request
+        .actor_task
+        .filter(|_| request.actor == BacklogActor::Explorer);
     let children = if item.kind == ItemKind::Epic {
-        open_children(conn, item.id)?.len()
+        open_children_except(conn, item.id, own_task)?.len()
     } else {
         0
     };
@@ -543,7 +562,7 @@ fn check(
 }
 
 /// Writes an allowed move and its `backlog-moved` event, applying the move's link and date effects ([`ItemMove`]).
-fn write_move(
+pub(crate) fn write_move(
     tx: &Transaction<'_>,
     before: &BacklogItem,
     step: &ItemMove,
@@ -822,6 +841,45 @@ pub(crate) fn task_ended(
     Ok(())
 }
 
+/// Adds an item of `shape` inside `tx`, as [`Store::add_backlog_item_shaped`] describes, and logs `backlog-added`.
+pub(crate) fn add_shaped(
+    tx: &Transaction<'_>,
+    draft: &BacklogDraft,
+    by: Actor,
+    mover: BacklogActor,
+    task: Option<TaskId>,
+    shape: &ItemShape,
+) -> Result<BacklogItem, StoreError> {
+    if draft.status != BacklogStatus::Backlog {
+        return Err(StoreError::BacklogAddRefused(format!(
+            "a new item is added to the backlog, not as {}",
+            draft.status.kind()
+        )));
+    }
+    transition(None, &Target::Backlog, mover, &MoveFacts::default())
+        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+    let kind = shape.kind.unwrap_or(ItemKind::Item);
+    let parent = shape
+        .parent
+        .map(|parent| {
+            load(tx, parent).map(|row| ParentFacts {
+                id: row.id,
+                kind: row.kind,
+                parent: row.parent,
+            })
+        })
+        .transpose()?;
+    check_parent(kind, parent)
+        .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
+    let id = insert(tx, draft, kind, shape.parent, &shape.plan)?;
+    for dep in &shape.after {
+        add_dependency(tx, id, *dep, by, task)?;
+    }
+    let item = load(tx, id)?;
+    event(tx, by, task, EVENT_BACKLOG_ADDED, &item)?;
+    Ok(item)
+}
+
 impl Store {
     /// Today's date on this machine's clock, the day an item is added or done.
     ///
@@ -994,35 +1052,8 @@ impl Store {
         task: Option<TaskId>,
         shape: &ItemShape,
     ) -> Result<BacklogItem, StoreError> {
-        if draft.status != BacklogStatus::Backlog {
-            return Err(StoreError::BacklogAddRefused(format!(
-                "a new item is added to the backlog, not as {}",
-                draft.status.kind()
-            )));
-        }
-        transition(None, &Target::Backlog, mover, &MoveFacts::default())
-            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let actor = by;
         let tx = self.conn.transaction()?;
-        let kind = shape.kind.unwrap_or(ItemKind::Item);
-        let parent = shape
-            .parent
-            .map(|parent| {
-                load(&tx, parent).map(|row| ParentFacts {
-                    id: row.id,
-                    kind: row.kind,
-                    parent: row.parent,
-                })
-            })
-            .transpose()?;
-        check_parent(kind, parent)
-            .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let id = insert(&tx, draft, kind, shape.parent, &shape.plan)?;
-        for dep in &shape.after {
-            add_dependency(&tx, id, *dep, actor, task)?;
-        }
-        let item = load(&tx, id)?;
-        event(&tx, actor, task, EVENT_BACKLOG_ADDED, &item)?;
+        let item = add_shaped(&tx, draft, by, mover, task, shape)?;
         tx.commit()?;
         Ok(item)
     }
@@ -1265,6 +1296,20 @@ impl Store {
     /// Returns a read error.
     pub fn backlog_open_children(&self, epic: i64) -> Result<Vec<i64>, StoreError> {
         open_children(&self.conn, epic)
+    }
+
+    /// The open children of an epic that block `own_task`'s `plan_finish`: every open child but the ones linked to that
+    /// task (a re-plan explorer's own child), in export order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn backlog_open_children_except(
+        &self,
+        epic: i64,
+        own_task: TaskId,
+    ) -> Result<Vec<i64>, StoreError> {
+        open_children_except(&self.conn, epic, Some(own_task))
     }
 
     /// Records that `task` was spun up to explore epic `epic` (`docs/backlog.md`, section 12) and logs `task-epic`.

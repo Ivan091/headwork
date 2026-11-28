@@ -742,7 +742,8 @@ fn plan_edit_refuses_done_cancelled_and_blocked_children_a_live_task_works_on() 
 }
 
 #[test]
-fn plan_add_refuses_bad_dependencies_and_takes_project_section_and_owner_overrides() {
+fn plan_add_refuses_bad_dependencies_other_projects_and_kinds_and_takes_section_and_owner_overrides()
+ {
     let mut w = world();
     let (epic, explorer) = w.spin_up("Add guard");
     w.ok("backlog_add", &json!({ "project": "demo", "text": "Gone" }));
@@ -782,10 +783,27 @@ fn plan_add_refuses_bad_dependencies_and_takes_project_section_and_owner_overrid
         is_error && text.contains("not a project headwork runs"),
         "{text}"
     );
+    let (is_error, text) = w.worker(
+        &explorer,
+        "plan_add",
+        &json!({ "text": "Beta", "brief": "Goal: beta", "project": "beta" }),
+    );
+    assert!(
+        is_error && text.contains("not the epic's project"),
+        "{text}"
+    );
+    for kind in ["review", "scene"] {
+        let (is_error, text) = w.worker(
+            &explorer,
+            "plan_add",
+            &json!({ "text": "Kind", "brief": "Goal: kind", "kind": kind }),
+        );
+        assert!(is_error && text.contains("[epics] kinds"), "{kind}: {text}");
+    }
     w.worker_ok(
         &explorer,
         "plan_add",
-        &json!({ "text": "First", "brief": "Goal: first", "project": "beta", "section": "Custom", "owner": "user" }),
+        &json!({ "text": "First", "brief": "Goal: first", "project": "demo", "section": "Custom", "owner": "user" }),
     );
     let first = w.last_item();
     let item = w.store.backlog_item(first).unwrap();
@@ -795,8 +813,14 @@ fn plan_add_refuses_bad_dependencies_and_takes_project_section_and_owner_overrid
             item.draft.section.as_deref(),
             item.draft.owner.as_str()
         ),
-        ("beta", Some("Custom"), "user")
+        ("demo", Some("Custom"), "user")
     );
+    let (is_error, text) = w.worker(
+        &explorer,
+        "plan_edit",
+        &json!({ "id": first, "kind": "silent" }),
+    );
+    assert!(is_error && text.contains("[epics] kinds"), "{text}");
     w.worker_ok(
         &explorer,
         "plan_add",

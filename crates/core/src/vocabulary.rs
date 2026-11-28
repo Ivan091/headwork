@@ -590,6 +590,12 @@ text_enum!(
         ConfigDrift => "config-drift",
         /// A migration note of a configured repository applies to this machine and is not applied or skipped yet.
         MigrationPending => "migration-pending",
+        /// The epic runner blocked an epic for the user's decision after `[epics] max_replans` re-plans; it stands while
+        /// the epic stays blocked with that note.
+        EpicChurn => "epic-churn",
+        /// The epic runner's newest step for an epic in progress failed (an `epic-runner-error` event not followed by
+        /// `epic-runner-ok`); it stands until a pass of that epic goes through.
+        EpicRunnerError => "epic-runner-error",
     }
 );
 

@@ -873,7 +873,7 @@ file = \"S:/x/backlog.md\"
         }
         assert!(
             run(
-                "[hooks]\nenforce = true\n[project.me-sim]\nheavy_slots = 2\n",
+                "[hooks]\nenforce = true\n[project.me-sim]\nheavy_slots = 2\n[epics]\nmax_parallel = 2\nmax_replans = 1\n",
                 "",
                 None
             )

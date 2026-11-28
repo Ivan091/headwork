@@ -5,6 +5,8 @@
 //! (`tasks.epic_id`, written once at spawn from [`SpawnRequest::epic`]). Its tools act as [`BacklogActor::Explorer`] with the
 //! explorer's task and its epic, so the status guard keeps them to that epic's children, and the epic itself only for
 //! `plan_finish`; the tools that change anything need the epic in progress.
+//!
+//! The epic runner ([`run`], `docs/backlog.md`, section 13) starts the children once the plan is written.
 
 use std::fmt::Write as _;
 
@@ -23,6 +25,10 @@ use super::backlog::{AddRequest, Change, add_for, changed, edit_for, spawn_linke
 use super::explore::is_explorer;
 use super::spawn::{Pumped, SpawnRequest};
 use super::{Env, slashed};
+
+mod runner;
+
+pub use runner::{EVENT_CHILD_SKIPPED, EVENT_HELD, EVENT_RUNNER_ERROR, run};
 
 /// The folder under the first `[hooks] brief_writable` root that holds the epics' plan notes.
 pub const PLAN_DIR: &str = "epics";
@@ -282,6 +288,17 @@ impl Explorer<'_> {
     }
 }
 
+/// Refuses a planned task kind outside `[epics] kinds`: the runner would never start it.
+fn plannable_kind(env: &Env<'_>, kind: Option<&str>) -> Result<()> {
+    match kind {
+        Some(kind) if !env.config.epics.kinds.iter().any(|own| own == kind) => bail!(
+            "`kind` `{kind}` is not in `[epics] kinds` ({}): the epic runner starts only those",
+            env.config.epics.kinds.join(", ")
+        ),
+        Some(_) | None => Ok(()),
+    }
+}
+
 /// The epic in [`PlanView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanEpic {
@@ -473,12 +490,21 @@ pub fn add(
     plan.task_kind = plan
         .task_kind
         .or_else(|| Some(DEFAULT_CHILD_KIND.to_owned()));
+    plannable_kind(env, plan.task_kind.as_deref())?;
     let epic = store.backlog_item(explorer.epic)?;
-    let project = request.project.unwrap_or(epic.draft.project);
+    let project = request
+        .project
+        .unwrap_or_else(|| epic.draft.project.clone());
     let runs =
         ProjectName::new(project.trim()).is_ok_and(|name| env.config.project(&name).is_some());
     if !runs {
         bail!("`{project}` is not a project headwork runs: a child is work a task can do");
+    }
+    if project.trim() != epic.draft.project {
+        bail!(
+            "`{project}` is not the epic's project `{}`: the epic runner starts children of the epic's project only",
+            epic.draft.project
+        );
     }
     let add = AddRequest {
         project,
@@ -535,9 +561,11 @@ pub fn edit(
             task.name
         );
     }
+    let plan = fields.checked()?;
+    plannable_kind(env, plan.task_kind.as_deref())?;
     let edit = BacklogEdit {
         text,
-        plan: fields.checked()?,
+        plan,
         ..BacklogEdit::default()
     };
     edit_for(store, env, id, &edit, Some(explorer.task.id))
@@ -601,6 +629,8 @@ pub fn cancel(
 
 /// Finishes the explorer's epic: in progress to done, its link ended; refused while a child is open, naming them.
 ///
+/// The child linked to the explorer's own task (a re-plan explorer's item) does not count: its task's end finishes it.
+///
 /// # Errors
 ///
 /// Fails when a child is open, the guard refuses, or the store fails.
@@ -611,7 +641,7 @@ pub fn finish(
     note: Option<&str>,
 ) -> Result<Change> {
     explorer.in_progress(store)?;
-    let open = store.backlog_open_children(explorer.epic)?;
+    let open = store.backlog_open_children_except(explorer.epic, explorer.task.id)?;
     if !open.is_empty() {
         let mut named = Vec::with_capacity(open.len());
         for id in &open {

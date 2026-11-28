@@ -1061,3 +1061,33 @@ host = \"wmux\"
         "none set"
     );
 }
+
+#[test]
+fn epics_defaults_parse_and_any_value_is_taken() {
+    let base = "[machine]\nhost = \"wmux\"\n";
+    let config = Config::parse(base, "minimal").unwrap();
+    assert_eq!(
+        (config.epics.max_parallel, config.epics.max_replans),
+        (3, 5),
+        "defaults"
+    );
+    let set = format!("{base}\n[epics]\nmax_parallel = 0\nmax_replans = 2\n");
+    let config = Config::parse(&set, "set").unwrap();
+    assert_eq!(
+        (config.epics.max_parallel, config.epics.max_replans),
+        (0, 2),
+        "set values"
+    );
+    assert_eq!(
+        config.epics.kinds,
+        vec!["code".to_owned(), "explore".to_owned()],
+        "default kinds"
+    );
+    let kinds = format!("{base}\n[epics]\nkinds = [\"code\", \"scene\"]\n");
+    assert_eq!(
+        Config::parse(&kinds, "kinds").unwrap().epics.kinds,
+        vec!["code".to_owned(), "scene".to_owned()]
+    );
+    let unknown = format!("{base}\n[epics]\nmax_children = 1\n");
+    assert!(Config::parse(&unknown, "unknown").is_err(), "unknown key");
+}

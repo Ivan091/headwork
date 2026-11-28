@@ -238,11 +238,18 @@ pub fn with_source(text: &str, report: Option<&str>, task: &str) -> String {
 ///
 /// The refusal `explore-no-report`.
 pub fn check_report(env: &Env<'_>, brief: &str) -> Result<()> {
+    let (roots, places) = report_scope(env);
+    explore_report_check(brief, &roots, &places).map_err(|message| anyhow!(message))
+}
+
+/// The `[hooks] brief_writable` roots and the places `explore-no-report` judges a brief's `Writes:` paths with.
+#[must_use]
+pub fn report_scope(env: &Env<'_>) -> (Vec<GuardPath>, Places) {
     let places = Places {
         home: Some(slashed(&env.home.expand("~"))),
         temp: None,
     };
-    explore_report_check(brief, &brief_roots(env), &places).map_err(|message| anyhow!(message))
+    (brief_roots(env), places)
 }
 
 fn brief_roots(env: &Env<'_>) -> Vec<GuardPath> {

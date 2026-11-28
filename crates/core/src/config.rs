@@ -338,6 +338,9 @@ pub struct Config {
     /// The machine-wide CPU and GPU gates (`docs/decisions/2026-11-26-gates-in-headwork.md`).
     #[serde(default)]
     pub gates: GatesConfig,
+    /// The epic runner (`docs/backlog.md`, section 13).
+    #[serde(default)]
+    pub epics: EpicsConfig,
     /// Projects by name.
     #[serde(default, rename = "project")]
     pub projects: BTreeMap<ProjectName, ProjectConfig>,
@@ -1002,6 +1005,29 @@ impl Default for DigestConfig {
             finding_hours: 3,
             push: true,
             push_hour: 9,
+        }
+    }
+}
+
+/// `[epics]`: the epic runner (`docs/backlog.md`, section 13). Any layer may set it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct EpicsConfig {
+    /// Children of one epic in progress at once, explore children aside; 0 is no limit.
+    pub max_parallel: u32,
+    /// Re-plans of one epic before the runner blocks it for the user's decision (`epic-churn`); 0 is no limit.
+    pub max_replans: u32,
+    /// The task kinds the runner starts and an explorer may plan; `review`, `silent`, a kind main-only in the child's
+    /// project and a kind of that project's `extra_writable` are never started, even when listed.
+    pub kinds: Vec<String>,
+}
+
+impl Default for EpicsConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel: 3,
+            max_replans: 5,
+            kinds: vec!["code".to_owned(), EXPLORE_KIND.to_owned()],
         }
     }
 }
