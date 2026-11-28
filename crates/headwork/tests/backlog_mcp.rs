@@ -677,7 +677,7 @@ fn spawn_with_after_is_refused_for_an_item_that_has_item_dependencies() {
     let first = w.add("demo", "first");
     let second = w.add("demo", "second");
     w.ok("backlog_depend", &json!({ "id": second, "on": [first] }));
-    w.ok("backlog_unblock", &json!({ "id": second }));
+    w.ok("backlog_done", &json!({ "id": first }));
     w.ok(
         "spawn",
         &json!({ "project": "demo", "slug": "early", "brief": "# Task\n" }),
@@ -702,4 +702,35 @@ fn spawn_with_after_is_refused_for_an_item_that_has_item_dependencies() {
         &json!({ "project": "demo", "slug": "plain", "brief": "# Task\n", "backlog": second }),
     );
     assert_eq!(spawned["backlog_unlinked"], Value::Null);
+}
+
+#[test]
+fn the_dependency_and_epic_arguments_must_have_their_types() {
+    let mut w = world();
+    let first = w.add("demo", "first");
+    for (tool, arguments, named) in [
+        (
+            "backlog_add",
+            json!({ "project": "demo", "text": "x", "parent": "7" }),
+            "parent",
+        ),
+        (
+            "backlog_add",
+            json!({ "project": "demo", "text": "x", "epic": "yes" }),
+            "epic",
+        ),
+        ("backlog_list", json!({ "epic": "7" }), "epic"),
+        ("backlog_depend", json!({ "id": first, "on": [] }), "on"),
+    ] {
+        let (is_error, text) = w.tool(tool, &arguments);
+        assert!(is_error && text.contains(named), "{tool}: {text}");
+    }
+    assert_eq!(
+        w.store
+            .backlog_items(&BacklogFilter::default())
+            .unwrap()
+            .len(),
+        1,
+        "nothing was added"
+    );
 }

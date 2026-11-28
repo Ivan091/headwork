@@ -1559,7 +1559,7 @@ impl<'a> Server<'a> {
             word("owner").map(str::parse).transpose()?,
             word("status"),
             word("state"),
-            args.get("epic").and_then(Value::as_i64),
+            optional_integer(args, "epic")?,
         )?;
         to_text(
             &items
@@ -1592,8 +1592,9 @@ impl<'a> Server<'a> {
             due: optional("due").map(str::parse).transpose()?,
             notes,
             shape: headwork_store::ItemShape {
-                kind: flag(args, "epic").then_some(headwork_core::backlog::ItemKind::Epic),
-                parent: args.get("parent").and_then(Value::as_i64),
+                kind: optional_bool(args, "epic")?
+                    .then_some(headwork_core::backlog::ItemKind::Epic),
+                parent: optional_integer(args, "parent")?,
                 after: match args.get("after") {
                     None | Some(Value::Null) => Vec::new(),
                     Some(Value::Array(ids)) => ids
@@ -1633,6 +1634,9 @@ impl<'a> Server<'a> {
                     .iter()
                     .map(|id| id.as_i64().context("`on` holds item ids as integers"))
                     .collect::<Result<_>>()?;
+                if on.is_empty() {
+                    bail!("`on` must name at least one item id");
+                }
                 to_text(&super::backlog::depend(
                     self.store,
                     &self.env,
@@ -2615,6 +2619,25 @@ fn spawn_flags(args: &Value, kind: &str, reason_key: &str) -> Result<super::flag
         args.get("decided_by").and_then(Value::as_str),
         args.get(reason_key).and_then(Value::as_str),
     )
+}
+
+fn optional_integer(args: &Value, key: &str) -> Result<Option<i64>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| anyhow!("`{key}` must be an integer")),
+    }
+}
+
+fn optional_bool(args: &Value, key: &str) -> Result<bool> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| anyhow!("`{key}` must be a boolean")),
+    }
 }
 
 fn flag(args: &Value, key: &str) -> bool {
