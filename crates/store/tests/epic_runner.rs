@@ -347,7 +347,9 @@ fn the_churn_block_holds_the_epic_for_a_decision_and_clears_the_count() {
     let cancel = BacklogMove::new(Target::Cancelled, BacklogActor::User, Actor::User, true);
     db.move_backlog_item(replan.id, &cancel).unwrap();
     assert_eq!(db.epic_facts(ep, |_| true).unwrap().replans, 1);
+    assert!(!db.epic_churn_blocked(ep).unwrap());
     let blocked = db.block_epic_churn(ep, 1, Actor::Tick).unwrap().unwrap();
+    assert!(db.epic_churn_blocked(ep).unwrap(), "recorded by its event");
     let block = blocked.draft.status.block().unwrap();
     assert_eq!(block.reason, BlockReason::Decision);
     assert_eq!(block.note.as_deref(), Some("epic-churn: 1 re-plans"));
@@ -358,6 +360,22 @@ fn the_churn_block_holds_the_epic_for_a_decision_and_clears_the_count() {
     let unblock = BacklogMove::new(Target::Unblock, BacklogActor::User, Actor::User, true);
     let back = db.move_backlog_item(ep, &unblock).unwrap();
     assert_eq!(back.draft.status, BacklogStatus::InProgress);
+    assert!(!db.epic_churn_blocked(ep).unwrap());
+    let by_hand = BacklogMove::new(
+        Target::Blocked {
+            reason: BlockReason::Decision,
+            note: Some("epic-churn later: talk to X".to_owned()),
+        },
+        BacklogActor::User,
+        Actor::User,
+        true,
+    );
+    db.move_backlog_item(ep, &by_hand).unwrap();
+    assert!(
+        !db.epic_churn_blocked(ep).unwrap(),
+        "a block by hand is no churn block, whatever its note says"
+    );
+    db.move_backlog_item(ep, &unblock).unwrap();
     assert_eq!(
         db.epic_facts(ep, |_| true).unwrap().replans,
         0,

@@ -3395,4 +3395,22 @@ fn an_epic_blocked_for_churn_is_a_standing_finding_until_it_is_unblocked() {
             .is_empty(),
         "cleared once the user unblocked it"
     );
+    let by_hand = BacklogMove::new(
+        Target::Blocked {
+            reason: headwork_core::backlog::BlockReason::Decision,
+            note: Some("epic-churn: talk to X".to_owned()),
+        },
+        BacklogActor::User,
+        Actor::User,
+        true,
+    );
+    w.store.move_backlog_item(epic, &by_hand).unwrap();
+    run_tick(&mut w);
+    assert!(
+        w.store
+            .open_finding_keys(FindingId::EpicChurn)
+            .unwrap()
+            .is_empty(),
+        "a block by hand with the same note raises nothing"
+    );
 }

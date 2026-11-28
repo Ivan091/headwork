@@ -24,8 +24,9 @@ pub const EVENT_EPIC_REPLAN: &str = "epic-replan";
 /// The event of an epic the runner blocked for the user's decision after too many re-plans (`epic`, `replans`).
 pub const EVENT_EPIC_CHURN: &str = "epic-churn";
 
-/// The start of the block note of an epic blocked for churn: `epic-churn: <n> re-plans`.
-pub const CHURN_NOTE: &str = "epic-churn";
+/// The start of the block note of an epic blocked for churn: `epic-churn: <n> re-plans`. Only text for the user: the
+/// churn block is recorded in `epic_churn_blocks`, never read back from the note.
+const CHURN_NOTE: &str = "epic-churn";
 
 /// What a claim of a child found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,6 +345,12 @@ impl Store {
         );
         let step = check(&tx, &item, &request)?;
         let blocked = write_move(&tx, &item, &step, &request)?;
+        if let Some(event) = latest_block_event(&tx, epic)? {
+            tx.execute(
+                &format!("INSERT INTO epic_churn_blocks (epic_id, event_id, created_at) VALUES (?1, ?2, {NOW})"),
+                params![epic, event],
+            )?;
+        }
         tx.execute(
             &format!(
                 "UPDATE epic_replans SET cleared_at = {NOW} WHERE epic_id = ?1 AND cleared_at IS NULL"
@@ -360,6 +367,27 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(Some(blocked))
+    }
+
+    /// Whether epic `epic` is blocked by the runner's churn cap: blocked, and the `backlog-moved` event into its current
+    /// block is one [`Store::block_epic_churn`] recorded in `epic_churn_blocks`. A block by anyone else, whatever its note,
+    /// is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownBacklogItem`] when there is no such item, or a read error.
+    pub fn epic_churn_blocked(&self, epic: i64) -> Result<bool, StoreError> {
+        if load(&self.conn, epic)?.draft.status.block().is_none() {
+            return Ok(false);
+        }
+        let Some(event) = latest_block_event(&self.conn, epic)? else {
+            return Ok(false);
+        };
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM epic_churn_blocks WHERE epic_id = ?1 AND event_id = ?2)",
+            params![epic, event],
+            |row| row.get(0),
+        )?)
     }
 
     /// Whether an event of `kind` names backlog item `item` (`data.item`).

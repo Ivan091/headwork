@@ -38,7 +38,7 @@ pub use backlog::{
 };
 pub use backup::{BACKUP_DIR, BACKUPS_KEPT, Backup};
 pub use digest::EVENT_DIGEST_PUSHED;
-pub use epics::{CHURN_NOTE, EVENT_EPIC_CHURN, EVENT_EPIC_REPLAN, EpicClaim, NewReplan, ReplanRow};
+pub use epics::{EVENT_EPIC_CHURN, EVENT_EPIC_REPLAN, EpicClaim, NewReplan, ReplanRow};
 pub use error::StoreError;
 pub use graph::{EventMark, EventRange, SpendOf};
 pub use hooks::{

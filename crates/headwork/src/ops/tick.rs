@@ -402,26 +402,27 @@ impl<'b> Run<'_, 'b> {
     }
 
     /// Keeps the standing finding `epic-churn` for each epic the runner blocked after `[epics] max_replans` re-plans, while
-    /// it stays blocked with that note (`docs/backlog.md`, section 13).
+    /// that churn block stands (`Store::epic_churn_blocked`, `docs/backlog.md`, section 13).
     fn epics(&mut self) -> Result<()> {
         let blocked = self.store.backlog_items(&headwork_store::BacklogFilter {
             statuses: vec![headwork_core::backlog::ItemStatus::Blocked],
             ..headwork_store::BacklogFilter::default()
         })?;
         for item in blocked {
-            let Some(note) = item
+            let Some(block) = item
                 .draft
                 .status
                 .block()
                 .filter(|block| block.reason == headwork_core::backlog::BlockReason::Decision)
-                .and_then(|block| block.note.clone())
-                .filter(|note| note.starts_with(headwork_store::CHURN_NOTE))
             else {
                 continue;
             };
-            if item.kind != headwork_core::backlog::ItemKind::Epic {
+            if item.kind != headwork_core::backlog::ItemKind::Epic
+                || !self.store.epic_churn_blocked(item.id)?
+            {
                 continue;
             }
+            let note = block.note.clone().unwrap_or_default();
             self.standing(
                 &format!("epic-churn:{}", item.id),
                 FindingId::EpicChurn,

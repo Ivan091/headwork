@@ -12,3 +12,10 @@ CREATE TABLE epic_replans (
 CREATE INDEX epic_replans_by_epic ON epic_replans (epic_id);
 
 CREATE INDEX epic_replans_by_cause ON epic_replans (cause_item);
+
+CREATE TABLE epic_churn_blocks (
+    epic_id INTEGER NOT NULL REFERENCES backlog_items(id),
+    event_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (epic_id, event_id)
+);
