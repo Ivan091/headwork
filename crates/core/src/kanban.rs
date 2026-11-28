@@ -296,8 +296,10 @@ pub fn build(
                     counts: counts(&children),
                     tokens: children
                         .iter()
-                        .filter_map(|child| child.task.as_ref())
-                        .map(|task| spend.get(&task.id).copied().unwrap_or(0))
+                        .filter_map(|child| child.task.as_ref().map(|task| task.id))
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .map(|task| spend.get(&task).copied().unwrap_or(0))
                         .sum(),
                 }),
             },
@@ -805,6 +807,21 @@ mod tests {
         );
         let head = board.lanes[1].epic.as_ref().expect("epic head");
         assert_eq!(head.tokens, 1500, "summed tokens");
+        let mut shared = items.to_vec();
+        shared.push(child(6, "headwork", 1, BacklogStatus::Done, Some(8)));
+        let again = build(
+            &shared,
+            &[],
+            &[],
+            &spend,
+            &date("2026-11-28"),
+            &Options::default(),
+        );
+        assert_eq!(
+            again.lanes[1].epic.as_ref().expect("head").tokens,
+            1500,
+            "a task shared by two children counts once"
+        );
         let counts: Vec<(ItemStatus, usize)> = head
             .counts
             .iter()
