@@ -353,7 +353,8 @@ fn spawn_child(
             })
         });
     let brief = if explore {
-        with_writes_line(&brief, &plan_path(env, epic)?)
+        let (roots, places) = crate::ops::explore::report_scope(env);
+        with_writes_line(&brief, &plan_path(env, epic)?, &roots, &places)
     } else {
         brief
     };

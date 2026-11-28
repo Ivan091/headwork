@@ -7,6 +7,8 @@
 use std::fmt::Write as _;
 
 use crate::backlog::{BacklogDate, BacklogStatus, BlockReason, ItemStatus};
+use crate::guard::grants::explore_report_check;
+use crate::guard::{GuardPath, Places};
 
 /// How many characters of the epic's text the short slug keeps.
 const SHORT_CHARS: usize = 24;
@@ -155,14 +157,13 @@ pub fn child_brief(brief: &ChildBrief<'_>) -> String {
     out
 }
 
-/// `brief` with a `Writes:` line naming `path` appended, unless it already has a `Writes:` line: an explore task's brief
-/// needs one.
+/// `brief`, with a `Writes:` line naming `path` appended when the report guard would refuse it.
+///
+/// The `explore-no-report` guard's own rule ([`explore_report_check`] under `roots`) decides, so the spawn of an explore
+/// child the runner starts is never refused for its report.
 #[must_use]
-pub fn with_writes_line(brief: &str, path: &str) -> String {
-    if brief
-        .lines()
-        .any(|line| line.trim_start().starts_with("Writes:"))
-    {
+pub fn with_writes_line(brief: &str, path: &str, roots: &[GuardPath], places: &Places) -> String {
+    if explore_report_check(brief, roots, places).is_ok() {
         brief.to_owned()
     } else {
         format!("{}\n\nWrites: {path}\n", brief.trim_end())

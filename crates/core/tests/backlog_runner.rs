@@ -9,6 +9,7 @@ use headwork_core::backlog::{
     ReplanTrigger, ReturnTo, Target, child_brief, child_slug, epic_step, goal_line, replan_brief,
     transition, with_writes_line,
 };
+use headwork_core::guard::{GuardPath, Places};
 
 fn date(text: &str) -> BacklogDate {
     BacklogDate::parse(text).unwrap()
@@ -399,13 +400,31 @@ fn a_child_brief_is_made_from_its_text_notes_and_epic() {
 }
 
 #[test]
-fn a_writes_line_is_added_only_when_missing() {
+fn a_writes_line_is_added_only_when_the_report_guard_would_refuse() {
+    let roots = [GuardPath::new("/n")];
+    let places = Places {
+        home: None,
+        temp: None,
+    };
     assert_eq!(
-        with_writes_line("Goal: x\n", "/n/p.md"),
+        with_writes_line("Goal: x\n", "/n/p.md", &roots, &places),
         "Goal: x\n\nWrites: /n/p.md\n"
     );
-    let has = "Goal: x\n\nWrites: /n/other.md\n";
-    assert_eq!(with_writes_line(has, "/n/p.md"), has);
+    let has = "Goal: x\n\n- writes: /n/other.md\n";
+    assert_eq!(
+        with_writes_line(has, "/n/p.md", &roots, &places),
+        has,
+        "a list marker and any case pass the guard"
+    );
+    for refused in [
+        "Goal: x\n\nWrites: notes/rel.md\n",
+        "Goal: x\n\nWrites: /elsewhere/r.md\n",
+    ] {
+        assert!(
+            with_writes_line(refused, "/n/p.md", &roots, &places).ends_with("\nWrites: /n/p.md\n"),
+            "{refused}: a path the guard refuses gets the plan line"
+        );
+    }
 }
 
 #[test]
