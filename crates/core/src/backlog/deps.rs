@@ -9,7 +9,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::UnknownWord;
-use crate::backlog::{ItemStatus, ReturnTo};
+use crate::backlog::{BacklogStatus, BlockReason, ItemStatus, ReturnTo, Target};
 use crate::vocabulary::text_enum;
 
 text_enum!(
@@ -121,8 +121,8 @@ pub fn would_cycle(edges: &[(i64, i64)], item: i64, dep: i64) -> Option<Vec<i64>
     None
 }
 
-/// The guard for adding "`item` depends on `dep`": not itself, the item in the backlog or blocked, the dependency not
-/// cancelled, not a cycle. A dependency already done is allowed (it gates nothing).
+/// The guard for adding "`item` depends on `dep`": not itself, the item in the backlog or blocked, a blocked item one that
+/// returns to the backlog, the dependency not cancelled, not a cycle. A dependency already done is allowed (it gates nothing).
 ///
 /// # Errors
 ///
@@ -153,6 +153,97 @@ pub fn check_dependency(
     Ok(())
 }
 
+/// The dependencies of an item that still hold it back, split the one way every part of the backlog reads them: a
+/// cancelled dependency first, then one that is not done.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WaitingDependencies {
+    /// The dependencies neither done nor cancelled, in the order given.
+    pub open: Vec<i64>,
+    /// The cancelled dependencies, in the order given.
+    pub cancelled: Vec<i64>,
+}
+
+impl WaitingDependencies {
+    /// Splits `(dependency, status)` pairs; done dependencies gate nothing and are dropped.
+    #[must_use]
+    pub fn of(dependencies: &[(i64, ItemStatus)]) -> Self {
+        let mut waiting = Self::default();
+        for &(id, status) in dependencies {
+            match status {
+                ItemStatus::Done => {}
+                ItemStatus::Cancelled => waiting.cancelled.push(id),
+                ItemStatus::Backlog | ItemStatus::InProgress | ItemStatus::Blocked => {
+                    waiting.open.push(id);
+                }
+            }
+        }
+        waiting
+    }
+
+    /// Whether any dependency holds the item back.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        !self.open.is_empty() || !self.cancelled.is_empty()
+    }
+
+    /// The ids with what holds them back, as `#4 (open), #3 (cancelled)`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        self.open
+            .iter()
+            .map(|id| format!("#{id} (open)"))
+            .chain(self.cancelled.iter().map(|id| format!("#{id} (cancelled)")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The move that makes the block of an item match its dependencies, or `None` when it already does.
+///
+/// Only an item in the backlog, or blocked for `depends` or `dep_cancelled`, is touched; every other status is left alone.
+/// A cancelled dependency beats an open one: it blocks `dep_cancelled` with the note `#<dep> cancelled`, else an open one
+/// blocks `depends` with the note `#<dep>`; with none waiting, a dependency block is lifted.
+#[must_use]
+pub fn dependency_block(
+    status: &BacklogStatus,
+    dependencies: &[(i64, ItemStatus)],
+) -> Option<Target> {
+    let held = match status {
+        BacklogStatus::Backlog => None,
+        BacklogStatus::Blocked(block)
+            if matches!(
+                block.reason,
+                BlockReason::Depends | BlockReason::DepCancelled
+            ) =>
+        {
+            Some(block.reason)
+        }
+        BacklogStatus::Blocked(_)
+        | BacklogStatus::InProgress
+        | BacklogStatus::Done
+        | BacklogStatus::Cancelled => return None,
+    };
+    let waiting = WaitingDependencies::of(dependencies);
+    let wanted = waiting
+        .cancelled
+        .first()
+        .map(|dep| (BlockReason::DepCancelled, format!("#{dep} cancelled")))
+        .or_else(|| {
+            waiting
+                .open
+                .first()
+                .map(|dep| (BlockReason::Depends, format!("#{dep}")))
+        });
+    match (wanted, held) {
+        (Some((reason, note)), current) if current != Some(reason) => Some(Target::Blocked {
+            reason,
+            note: Some(note),
+        }),
+        (None, Some(_)) => Some(Target::Unblock),
+        _ => None,
+    }
+}
+
 /// The guard for the shape of a new item: a parent must be an epic with no parent, and an epic has none.
 ///
 /// # Errors
@@ -180,6 +271,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::backlog::Block;
 
     const fn node(id: i64, status: ItemStatus) -> DepNode {
         DepNode {
@@ -187,6 +279,107 @@ mod tests {
             status,
             returns_to: Some(ReturnTo::Backlog),
         }
+    }
+
+    fn blocked(reason: BlockReason) -> BacklogStatus {
+        BacklogStatus::Blocked(Block {
+            reason,
+            note: None,
+            before: ReturnTo::Backlog,
+        })
+    }
+
+    fn block_to(reason: BlockReason, note: &str) -> Option<Target> {
+        Some(Target::Blocked {
+            reason,
+            note: Some(note.to_owned()),
+        })
+    }
+
+    #[test]
+    fn the_dependency_block_follows_the_dependencies() {
+        use ItemStatus as S;
+        let depends = blocked(BlockReason::Depends);
+        let cancelled = blocked(BlockReason::DepCancelled);
+        let backlog = BacklogStatus::Backlog;
+        let table: Vec<(&BacklogStatus, Vec<(i64, ItemStatus)>, Option<Target>)> = vec![
+            (&backlog, vec![], None),
+            (&backlog, vec![(1, S::Done)], None),
+            (
+                &backlog,
+                vec![(1, S::Done), (2, S::InProgress)],
+                block_to(BlockReason::Depends, "#2"),
+            ),
+            (
+                &backlog,
+                vec![(1, S::Blocked)],
+                block_to(BlockReason::Depends, "#1"),
+            ),
+            (
+                &backlog,
+                vec![(1, S::Backlog), (2, S::Cancelled)],
+                block_to(BlockReason::DepCancelled, "#2 cancelled"),
+            ),
+            (
+                &backlog,
+                vec![(3, S::Cancelled), (2, S::Cancelled)],
+                block_to(BlockReason::DepCancelled, "#3 cancelled"),
+            ),
+            (&depends, vec![], Some(Target::Unblock)),
+            (&depends, vec![(1, S::Done)], Some(Target::Unblock)),
+            (&depends, vec![(1, S::Backlog)], None),
+            (
+                &depends,
+                vec![(1, S::Cancelled)],
+                block_to(BlockReason::DepCancelled, "#1 cancelled"),
+            ),
+            (&cancelled, vec![(1, S::Cancelled), (2, S::Backlog)], None),
+            (
+                &cancelled,
+                vec![(2, S::Backlog)],
+                block_to(BlockReason::Depends, "#2"),
+            ),
+            (&cancelled, vec![(1, S::Done)], Some(Target::Unblock)),
+        ];
+        for (status, dependencies, want) in table {
+            assert_eq!(
+                dependency_block(status, &dependencies),
+                want,
+                "{status} {dependencies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dependency_block_leaves_other_statuses_alone() {
+        let waiting = [(1, ItemStatus::Cancelled), (2, ItemStatus::Backlog)];
+        for status in [
+            BacklogStatus::InProgress,
+            BacklogStatus::Done,
+            BacklogStatus::Cancelled,
+            blocked(BlockReason::Decision),
+            blocked(BlockReason::Event),
+            blocked(BlockReason::TaskLost),
+            blocked(BlockReason::Partial),
+        ] {
+            assert_eq!(dependency_block(&status, &waiting), None, "{status}");
+            assert_eq!(dependency_block(&status, &[]), None, "{status}");
+        }
+    }
+
+    #[test]
+    fn waiting_dependencies_split_open_from_cancelled() {
+        let waiting = WaitingDependencies::of(&[
+            (1, ItemStatus::Done),
+            (4, ItemStatus::Blocked),
+            (3, ItemStatus::Cancelled),
+            (5, ItemStatus::InProgress),
+        ]);
+        assert_eq!(waiting.open, vec![4, 5]);
+        assert_eq!(waiting.cancelled, vec![3]);
+        assert!(waiting.any());
+        assert_eq!(waiting.describe(), "#4 (open), #5 (open), #3 (cancelled)");
+        assert!(!WaitingDependencies::of(&[(1, ItemStatus::Done)]).any());
     }
 
     #[test]

@@ -16,7 +16,8 @@ mod deps;
 mod status;
 
 pub use deps::{
-    DepNode, DepRefusal, ItemKind, ParentFacts, check_dependency, check_parent, would_cycle,
+    DepNode, DepRefusal, ItemKind, ParentFacts, WaitingDependencies, check_dependency,
+    check_parent, dependency_block, would_cycle,
 };
 pub use status::{
     BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,

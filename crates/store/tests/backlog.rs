@@ -1300,17 +1300,73 @@ fn cancelling_a_dependency_blocks_a_backlog_dependant_and_swaps_a_depends_block(
 }
 
 #[test]
-fn unblocking_a_dependant_by_hand_blocks_it_again_while_a_dependency_is_open() {
+fn unblocking_a_dependant_by_hand_is_refused_while_a_dependency_is_open() {
     let (mut store, _) = store();
     let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
     depend(&mut store, b, a).unwrap();
-    by_user(&mut store, b, Target::Unblock, None).unwrap();
+    let before = moves(&store).len();
+    let error = by_user(&mut store, b, Target::Unblock, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&format!("#{a} (open)")), "{error}");
     assert_eq!(
         status_of(&store, b),
         blocked_for(BlockReason::Depends, &format!("#{a}"), ReturnTo::Backlog)
     );
+    assert_eq!(
+        moves(&store).len(),
+        before,
+        "no event for a refused unblock"
+    );
     by_user(&mut store, a, Target::Done, None).unwrap();
     assert_eq!(status_of(&store, b), BacklogStatus::Backlog);
+}
+
+#[test]
+fn unblocking_a_dep_cancelled_block_by_hand_is_refused_and_names_the_cancelled_dependency() {
+    let (mut store, _) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    depend(&mut store, b, a).unwrap();
+    by_user(&mut store, a, Target::Cancelled, Some("no")).unwrap();
+    let before = moves(&store).len();
+    let error = by_user(&mut store, b, Target::Unblock, None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&format!("#{a} (cancelled)")), "{error}");
+    assert!(!error.contains("0 open"), "{error}");
+    assert_eq!(
+        status_of(&store, b),
+        blocked_for(
+            BlockReason::DepCancelled,
+            &format!("#{a} cancelled"),
+            ReturnTo::Backlog
+        )
+    );
+    assert_eq!(moves(&store).len(), before);
+}
+
+#[test]
+fn a_relink_is_refused_while_a_dependency_was_reopened_after_the_item_started() {
+    let (mut store, config) = store();
+    let (a, b) = (add(&mut store, "a"), add(&mut store, "b"));
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    depend(&mut store, b, a).unwrap();
+    let first = task(&mut store, &config, "first");
+    link(&mut store, b, first.id).unwrap();
+    by_user(&mut store, a, Target::Backlog, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::InProgress);
+    store.drop_task(first.id, Actor::Orchestrator).unwrap();
+    assert_eq!(
+        status_of(&store, b).block().unwrap().reason,
+        BlockReason::TaskLost
+    );
+    by_user(&mut store, b, Target::Unblock, None).unwrap();
+    assert_eq!(status_of(&store, b), BacklogStatus::InProgress);
+    let second = task(&mut store, &config, "second");
+    let error = link(&mut store, b, second.id).unwrap_err().to_string();
+    assert!(error.contains(&format!("#{a} (open)")), "{error}");
+    by_user(&mut store, a, Target::Done, None).unwrap();
+    link(&mut store, b, second.id).unwrap();
 }
 
 #[test]

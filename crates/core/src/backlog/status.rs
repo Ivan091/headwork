@@ -278,6 +278,20 @@ impl Target {
     }
 }
 
+fn waiting_text(open: usize, cancelled: usize) -> String {
+    let part = |count: usize, word: &str| (count > 0).then(|| format!("{count} {word}"));
+    let parts = [part(open, "open"), part(cancelled, "cancelled")]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let noun = if open + cancelled == 1 {
+        "dependency"
+    } else {
+        "dependencies"
+    };
+    format!("{} {noun}", parts.join(" and "))
+}
+
 /// What the guard knows about an item besides its status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
@@ -388,10 +402,8 @@ pub enum MoveRefusal {
     /// A cancel of an item a live task works on, at the store; the ops-level cancel drops the task first.
     #[error("task {0} works on it: drop the task first, then cancel the item")]
     DropTaskFirst(String),
-    /// A start of an item that still waits for dependencies.
-    #[error(
-        "it waits for {open} open and {cancelled} cancelled dependencies: finish them, or remove the dependencies"
-    )]
+    /// A start, respawn, relink or unblock of an item that still waits for dependencies.
+    #[error("it waits for {}: finish them, or remove the dependencies", waiting_text(*open, *cancelled))]
     Dependencies {
         /// Dependencies not yet done or cancelled.
         open: usize,
@@ -617,6 +629,16 @@ fn decide(
             BacklogStatus::Blocked(block)
                 if matches!(actor, A::Headwork | A::Worker | A::Orchestrator | A::User) =>
             {
+                if matches!(
+                    block.reason,
+                    BlockReason::Depends | BlockReason::DepCancelled
+                ) && (facts.open_dependencies > 0 || facts.cancelled_dependencies > 0)
+                {
+                    return Err(MoveRefusal::Dependencies {
+                        open: facts.open_dependencies,
+                        cancelled: facts.cancelled_dependencies,
+                    });
+                }
                 Ok(moved(
                     kind,
                     block.before.backlog_status(),
@@ -744,7 +766,7 @@ fn start(
     if !facts.has_project {
         return Err(MoveRefusal::NoProject);
     }
-    if matches!(kind, MoveKind::Start | MoveKind::Respawn)
+    if matches!(kind, MoveKind::Start | MoveKind::Respawn | MoveKind::Relink)
         && (facts.open_dependencies > 0 || facts.cancelled_dependencies > 0)
     {
         return Err(MoveRefusal::Dependencies {

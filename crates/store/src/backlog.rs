@@ -8,10 +8,11 @@
 use std::collections::HashSet;
 
 use headwork_core::backlog::{
-    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason,
-    DateEffect, DepNode, ItemKind, ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask,
-    MoveFacts, MoveRefusal, ParentFacts, Target, TaskEndEffect, TaskOutcome, check_dependency,
-    check_parent, identity, on_linked_end, on_task_end, transition,
+    BacklogActor, BacklogDate, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, DateEffect,
+    DepNode, ItemKind, ItemMove, ItemStatus, LinkEffect, LinkedEnd, LinkedTask, MoveFacts,
+    MoveRefusal, ParentFacts, Target, TaskEndEffect, TaskOutcome, WaitingDependencies,
+    check_dependency, check_parent, dependency_block, identity, on_linked_end, on_task_end,
+    transition,
 };
 use headwork_core::{Actor, TaskState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
@@ -437,7 +438,7 @@ fn counts(
 fn facts<'a>(
     item: &'a BacklogItem,
     request: &BacklogMove<'a>,
-    dependencies: &[(i64, ItemStatus)],
+    waiting: &WaitingDependencies,
 ) -> MoveFacts<'a> {
     let live_task = item
         .task
@@ -456,25 +457,10 @@ fn facts<'a>(
                 .as_ref()
                 .is_some_and(|task| task.is_live() && task.id != link.0)
         }),
-        open_dependencies: dependencies
-            .iter()
-            .filter(|(_, status)| !matches!(status, ItemStatus::Done | ItemStatus::Cancelled))
-            .count(),
-        cancelled_dependencies: dependencies
-            .iter()
-            .filter(|(_, status)| *status == ItemStatus::Cancelled)
-            .count(),
+        open_dependencies: waiting.open.len(),
+        cancelled_dependencies: waiting.cancelled.len(),
         reason: request.reason,
     }
-}
-
-fn waiting_on(dependencies: &[(i64, ItemStatus)]) -> String {
-    dependencies
-        .iter()
-        .filter(|(_, status)| *status != ItemStatus::Done)
-        .map(|(dep, _)| format!("#{dep}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn check(
@@ -482,16 +468,19 @@ fn check(
     item: &BacklogItem,
     request: &BacklogMove<'_>,
 ) -> Result<ItemMove, StoreError> {
-    let dependencies = dependency_statuses(conn, item.id)?;
+    let waiting = WaitingDependencies::of(&dependency_statuses(conn, item.id)?);
     transition(
         Some(&item.draft.status),
         &request.target,
         request.actor,
-        &facts(item, request, &dependencies),
+        &facts(item, request, &waiting),
     )
     .map_err(|refusal| {
         let reason = if matches!(refusal, MoveRefusal::Dependencies { .. }) {
-            format!("{refusal} ({})", waiting_on(&dependencies))
+            format!(
+                "it waits on {}: finish them, or remove the dependencies",
+                waiting.describe()
+            )
         } else {
             refusal.to_string()
         };
@@ -601,44 +590,9 @@ fn cascade_move(
 /// a dependency is added or removed.
 fn settle_dependency_block(tx: &Transaction<'_>, id: i64, by: Actor) -> Result<(), StoreError> {
     let status = load(tx, id)?.draft.status;
-    let current = match &status {
-        BacklogStatus::Backlog => None,
-        BacklogStatus::Blocked(block)
-            if matches!(
-                block.reason,
-                BlockReason::Depends | BlockReason::DepCancelled
-            ) =>
-        {
-            Some(block.reason)
-        }
-        BacklogStatus::Blocked(_)
-        | BacklogStatus::InProgress
-        | BacklogStatus::Done
-        | BacklogStatus::Cancelled => return Ok(()),
-    };
-    let dependencies = dependency_statuses(tx, id)?;
-    let wanted = dependencies
-        .iter()
-        .find(|(_, status)| *status == ItemStatus::Cancelled)
-        .map(|(dep, _)| (BlockReason::DepCancelled, format!("#{dep} cancelled")))
-        .or_else(|| {
-            dependencies
-                .iter()
-                .find(|(_, status)| *status != ItemStatus::Done)
-                .map(|(dep, _)| (BlockReason::Depends, format!("#{dep}")))
-        });
-    match (wanted, current) {
-        (Some((reason, note)), held) if held != Some(reason) => cascade_move(
-            tx,
-            id,
-            Target::Blocked {
-                reason,
-                note: Some(note),
-            },
-            by,
-        ),
-        (None, Some(_)) => cascade_move(tx, id, Target::Unblock, by),
-        _ => Ok(()),
+    match dependency_block(&status, &dependency_statuses(tx, id)?) {
+        Some(target) => cascade_move(tx, id, target, by),
+        None => Ok(()),
     }
 }
 
