@@ -2530,3 +2530,70 @@ fn the_kanban_board_rolls_a_lead_with_an_asking_part_into_needs_you_and_shows_it
         "the gate wait of the part"
     );
 }
+
+#[test]
+fn the_kanban_board_joins_an_item_to_its_linked_lead_by_task_id() {
+    use headwork::ops::kanban::kanban;
+    use headwork_core::backlog::{BacklogActor, BacklogDraft, BacklogOwner, BacklogStatus, Target};
+    use headwork_core::kanban::Options;
+    use headwork_store::BacklogMove;
+
+    let mut w = world_with("ask", LEADS);
+    let (lead, _, _) = w.working("plan");
+    let (other, _, _) = w.working("other");
+    let draft = BacklogDraft {
+        project: "demo".to_owned(),
+        section: None,
+        text: "the planned work".to_owned(),
+        notes: Vec::new(),
+        status: BacklogStatus::Backlog,
+        owner: BacklogOwner::Agent,
+        added: None,
+        not_before: None,
+        due: None,
+        done_on: None,
+        done_note: None,
+    };
+    let item = w.store.add_backlog_item(&draft, Actor::User).unwrap();
+    w.store
+        .move_backlog_item(
+            item.id,
+            &BacklogMove {
+                link: Some(lead.id),
+                ..BacklogMove::new(Target::InProgress, BacklogActor::User, Actor::User, true)
+            },
+        )
+        .unwrap();
+    let board = kanban(
+        &w.store,
+        &headwork_core::usage::UsageConfig::default(),
+        &[],
+        &Options::default(),
+    )
+    .unwrap();
+    let working = board.columns[1]
+        .groups
+        .iter()
+        .find(|group| group.key == "working")
+        .unwrap();
+    let card = working
+        .cards
+        .iter()
+        .find(|card| card.item.id == item.id)
+        .unwrap();
+    let task = card.task.as_ref().unwrap();
+    assert_eq!(task.id, lead.id.0, "joined by the linked task id");
+    assert_eq!(task.name, "demo-plan", "the lead, not another task");
+    assert_eq!(task.project, "demo", "project");
+    assert!(task.prs.is_empty() && !task.silent, "plain facts");
+    let unlinked: Vec<&str> = board
+        .unlinked
+        .iter()
+        .map(|task| task.name.as_str())
+        .collect();
+    assert_eq!(
+        unlinked,
+        vec![other.name.to_string().as_str()],
+        "only the other task has no item"
+    );
+}

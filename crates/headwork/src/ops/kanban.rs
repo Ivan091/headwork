@@ -42,6 +42,7 @@ fn card(line: StatusLine) -> TaskCard {
     TaskCard {
         id: line.task_id,
         name: line.task,
+        project: line.project,
         state: line.state,
         status: line.status,
         model: line.model,
