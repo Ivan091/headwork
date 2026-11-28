@@ -254,7 +254,7 @@ Each item's status is stored. Every move goes through one pure guard, `transitio
 `crates/core/src/backlog/status.rs`, and adds through `transition(None, backlog, ...)`; import is the one way in that
 skips the guard (section 3). A move is written by one store call, `Store::move_backlog_item`, which writes the row and the event
 `backlog-moved` (`item`, `from`, `to`, `actor`, `reason`, `kind`, `task`) in one transaction. The design is
-`S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phases P1 and P2 (no epics, dependencies or automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
+`S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`; this is its phases P1 and P2 (dependencies and epics are P3, section 11; no automatic respawn yet; a respawn by hand is `spawn --backlog` of a `task_lost` or `partial` item). Decisions: `docs/decisions/2026-11-27-stored-backlog-statuses.md`.
 
 | Status | Meaning |
 |---|---|
@@ -278,7 +278,8 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 | `done`, `blocked` (linked to a task that is over) | the same | headwork: the link ends (`Unlink`) |
 | `backlog`, `in_progress`, `blocked` with no live task | `done` | user (`backlog done`), orchestrator (`backlog_done`) |
 | `in_progress` | `blocked` | worker on its own item (`item_block`) and the user and orchestrator (`decision`, `event`); headwork (`task_lost`, `partial`) |
-| `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`dep_cancelled`) |
+| `backlog` | `blocked` | user and orchestrator (`decision`, `event`); explorer (`depends`); headwork (`depends`, `dep_cancelled`) |
+| `blocked` (`depends`) | `blocked` (`dep_cancelled`), and back | headwork only, keeping the status before the block (section 11) |
 | `blocked` | the status before | user (`backlog unblock`), orchestrator (`backlog_unblock`), worker on its own item (`item_unblock`), headwork |
 | `blocked` (`task_lost`, `partial`) | `in_progress` | user, orchestrator, headwork: a respawn |
 | `backlog`, `in_progress`, `blocked` with no live task | `cancelled` | user (`backlog cancel`), orchestrator (`backlog_cancel`, with a reason); explorer on its epic's `backlog` and `blocked` children |
@@ -286,7 +287,9 @@ an explorer (its epic's children only), a worker (its own linked item only) and 
 
 Refused: a worker touching an item its task is not linked to; an explorer outside its epic; anyone but headwork
 finishing an item a live task works on; a cancel while a live task works on it, at the store (the ops-level cancel drops the
-task first, see below); `cancelled` on a `done` item; the orchestrator cancelling without a reason; a move to the status the item already has.
+task first, see below); `cancelled` on a `done` item; the orchestrator cancelling without a reason; a move to the status the item already has (headwork turning a `depends` block
+into `dep_cancelled` or back is a move to another block, not to the same one); a start or respawn, by anyone, while the item
+has a dependency that is not done or a cancelled one.
 
 What a task's end does to each `in_progress` item linked to it (`on_task_end`, applied by the store's `task_ended` to
 every such item, inside the transition):
@@ -350,21 +353,40 @@ Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 3.
 `core::backlog::check_dependency` refuses, in this order: an item that depends on itself; an item that is not in `backlog` or
 `blocked` (`in_progress`, `done` and `cancelled` take no dependency, so a started task is never stopped by a new edge); a
 `cancelled` dependency; and a cycle (`would_cycle` returns the path, the refusal prints `#1 -> #2 -> #1`). A dependency that
-is already `done` is allowed and gates nothing. Adding an edge that exists changes nothing.
+is already `done` is allowed and gates nothing until it is reopened. Adding an edge that exists changes nothing.
 
-Everything is stored and event-driven, in the transaction of the move that causes it (`write_move`, so the CLI, the MCP
-tools, `task_ended` and close all cascade), and logged as `backlog-moved` by headwork:
+Everything is stored and event-driven, in the transaction of the move that causes it, and logged as `backlog-moved` by
+headwork. One store function, `settle_dependency_block`, makes the block of an item match its dependencies, whatever ended
+the block or changed them; `write_move` calls it for every dependant of an item after any move of that item (done,
+cancelled, reopened, unfinished, blocked, unblocked, started) and for the moved item itself, and adding or removing an edge
+calls it for the item, so the CLI, the MCP tools, `task_ended` and close all pass through it. It looks only at an item in
+`backlog` or blocked `depends` or `dep_cancelled` (an item in progress, done, cancelled or blocked for another reason is left
+alone) and applies the first row that fits:
+
+| Its dependencies | The item |
+|---|---|
+| one is `cancelled` | blocked `dep_cancelled`, note `#<dep> cancelled` (a block `depends` becomes `dep_cancelled`, keeping `status_before_block`: a headwork-only row of the guard) |
+| none cancelled, one not done | blocked `depends`, note `#<first not-done dep>` (a block `dep_cancelled` becomes `depends`, the same headwork-only row) |
+| all done, or none | a block `depends` or `dep_cancelled` is lifted to its `status_before_block` |
+
+So the changes read as:
 
 | Change | Effect on the dependant |
 |---|---|
-| add a dependency that is not done | in `backlog`: blocked `depends`, note `#<dep>`, returns to `backlog`; already blocked: keeps its block; logs `backlog-depended` |
+| add a dependency that is not done | in `backlog`: blocked `depends`; blocked for another reason: keeps that block until it is lifted, then `depends`; logs `backlog-depended` |
 | add a dependency that is done | no change; logs `backlog-depended` |
-| the dependency becomes `done` | blocked `depends` with no other not-done dependency: unblocked to its `status_before_block` |
-| the dependency becomes `cancelled` | in `backlog`: blocked `dep_cancelled`, note `#<dep> cancelled`; blocked `depends`: the reason becomes `dep_cancelled` and `status_before_block` is kept (a headwork-only row of the guard); `in_progress`, `done`, `cancelled` and every other block are left alone |
-| remove a dependency (`backlog-undepended`) | blocked `depends` or `dep_cancelled` with no other not-done dependency: unblocked |
-| a done dependency is reopened (or unfinished by its task) | nothing: dependants already freed stay free |
+| a dependency becomes `done` | freed when nothing else it waits for is open or cancelled |
+| a dependency becomes `cancelled` | `dep_cancelled` |
+| a dependency is reopened or unfinished | blocked `depends` again: a done dependency reopened re-blocks its dependants in `backlog` (this replaces "reopening does not re-block"), and a cancelled one reopened turns `dep_cancelled` into `depends` while it is open; dependants already started or finished are left alone |
+| remove a dependency (`backlog-undepended`) | settled again: the last cancelled edge gone with open ones left gives `depends`; nothing left to wait for frees it |
+| the user or orchestrator unblocks it by hand while an edge is open or cancelled | blocked again at once (`depends` or `dep_cancelled`), so a hand-lifted block or a `decision` block cannot let the item start |
 
-A block that is not `depends` is never lifted by a dependency: a `decision` or `event` block stays until its own cause ends.
+A start or respawn is refused for any actor while the item has a not-done or cancelled dependency (`MoveFacts`
+`open_dependencies` and `cancelled_dependencies`; the refusal names them). A dependency is added only to an item in `backlog`,
+or blocked with `backlog` as the status to return to: a block out of `in_progress` (`task_lost`, `partial`, or a worker's
+`decision`) takes none.
+
+A block that is not `depends` or `dep_cancelled` is never lifted by a dependency: a `decision` or `event` block stays until it is lifted by hand, and then the dependencies are settled.
 Only the user and the orchestrator change dependencies (`backlog depend`, `backlog undepend`, `backlog add --after`, and the
 tools `backlog_depend`, `backlog_undepend`, `backlog_add` with `after`); a worker is refused, and an explorer adds plain items
 only.
