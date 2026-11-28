@@ -12,8 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::vocabulary::text_enum;
 use crate::{TaskState, UnknownWord};
 
+mod deps;
 mod status;
 
+pub use deps::{
+    DepNode, DepRefusal, ItemKind, ParentFacts, check_dependency, check_parent, would_cycle,
+};
 pub use status::{
     BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,
     LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,
@@ -295,6 +299,12 @@ pub struct BacklogItem {
     pub position: i64,
     /// The task spawned for it.
     pub task: Option<LinkedTask>,
+    /// An item, or an epic grouping items.
+    pub kind: ItemKind,
+    /// The epic this item belongs to.
+    pub parent: Option<i64>,
+    /// The ids of the items it depends on, in ascending order.
+    pub deps: Vec<i64>,
     /// What the row holds besides those.
     #[serde(flatten)]
     pub draft: BacklogDraft,
@@ -310,8 +320,18 @@ impl BacklogItem {
             |section| format!("{}/{section}", draft.project),
         );
         let mut facts = vec![draft.owner.to_string()];
+        if self.kind == ItemKind::Epic {
+            facts.push("epic".to_owned());
+        }
+        if let Some(parent) = self.parent {
+            facts.push(format!("in epic #{parent}"));
+        }
         if draft.status != BacklogStatus::Backlog {
             facts.push(draft.status.to_string());
+        }
+        if !self.deps.is_empty() {
+            let ids: Vec<String> = self.deps.iter().map(|id| format!("#{id}")).collect();
+            facts.push(format!("after {}", ids.join(", ")));
         }
         for (label, date) in [
             ("added", &draft.added),
@@ -1434,6 +1454,9 @@ mod tests {
             id,
             position: id,
             task: None,
+            kind: ItemKind::Item,
+            parent: None,
+            deps: Vec::new(),
             draft: draft.clone(),
         }
     }

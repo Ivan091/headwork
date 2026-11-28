@@ -598,26 +598,7 @@ fn decide(
         Target::InProgress => {
             start(from, actor, facts).map(|kind_of| moved(kind, BacklogStatus::InProgress, kind_of))
         }
-        Target::Blocked { reason, note } => {
-            let before = match from {
-                BacklogStatus::Backlog => ReturnTo::Backlog,
-                BacklogStatus::InProgress => ReturnTo::InProgress,
-                BacklogStatus::Blocked(_) => {
-                    return Err(MoveRefusal::Already(ItemStatus::Blocked));
-                }
-                BacklogStatus::Done | BacklogStatus::Cancelled => return Err(refuse()),
-            };
-            block_allowed(before, *reason, actor)?;
-            Ok(moved(
-                kind,
-                BacklogStatus::Blocked(Block {
-                    reason: *reason,
-                    note: note.clone(),
-                    before,
-                }),
-                MoveKind::Block,
-            ))
-        }
+        Target::Blocked { reason, note } => block(from, *reason, note.as_ref(), actor),
         Target::Unblock => match from {
             BacklogStatus::Blocked(block)
                 if matches!(actor, A::Headwork | A::Worker | A::Orchestrator | A::User) =>
@@ -643,6 +624,43 @@ fn decide(
         Target::Cancelled => cancel(from, actor, facts)
             .map(|()| moved(kind, BacklogStatus::Cancelled, MoveKind::Cancel)),
     }
+}
+
+fn block(
+    from: &BacklogStatus,
+    reason: BlockReason,
+    note: Option<&String>,
+    actor: BacklogActor,
+) -> Result<ItemMove, MoveRefusal> {
+    let before = match from {
+        BacklogStatus::Backlog => ReturnTo::Backlog,
+        BacklogStatus::InProgress => ReturnTo::InProgress,
+        BacklogStatus::Blocked(Block {
+            reason: BlockReason::Depends,
+            before,
+            ..
+        }) if actor == BacklogActor::Headwork && reason == BlockReason::DepCancelled => *before,
+        BacklogStatus::Blocked(_) => return Err(MoveRefusal::Already(ItemStatus::Blocked)),
+        BacklogStatus::Done | BacklogStatus::Cancelled => {
+            return Err(not_allowed(
+                actor,
+                Some(from.kind()),
+                &Target::Blocked { reason, note: None },
+            ));
+        }
+    };
+    if !matches!(from, BacklogStatus::Blocked(_)) {
+        block_allowed(before, reason, actor)?;
+    }
+    Ok(moved(
+        Some(from.kind()),
+        BacklogStatus::Blocked(Block {
+            reason,
+            note: note.cloned(),
+            before,
+        }),
+        MoveKind::Block,
+    ))
 }
 
 /// Headwork ends the link of a done or blocked item whose task is over; the status stays.
@@ -723,7 +741,7 @@ fn block_allowed(
             matches!(reason, R::Decision | R::Event)
         }
         (ReturnTo::InProgress, A::Headwork) => matches!(reason, R::TaskLost | R::Partial),
-        (ReturnTo::Backlog, A::Headwork) => matches!(reason, R::DepCancelled),
+        (ReturnTo::Backlog, A::Headwork) => matches!(reason, R::Depends | R::DepCancelled),
         (ReturnTo::Backlog, A::Explorer) => matches!(reason, R::Depends),
         (ReturnTo::InProgress, A::Explorer) | (ReturnTo::Backlog, A::Worker) => {
             return Err(MoveRefusal::NotAllowed {

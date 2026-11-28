@@ -1590,3 +1590,46 @@ more"
         Some(160)
     );
 }
+
+#[test]
+fn headwork_blocks_a_backlog_item_for_depends() {
+    let step = transition(
+        Some(&BacklogStatus::Backlog),
+        &block(R::Depends),
+        A::Headwork,
+        &PLAIN,
+    )
+    .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+    assert_eq!(step.to, blocked(R::Depends, ReturnTo::Backlog));
+    assert_eq!(step.kind, MoveKind::Block);
+}
+
+#[test]
+fn headwork_turns_a_depends_block_into_dep_cancelled_and_keeps_where_it_returns_to() {
+    for before in [ReturnTo::Backlog, ReturnTo::InProgress] {
+        let from = blocked(R::Depends, before);
+        let step = transition(Some(&from), &block(R::DepCancelled), A::Headwork, &PLAIN)
+            .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+        assert_eq!(step.to, blocked(R::DepCancelled, before));
+        assert_eq!(step.kind, MoveKind::Block);
+    }
+}
+
+#[test]
+fn only_headwork_swaps_a_depends_block_and_no_other_block_is_swapped() {
+    let from = blocked(R::Depends, ReturnTo::Backlog);
+    for actor in [A::User, A::Orchestrator, A::Explorer, A::Worker] {
+        assert!(
+            transition(Some(&from), &block(R::DepCancelled), actor, &OWN).is_err(),
+            "{actor}"
+        );
+    }
+    for reason in [R::Event, R::Decision, R::TaskLost, R::DepCancelled] {
+        let from = blocked(reason, ReturnTo::Backlog);
+        assert_eq!(
+            transition(Some(&from), &block(R::DepCancelled), A::Headwork, &PLAIN),
+            Err(MoveRefusal::Already(ItemStatus::Blocked)),
+            "{reason}"
+        );
+    }
+}
