@@ -20,6 +20,8 @@ pub struct StatusLine {
     pub task: String,
     /// The task's id.
     pub task_id: i64,
+    /// The project the task belongs to.
+    pub project: String,
     /// The task's model.
     pub model: String,
     /// The task's effort as shown, `?` when none is stored.
@@ -220,6 +222,7 @@ pub fn lines_waiting(
         out.push(StatusLine {
             task,
             task_id: top.task.id.0,
+            project: top.task.name.project().to_string(),
             model: top.task.model.to_string(),
             effort: top.task.effort_label(),
             parts: u32::try_from(parts.len()).unwrap_or(u32::MAX),

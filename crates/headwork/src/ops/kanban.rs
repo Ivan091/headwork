@@ -42,6 +42,7 @@ fn card(line: StatusLine) -> TaskCard {
     TaskCard {
         id: line.task_id,
         name: line.task,
+        project: line.project,
         state: line.state,
         status: line.status,
         model: line.model,
@@ -63,5 +64,99 @@ fn card(line: StatusLine) -> TaskCard {
         silent: line.close == headwork_core::CloseMode::Silent,
         dead_dependency: line.dead_dependency,
         updated_at: line.updated_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests")]
+
+    use headwork_core::gate::GateClass;
+    use headwork_core::{CloseMode, TaskState, TaskStatus};
+
+    use super::*;
+    use crate::ops::status::StatusReview;
+
+    #[test]
+    fn a_status_line_maps_field_by_field_onto_its_card() {
+        let line = StatusLine {
+            task: "demo-plan".to_owned(),
+            task_id: 7,
+            project: "demo".to_owned(),
+            model: "opus".to_owned(),
+            effort: "high".to_owned(),
+            parts: 3,
+            state: TaskState::InReview,
+            updated_at: "2026-11-28 10:00:00".to_owned(),
+            status: TaskStatus::InReview,
+            prs: vec!["https://github.com/o/r/pull/9".to_owned()],
+            asking_parts: vec!["demo-plan-a".to_owned(), "demo-plan-b".to_owned()],
+            dead_dependency: Some("demo-gone closed".to_owned()),
+            line: String::new(),
+            tokens: 1234,
+            estimate: Some("$1.50".to_owned()),
+            findings: vec!["stuck (open 1h)".to_owned(), "idle (open 2h)".to_owned()],
+            review: Some(StatusReview {
+                level: 2,
+                flow: "code".to_owned(),
+                round: 3,
+                state: "running".to_owned(),
+                focus: String::new(),
+                findings_awaiting_lead: 5,
+            }),
+            review_tokens: 0,
+            close: CloseMode::Silent,
+            review_plan: Some(3),
+            waiting_for: Some(GateClass::Gpu),
+        };
+        let card = card(line);
+        assert_eq!(
+            (card.id, card.name.as_str(), card.project.as_str()),
+            (7, "demo-plan", "demo")
+        );
+        assert_eq!(
+            (card.model.as_str(), card.effort.as_str()),
+            ("opus", "high")
+        );
+        assert_eq!(
+            (card.state, card.status),
+            (TaskState::InReview, TaskStatus::InReview)
+        );
+        assert_eq!(
+            card.prs,
+            vec!["https://github.com/o/r/pull/9".to_owned()],
+            "prs"
+        );
+        assert_eq!(
+            (card.parts, card.asking_parts.len()),
+            (3, 2),
+            "parts and asking parts"
+        );
+        assert_eq!(
+            card.dead_dependency.as_deref(),
+            Some("demo-gone closed"),
+            "dead dependency"
+        );
+        assert_eq!(
+            (card.tokens, card.estimate.as_deref()),
+            (1234, Some("$1.50")),
+            "tokens"
+        );
+        assert_eq!(card.findings, 2, "findings are counted");
+        let review = card.review.unwrap();
+        assert_eq!(
+            (
+                review.level,
+                review.round,
+                review.state.as_str(),
+                review.findings
+            ),
+            (2, 3, "running", 5),
+            "review"
+        );
+        assert_eq!(card.review_plan, Some(3), "review plan");
+        assert_eq!(card.waiting_for.as_deref(), Some("gpu"), "gate class");
+        assert!(card.silent, "silent close");
+        assert_eq!(card.updated_at, "2026-11-28 10:00:00", "updated_at");
     }
 }

@@ -35,6 +35,8 @@ pub struct TaskCard {
     pub id: i64,
     /// `<project>-<slug>`.
     pub name: String,
+    /// The project the task belongs to.
+    pub project: String,
     /// The lifecycle state.
     pub state: TaskState,
     /// The rolled-up status.
@@ -235,7 +237,7 @@ pub fn build(
             options
                 .project
                 .as_ref()
-                .is_none_or(|project| task.name.starts_with(&format!("{project}-")))
+                .is_none_or(|project| *project == task.project)
         })
         .cloned()
         .collect();
@@ -388,6 +390,7 @@ mod tests {
         TaskCard {
             id,
             name: format!("headwork-t{id}"),
+            project: "headwork".to_owned(),
             state: TaskState::Working,
             status,
             model: "sonnet".to_owned(),
@@ -447,6 +450,12 @@ mod tests {
                 &Options::default(),
             );
             assert_eq!(group(&board, key), vec![1], "{status}");
+            let drift = board.columns[1]
+                .groups
+                .iter()
+                .flat_map(|group| &group.cards)
+                .any(|card| card.drift);
+            assert_eq!(drift, key == NO_TASK, "drift mark for {status}");
         }
     }
 
@@ -469,6 +478,34 @@ mod tests {
                 .iter()
                 .all(|card| card.drift),
             "drift mark"
+        );
+    }
+
+    #[test]
+    fn the_project_filter_keeps_unlinked_tasks_of_prefix_overlapping_projects_apart() {
+        let mut site = task(8, TaskStatus::Queued);
+        site.name = "me-sim-site-foo".to_owned();
+        site.project = "me-sim-site".to_owned();
+        let mut sim = task(9, TaskStatus::Queued);
+        sim.name = "me-sim-bar".to_owned();
+        sim.project = "me-sim".to_owned();
+        let board = build(
+            &[],
+            &[site, sim],
+            &[],
+            &date("2026-11-28"),
+            &Options {
+                project: Some("me-sim".to_owned()),
+                ..Options::default()
+            },
+        );
+        assert_eq!(
+            board
+                .unlinked
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![9]
         );
     }
 
