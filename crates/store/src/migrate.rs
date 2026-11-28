@@ -37,6 +37,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0029_review_round_scope.sql"),
     include_str!("../migrations/0030_review_late_commits.sql"),
     include_str!("../migrations/0031_backlog_statuses.sql"),
+    include_str!("../migrations/0032_backlog_deps_epics.sql"),
 ];
 
 /// Applies the migrations the database lacks, each in its own immediate transaction.
