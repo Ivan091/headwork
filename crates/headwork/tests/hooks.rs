@@ -5570,6 +5570,29 @@ fn an_explorer_adds_what_the_user_picked_with_a_source() {
 }
 
 #[test]
+fn an_explorer_adds_plain_items_only_never_an_epic_a_parent_or_a_dependency() {
+    let mut w = explore_world();
+    w.start();
+    answer_backlog(&mut w, "Guard x, Fix y");
+    let identity = worker_identity(&w);
+    for extra in [
+        json!({ "epic": true }),
+        json!({ "parent": 1 }),
+        json!({ "after": [1] }),
+    ] {
+        let mut arguments = json!({ "project": "demo", "text": "Guard x." });
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let (is_error, text) = w.tool(identity.clone(), "backlog_add", &arguments);
+        assert!(is_error && text.contains("plain items"), "{extra}: {text}");
+    }
+    let (is_error, text) = add_item(&mut w, "Guard x.");
+    assert!(!is_error, "the picks are still unused: {text}");
+}
+
+#[test]
 fn an_explorer_edits_only_the_scratchpad_and_its_report_in_shadow() {
     let mut w = explore_world();
     w.start();
