@@ -168,6 +168,14 @@
     if (item.kind === "epic") {
       chips.append(chip("epic"));
     }
+    if (item.parent) {
+      chips.append(chip("in epic #" + item.parent));
+    }
+    if (card.deps && card.deps.length) {
+      const labels = card.deps.map((dep) => "#" + dep.id + " " + dep.status.replace("_", " "));
+      const open = card.deps.some((dep) => dep.status !== "done" && dep.status !== "cancelled");
+      chips.append(chip("after " + labels.join(", "), open ? "held" : "", open ? "waits for these items" : "every dependency is over"));
+    }
     if (item.not_before) {
       chips.append(chip("not before " + item.not_before, item.not_before > today ? "held" : ""));
     }
@@ -222,6 +230,22 @@
       }
     });
     return element;
+  }
+
+  function laneHead(lane) {
+    const head = make("h3", lane.epic ? "kb-epic" : "", lane.title);
+    if (!lane.epic) {
+      return head;
+    }
+    const epic = lane.epic;
+    const box = make("div", "kb-epic-head");
+    box.append(head);
+    box.append(chip("epic · " + epic.item.status.replace("_", " "), "status-" + epic.item.status));
+    epic.counts.forEach((entry) => box.append(chip(entry.count + " " + entry.status.replace("_", " "), "status-" + entry.status)));
+    if (epic.tokens) {
+      box.append(chip(short(epic.tokens), "tokens", "tokens its children's tasks spent"));
+    }
+    return box;
   }
 
   function unlinkedCard(task) {
@@ -307,7 +331,7 @@
     root.append(heads);
     for (const lane of board.lanes) {
       const section = make("section", "kb-lane");
-      section.append(make("h3", "", lane.title));
+      section.append(laneHead(lane));
       const grid = make("div", "kb-grid");
       board.columns.forEach((column) => grid.append(columnBody(column, lane.key, text)));
       section.append(grid);

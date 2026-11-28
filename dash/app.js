@@ -709,6 +709,12 @@
       ["started", node.start],
       ["ended", node.end],
     ]);
+    if (details.items && details.items.length) {
+      pairs(
+        panelBody,
+        details.items.map(([id, itemStatus]) => ["item", "#" + id + " · " + itemStatus.replace("_", " ")]),
+      );
+    }
     const extra = Object.entries(node.details || {});
     if (extra.length) {
       add(panelBody, "h3", "details");

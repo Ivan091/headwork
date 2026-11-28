@@ -222,3 +222,15 @@ body[data-view="board"] #board {
 .kb-note {
   margin-top: 2px;
 }
+
+.kb-epic-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.kb-epic-head h3 {
+  margin: 0 8px 0 0;
+}

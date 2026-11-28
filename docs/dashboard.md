@@ -134,12 +134,12 @@ All `GET`, JSON, read only:
 | `/` | the page |
 | `/api/graph?at=<time>&scope=<live\|all\|task:<name>>` | nodes and edges as Cytoscape elements, the state at that time (default now); the scope takes a task name like `headwork graph --task` |
 | `/api/events?since=<event id>` | new events since an id, each mapped to a graph change (node added, state changed, edge pulse) |
-| `/api/node/<id>` | details for the side panel: state history, last report, recap, tokens by type, prs, asks, findings |
+| `/api/node/<id>` | details for the side panel: state history, last report, recap, tokens by type, prs, asks, findings; for a task also `items`, the backlog items it works on as `[id, status]`, shown as `#id · status` |
 | `/api/range` | first and last event times, for the slider |
 | `/api/stream` | server-sent events: the same changes as `/api/events`, pushed as they land |
 | `/api/gates` | the cpu and gpu slots, holders and waiters, read from the slot folders |
 | `/api/backlog?status=&project=&owner=` | the backlog items (status `open` by default: backlog, in progress and blocked; or one status, or `all`; the old `state` with `dropped` for cancelled is read for one release), each with `status`, `blocked_reason`, `blocked_note` and `status_before_block`, `waiting`: the ids of the open items that wait on the user by the "Needs you" digest's own rule (`core::digest::waiting_items`), and `today`; the page's read-only backlog drawer polls it every 30 s while open |
-| `/api/kanban?project=&done=<n>` | the kanban board (section 7a): five columns (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`), each with its `count` and `cards`; In progress holds `groups` by the linked task's rolled-up status (`needs-you`, `working`, `in-review`, `merged`, `queued`, `paused`, `no-task`); a card is the item as `/api/backlog` serialises it plus its `lane`, `waiting`, `held`, `drift` and `task` (id, state, status, model, effort, review, open pull requests, parts, tokens, estimate, findings, `waiting_for`, `silent`); also `lanes` (one per project), `waiting` (the digest's ids), `unlinked` (live tasks no item links) and `today`; `done` (default 20, at most 1000) cuts the Done column, `more` counts the rest; `GET` only, no store write, no replay |
+| `/api/kanban?project=&done=<n>` | the kanban board (section 7a): five columns (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`), each with its `count` and `cards`; In progress holds `groups` by the linked task's rolled-up status (`needs-you`, `working`, `in-review`, `merged`, `queued`, `paused`, `no-task`); a card is the item as `/api/backlog` serialises it plus its `lane`, `waiting`, `held`, `drift` and `task` (id, state, status, model, effort, review, open pull requests, parts, tokens, estimate, findings, `waiting_for`, `silent`); also `lanes` (one per project, and one per epic: `epic` holds the epic item, its children's `counts` by status and their summed `tokens`; an epic is a lane, not a card, and a card's `lane` is `epic:<id>` while its epic exists), a card's `deps` (`id` and `status` of each item it waits on), `waiting` (the digest's ids), `unlinked` (live tasks no item links) and `today`; `done` (default 20, at most 1000) cuts the Done column, `more` counts the rest; `GET` only, no store write, no replay |
 
 **Live:** the page opens `/api/stream`; the server polls the `events` table every second for ids above the last one it
 sent (cheap: the primary key) and pushes the mapped changes. A dropped stream falls back to polling `/api/events`.
@@ -184,8 +184,12 @@ status lines of `ops/status.rs`) and the page files `dash/kanban.js` and `dash/k
   (a count; a click on its header shows the cards). Held items (a future `not_before`) are dimmed and sorted last.
 - **Groups** inside In progress, by the linked task's rolled-up status: Needs you, Working, In review, Merged, Queued,
   Paused, No task (an in progress item whose task is gone or over: the card is marked as drift).
-- **Lanes** are projects; the header's project filter narrows the board to one. The search box filters cards by id,
-  text or task name.
+- **Lanes** are projects, then the epics of each project: an epic's lane holds its children (whatever their project) in the
+  column of their own status, under a header with the epic's status, its children's count per status and the tokens
+  their tasks spent. An epic is no card. The header's project filter narrows the board to one project, keeping the epic
+  lane of a child it shows. A card shows `in epic #N` and, when it has dependencies, `after #12 done, #14 backlog`
+  (highlighted while one is still open). The search box filters cards by id,
+  text or task name. The graph's task panel lists the item (`#id · status`) the task works on.
 - **Needs you strip** at the top: the cards in the Needs you group and the items the digest says wait on the user
   (`core::digest::waiting_items`), each card once.
 - **Cards** show the id, text, owner, dates, the block reason and, for a linked task, a task chip (opens the shared side

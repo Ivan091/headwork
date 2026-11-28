@@ -526,6 +526,9 @@ pub struct NodeDetails {
     /// For a task (its own), a session or a subagent, the tokens spent by type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend: Option<headwork_core::usage::Tokens>,
+    /// For a task, the backlog items it works on: `(id, status)`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<(i64, String)>,
 }
 
 /// The answer to a route, read from the store at `db` through a read-only connection.
@@ -640,12 +643,21 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         | Shape::External => None,
     };
     let spend = whose.map(|whose| store.spend_of(whose)).transpose()?;
+    let items = match task {
+        Some(task) => store
+            .backlog_items_of_task(TaskId(task))?
+            .into_iter()
+            .map(|item| (item.id, item.draft.status.kind().to_string()))
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(Some(NodeDetails {
         node,
         edges,
         history,
         recap,
         spend,
+        items,
     }))
 }
 
