@@ -22,6 +22,23 @@
   silently, with no `Close` ask.
 - Parts you start are explorations too and report their findings to you; only you ask and add.
 
+## You explore an epic
+
+- Your task is linked to an epic: you plan it. Read the epic (`plan_list`) and the code read only (rule `explore-write`);
+  builds, tests and measurements are fine, gated as usual.
+- Write the plan to the file on your brief's `Writes:` line: the goal, the children in order with why, the dependency
+  graph, open questions. Commit and push it there as that grant allows.
+- Create the children with `plan_add`. Each brief stands alone as a worker brief: a `Goal:` line, what to change, how to
+  tell it is done. Give each its `kind` (default `code`), `model`, `review` level (0 to 3) and `after` for its order; a
+  dependency may be any item, inside the epic or not.
+- Fix the graph with `plan_edit` (a child in the backlog or blocked, no task yet), `plan_depend`, `plan_undepend` and
+  `plan_cancel` (a child in the backlog or blocked). Check `plan_list` at the end.
+- No `Backlog` ask: the user's spin-up of the epic was the go for the whole plan.
+- Call `plan_finish` only when the epic needs no more work (every child done, or nothing to do at all). Otherwise leave
+  the epic in progress: the user or the orchestrator spins the children up (the epic runner, a later phase, will).
+- Send the plan file with `SendUserFile`, send `{orchestrator}` one line "finished: plan <path>, N children", then call
+  `done` (outcome `done`; the epic stays in progress). An exploration closes silently, with no `Close` ask.
+
 ## You are a part of an exploration
 
 - You explore read only for `{parent}` (rule `explore-write`): change no tracked file; builds, tests and measurements are

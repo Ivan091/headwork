@@ -54,6 +54,9 @@ pub const EVENT_BACKLOG_UNDEPENDED: &str = "backlog-undepended";
 /// The event of an item's fields changed.
 pub const EVENT_BACKLOG_EDITED: &str = "backlog-edited";
 
+/// The event of a task recorded as the explorer of an epic (`epic`).
+pub const EVENT_TASK_EPIC: &str = "task-epic";
+
 /// The event of an import.
 pub const EVENT_BACKLOG_IMPORTED: &str = "backlog-imported";
 
@@ -79,7 +82,7 @@ pub struct BacklogFilter {
     pub epic: Option<i64>,
 }
 
-/// Where a new item sits: its kind, its epic, and the items it waits for.
+/// Where a new item sits: its kind, its epic, the items it waits for, and what its explorer planned for its spawn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ItemShape {
     /// An item, or an epic.
@@ -88,6 +91,22 @@ pub struct ItemShape {
     pub parent: Option<i64>,
     /// The items it depends on.
     pub after: Vec<i64>,
+    /// The brief, task kind, model and review level of an epic's child.
+    pub plan: ItemPlan,
+}
+
+/// What a spawn of an epic's child needs, written by the epic's explorer (`docs/backlog.md`, section 12). On an edit, a
+/// field that is `None` stays as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ItemPlan {
+    /// The full task brief.
+    pub brief: Option<String>,
+    /// The task kind, such as `code` or `explore`.
+    pub task_kind: Option<String>,
+    /// The model; the kind's default when absent.
+    pub model: Option<String>,
+    /// The planned review level, 0 to 3.
+    pub review: Option<u8>,
 }
 
 /// A move of an item's status, checked by [`transition`].
@@ -107,6 +126,8 @@ pub struct BacklogMove<'a> {
     pub reason: Option<&'a str>,
     /// The task a start, relink or respawn links it to.
     pub link: Option<TaskId>,
+    /// The acting explorer's epic: its children are in its reach, and the epic itself only for `plan_finish`.
+    pub actor_epic: Option<i64>,
 }
 
 impl<'a> BacklogMove<'a> {
@@ -122,6 +143,7 @@ impl<'a> BacklogMove<'a> {
             has_project,
             reason: None,
             link: None,
+            actor_epic: None,
         }
     }
 
@@ -151,6 +173,8 @@ pub struct BacklogEdit {
     pub append: Option<String>,
     /// The day it was added, when the new text says so in an `(added D)` group.
     pub added: Option<BacklogDate>,
+    /// The brief, task kind, model and review level to set; a field that is `None` stays.
+    pub plan: ItemPlan,
 }
 
 /// What an import did, or would do.
@@ -330,6 +354,16 @@ fn dependency_statuses(conn: &Connection, id: i64) -> Result<Vec<(i64, ItemStatu
         .collect()
 }
 
+fn open_children(conn: &Connection, epic: i64) -> Result<Vec<i64>, StoreError> {
+    Ok(conn
+        .prepare(
+            "SELECT id FROM backlog_items WHERE parent_id = ?1 AND status IN ('backlog', 'in_progress', 'blocked')
+             ORDER BY position, id",
+        )?
+        .query_map(params![epic], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
 fn today(conn: &Connection) -> Result<BacklogDate, StoreError> {
     let text: String = conn.query_row(&format!("SELECT {TODAY}"), [], |row| row.get(0))?;
     Ok(BacklogDate::parse(&text)?)
@@ -352,6 +386,7 @@ fn insert(
     draft: &BacklogDraft,
     kind: ItemKind,
     parent: Option<i64>,
+    plan: &ItemPlan,
 ) -> Result<i64, StoreError> {
     draft.validate().map_err(StoreError::InvalidBacklogItem)?;
     let position: i64 = tx.query_row(
@@ -364,8 +399,9 @@ fn insert(
     tx.execute(
         &format!(
             "INSERT INTO backlog_items (project, section, text, notes, status, owner, added, not_before, due, done_on, done_note,
-                                position, blocked_reason, blocked_note, status_before_block, kind, parent_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, {NOW}, {NOW})"
+                                position, blocked_reason, blocked_note, status_before_block, kind, parent_id, brief, task_kind,
+                                model, review, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, {NOW}, {NOW})"
         ),
         params![
             draft.project,
@@ -385,6 +421,10 @@ fn insert(
             before,
             kind.as_str(),
             parent,
+            plan.brief,
+            plan.task_kind,
+            plan.model,
+            plan.review,
         ],
     )?;
     Ok(tx.last_insert_rowid())
@@ -439,6 +479,7 @@ fn facts<'a>(
     item: &'a BacklogItem,
     request: &BacklogMove<'a>,
     waiting: &WaitingDependencies,
+    open_children: usize,
 ) -> MoveFacts<'a> {
     let live_task = item
         .task
@@ -450,7 +491,12 @@ fn facts<'a>(
         linked_to_actor: request
             .actor_task
             .is_some_and(|own| item.task.as_ref().is_some_and(|task| task.id == own.0)),
-        in_actor_epic: false,
+        in_actor_epic: request
+            .actor_epic
+            .is_some_and(|epic| item.parent == Some(epic)),
+        is_actor_epic: request.actor_epic == Some(item.id),
+        open_children,
+        is_epic: item.kind == ItemKind::Epic,
         has_project: request.has_project,
         links_another_task: request.link.is_some_and(|link| {
             item.task
@@ -469,11 +515,16 @@ fn check(
     request: &BacklogMove<'_>,
 ) -> Result<ItemMove, StoreError> {
     let waiting = WaitingDependencies::of(&dependency_statuses(conn, item.id)?);
+    let children = if item.kind == ItemKind::Epic {
+        open_children(conn, item.id)?.len()
+    } else {
+        0
+    };
     transition(
         Some(&item.draft.status),
         &request.target,
         request.actor,
-        &facts(item, request, &waiting),
+        &facts(item, request, &waiting, children),
     )
     .map_err(|refusal| {
         let reason = if matches!(refusal, MoveRefusal::Dependencies { .. }) {
@@ -548,7 +599,7 @@ fn write_move(
     insert_event(
         tx,
         request.by,
-        task.or(old_task).map(TaskId),
+        task.or(old_task).map(TaskId).or(request.actor_task),
         None,
         EVENT_BACKLOG_MOVED,
         &data,
@@ -711,7 +762,8 @@ fn headwork_move(
 /// Applies what a task's new state means for the items linked to it, inside the transition's transaction.
 ///
 /// Every in-progress item follows the task-end table ([`on_task_end`]): a merged task, or a closed one whose item never
-/// saw the merge, finishes it (a merged task keeps the link); a dropped or failed one blocks it as `task_lost`. The other
+/// saw the merge, finishes it (a merged task keeps the link); a dropped or failed one blocks it as `task_lost`. An epic is
+/// never finished by its explorer's end: merged or closed, it stays in progress and its link ends. The other
 /// linked items follow [`on_linked_end`]: back in review, a done item is in progress again; over, a done item loses its
 /// link and gets a note naming every merged pull request, and a blocked one loses its link and keeps its block. A move
 /// the guard refuses is logged as `backlog-move-refused` and never fails the transition.
@@ -732,16 +784,21 @@ pub(crate) fn task_ended(
         .query_map(params![task.id.0], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     let name = task.name.to_string();
-    if let Some(effect) = on_task_end(to, TaskOutcome::Done, &merged, &name) {
+    for id in in_progress {
+        let kind = load(tx, id)?.kind;
+        let Some(effect) = on_task_end(to, TaskOutcome::Done, kind, &merged, &name) else {
+            continue;
+        };
         let note = match &effect {
-            TaskEndEffect::Finish { note } => Some(note.as_str()),
+            TaskEndEffect::Finish { note } | TaskEndEffect::Release { note } => Some(note.as_str()),
             TaskEndEffect::Lost { .. } | TaskEndEffect::Partial { .. } => None,
         };
-        let request = BacklogMove::new(effect.target(), BacklogActor::Headwork, actor, true)
-            .with_reason(note);
-        for id in in_progress {
-            headwork_move(tx, task, id, &request)?;
-        }
+        let request = BacklogMove {
+            actor_task: Some(task.id),
+            ..BacklogMove::new(effect.target(), BacklogActor::Headwork, actor, true)
+                .with_reason(note)
+        };
+        headwork_move(tx, task, id, &request)?;
     }
     for (status, ids) in [(ItemStatus::Done, done), (ItemStatus::Blocked, blocked)] {
         match on_linked_end(to, status, &merged, &name) {
@@ -804,7 +861,8 @@ impl Store {
 
     /// Records that a task's `done` said it did not finish the work, and blocks each in-progress item linked to it as
     /// `partial` ([`on_task_end`] with [`TaskOutcome::Partial`]); the note is the worker's, cut to one line. An item
-    /// already done (its pull request merged first) stays done. Logs `task-outcome`; returns the ids blocked.
+    /// already done (its pull request merged first) stays done, and an epic is never blocked by its explorer's outcome.
+    /// Logs `task-outcome`; returns the ids blocked.
     ///
     /// # Errors
     ///
@@ -817,9 +875,20 @@ impl Store {
         actor: Actor,
     ) -> Result<Vec<i64>, StoreError> {
         let tx = self.conn.transaction()?;
-        let blocked = linked_ids(&tx, task.id, ItemStatus::InProgress)?;
+        let mut blocked = Vec::new();
+        for id in linked_ids(&tx, task.id, ItemStatus::InProgress)? {
+            if load(&tx, id)?.kind != ItemKind::Epic {
+                blocked.push(id);
+            }
+        }
         let name = task.name.to_string();
-        let effect = on_task_end(TaskState::Closed, TaskOutcome::Partial, &[], &name);
+        let effect = on_task_end(
+            TaskState::Closed,
+            TaskOutcome::Partial,
+            ItemKind::Item,
+            &[],
+            &name,
+        );
         if let Some(TaskEndEffect::Partial { note: head }) = effect {
             let said = note
                 .map(|note| note.replace(['\n', '\r', '[', ']'], " "))
@@ -948,7 +1017,7 @@ impl Store {
             .transpose()?;
         check_parent(kind, parent)
             .map_err(|refusal| StoreError::BacklogAddRefused(refusal.to_string()))?;
-        let id = insert(&tx, draft, kind, shape.parent)?;
+        let id = insert(&tx, draft, kind, shape.parent, &shape.plan)?;
         for dep in &shape.after {
             add_dependency(&tx, id, *dep, actor, task)?;
         }
@@ -1090,6 +1159,21 @@ impl Store {
         edit: &BacklogEdit,
         actor: Actor,
     ) -> Result<BacklogItem, StoreError> {
+        self.edit_backlog_item_for(id, edit, actor, None)
+    }
+
+    /// As [`Store::edit_backlog_item`], logged with `task`: the explorer that changed its epic's child.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::edit_backlog_item`].
+    pub fn edit_backlog_item_for(
+        &mut self,
+        id: i64,
+        edit: &BacklogEdit,
+        actor: Actor,
+        task: Option<TaskId>,
+    ) -> Result<BacklogItem, StoreError> {
         let tx = self.conn.transaction()?;
         let mut item = load(&tx, id)?.draft;
         if let Some(text) = &edit.text {
@@ -1136,10 +1220,83 @@ impl Store {
                 item.added.as_ref().map(BacklogDate::as_str),
             ],
         )?;
+        let plan = &edit.plan;
+        tx.execute(
+            &format!(
+                "UPDATE backlog_items SET brief = coalesce(?2, brief), task_kind = coalesce(?3, task_kind),
+                                          model = coalesce(?4, model), review = coalesce(?5, review), updated_at = {NOW}
+                 WHERE id = ?1"
+            ),
+            params![id, plan.brief, plan.task_kind, plan.model, plan.review],
+        )?;
         let item = load(&tx, id)?;
-        event(&tx, actor, None, EVENT_BACKLOG_EDITED, &item)?;
+        event(&tx, actor, task, EVENT_BACKLOG_EDITED, &item)?;
         tx.commit()?;
         Ok(item)
+    }
+
+    /// The brief, task kind, model and review level stored for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::UnknownBacklogItem`] when there is none, or a read error.
+    pub fn backlog_plan(&self, id: i64) -> Result<ItemPlan, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT brief, task_kind, model, review FROM backlog_items WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(ItemPlan {
+                        brief: row.get(0)?,
+                        task_kind: row.get(1)?,
+                        model: row.get(2)?,
+                        review: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::UnknownBacklogItem(id))
+    }
+
+    /// The open children of an epic (backlog, in progress, blocked), in export order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error.
+    pub fn backlog_open_children(&self, epic: i64) -> Result<Vec<i64>, StoreError> {
+        open_children(&self.conn, epic)
+    }
+
+    /// Records that `task` was spun up to explore epic `epic` (`docs/backlog.md`, section 12) and logs `task-epic`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::BacklogRefused`] when `epic` is not an epic, [`StoreError::UnknownBacklogItem`] when there is
+    /// no such item, or a write error.
+    pub fn set_task_epic(
+        &mut self,
+        task: TaskId,
+        epic: i64,
+        actor: Actor,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        if load(&tx, epic)?.kind != ItemKind::Epic {
+            return Err(refused(epic, "it is not an epic".to_owned()));
+        }
+        tx.execute(
+            &format!("UPDATE tasks SET epic_id = ?2, updated_at = {NOW} WHERE id = ?1"),
+            params![task.0, epic],
+        )?;
+        insert_event(
+            &tx,
+            actor,
+            Some(task),
+            None,
+            EVENT_TASK_EPIC,
+            &serde_json::json!({ "epic": epic }),
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// What importing `drafts` would do: new items, items the store already holds by text, and repeats within the list.
@@ -1166,7 +1323,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         let (counts, fresh) = counts(&tx, drafts)?;
         for (draft, _) in drafts.iter().zip(&fresh).filter(|(_, fresh)| **fresh) {
-            insert(&tx, draft, ItemKind::Item, None)?;
+            insert(&tx, draft, ItemKind::Item, None, &ItemPlan::default())?;
         }
         tx.execute(
             &format!(

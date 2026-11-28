@@ -713,7 +713,8 @@ enum BacklogAction {
         #[arg(long)]
         json: bool,
     },
-    /// Spin an item up: backlog to in progress. It spawns nothing; `spawn --backlog` links a task.
+    /// Spin an item up: backlog to in progress. A plain item spawns nothing (`spawn --backlog` links a task); an epic spawns
+    /// its explorer, an `explore` task linked to it that plans its children.
     Start {
         /// The item's id.
         id: i64,
@@ -1788,6 +1789,7 @@ fn spawn_command(
         depends_on,
         permission_mode: args.mode,
         allow_ask: &args.allow_ask,
+        epic: None,
     };
     let spawned = ctx.with_env(|env| {
         reap(store, env)?;
@@ -1902,6 +1904,7 @@ fn backlog_list_command(
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per backlog action")]
 fn backlog_change_command(
     store: &mut Store,
     ctx: &Ctx<'_>,
@@ -1937,6 +1940,7 @@ fn backlog_change_command(
                     kind: epic.then_some(headwork_core::backlog::ItemKind::Epic),
                     parent,
                     after,
+                    plan: headwork_store::ItemPlan::default(),
                 },
             };
             (act(&mut |env| list::add(store, env, &request))?, json)
@@ -1992,6 +1996,7 @@ fn backlog_change_command(
                 due: due.as_deref().map(date_or_none).transpose()?,
                 append,
                 added: None,
+                plan: headwork_store::ItemPlan::default(),
             };
             (act(&mut |env| list::edit(store, env, id, &edit))?, json)
         }

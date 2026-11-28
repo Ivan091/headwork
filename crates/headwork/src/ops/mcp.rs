@@ -93,6 +93,17 @@ const LEAD_TOOLS: &[&str] = &["part_spawn", "part_drop", "review_start", "review
 /// The orchestrator tools an explorer (a task of kind `explore`, not a part) also sees and may call.
 const EXPLORER_TOOLS: &[&str] = &["backlog_list", "backlog_add"];
 
+/// The worker tools only an epic explorer (an explorer linked to an epic, `docs/backlog.md`, section 12) sees and may call.
+const EPIC_TOOLS: &[&str] = &[
+    "plan_list",
+    "plan_add",
+    "plan_edit",
+    "plan_depend",
+    "plan_undepend",
+    "plan_cancel",
+    "plan_finish",
+];
+
 /// The worker tools only a reviewer lead (a part of kind `review`) sees and may call.
 const REVIEWER_TOOLS: &[&str] = &[
     "review_next",
@@ -509,8 +520,10 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "backlog_start",
         description: concat!(
-            "Spin a backlog item up: backlog to in progress, and export `backlog.md`. It spawns nothing; `spawn` with `backlog` ",
-            "links a task and moves the item itself. Refused for an item whose project headwork does not run.",
+            "Spin a backlog item up: backlog to in progress, and export `backlog.md`. A plain item spawns nothing; `spawn` with ",
+            "`backlog` links a task and moves the item itself. An epic spawns its explorer (kind `explore`, linked to it, with ",
+            "a plan notes file under the first `[hooks] brief_writable` folder); `spawned` names the task. Refused for an item ",
+            "whose project headwork does not run.",
         ),
         roles: ORCHESTRATOR,
         schema: || object(json!({ "id": { "type": "integer" } }), &["id"]),
@@ -582,6 +595,120 @@ const TOOLS: &[ToolDef] = &[
         schema: || {
             object(
                 json!({ "id": { "type": "integer", "description": "The item; optional when your task works on one blocked item." } }),
+                &[],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_list",
+        description: concat!(
+            "Your epic (id, text, status) and its children: id, text, status with its block, dependencies, task kind, model, ",
+            "review level, whether a brief is stored, and the linked task with its state.",
+        ),
+        roles: WORKER,
+        schema: || object(json!({}), &[]),
+    },
+    ToolDef {
+        name: "plan_add",
+        description: concat!(
+            "Add a child to your epic with the brief its worker starts from (it stands alone: a `Goal:` line, what to change, ",
+            "how to tell it is done), its task kind (default `code`), model and review level. `after` names the items it ",
+            "waits for (any item); with one not done it starts blocked (`depends`). Exports `backlog.md`.",
+        ),
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "text": { "type": "string", "description": "The child's one-line text." },
+                    "brief": { "type": "string", "description": "The full task brief." },
+                    "kind": { "type": "string", "description": "The task kind; `code` when absent." },
+                    "model": { "type": "string", "description": "The model; the kind's default when absent." },
+                    "review": { "type": "integer", "minimum": 0, "maximum": 3, "description": "The planned review level." },
+                    "after": { "type": "array", "items": { "type": "integer" }, "description": "Item ids it depends on." },
+                    "project": { "type": "string", "description": "The epic's project when absent." },
+                    "section": { "type": "string", "description": "The epic's section when absent." },
+                    "owner": { "type": "string", "enum": ["user", "agent"] },
+                }),
+                &["text", "brief"],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_edit",
+        description: concat!(
+            "Change a child of your epic that is in the backlog or blocked and has no task yet: its text, brief, task kind, ",
+            "model or review level. Exports `backlog.md`.",
+        ),
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "brief": { "type": "string" },
+                    "kind": { "type": "string" },
+                    "model": { "type": "string" },
+                    "review": { "type": "integer", "minimum": 0, "maximum": 3 },
+                }),
+                &["id"],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_depend",
+        description: concat!(
+            "Make a child of your epic wait for each of `on` (any items, all or nothing); a child in the backlog is blocked ",
+            "(`depends`) while one is not done. Refused for a cancelled dependency or a cycle.",
+        ),
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer", "description": "The child that waits." },
+                    "on": { "type": "array", "items": { "type": "integer" }, "description": "The items it waits for." },
+                }),
+                &["id", "on"],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_undepend",
+        description: "Remove a dependency of a child of your epic; its block is settled again.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer", "description": "The child that waited." },
+                    "on": { "type": "integer", "description": "The item it no longer waits for." },
+                }),
+                &["id", "on"],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_cancel",
+        description: "Cancel a child of your epic that is in the backlog or blocked and no task works on. Exports `backlog.md`.",
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer" },
+                    "reason": { "type": "string", "description": "Why it is no longer part of the plan." },
+                }),
+                &["id"],
+            )
+        },
+    },
+    ToolDef {
+        name: "plan_finish",
+        description: concat!(
+            "Mark your epic done: only when it needs no more work. Refused while a child is open (backlog, in progress, ",
+            "blocked), naming them; otherwise leave the epic in progress.",
+        ),
+        roles: WORKER,
+        schema: || {
+            object(
+                json!({ "note": { "type": "string", "description": "Why the epic is done." } }),
                 &[],
             )
         },
@@ -1201,12 +1328,14 @@ impl<'a> Server<'a> {
         let lead = self.is_lead();
         let reviewer = self.is_reviewer();
         let sees_backlog = role == Role::Orchestrator || self.is_explorer();
+        let plans = self.epic_explorer().ok().flatten().is_some();
         TOOLS
             .iter()
             .filter(|tool| tool.roles.contains(&role))
             .filter(|tool| lead || !LEAD_TOOLS.contains(&tool.name))
             .filter(|tool| reviewer || !REVIEWER_TOOLS.contains(&tool.name))
             .filter(|tool| sees_backlog || !EXPLORER_TOOLS.contains(&tool.name))
+            .filter(|tool| plans || !EPIC_TOOLS.contains(&tool.name))
             .map(|tool| {
                 json!({
                     "name": tool.name,
@@ -1261,6 +1390,7 @@ impl<'a> Server<'a> {
         }
         self.check_explorer_tool(name, role)?;
         match name {
+            plan if EPIC_TOOLS.contains(&plan) => self.epic_tool(plan, args),
             "board" => self.board(&session, role, args),
             "inbox" => self.inbox(&session, role),
             "status" => self.status(args),
@@ -1389,6 +1519,117 @@ impl<'a> Server<'a> {
             );
         }
         Ok(())
+    }
+
+    /// The calling session's task and the epic it explores, when it is an epic explorer.
+    fn epic_explorer(&self) -> Result<Option<(Task, i64)>> {
+        let Some((session, Role::Worker)) = self.identity.managed() else {
+            return Ok(None);
+        };
+        let Some(id) = self
+            .store
+            .hook_session(session)?
+            .filter(|row| row.role == Role::Worker)
+            .and_then(|row| row.task_id)
+        else {
+            return Ok(None);
+        };
+        let task = self.store.task(id)?;
+        Ok(super::epic::epic_of(&task).map(|epic| (task, epic)))
+    }
+
+    fn epic_tool(&mut self, name: &str, args: &Value) -> Result<String> {
+        use super::epic::{self, Explorer, PlanAdd, PlanFields};
+        let Some((task, epic_id)) = self.epic_explorer()? else {
+            bail!(
+                "`{name}` is an epic explorer's tool (a task of kind `explore`, not a part, spun up for an epic); your task is not one"
+            );
+        };
+        let explorer = Explorer {
+            task: &task,
+            epic: epic_id,
+        };
+        let optional = |key| args.get(key).and_then(Value::as_str).map(str::to_owned);
+        let fields = || -> Result<PlanFields> {
+            Ok(PlanFields {
+                brief: optional("brief"),
+                kind: optional("kind"),
+                model: optional("model"),
+                review: match args.get("review") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_u64()
+                            .ok_or_else(|| anyhow!("`review` must be 0, 1, 2 or 3"))?,
+                    ),
+                },
+            })
+        };
+        match name {
+            "plan_list" => to_text(&epic::list(self.store, &explorer)?),
+            "plan_add" => {
+                let request = PlanAdd {
+                    text: text(args, "text")?,
+                    plan: PlanFields {
+                        brief: Some(text(args, "brief")?),
+                        ..fields()?
+                    },
+                    after: ids(args, "after")?,
+                    project: optional("project"),
+                    section: optional("section"),
+                    owner: optional("owner").as_deref().map(str::parse).transpose()?,
+                };
+                to_text(&epic::add(self.store, &self.env, &explorer, request)?)
+            }
+            "plan_edit" => to_text(&epic::edit(
+                self.store,
+                &self.env,
+                &explorer,
+                backlog_id(args)?,
+                optional("text"),
+                &fields()?,
+            )?),
+            "plan_depend" => {
+                let on = ids(args, "on")?;
+                if on.is_empty() {
+                    bail!("`on` must name at least one item id");
+                }
+                to_text(&epic::depend(
+                    self.store,
+                    &self.env,
+                    &explorer,
+                    backlog_id(args)?,
+                    &on,
+                )?)
+            }
+            "plan_undepend" => {
+                let on = args
+                    .get("on")
+                    .and_then(Value::as_i64)
+                    .context("`on` is an item id")?;
+                to_text(&epic::undepend(
+                    self.store,
+                    &self.env,
+                    &explorer,
+                    backlog_id(args)?,
+                    on,
+                )?)
+            }
+            "plan_cancel" => to_text(&epic::cancel(
+                self.store,
+                &self.env,
+                &explorer,
+                backlog_id(args)?,
+                optional("reason").as_deref(),
+            )?),
+            "plan_finish" => to_text(&epic::finish(
+                self.store,
+                &self.env,
+                &explorer,
+                optional("note").as_deref(),
+            )?),
+            other => bail!("unknown tool `{other}`"),
+        }
     }
 
     fn is_explorer(&self) -> bool {
@@ -1604,6 +1845,7 @@ impl<'a> Server<'a> {
                         .collect::<Result<_>>()?,
                     Some(_) => bail!("`after` is a list of item ids"),
                 },
+                plan: headwork_store::ItemPlan::default(),
             },
         };
         if let Some((session, Role::Worker)) = self.identity.managed() {
@@ -1659,7 +1901,11 @@ impl<'a> Server<'a> {
             }
             "backlog_done" => self.backlog_done(args),
             "backlog_edit" => self.backlog_edit(args),
-            "backlog_start" => self.backlog_move(args, Target::InProgress, None),
+            "backlog_start" => to_text(&super::backlog::start(
+                self.store,
+                &self.env,
+                backlog_id(args)?,
+            )?),
             "backlog_cancel" => {
                 let reason = text(args, "reason")?;
                 self.backlog_move(args, Target::Cancelled, Some(&reason))
@@ -1788,6 +2034,7 @@ impl<'a> Server<'a> {
             due: date("due")?,
             append: optional("append").map(str::to_owned),
             added: None,
+            plan: headwork_store::ItemPlan::default(),
         };
         to_text(&super::backlog::edit(
             self.store,
@@ -2077,6 +2324,7 @@ impl<'a> Server<'a> {
             depends_on,
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
+            epic: None,
         };
         let item = match ["backlog", "todo"]
             .iter()
@@ -2171,6 +2419,7 @@ impl<'a> Server<'a> {
             depends_on,
             permission_mode: PermissionMode::Auto,
             allow_ask: &allow_ask,
+            epic: None,
         };
         reap(self.store, &self.env)?;
         let result = spawn_shaped(
@@ -2620,6 +2869,21 @@ fn spawn_flags(args: &Value, kind: &str, reason_key: &str) -> Result<super::flag
         args.get("decided_by").and_then(Value::as_str),
         args.get(reason_key).and_then(Value::as_str),
     )
+}
+
+/// A list of item ids under `key`; empty when absent.
+fn ids(args: &Value, key: &str) -> Result<Vec<i64>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(ids)) => ids
+            .iter()
+            .map(|id| {
+                id.as_i64()
+                    .ok_or_else(|| anyhow!("`{key}` holds item ids as integers"))
+            })
+            .collect(),
+        Some(_) => bail!("`{key}` is a list of item ids"),
+    }
 }
 
 fn optional_integer(args: &Value, key: &str) -> Result<Option<i64>> {

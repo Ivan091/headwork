@@ -211,6 +211,7 @@ fn spawn_reviewer(
         depends_on: None,
         permission_mode: PermissionMode::Auto,
         allow_ask: &[],
+        epic: None,
     };
     let result = spawn_shaped(store, env, &request, TaskShape::Part { parent: lead.id });
     std::fs::remove_file(&file).ok();

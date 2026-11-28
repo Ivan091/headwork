@@ -37,6 +37,8 @@ pub struct SpawnRequest<'a> {
     pub permission_mode: PermissionMode,
     /// User-only commands the user asked a worker to run: the worker's first action is the `Allow` ask for them.
     pub allow_ask: &'a [String],
+    /// The epic an explorer is spun up for (`docs/backlog.md`, section 12), recorded on the task.
+    pub epic: Option<i64>,
 }
 
 /// What happened to one queued task when the queue was run.
@@ -155,6 +157,10 @@ pub fn spawn_shaped(
         },
         env.actor,
     )?;
+    if let Some(epic) = new.epic {
+        store.set_task_epic(task.id, epic, env.actor)?;
+    }
+    let task = store.task(task.id)?;
     if !asks.is_empty() {
         let commands: Vec<&str> = asks.iter().map(user_go::AllowAsk::command).collect();
         store.append_event(
@@ -185,6 +191,7 @@ pub fn spawn_shaped(
                 task: &task,
                 dir: &dir,
                 parent: parent.as_deref(),
+                epic: super::epic::epic_of(&task).is_some(),
             }),
         );
         format!("{}\n\n{rules}", brief.trim_end())

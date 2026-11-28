@@ -13,12 +13,14 @@ use crate::vocabulary::text_enum;
 use crate::{TaskState, UnknownWord};
 
 mod deps;
+mod epic;
 mod status;
 
 pub use deps::{
     DepNode, DepRefusal, ItemKind, ParentFacts, WaitingDependencies, check_dependency,
     check_parent, dependency_block, would_cycle,
 };
+pub use epic::{EpicBrief, epic_brief, epic_slug, plan_file_name, short_slug};
 pub use status::{
     BacklogActor, BacklogStatus, Block, BlockReason, DateEffect, ItemMove, ItemStatus, LinkEffect,
     LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,

@@ -75,6 +75,8 @@ pub struct Task {
     pub queued_at: String,
     /// When it last changed.
     pub updated_at: String,
+    /// The epic it was spun up to explore (`docs/backlog.md`, section 12), recorded once at spawn.
+    pub epic: Option<i64>,
 }
 
 impl Task {

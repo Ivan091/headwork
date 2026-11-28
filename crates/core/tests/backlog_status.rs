@@ -2,9 +2,9 @@
 
 use headwork_core::TaskState;
 use headwork_core::backlog::{
-    BacklogActor as A, BacklogStatus, Block, BlockReason as R, DateEffect, ItemStatus, LinkEffect,
-    LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect, TaskOutcome,
-    on_linked_end, on_task_end, transition,
+    BacklogActor as A, BacklogStatus, Block, BlockReason as R, DateEffect, ItemKind, ItemStatus,
+    LinkEffect, LinkedEnd, MoveFacts, MoveKind, MoveRefusal, ReturnTo, Target, TaskEndEffect,
+    TaskOutcome, on_linked_end, on_task_end, transition,
 };
 
 fn blocked(reason: R, before: ReturnTo) -> BacklogStatus {
@@ -33,6 +33,9 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     live_task: None,
     linked_to_actor: false,
     in_actor_epic: false,
+    is_actor_epic: false,
+    open_children: 0,
+    is_epic: false,
     has_project: true,
     links_another_task: false,
     open_dependencies: 0,
@@ -1195,7 +1198,7 @@ fn the_task_end_table() {
     ];
     for (state, merged, want) in cases {
         assert_eq!(
-            on_task_end(state, TaskOutcome::Done, merged, "t"),
+            on_task_end(state, TaskOutcome::Done, ItemKind::Item, merged, "t"),
             want,
             "{state}"
         );
@@ -1519,7 +1522,7 @@ fn a_generated_unlink_note_is_paren_checked_like_a_done_note() {
 fn a_partial_outcome_blocks_the_item_whether_the_task_merged_or_closed() {
     for state in [TaskState::Merged, TaskState::Closed] {
         assert_eq!(
-            on_task_end(state, TaskOutcome::Partial, &[], "t"),
+            on_task_end(state, TaskOutcome::Partial, ItemKind::Item, &[], "t"),
             Some(TaskEndEffect::Partial {
                 note: "task t partial".to_owned()
             }),
@@ -1528,7 +1531,7 @@ fn a_partial_outcome_blocks_the_item_whether_the_task_merged_or_closed() {
     }
     for state in [TaskState::Working, TaskState::InReview] {
         assert_eq!(
-            on_task_end(state, TaskOutcome::Partial, &[], "t"),
+            on_task_end(state, TaskOutcome::Partial, ItemKind::Item, &[], "t"),
             None,
             "{state}"
         );

@@ -30,7 +30,7 @@ const FABLE_DECLINE: &str = "Use Opus instead";
 
 const TASK_COLUMNS: &str = "id, project, slug, kind, state, state_before_park, model, keep, in_main, depends_on, \
                             fable_ask, brief_path, last_report, queued_at, updated_at, permission_mode, effort, parent_id, lead, \
-                            close_mode, review_plan";
+                            close_mode, review_plan, epic_id";
 
 /// A task to create.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +112,7 @@ struct RawTask {
     lead: bool,
     close_mode: String,
     review_plan: Option<u8>,
+    epic_id: Option<i64>,
 }
 
 impl RawTask {
@@ -138,6 +139,7 @@ impl RawTask {
             lead: row.get(18)?,
             close_mode: row.get(19)?,
             review_plan: row.get(20)?,
+            epic_id: row.get(21)?,
         })
     }
 
@@ -169,6 +171,7 @@ impl RawTask {
             last_report: self.last_report,
             queued_at: self.queued_at,
             updated_at: self.updated_at,
+            epic: self.epic_id,
         })
     }
 }
