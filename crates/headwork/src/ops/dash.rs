@@ -1628,12 +1628,7 @@ mod tests {
         let find = |path: &str| ASSETS.iter().find(|asset| asset.path == path).unwrap().body;
         let script = find("/kanban.js");
         let css = find("/kanban.css");
-        for needle in [
-            "kind-done",
-            "kind-cancelled",
-            "✓ done",
-            "✕ cancelled",
-        ] {
+        for needle in ["kind-done", "kind-cancelled", "✓ done", "✕ cancelled"] {
             assert!(script.contains(needle), "kanban.js lacks {needle}");
         }
         for needle in [
