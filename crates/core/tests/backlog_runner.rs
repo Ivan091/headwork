@@ -88,7 +88,7 @@ fn a_live_explorer_holds_starts_and_re_plans() {
 fn ready_children_start_in_order_up_to_max_parallel_and_explore_children_do_not_count() {
     let children = vec![
         child(2, BacklogStatus::InProgress),
-        explore(3, BacklogStatus::InProgress),
+        explore(3, BacklogStatus::Done),
         child(4, BacklogStatus::Backlog),
         child(5, blocked(R::Depends)),
         child(6, BacklogStatus::Backlog),
@@ -116,7 +116,7 @@ fn ready_children_start_in_order_up_to_max_parallel_and_explore_children_do_not_
 }
 
 #[test]
-fn a_ready_explore_child_starts_alone_and_never_beside_a_running_one() {
+fn a_ready_explore_child_starts_alone_and_an_explore_child_in_progress_holds_the_epic() {
     let children = vec![
         child(2, BacklogStatus::Backlog),
         explore(3, BacklogStatus::Backlog),
@@ -127,8 +127,17 @@ fn a_ready_explore_child_starts_alone_and_never_beside_a_running_one() {
     both.push(explore(5, BacklogStatus::InProgress));
     assert_eq!(
         epic_step(&facts(both), &LIMITS),
-        run(&[]),
-        "an explore child in progress keeps the next one, and the rest, waiting"
+        EpicStep::Hold,
+        "an explore child in progress, claimed or running, holds the epic like a live explorer"
+    );
+    let claimed = facts(vec![
+        explore(3, BacklogStatus::InProgress),
+        child(4, blocked(R::TaskLost)),
+    ]);
+    assert_eq!(
+        epic_step(&claimed, &LIMITS),
+        EpicStep::Hold,
+        "no re-plan either"
     );
 }
 
@@ -283,12 +292,8 @@ fn no_open_child_asks_whether_the_plan_is_complete() {
 }
 
 #[test]
-fn an_open_explore_child_suppresses_every_trigger() {
-    for status in [
-        BacklogStatus::Backlog,
-        BacklogStatus::InProgress,
-        blocked(R::TaskLost),
-    ] {
+fn only_an_explore_child_in_the_backlog_or_in_progress_holds_the_triggers() {
+    for status in [BacklogStatus::Backlog, BacklogStatus::InProgress] {
         let children = vec![child(2, blocked(R::TaskLost)), explore(3, status.clone())];
         let step = epic_step(&facts(children), &LIMITS);
         assert!(
@@ -296,6 +301,43 @@ fn an_open_explore_child_suppresses_every_trigger() {
             "{status}: {step:?}"
         );
     }
+}
+
+#[test]
+fn a_lost_re_plan_child_is_itself_a_cause() {
+    let lost_replan = EpicChild {
+        block_event: Some(50),
+        ..explore(3, blocked(R::TaskLost))
+    };
+    let step = epic_step(
+        &facts(vec![child(2, BacklogStatus::Done), lost_replan]),
+        &LIMITS,
+    );
+    let EpicStep::Replan(ReplanTrigger::Blocked(causes)) = step else {
+        unreachable!("{step:?}")
+    };
+    assert_eq!(
+        causes.iter().map(|cause| cause.child).collect::<Vec<_>>(),
+        vec![3]
+    );
+}
+
+#[test]
+fn an_explicit_re_plan_waiting_on_a_lost_child_does_not_hide_the_loss() {
+    let lost = EpicChild {
+        block_event: Some(51),
+        ..child(2, blocked(R::TaskLost))
+    };
+    let waiting = explore(3, blocked(R::Depends));
+    let step = epic_step(&facts(vec![lost, waiting]), &LIMITS);
+    let EpicStep::Replan(ReplanTrigger::Blocked(causes)) = step else {
+        unreachable!("{step:?}")
+    };
+    assert_eq!(
+        causes.iter().map(|cause| cause.child).collect::<Vec<_>>(),
+        vec![2],
+        "the explore child blocked depends holds nothing and is no cause"
+    );
 }
 
 #[test]

@@ -155,6 +155,37 @@ fn an_explore_child_is_claimed_beside_others_but_never_beside_another_explore_ch
         "explore children do not count against max_parallel"
     );
     assert!(!claimed(&db.claim_epic_child(y, 1, Actor::Tick).unwrap()));
+    let b = child(&mut db, ep, "B", "code", &[]);
+    assert!(
+        !claimed(&db.claim_epic_child(b, 0, Actor::Tick).unwrap()),
+        "an explore child in progress holds every other claim, its task not yet created"
+    );
+}
+
+#[test]
+fn a_blocked_explore_child_does_not_hold_the_next_re_plan() {
+    let mut db = store();
+    let ep = epic(&mut db);
+    let x = child(&mut db, ep, "X", EXPLORE_KIND, &[]);
+    assert!(claimed(&db.claim_epic_child(x, 3, Actor::Tick).unwrap()));
+    lose(&mut db, x);
+    let shape = replan_shape(ep);
+    let added = db
+        .add_epic_replan(
+            &NewReplan {
+                epic: ep,
+                draft: &draft("Re-plan: #x task_lost"),
+                shape: &shape,
+                reason: "lost re-plan",
+                causes: &[ReplanRow {
+                    item: x,
+                    event: None,
+                }],
+            },
+            Actor::Tick,
+        )
+        .unwrap();
+    assert!(added.is_some(), "a lost explore child holds nothing");
 }
 
 #[test]

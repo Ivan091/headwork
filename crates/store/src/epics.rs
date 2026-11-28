@@ -6,7 +6,7 @@
 
 use headwork_core::backlog::{
     BacklogActor, BacklogDraft, BacklogItem, BacklogOwner, BacklogStatus, BlockReason, EpicChild,
-    EpicFacts, ItemKind, LinkedTask, Target,
+    EpicFacts, ItemKind, ItemStatus, LinkedTask, Target, holds_triggers,
 };
 use headwork_core::{Actor, EXPLORE_KIND};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -121,12 +121,19 @@ fn children_in(conn: &Connection, epic: i64, status: &str) -> Result<(usize, usi
     Ok((explore, kinds.len() - explore))
 }
 
-fn open_explore_children(conn: &Connection, epic: i64) -> Result<usize, StoreError> {
-    let mut open = 0;
-    for status in ["backlog", "in_progress", "blocked"] {
-        open += children_in(conn, epic, status)?.0;
+/// How many explore children of `epic` hold its re-plan triggers ([`holds_triggers`]).
+fn trigger_holders(conn: &Connection, epic: i64) -> Result<usize, StoreError> {
+    let rows: Vec<(Option<String>, String)> = conn
+        .prepare("SELECT task_kind, status FROM backlog_items WHERE parent_id = ?1")?
+        .query_map(params![epic], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut held = 0;
+    for (kind, status) in rows {
+        if holds_triggers(is_explore(kind.as_deref()), status.parse::<ItemStatus>()?) {
+            held += 1;
+        }
     }
-    Ok(open)
+    Ok(held)
 }
 
 impl Store {
@@ -177,8 +184,9 @@ impl Store {
 
     /// Claims child `child` for a start: in one immediate transaction it reads the child again and moves it from the
     /// backlog to in progress with no task, as headwork, through the status guard. It skips (and changes nothing) unless
-    /// the child is in the backlog, its epic is in progress, and, for an explore child, no other explore child of the
-    /// epic is in progress, or, for any other child, fewer than `max_parallel` (0: no limit) non-explore children are.
+    /// the child is in the backlog, its epic is in progress, no explore child of the epic is in progress (it holds the
+    /// epic, its task perhaps not yet created), and, for a child that is not `explore`, fewer than `max_parallel` (0: no
+    /// limit) non-explore children are.
     ///
     /// # Errors
     ///
@@ -211,13 +219,13 @@ impl Store {
             )));
         }
         let (explore_running, others_running) = children_in(&tx, epic, "in_progress")?;
-        if is_explore(task_kind(&tx, child)?.as_deref()) {
-            if explore_running > 0 {
-                return Ok(EpicClaim::Skipped(format!(
-                    "an explore child of epic #{epic} is in progress"
-                )));
-            }
-        } else if max_parallel != 0
+        if explore_running > 0 {
+            return Ok(EpicClaim::Skipped(format!(
+                "an explore child of epic #{epic} is in progress: it holds the epic"
+            )));
+        }
+        if !is_explore(task_kind(&tx, child)?.as_deref())
+            && max_parallel != 0
             && others_running >= usize::try_from(max_parallel).unwrap_or(usize::MAX)
         {
             return Ok(EpicClaim::Skipped(format!(
@@ -239,7 +247,8 @@ impl Store {
 
     /// Adds a re-plan child to an epic and records one `epic_replans` row per cause (one with no cause for "plan
     /// complete?"), logging `backlog-added` and `epic-replan`, in one immediate transaction. Adds nothing and returns
-    /// `None` when the epic is not in progress or an explore child of it is already open (another runner added one).
+    /// `None` when the epic is not in progress or an explore child of it holds the triggers (in the backlog or in
+    /// progress, [`holds_triggers`]: another runner added one).
     ///
     /// # Errors
     ///
@@ -254,8 +263,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let epic = load(&tx, replan.epic)?;
-        if epic.draft.status != BacklogStatus::InProgress
-            || open_explore_children(&tx, replan.epic)? > 0
+        if epic.draft.status != BacklogStatus::InProgress || trigger_holders(&tx, replan.epic)? > 0
         {
             return Ok(None);
         }

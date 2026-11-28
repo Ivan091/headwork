@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use crate::backlog::{BacklogDate, BacklogStatus, BlockReason};
+use crate::backlog::{BacklogDate, BacklogStatus, BlockReason, ItemStatus};
 
 /// How many characters of the epic's text the short slug keeps.
 const SHORT_CHARS: usize = 24;
@@ -360,18 +360,36 @@ pub const fn counts_against_parallel(child: &EpicChild) -> bool {
     !child.explore
 }
 
+/// Whether a child holds the epic's re-plan triggers: an `explore` child in the backlog or in progress.
+///
+/// That is a re-plan about to run or running. A blocked explore child (lost, partial, waiting on a dependency) holds nothing, and its block is a
+/// cause like any child's. The store's re-plan recheck uses the same rule.
+#[must_use]
+pub const fn holds_triggers(explore: bool, status: ItemStatus) -> bool {
+    explore && matches!(status, ItemStatus::Backlog | ItemStatus::InProgress)
+}
+
+/// Whether a child holds the whole epic like a live explorer: an `explore` child in progress, claimed or running, whose
+/// task may not exist yet.
+#[must_use]
+pub fn holds_epic(child: &EpicChild) -> bool {
+    child.explore && child.status == BacklogStatus::InProgress
+}
+
+#[must_use]
 fn ready(child: &EpicChild, today: &BacklogDate) -> bool {
     child.status == BacklogStatus::Backlog
         && child.agent
         && child.not_before.as_ref().is_none_or(|from| from <= today)
 }
 
+#[must_use]
 fn trigger(facts: &EpicFacts) -> Option<ReplanTrigger> {
-    let open_explore = facts
+    let held = facts
         .children
         .iter()
-        .any(|child| child.explore && child.status.is_open());
-    if open_explore {
+        .any(|child| holds_triggers(child.explore, child.status.kind()));
+    if held {
         return None;
     }
     let causes: Vec<ReplanCause> = facts
@@ -402,15 +420,16 @@ fn trigger(facts: &EpicFacts) -> Option<ReplanTrigger> {
 
 /// The runner's decision for one epic in progress (`docs/backlog.md`, section 13).
 ///
-/// A live explorer holds everything. Otherwise, with no explore child open, a child blocked `task_lost`, `partial` or
-/// `dep_cancelled` whose block caused no re-plan yet, else no open child at all, triggers a re-plan, or the churn block
-/// once `max_replans` re-plans are counted. Without a trigger, ready children start: in the backlog (so every dependency
-/// is done), owned by an agent, past `not_before`, in a project headwork runs. A ready explore child starts alone, and
-/// only while no other explore child is in progress; other children start while fewer than `max_parallel` non-explore
-/// children are in progress, and never more than `room`.
+/// A live explorer, or an explore child in progress (claimed, its task perhaps not created yet), holds everything.
+/// Otherwise, with no explore child in the backlog ([`holds_triggers`]), a child blocked `task_lost`, `partial` or
+/// `dep_cancelled` whose block caused no re-plan yet (an explore child too), else no open child at all, triggers a
+/// re-plan, or the churn block once `max_replans` re-plans are counted. Without a trigger, ready children start: in the
+/// backlog (so every dependency is done), owned by an agent, past `not_before`, in a project headwork runs. A ready
+/// explore child starts alone; other children start while fewer than `max_parallel` non-explore children are in
+/// progress, and never more than `room`.
 #[must_use]
 pub fn epic_step(facts: &EpicFacts, limits: &EpicLimits) -> EpicStep {
-    if facts.explorer_live {
+    if facts.explorer_live || facts.children.iter().any(holds_epic) {
         return EpicStep::Hold;
     }
     if let Some(trigger) = trigger(facts) {
@@ -429,11 +448,7 @@ pub fn epic_step(facts: &EpicFacts, limits: &EpicLimits) -> EpicStep {
     let skipped = skipped.iter().map(|child| child.id).collect();
     let room = limits.room.unwrap_or(usize::MAX);
     if let Some(explore) = ready.iter().find(|child| child.explore) {
-        let explore_running = facts
-            .children
-            .iter()
-            .any(|child| child.explore && child.status == BacklogStatus::InProgress);
-        let starts = if explore_running || room == 0 {
+        let starts = if room == 0 {
             Vec::new()
         } else {
             vec![explore.id]
@@ -441,7 +456,7 @@ pub fn epic_step(facts: &EpicFacts, limits: &EpicLimits) -> EpicStep {
         return EpicStep::Run {
             starts,
             skipped,
-            held: !explore_running && room == 0,
+            held: room == 0,
         };
     }
     let running = facts
