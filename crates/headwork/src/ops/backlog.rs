@@ -14,7 +14,9 @@ use headwork_core::backlog::{
     BlockReason, ExportFacts, ExportPlan, ItemStatus, Target, Unparsed, clean_note,
 };
 use headwork_core::{Actor, Config};
-use headwork_store::{BacklogEdit, BacklogFilter, BacklogMove, ImportCounts, Store, Task, TaskId};
+use headwork_store::{
+    BacklogEdit, BacklogFilter, BacklogMove, ImportCounts, ItemShape, Store, Task, TaskId,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -200,6 +202,8 @@ pub struct AddRequest {
     pub due: Option<BacklogDate>,
     /// Sub-bullets.
     pub notes: Vec<String>,
+    /// An epic or an item, the epic it belongs to and the items it waits for.
+    pub shape: ItemShape,
 }
 
 /// Items a change touched and what the export after it did.
@@ -663,7 +667,37 @@ pub fn add_for(
         done_on: None,
         done_note: None,
     };
-    let item = store.add_backlog_item_for(&draft, env.actor, mover, task)?;
+    let item = store.add_backlog_item_shaped(&draft, env.actor, mover, task, &request.shape)?;
+    Ok(changed(store, env, &[item]))
+}
+
+/// Makes `id` depend on each of `deps`, in one transaction (all or nothing), and exports. An item in the backlog is blocked for
+/// `depends` while a dependency is not done.
+///
+/// # Errors
+///
+/// Fails when a worker asks (only the user and the orchestrator order the backlog), the dependency guard refuses (itself, an
+/// item not in the backlog or blocked, a blocked item that does not return to the backlog, a cancelled dependency, a
+/// cycle) or the store fails; nothing changes then.
+pub fn depend(store: &mut Store, env: &Env<'_>, id: i64, deps: &[i64]) -> Result<Change> {
+    if backlog_actor(env.actor) == BacklogActor::Worker {
+        bail!("a worker does not change dependencies: ask the orchestrator");
+    }
+    let item = store.add_backlog_dependencies(id, deps, env.actor, None)?;
+    Ok(changed(store, env, &[item]))
+}
+
+/// Removes the dependency of `id` on `dep` and exports; the item's dependency block is settled again: unblocked when nothing
+/// is left to wait for, else blocked for the dependency that still waits.
+///
+/// # Errors
+///
+/// Fails when a worker asks, `id` does not depend on `dep`, or the store fails.
+pub fn undepend(store: &mut Store, env: &Env<'_>, id: i64, dep: i64) -> Result<Change> {
+    if backlog_actor(env.actor) == BacklogActor::Worker {
+        bail!("a worker does not change dependencies: ask the orchestrator");
+    }
+    let item = store.remove_backlog_dependency(id, dep, env.actor, None)?;
     Ok(changed(store, env, &[item]))
 }
 
@@ -885,6 +919,15 @@ pub fn spawn_linked(
         )
     };
     if let Some(id) = item {
+        let deps = store.backlog_item(id)?.deps;
+        if request.depends_on.is_some() && !deps.is_empty() {
+            let ids: Vec<String> = deps.iter().map(|dep| format!("#{dep}")).collect();
+            bail!(
+                "backlog item {id} depends on {}: its order comes from those items, so `--after` (a task dependency) is refused; \
+                 remove the item dependencies or drop `--after`",
+                ids.join(", ")
+            );
+        }
         store.check_backlog_move(id, &link(None))?;
     }
     let (task, pumped) = spawn(store, env, request)?;
@@ -997,6 +1040,7 @@ pub fn list(
     owner: Option<BacklogOwner>,
     status: Option<&str>,
     state: Option<&str>,
+    epic: Option<i64>,
 ) -> Result<Vec<BacklogItem>> {
     let statuses = match (status, state) {
         (Some(word), _) => statuses(word)?,
@@ -1007,6 +1051,7 @@ pub fn list(
         project: project.map(str::to_owned),
         owner,
         statuses,
+        epic,
     })?)
 }
 

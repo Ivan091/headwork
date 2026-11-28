@@ -342,6 +342,7 @@ fn backlog_answer(db: &Path, query: &BacklogQuery) -> Result<BacklogAnswer> {
         project: query.project.clone(),
         owner: query.owner,
         statuses: query.statuses.clone(),
+        ..BacklogFilter::default()
     })?;
     Ok(BacklogAnswer {
         items,
@@ -545,6 +546,8 @@ fn node_details(db: &Path, id: &str) -> Result<Option<NodeDetails>> {
         | Shape::Job(_)
         | Shape::Pr(_)
         | Shape::Ask(_)
+        | Shape::Item(_)
+        | Shape::Epic(_)
         | Shape::External => None,
     };
     let spend = whose.map(|whose| store.spend_of(whose)).transpose()?;

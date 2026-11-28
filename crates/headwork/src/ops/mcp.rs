@@ -407,6 +407,7 @@ const TOOLS: &[ToolDef] = &[
                 json!({
                     "project": { "type": "string" },
                     "owner": { "type": "string", "enum": ["user", "agent"] },
+                    "epic": { "type": "integer", "description": "Only the children of this epic." },
                     "status": {
                         "type": "string",
                         "enum": ["open", "backlog", "in_progress", "blocked", "done", "cancelled", "all"],
@@ -439,8 +440,51 @@ const TOOLS: &[ToolDef] = &[
                     "not_before": { "type": "string", "description": "YYYY-MM-DD: do not start before." },
                     "due": { "type": "string", "description": "YYYY-MM-DD." },
                     "notes": { "type": "array", "items": { "type": "string" }, "description": "Sub-bullets." },
+                    "after": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Items this one waits for: it is blocked until each is done. Orchestrator only.",
+                    },
+                    "epic": { "type": "boolean", "description": "Add an epic (a group of items, one level deep). Orchestrator only." },
+                    "parent": { "type": "integer", "description": "The epic this item belongs to. Orchestrator only." },
                 }),
                 &["project", "text"],
+            )
+        },
+    },
+    ToolDef {
+        name: "backlog_depend",
+        description: concat!(
+            "Make a backlog item wait for others, and export `backlog.md`: it is blocked (`depends`) until each is done, and ",
+            "freed when the last is. Refused for itself, an item not in the backlog or blocked, a blocked item that does not ",
+            "return to the backlog, a cancelled dependency, and a cycle.",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer", "description": "The item that waits." },
+                    "on": { "type": "array", "items": { "type": "integer" }, "description": "The items it waits for." },
+                }),
+                &["id", "on"],
+            )
+        },
+    },
+    ToolDef {
+        name: "backlog_undepend",
+        description: concat!(
+            "Remove a dependency of a backlog item, and export `backlog.md`; its dependency block is settled again: with ",
+            "nothing left to wait for the item goes back to what it was, else it is blocked for the dependency that still ",
+            "waits (`dep_cancelled` while one is cancelled).",
+        ),
+        roles: ORCHESTRATOR,
+        schema: || {
+            object(
+                json!({
+                    "id": { "type": "integer", "description": "The item that waited." },
+                    "on": { "type": "integer", "description": "The item it no longer waits for." },
+                }),
+                &["id", "on"],
             )
         },
     },
@@ -1516,6 +1560,7 @@ impl<'a> Server<'a> {
             word("owner").map(str::parse).transpose()?,
             word("status"),
             word("state"),
+            optional_integer(args, "epic")?,
         )?;
         to_text(
             &items
@@ -1547,6 +1592,19 @@ impl<'a> Server<'a> {
             not_before: optional("not_before").map(str::parse).transpose()?,
             due: optional("due").map(str::parse).transpose()?,
             notes,
+            shape: headwork_store::ItemShape {
+                kind: optional_bool(args, "epic")?
+                    .then_some(headwork_core::backlog::ItemKind::Epic),
+                parent: optional_integer(args, "parent")?,
+                after: match args.get("after") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(Value::Array(ids)) => ids
+                        .iter()
+                        .map(|id| id.as_i64().context("`after` holds item ids as integers"))
+                        .collect::<Result<_>>()?,
+                    Some(_) => bail!("`after` is a list of item ids"),
+                },
+            },
         };
         if let Some((session, Role::Worker)) = self.identity.managed() {
             let task = self.own_task(session)?;
@@ -1557,7 +1615,7 @@ impl<'a> Server<'a> {
 
     fn backlog_done(&mut self, args: &Value) -> Result<String> {
         let note = args.get("note").and_then(Value::as_str);
-        let target = if flag(args, "drop") {
+        let target = if optional_bool(args, "drop")? {
             Target::Cancelled
         } else {
             Target::Done
@@ -1569,6 +1627,36 @@ impl<'a> Server<'a> {
         match name {
             "backlog_list" => self.backlog_list(args),
             "backlog_add" => self.backlog_add(args),
+            "backlog_depend" => {
+                let on: Vec<i64> = args
+                    .get("on")
+                    .and_then(Value::as_array)
+                    .context("`on` is a list of item ids")?
+                    .iter()
+                    .map(|id| id.as_i64().context("`on` holds item ids as integers"))
+                    .collect::<Result<_>>()?;
+                if on.is_empty() {
+                    bail!("`on` must name at least one item id");
+                }
+                to_text(&super::backlog::depend(
+                    self.store,
+                    &self.env,
+                    backlog_id(args)?,
+                    &on,
+                )?)
+            }
+            "backlog_undepend" => {
+                let on = args
+                    .get("on")
+                    .and_then(Value::as_i64)
+                    .context("`on` is an item id")?;
+                to_text(&super::backlog::undepend(
+                    self.store,
+                    &self.env,
+                    backlog_id(args)?,
+                    on,
+                )?)
+            }
             "backlog_done" => self.backlog_done(args),
             "backlog_edit" => self.backlog_edit(args),
             "backlog_start" => self.backlog_move(args, Target::InProgress, None),
@@ -2532,6 +2620,25 @@ fn spawn_flags(args: &Value, kind: &str, reason_key: &str) -> Result<super::flag
         args.get("decided_by").and_then(Value::as_str),
         args.get(reason_key).and_then(Value::as_str),
     )
+}
+
+fn optional_integer(args: &Value, key: &str) -> Result<Option<i64>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| anyhow!("`{key}` must be an integer")),
+    }
+}
+
+fn optional_bool(args: &Value, key: &str) -> Result<bool> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| anyhow!("`{key}` must be a boolean")),
+    }
 }
 
 fn flag(args: &Value, key: &str) -> bool {

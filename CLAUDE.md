@@ -35,7 +35,7 @@ docs/                   design, research, trials, decisions
 
 
 The MCP server (`headwork mcp`, `ops/mcp.rs`) offers the orchestrator tools (board, status, usage, inbox, spawn, drop, close, answer, queue, clean, reap, update, config_sync, migrate_list, migrate_mark,
-backlog_list, backlog_add, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done (with `outcome` `done` or `partial`), recap, item_block, item_unblock, job_start,
+backlog_list, backlog_add, backlog_depend, backlog_undepend, backlog_done, backlog_start, backlog_cancel, backlog_block, backlog_unblock, backlog_reopen, backlog_edit, rules, rule_add, rule_retire, job_status, job_forget, park, resume; an explorer, a worker of kind `explore`, also gets `backlog_list` and `backlog_add`) and the worker tools (board, inbox, migrate_list, report, done (with `outcome` `done` or `partial`), recap, item_block, item_unblock, job_start,
 job_register, job_status, job_stop, job_forget, helper_tab, worktree_add, and for a lead part_spawn and part_drop) by the session's identity. A lead's or part's board and inbox show only the lead and its parts; a lead's rules add `rules/lead.md`, and `{parent}` in `rules/worker.md` names a part's lead (L3, `docs/leads.md`). `headwork mcp` itself is a relay (`ops/relay.rs`) over
 `headwork mcp --serve`, replaced when a new build is installed; every build must keep accepting `mcp --serve`. Hot
 reload (`ops/install.rs`, `ops/reload.rs`, `headwork exited`) is described in `docs/hot-reload.md`.
@@ -198,7 +198,7 @@ that checks the `Host` header; the page (`dash/index.html`, `app.js`, `style.css
 fcose (`dash/vendor/`, versions and checksums in `dash/VENDOR.md`) are built into the binary. D3 adds `/api/range`,
 `/api/events?since=` and `/api/stream` (server-sent `change` lines written straight to the socket when the event log
 grows), and the page's timeline: live, a slider over the log, play at 1x to 1000x, pulses on new talk, and "replay
-this task". D4 adds tokens (`Facts::spend`, `Store::spend_of`) for "size by cost" and the panel, and badges: open tick
+this task". D4 adds tokens (`Facts::spend`, `Store::spend_of`) for "size by cost" and the panel, item and epic nodes with their `depends`, `part-of` and `tracks` edges (`docs/dashboard.md`, section 4a), and badges: open tick
 findings on a task, open asks on the user, review findings on a review and its flow nodes. The header button `backlog` opens a read-only drawer (`/api/backlog`, `ops/dash.rs`; open items by project and section with owner, dates, linked task and "Waiting on you", the digest's own rule `core::digest::waiting_items`; a task chip selects its node; polled every 30 s).
 Migration notes (`docs/migrations.md`) tell another machine what a change asks of it: one TOML file per note in a repository's
 `migrations/`, read from the remote default branch (`adapters/src/notes.rs`: fetch in batch ssh mode, `git show`, never the working
@@ -208,7 +208,7 @@ claude_config repository of `sources.toml` and `[hooks] orchestrator_repos`). `d
 finding `migration-pending` and `update.json` notices (after `update` and `config sync`, once per note) surface pending notes;
 `scripts/check.sh` validates `migrations/` and, on a pull request, its `Migration:` line; `release.yml` lists new notes in the
 release. Every pull request body carries `Migration: migrations/<id>.toml` or `Migration: none (<reason>)`.
-The backlog (`docs/backlog.md`, migrations 0026, 0027 and 0031; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
+The backlog (`docs/backlog.md`, migrations 0026, 0027, 0031 and 0032; it was the to-do list) lives in the store: `core/src/backlog.rs` parses and renders `backlog.md` (pure),
 `store/src/backlog.rs` holds the rows (`backlog_items`) and `backlog_files`, `ops/backlog.rs` imports, exports and changes items for `headwork backlog` and
 the orchestrator's `backlog_*` tools. `[backlog] file` (machine-only) names the generated file: an export writes it after every
 change, after a close and in each tick, refuses a file never imported, and copies a hand-edited one to `<home>/backlog-backups`
@@ -216,6 +216,7 @@ first; pointing it at a new file moves the list there (`backlog-file-moved`, `co
 line under `[backlog] leave_pointer`). Each item has a stored status (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`;
 section 10): moves go through the pure guard `core::backlog::transition` and `Store::move_backlog_item` (logs `backlog-moved`), adds through
 `transition(None, ...)`, and import is the one way in that skips the guard.
+Item dependencies and epics (`docs/backlog.md`, section 11, migration 0032) live in `backlog_deps` and the `kind` and `parent_id` columns: `core::backlog::check_dependency` and `check_parent` are the pure guards, and `write_move` settles the block of every dependant (`settle_dependency_block`) after any move of an item, so the CLI, the tools, a task's end and close all keep the gate.
 `spawn --backlog <id>` links an item and moves it to `in_progress`, and a spawn without it gets an item of its own from the brief's goal line (`auto_item`); `backlog cancel` drops the item's live task first; a worker's `done` with `partial` blocks its item (`record_partial_outcome`); the digest lists `decision`, `task_lost`, `partial` and `dep_cancelled` blocks; `apply_in` runs the task-end table on every linked in-progress
 item (merged or closed: done; dropped or failed: blocked `task_lost`). The old names (`headwork todo`, `todo_*` tools, `spawn --todo`, `[todo] file`, the `todo-backups` folder) work for one release and are
 listed in `docs/backlog.md`, section 9.
@@ -279,8 +280,8 @@ cargo run -p headwork -- tick [--json]                 # reconcile the store wit
 cargo run -p headwork -- tick --install | --uninstall  # create or remove the Windows task "headwork tick" or the macOS launch agent (after the user's Allow tap)
 cargo run -p headwork -- reap [--dry-run] [--json]     # end what ended sessions left running and orphaned idle tail/bash
 cargo run -p headwork -- leftovers [--all] [--json] | clear (<rc name or session id>... | --all)   # ended sessions that left no `/exit`, still listed in the Claude app; clear after archiving them there
-cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--json]   # the backlog kept in the store (docs/backlog.md)
-cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... | start | unblock | reopen <id> | block <id> --reason decision|event --note N | cancel <id> [--reason R] | done <id> [--note N] | edit <id> [...]
+cargo run -p headwork -- backlog [list] [--project P] [--owner user|agent] [--status open|backlog|in_progress|blocked|done|cancelled|all] [--epic ID] [--json]   # the backlog kept in the store (docs/backlog.md)
+cargo run -p headwork -- backlog add <project> <text> [--section S] [--owner O] [--not-before D] [--due D] [--note N]... [--after ID]... [--epic | --parent ID] | depend <id> --on <id>... | undepend <id> --on <id> | start | unblock | reopen <id> | block <id> --reason decision|event --note N | cancel <id> [--reason R] | done <id> [--note N] | edit <id> [...]
 cargo run -p headwork -- backlog import [--file P] [--dry-run] | export [--file P]   # backlog.md into the store (never deletes) and back out (backs up a hand-edited file)
 cargo run -p headwork -- digest [--json]   # "Needs you": asks, backlog items due, migration notes, waiting pull requests, old findings (docs/backlog.md, section 8)
 cargo run -p headwork -- park [--deadline S] [--keep-orchestrator]   # recaps, jobs stopped at checkpoints, panes closed, the orchestrator last: safe to restart

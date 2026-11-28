@@ -58,6 +58,7 @@ panel on click.
 | `job` | `jobs` | label | satellite of its task; colour by state |
 | `pr` | `prs` | `#<number>` | satellite of its task; gate and merge state |
 | `ask` | `asks` open or answered | header, else the start of its question | edge-node between the session and `user` while open; folds into a line on the edge once answered |
+| `item` / `epic` | `backlog_items` (section 4a) | `#<id> <start of its text>` | the item's status (`backlog`, `in_progress`, `blocked`, `done`, `cancelled`) is its state; the project and full text are in details; an epic is drawn larger |
 | `external` | a message address headwork does not know | the address | drawn apart, its id a hash of the address; a name headwork knows but this view does not draw gets no edge |
 
 Projects are not nodes: tasks are coloured or grouped by project (a filter, section 7).
@@ -86,6 +87,16 @@ cut to 120 characters, never the body. The receiver side already logs `cross_ses
 senders outside headwork and for history before `to`; a message to a session headwork runs is counted there, and one
 to anything else from the sender's event. A message to a name headwork does not know becomes an edge to an `external`
 node. No schema change, an event payload field only.
+
+## 4a. Backlog items
+
+Items are nodes `item:<id>` (`kind` `item` or `epic`), read straight from `backlog_items` and `backlog_deps` by `Store::graph_facts`. A view draws an item when:
+
+- it is linked to a task the view draws (any status); or
+- it is open (`backlog`, `in_progress`, `blocked`) and has a dependency or a dependant; or
+- it is an epic with an open child (the last two rules apply to every view except one task's, `--task`).
+
+Edges: `depends` (item to the item it waits for, dashed amber), `part-of` (item to its epic, dotted) and `tracks` (task to its linked item, dotted); an edge whose other end is not drawn is left out. A past instant (`--at`, the replay slider) draws the items and the dependencies added by then (`created_at`); a replay draws only the dependencies still stored, so a dependency removed before now is not drawn even at an instant when it existed, and an item's status is not replayed from the `backlog-moved` events, so each shows the status it has now. The page has a `backlog items` filter and a legend entry; the project filter applies through the item's project.
 
 ## 5. Store: one new migration
 

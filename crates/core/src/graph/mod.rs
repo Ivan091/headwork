@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 pub use build::build;
 
+use crate::backlog::ItemStatus;
 use crate::review::Level;
 use crate::vocabulary::{
     Actor, AskState, Effort, FindingVerdict, JobState, Model, NodeState, PullState, Resolution,
@@ -285,6 +286,38 @@ pub struct ReviewFindingFact {
     pub resolution: Option<Resolution>,
 }
 
+/// A backlog item as the graph needs it (`backlog_items`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemFact {
+    /// The store's id.
+    pub id: i64,
+    /// The project.
+    pub project: String,
+    /// The item's text.
+    pub text: String,
+    /// Where it stands now; a replay shows this (the status is not yet replayed from the `backlog-moved` events).
+    pub status: ItemStatus,
+    /// Whether it is an epic.
+    pub epic: bool,
+    /// The epic it belongs to.
+    pub parent: Option<i64>,
+    /// The task linked to it.
+    pub task: Option<i64>,
+    /// When it was added.
+    pub created_at: String,
+}
+
+/// An item waiting for another (`backlog_deps`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepFact {
+    /// The item that waits.
+    pub item: i64,
+    /// The item it waits for.
+    pub depends_on: i64,
+    /// When the dependency was added.
+    pub created_at: String,
+}
+
 /// Tokens spent (every input kind plus output), as the usage reader stored them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Spend {
@@ -348,6 +381,10 @@ pub struct Facts {
     pub findings: Vec<FindingFact>,
     /// Every review finding.
     pub review_findings: Vec<ReviewFindingFact>,
+    /// Every backlog item.
+    pub items: Vec<ItemFact>,
+    /// Every dependency between backlog items.
+    pub item_deps: Vec<DepFact>,
     /// The tokens spent so far.
     pub spend: Spend,
     /// Events left out because they hold a word this build does not know, each named with why.
@@ -393,6 +430,10 @@ text_enum!(
         Pr => "pr",
         /// An open ask to the user.
         Ask => "ask",
+        /// A backlog item.
+        Item => "item",
+        /// A backlog epic.
+        Epic => "epic",
         /// A message address headwork does not know.
         External => "external",
     }
@@ -423,6 +464,10 @@ text_enum!(
         Ran => "ran",
         /// A task delivers in a pull request.
         Delivered => "delivered",
+        /// A backlog item waits for another.
+        Depends => "depends",
+        /// A task works on a backlog item.
+        Tracks => "tracks",
     }
 );
 
@@ -457,6 +502,8 @@ pub enum Status {
     ReviewNode(NodeState),
     /// An open ask.
     Ask(AskState),
+    /// A backlog item or epic.
+    Item(ItemStatus),
 }
 
 impl Status {
@@ -472,6 +519,7 @@ impl Status {
             Self::Review(state) => state.as_str(),
             Self::ReviewNode(state) => state.as_str(),
             Self::Ask(state) => state.as_str(),
+            Self::Item(state) => state.as_str(),
         }
     }
 }
@@ -510,6 +558,10 @@ pub enum Shape {
     Pr(PullState),
     /// An open ask.
     Ask(AskState),
+    /// A backlog item.
+    Item(ItemStatus),
+    /// A backlog epic.
+    Epic(ItemStatus),
     /// A message address headwork does not know.
     External,
 }
@@ -531,6 +583,8 @@ impl Shape {
             Self::Job(_) => NodeKind::Job,
             Self::Pr(_) => NodeKind::Pr,
             Self::Ask(_) => NodeKind::Ask,
+            Self::Item(_) => NodeKind::Item,
+            Self::Epic(_) => NodeKind::Epic,
             Self::External => NodeKind::External,
         }
     }
@@ -550,6 +604,7 @@ impl Shape {
             Self::Job(state) => Some(Status::Job(state)),
             Self::Pr(state) => Some(Status::Pull(state)),
             Self::Ask(state) => Some(Status::Ask(state)),
+            Self::Item(state) | Self::Epic(state) => Some(Status::Item(state)),
         }
     }
 }

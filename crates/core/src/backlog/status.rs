@@ -278,6 +278,20 @@ impl Target {
     }
 }
 
+fn waiting_text(open: usize, cancelled: usize) -> String {
+    let part = |count: usize, word: &str| (count > 0).then(|| format!("{count} {word}"));
+    let parts = [part(open, "open"), part(cancelled, "cancelled")]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let noun = if open + cancelled == 1 {
+        "dependency"
+    } else {
+        "dependencies"
+    };
+    format!("{} {noun}", parts.join(" and "))
+}
+
 /// What the guard knows about an item besides its status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
@@ -295,6 +309,10 @@ pub struct MoveFacts<'a> {
     pub has_project: bool,
     /// Whether the move names a task to link that is not the live task linked to it.
     pub links_another_task: bool,
+    /// How many items it depends on that are neither done nor cancelled.
+    pub open_dependencies: usize,
+    /// How many items it depends on that are cancelled.
+    pub cancelled_dependencies: usize,
     /// The note of a finish or the reason of a cancel the move came with.
     pub reason: Option<&'a str>,
 }
@@ -384,6 +402,14 @@ pub enum MoveRefusal {
     /// A cancel of an item a live task works on, at the store; the ops-level cancel drops the task first.
     #[error("task {0} works on it: drop the task first, then cancel the item")]
     DropTaskFirst(String),
+    /// A start, respawn, relink or unblock of an item that still waits for dependencies.
+    #[error("it waits for {}: finish them, or remove the dependencies", waiting_text(*open, *cancelled))]
+    Dependencies {
+        /// Dependencies not yet done or cancelled.
+        open: usize,
+        /// Dependencies that were cancelled.
+        cancelled: usize,
+    },
     /// A start or link while a live task already works on it.
     #[error("task {0} already works on it")]
     TaskWorks(String),
@@ -598,30 +624,21 @@ fn decide(
         Target::InProgress => {
             start(from, actor, facts).map(|kind_of| moved(kind, BacklogStatus::InProgress, kind_of))
         }
-        Target::Blocked { reason, note } => {
-            let before = match from {
-                BacklogStatus::Backlog => ReturnTo::Backlog,
-                BacklogStatus::InProgress => ReturnTo::InProgress,
-                BacklogStatus::Blocked(_) => {
-                    return Err(MoveRefusal::Already(ItemStatus::Blocked));
-                }
-                BacklogStatus::Done | BacklogStatus::Cancelled => return Err(refuse()),
-            };
-            block_allowed(before, *reason, actor)?;
-            Ok(moved(
-                kind,
-                BacklogStatus::Blocked(Block {
-                    reason: *reason,
-                    note: note.clone(),
-                    before,
-                }),
-                MoveKind::Block,
-            ))
-        }
+        Target::Blocked { reason, note } => block(from, *reason, note.as_ref(), actor),
         Target::Unblock => match from {
             BacklogStatus::Blocked(block)
                 if matches!(actor, A::Headwork | A::Worker | A::Orchestrator | A::User) =>
             {
+                if matches!(
+                    block.reason,
+                    BlockReason::Depends | BlockReason::DepCancelled
+                ) && (facts.open_dependencies > 0 || facts.cancelled_dependencies > 0)
+                {
+                    return Err(MoveRefusal::Dependencies {
+                        open: facts.open_dependencies,
+                        cancelled: facts.cancelled_dependencies,
+                    });
+                }
                 Ok(moved(
                     kind,
                     block.before.backlog_status(),
@@ -643,6 +660,48 @@ fn decide(
         Target::Cancelled => cancel(from, actor, facts)
             .map(|()| moved(kind, BacklogStatus::Cancelled, MoveKind::Cancel)),
     }
+}
+
+fn block(
+    from: &BacklogStatus,
+    reason: BlockReason,
+    note: Option<&String>,
+    actor: BacklogActor,
+) -> Result<ItemMove, MoveRefusal> {
+    let before = match from {
+        BacklogStatus::Backlog => ReturnTo::Backlog,
+        BacklogStatus::InProgress => ReturnTo::InProgress,
+        BacklogStatus::Blocked(Block {
+            reason: current @ (BlockReason::Depends | BlockReason::DepCancelled),
+            before,
+            ..
+        }) if actor == BacklogActor::Headwork
+            && matches!(reason, BlockReason::Depends | BlockReason::DepCancelled)
+            && *current != reason =>
+        {
+            *before
+        }
+        BacklogStatus::Blocked(_) => return Err(MoveRefusal::Already(ItemStatus::Blocked)),
+        BacklogStatus::Done | BacklogStatus::Cancelled => {
+            return Err(not_allowed(
+                actor,
+                Some(from.kind()),
+                &Target::Blocked { reason, note: None },
+            ));
+        }
+    };
+    if !matches!(from, BacklogStatus::Blocked(_)) {
+        block_allowed(before, reason, actor)?;
+    }
+    Ok(moved(
+        Some(from.kind()),
+        BacklogStatus::Blocked(Block {
+            reason,
+            note: note.cloned(),
+            before,
+        }),
+        MoveKind::Block,
+    ))
 }
 
 /// Headwork ends the link of a done or blocked item whose task is over; the status stays.
@@ -707,6 +766,14 @@ fn start(
     if !facts.has_project {
         return Err(MoveRefusal::NoProject);
     }
+    if matches!(kind, MoveKind::Start | MoveKind::Respawn | MoveKind::Relink)
+        && (facts.open_dependencies > 0 || facts.cancelled_dependencies > 0)
+    {
+        return Err(MoveRefusal::Dependencies {
+            open: facts.open_dependencies,
+            cancelled: facts.cancelled_dependencies,
+        });
+    }
     Ok(kind)
 }
 
@@ -723,7 +790,7 @@ fn block_allowed(
             matches!(reason, R::Decision | R::Event)
         }
         (ReturnTo::InProgress, A::Headwork) => matches!(reason, R::TaskLost | R::Partial),
-        (ReturnTo::Backlog, A::Headwork) => matches!(reason, R::DepCancelled),
+        (ReturnTo::Backlog, A::Headwork) => matches!(reason, R::Depends | R::DepCancelled),
         (ReturnTo::Backlog, A::Explorer) => matches!(reason, R::Depends),
         (ReturnTo::InProgress, A::Explorer) | (ReturnTo::Backlog, A::Worker) => {
             return Err(MoveRefusal::NotAllowed {

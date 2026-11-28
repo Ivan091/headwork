@@ -14,13 +14,15 @@
     review: "show-reviews",
     "review-node": "show-reviews",
     ask: "show-asks",
+    item: "show-items",
+    epic: "show-items",
     user: "show-user",
   };
   const words = {
-    green: ["working", "spawning", "live", "starting", "running", "open-pr"],
+    green: ["in_progress", "working", "spawning", "live", "starting", "running", "open-pr"],
     red: ["needs_user", "failed", "open-ask", "pending"],
-    amber: ["in_review", "requested", "delivered", "rechecking", "asking", "ready", "stopping", "parking", "parked"],
-    grey: ["queued", "seen"],
+    amber: ["blocked", "in_review", "requested", "delivered", "rechecking", "asking", "ready", "stopping", "parking", "parked"],
+    grey: ["queued", "seen", "backlog"],
     faded: [
       "closed", "dropped", "merged", "closing", "interrupted", "ended", "gone", "done", "cancelled", "answered",
       "superseded", "expired",
@@ -150,6 +152,8 @@
       { selector: "node[kind = 'subagent'], node[kind = 'helper']", style: { "font-size": 8 } },
       { selector: "node[kind = 'job']", style: { shape: "round-rectangle", width: 16, height: 12 } },
       { selector: "node[kind = 'pr']", style: { shape: "tag", width: 16, height: 14 } },
+      { selector: "node[kind = 'item']", style: { shape: "round-rectangle", width: 30, height: 14, "font-size": 9 } },
+      { selector: "node[kind = 'epic']", style: { shape: "round-rectangle", width: 52, height: 26, "font-size": 11, "border-width": 2, "border-color": c.violet } },
       { selector: "node[kind = 'review']", style: { shape: "diamond", width: 20, height: 20 } },
       { selector: "node[kind = 'review-node']", style: { shape: "diamond", width: 10, height: 10, "font-size": 8 } },
       { selector: "node[kind = 'ask']", style: { shape: "round-triangle", width: 20, height: 20 } },
@@ -178,6 +182,8 @@
       { selector: "edge[kind = 'asked']", style: { "line-color": c.red, "target-arrow-color": c.red } },
       { selector: "edge[kind = 'depends-on']", style: { "line-style": "dashed" } },
       { selector: "edge[kind = 'part-of']", style: { "line-style": "dotted" } },
+      { selector: "edge[kind = 'depends']", style: { "line-style": "dashed", "line-color": c.amber, "target-arrow-color": c.amber } },
+      { selector: "edge[kind = 'tracks']", style: { "line-style": "dotted" } },
       {
         selector: "node[?working]",
         style: { "outline-color": c.green, "outline-width": 3, "outline-offset": 2, "outline-opacity": 1 },
@@ -239,11 +245,12 @@
 
   const TASK_KINDS = ["lead", "worker", "part"];
   const OWNED_EDGES = ["opened", "called", "delivered", "reviews", "ran"];
+  const ITEM_KINDS = ["item", "epic"];
 
   function projectsOf(nodes, edges) {
     const projects = new Map();
     for (const node of nodes) {
-      if (TASK_KINDS.includes(node.kind) && node.details && node.details.project) {
+      if ((TASK_KINDS.includes(node.kind) || ITEM_KINDS.includes(node.kind)) && node.details && node.details.project) {
         projects.set(node.id, node.details.project);
       }
     }
@@ -981,6 +988,7 @@
     ["ellipse", "a subagent or helper (smaller)", "green"],
     ["round-rectangle", "a job", "green"],
     ["tag", "a pull request", "green"],
+    ["round-rectangle", "a backlog item (an epic is larger, with a violet border)", "grey"],
     ["diamond", "a review or review node", "amber"],
     ["round-triangle", "an ask", "red"],
     ["round-octagon", "an outside address", "grey"],
@@ -989,12 +997,14 @@
     ["green", "working, running, live, open pull request"],
     ["amber", "in review, ready, parked, requested"],
     ["red", "needs you, failed, open ask"],
-    ["grey", "queued or not yet seen"],
+    ["grey", "queued, not yet seen, backlog item not started"],
     ["faded", "closed, merged, ended, done"],
   ];
   const EDGE_ROWS = [
     ["", "#line", "spawned, called, opened, reviews"],
     ["dotted", "#line", "a part hangs off its lead"],
+    ["dashed", "#amber", "a backlog item waits for another"],
+    ["dotted", "#line", "a task tracks its item; an item belongs to its epic"],
     ["", "#blue", "message between sessions (count on the line)"],
     ["", "#green", "report to the orchestrator"],
     ["", "#red", "ask to the user"],

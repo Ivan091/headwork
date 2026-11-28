@@ -23,6 +23,9 @@ fn rows(drafts: &[BacklogDraft]) -> Vec<BacklogItem> {
             id,
             position: id,
             task: None,
+            kind: headwork_core::backlog::ItemKind::Item,
+            parent: None,
+            deps: Vec::new(),
             draft: draft.clone(),
         })
         .collect()

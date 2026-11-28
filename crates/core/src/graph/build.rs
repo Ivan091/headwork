@@ -12,6 +12,9 @@ use crate::vocabulary::{
     SessionState, TaskState,
 };
 
+/// The longest text of an item's label, in characters.
+pub(super) const ITEM_LABEL_CHARS: usize = 40;
+
 /// The longest label an ask without a header takes from its question, in characters.
 pub(super) const ASK_LABEL_CHARS: usize = 40;
 
@@ -389,6 +392,7 @@ pub fn build(facts: &Facts, at: Option<&str>, scope: Scope) -> Graph {
     messages(&draw, &mut canvas);
     reports(&draw, &mut canvas);
     asks(&draw, &mut canvas);
+    items(&draw, &mut canvas);
     spend_and_badges(&draw, &mut canvas);
     canvas.finish(at, &facts.skipped)
 }
@@ -1092,4 +1096,118 @@ fn finding_badges(node: &mut Node, found: &[&super::ReviewFindingFact]) {
         .collect::<Vec<_>>()
         .join(", ");
     node.details.insert("findings".to_owned(), summary);
+}
+
+fn item_node(item: i64) -> String {
+    format!("item:{item}")
+}
+
+fn short_text(text: &str, max: usize) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= max {
+        line.to_owned()
+    } else {
+        let kept: String = line.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", kept.trim_end())
+    }
+}
+
+fn replayed_deps<'f>(draw: &Draw<'f>) -> impl Iterator<Item = &'f super::DepFact> {
+    let draw_until = draw.at;
+    draw.facts
+        .item_deps
+        .iter()
+        .filter(move |dep| draw_until.is_none_or(|at| dep.created_at.as_str() <= at))
+}
+
+/// The backlog items drawn: those linked to a drawn task; and, outside a one-task view, open ones with a dependency or
+/// a dependant, and epics with an open child. An instant shows the items created by then and the dependencies still
+/// stored that were added by then, each item in its status now: a dependency removed before now is not drawn even at an
+/// instant when it existed, because removals are not replayed.
+fn drawn_items<'f>(draw: &Draw<'f>) -> Vec<&'f super::ItemFact> {
+    let existing: Vec<&super::ItemFact> = draw
+        .facts
+        .items
+        .iter()
+        .filter(|item| draw.at.is_none_or(|at| item.created_at.as_str() <= at))
+        .collect();
+    let ids: BTreeSet<i64> = existing.iter().map(|item| item.id).collect();
+    let open_ids: BTreeSet<i64> = existing
+        .iter()
+        .filter(|item| item.status.is_open())
+        .map(|item| item.id)
+        .collect();
+    let mut tied: BTreeSet<i64> = BTreeSet::new();
+    for dep in replayed_deps(draw) {
+        if ids.contains(&dep.item) && ids.contains(&dep.depends_on) {
+            tied.insert(dep.item);
+            tied.insert(dep.depends_on);
+        }
+    }
+    let parents: BTreeSet<i64> = existing
+        .iter()
+        .filter(|item| item.status.is_open())
+        .filter_map(|item| item.parent)
+        .collect();
+    let whole = !matches!(draw.scope, Scope::Task(_));
+    existing
+        .into_iter()
+        .filter(|item| {
+            item.task.is_some_and(|task| draw.is_drawn(task))
+                || (whole
+                    && open_ids.contains(&item.id)
+                    && (tied.contains(&item.id) || (item.epic && parents.contains(&item.id))))
+        })
+        .collect()
+}
+
+fn items(draw: &Draw<'_>, canvas: &mut Canvas) {
+    for item in drawn_items(draw) {
+        let id = item_node(item.id);
+        let shape = if item.epic {
+            Shape::Epic(item.status)
+        } else {
+            Shape::Item(item.status)
+        };
+        canvas.put(Node {
+            id: id.clone(),
+            shape,
+            label: format!("#{} {}", item.id, short_text(&item.text, ITEM_LABEL_CHARS)),
+            start: Some(item.created_at.clone()),
+            end: None,
+            details: details([
+                ("project", Some(item.project.clone())),
+                ("text", Some(item.text.clone())),
+            ]),
+            tokens: None,
+            badges: BTreeMap::new(),
+        });
+        if let Some(task) = item.task.filter(|task| draw.is_drawn(*task)) {
+            canvas.link(
+                EdgeKind::Tracks,
+                &task_node(task),
+                &id,
+                None,
+                Some(&item.created_at),
+            );
+        }
+        if let Some(parent) = item.parent {
+            canvas.link(
+                EdgeKind::PartOf,
+                &id,
+                &item_node(parent),
+                None,
+                Some(&item.created_at),
+            );
+        }
+    }
+    for dep in replayed_deps(draw) {
+        canvas.link(
+            EdgeKind::Depends,
+            &item_node(dep.item),
+            &item_node(dep.depends_on),
+            None,
+            Some(&dep.created_at),
+        );
+    }
 }

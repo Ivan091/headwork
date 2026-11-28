@@ -35,6 +35,8 @@ const PLAIN: MoveFacts<'static> = MoveFacts {
     in_actor_epic: false,
     has_project: true,
     links_another_task: false,
+    open_dependencies: 0,
+    cancelled_dependencies: 0,
     reason: None,
 };
 
@@ -1589,4 +1591,182 @@ more"
         goal_line(&"x".repeat(500)).map(|goal| goal.chars().count()),
         Some(160)
     );
+}
+
+#[test]
+fn headwork_blocks_a_backlog_item_for_depends() {
+    let step = transition(
+        Some(&BacklogStatus::Backlog),
+        &block(R::Depends),
+        A::Headwork,
+        &PLAIN,
+    )
+    .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+    assert_eq!(step.to, blocked(R::Depends, ReturnTo::Backlog));
+    assert_eq!(step.kind, MoveKind::Block);
+}
+
+#[test]
+fn headwork_turns_a_depends_block_into_dep_cancelled_and_keeps_where_it_returns_to() {
+    for before in [ReturnTo::Backlog, ReturnTo::InProgress] {
+        let from = blocked(R::Depends, before);
+        let step = transition(Some(&from), &block(R::DepCancelled), A::Headwork, &PLAIN)
+            .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+        assert_eq!(step.to, blocked(R::DepCancelled, before));
+        assert_eq!(step.kind, MoveKind::Block);
+    }
+}
+
+#[test]
+fn only_headwork_swaps_a_depends_block_and_no_other_block_is_swapped() {
+    let from = blocked(R::Depends, ReturnTo::Backlog);
+    for actor in [A::User, A::Orchestrator, A::Explorer, A::Worker] {
+        assert!(
+            transition(Some(&from), &block(R::DepCancelled), actor, &OWN).is_err(),
+            "{actor}"
+        );
+    }
+    for reason in [R::Event, R::Decision, R::TaskLost, R::DepCancelled] {
+        let from = blocked(reason, ReturnTo::Backlog);
+        assert_eq!(
+            transition(Some(&from), &block(R::DepCancelled), A::Headwork, &PLAIN),
+            Err(MoveRefusal::Already(ItemStatus::Blocked)),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn headwork_swaps_dep_cancelled_back_to_depends_and_no_one_else_does() {
+    let from = blocked(R::DepCancelled, ReturnTo::Backlog);
+    let step = transition(Some(&from), &block(R::Depends), A::Headwork, &PLAIN)
+        .unwrap_or_else(|refusal| unreachable!("{refusal}"));
+    assert_eq!(step.to, blocked(R::Depends, ReturnTo::Backlog));
+    for actor in [A::User, A::Orchestrator, A::Explorer] {
+        assert!(
+            transition(Some(&from), &block(R::Depends), actor, &PLAIN).is_err(),
+            "{actor}"
+        );
+    }
+    assert_eq!(
+        transition(
+            Some(&blocked(R::Depends, ReturnTo::Backlog)),
+            &block(R::Depends),
+            A::Headwork,
+            &PLAIN
+        ),
+        Err(MoveRefusal::Already(ItemStatus::Blocked))
+    );
+}
+
+#[test]
+fn a_start_or_respawn_is_refused_for_any_actor_while_a_dependency_is_open_or_cancelled() {
+    let waiting = [
+        MoveFacts {
+            open_dependencies: 1,
+            ..PLAIN
+        },
+        MoveFacts {
+            cancelled_dependencies: 1,
+            ..PLAIN
+        },
+    ];
+    let lost = blocked(R::TaskLost, ReturnTo::InProgress);
+    for facts in &waiting {
+        for actor in [A::User, A::Orchestrator, A::Headwork] {
+            for from in [&BacklogStatus::Backlog, &lost] {
+                assert!(
+                    matches!(
+                        transition(Some(from), &Target::InProgress, actor, facts),
+                        Err(MoveRefusal::Dependencies { .. })
+                    ),
+                    "{actor} from {from}"
+                );
+            }
+        }
+    }
+    for from in [&BacklogStatus::Backlog, &lost] {
+        assert!(transition(Some(from), &Target::InProgress, A::User, &PLAIN).is_ok());
+    }
+}
+
+#[test]
+fn a_relink_is_refused_while_a_dependency_waits() {
+    let facts = MoveFacts {
+        open_dependencies: 1,
+        ..PLAIN
+    };
+    for actor in [A::User, A::Orchestrator, A::Headwork] {
+        assert!(
+            matches!(
+                transition(
+                    Some(&BacklogStatus::InProgress),
+                    &Target::InProgress,
+                    actor,
+                    &facts
+                ),
+                Err(MoveRefusal::Dependencies { .. })
+            ),
+            "{actor}"
+        );
+        assert!(
+            transition(
+                Some(&BacklogStatus::InProgress),
+                &Target::InProgress,
+                actor,
+                &PLAIN
+            )
+            .is_ok(),
+            "{actor}"
+        );
+    }
+}
+
+#[test]
+fn an_unblock_of_a_dependency_block_is_refused_while_a_dependency_waits_and_other_blocks_lift() {
+    let waiting = [
+        MoveFacts {
+            open_dependencies: 2,
+            ..PLAIN
+        },
+        MoveFacts {
+            cancelled_dependencies: 1,
+            ..PLAIN
+        },
+    ];
+    for facts in &waiting {
+        for reason in [R::Depends, R::DepCancelled] {
+            let from = blocked(reason, ReturnTo::Backlog);
+            for actor in [A::User, A::Orchestrator, A::Headwork] {
+                assert!(
+                    matches!(
+                        transition(Some(&from), &Target::Unblock, actor, facts),
+                        Err(MoveRefusal::Dependencies { .. })
+                    ),
+                    "{actor} {reason}"
+                );
+            }
+            assert!(transition(Some(&from), &Target::Unblock, A::User, &PLAIN).is_ok());
+        }
+        for reason in [R::Decision, R::Event] {
+            let from = blocked(reason, ReturnTo::Backlog);
+            assert!(
+                transition(Some(&from), &Target::Unblock, A::User, facts).is_ok(),
+                "{reason}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_dependencies_refusal_reads_well_for_each_mix() {
+    let text = |open, cancelled| MoveRefusal::Dependencies { open, cancelled }.to_string();
+    assert!(
+        text(0, 2).contains("2 cancelled dependencies"),
+        "{}",
+        text(0, 2)
+    );
+    assert!(!text(0, 2).contains("0 open"));
+    assert!(text(1, 0).contains("1 open dependency"));
+    assert!(text(1, 1).contains("1 open and 1 cancelled dependencies"));
 }

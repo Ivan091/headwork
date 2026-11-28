@@ -390,6 +390,9 @@ mod tests {
             id,
             position: id,
             task: None,
+            kind: crate::backlog::ItemKind::Item,
+            parent: None,
+            deps: Vec::new(),
             draft: BacklogDraft {
                 project: "demo".to_owned(),
                 section: None,
