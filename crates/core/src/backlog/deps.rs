@@ -121,8 +121,10 @@ pub fn would_cycle(edges: &[(i64, i64)], item: i64, dep: i64) -> Option<Vec<i64>
     None
 }
 
-/// The guard for adding "`item` depends on `dep`": not itself, the item in the backlog or blocked, a blocked item one that
-/// returns to the backlog, the dependency not cancelled, not a cycle. A dependency already done is allowed (it gates nothing).
+/// The guard for adding "`item` depends on `dep`".
+///
+/// Refused, in this order: itself, an item not in the backlog or blocked, a blocked item that does not return to the
+/// backlog, a cancelled dependency, a cycle. A dependency already done is allowed (it gates nothing).
 ///
 /// # Errors
 ///
@@ -182,7 +184,7 @@ impl WaitingDependencies {
 
     /// Whether any dependency holds the item back.
     #[must_use]
-    pub fn any(&self) -> bool {
+    pub const fn any(&self) -> bool {
         !self.open.is_empty() || !self.cancelled.is_empty()
     }
 
@@ -281,6 +283,8 @@ mod tests {
         }
     }
 
+    type Row<'a> = (&'a BacklogStatus, Vec<(i64, ItemStatus)>, Option<Target>);
+
     fn blocked(reason: BlockReason) -> BacklogStatus {
         BacklogStatus::Blocked(Block {
             reason,
@@ -289,11 +293,11 @@ mod tests {
         })
     }
 
-    fn block_to(reason: BlockReason, note: &str) -> Option<Target> {
-        Some(Target::Blocked {
+    fn block_to(reason: BlockReason, note: &str) -> Target {
+        Target::Blocked {
             reason,
             note: Some(note.to_owned()),
-        })
+        }
     }
 
     #[test]
@@ -302,28 +306,28 @@ mod tests {
         let depends = blocked(BlockReason::Depends);
         let cancelled = blocked(BlockReason::DepCancelled);
         let backlog = BacklogStatus::Backlog;
-        let table: Vec<(&BacklogStatus, Vec<(i64, ItemStatus)>, Option<Target>)> = vec![
+        let table: Vec<Row<'_>> = vec![
             (&backlog, vec![], None),
             (&backlog, vec![(1, S::Done)], None),
             (
                 &backlog,
                 vec![(1, S::Done), (2, S::InProgress)],
-                block_to(BlockReason::Depends, "#2"),
+                Some(block_to(BlockReason::Depends, "#2")),
             ),
             (
                 &backlog,
                 vec![(1, S::Blocked)],
-                block_to(BlockReason::Depends, "#1"),
+                Some(block_to(BlockReason::Depends, "#1")),
             ),
             (
                 &backlog,
                 vec![(1, S::Backlog), (2, S::Cancelled)],
-                block_to(BlockReason::DepCancelled, "#2 cancelled"),
+                Some(block_to(BlockReason::DepCancelled, "#2 cancelled")),
             ),
             (
                 &backlog,
                 vec![(3, S::Cancelled), (2, S::Cancelled)],
-                block_to(BlockReason::DepCancelled, "#3 cancelled"),
+                Some(block_to(BlockReason::DepCancelled, "#3 cancelled")),
             ),
             (&depends, vec![], Some(Target::Unblock)),
             (&depends, vec![(1, S::Done)], Some(Target::Unblock)),
@@ -331,13 +335,13 @@ mod tests {
             (
                 &depends,
                 vec![(1, S::Cancelled)],
-                block_to(BlockReason::DepCancelled, "#1 cancelled"),
+                Some(block_to(BlockReason::DepCancelled, "#1 cancelled")),
             ),
             (&cancelled, vec![(1, S::Cancelled), (2, S::Backlog)], None),
             (
                 &cancelled,
                 vec![(2, S::Backlog)],
-                block_to(BlockReason::Depends, "#2"),
+                Some(block_to(BlockReason::Depends, "#2")),
             ),
             (&cancelled, vec![(1, S::Done)], Some(Target::Unblock)),
         ];

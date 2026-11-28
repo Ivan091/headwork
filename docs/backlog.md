@@ -352,6 +352,7 @@ Design: `S:/Code/notes/backlog-workflow-v2-proposal-2026-11-27.md`, section 3.
 `item` depends on `dep` ("`item` waits for `dep`"). Many to many, across projects and epics. The pure guard
 `core::backlog::check_dependency` refuses, in this order: an item that depends on itself; an item that is not in `backlog` or
 `blocked` (`in_progress`, `done` and `cancelled` take no dependency, so a started task is never stopped by a new edge); a
+`blocked` item whose status before the block is not `backlog` (a block out of `in_progress` takes no dependency); a
 `cancelled` dependency; and a cycle (`would_cycle` returns the path, the refusal prints `#1 -> #2 -> #1`). A dependency that
 is already `done` is allowed and gates nothing until it is reopened. Adding an edge that exists changes nothing.
 
@@ -379,10 +380,14 @@ So the changes read as:
 | a dependency becomes `cancelled` | `dep_cancelled` |
 | a dependency is reopened or unfinished | blocked `depends` again: a done dependency reopened re-blocks its dependants in `backlog` (this replaces "reopening does not re-block"), and a cancelled one reopened turns `dep_cancelled` into `depends` while it is open; dependants already started or finished are left alone |
 | remove a dependency (`backlog-undepended`) | settled again: the last cancelled edge gone with open ones left gives `depends`; nothing left to wait for frees it |
-| the user or orchestrator unblocks it by hand while an edge is open or cancelled | blocked again at once (`depends` or `dep_cancelled`), so a hand-lifted block or a `decision` block cannot let the item start |
+| the user or orchestrator unblocks a `depends` or `dep_cancelled` block by hand while an edge is open or cancelled | refused (`MoveRefusal::Dependencies`, naming the waiting ids such as `#4 (open), #3 (cancelled)`), with no event; finish the dependency or remove the edge |
+| a `decision`, `event` or other block with an open or cancelled edge is unblocked by hand | lifted, then settled at once to `depends` or `dep_cancelled`, so the item cannot start |
 
-A start or respawn is refused for any actor while the item has a not-done or cancelled dependency (`MoveFacts`
-`open_dependencies` and `cancelled_dependencies`; the refusal names them). A dependency is added only to an item in `backlog`,
+A start, respawn or relink (an item in progress whose task is no longer live, linked to a new task) is refused for any actor
+while the item has a not-done or cancelled dependency (`MoveFacts` `open_dependencies` and `cancelled_dependencies`; the
+refusal names them), and so is the unblock of a `depends` or `dep_cancelled` block. The decision of what to block lives in
+the pure `core::backlog::dependency_block`, and `WaitingDependencies` counts and names the waiting dependencies once for the
+guard's facts and the refusal text. A dependency is added only to an item in `backlog`,
 or blocked with `backlog` as the status to return to: a block out of `in_progress` (`task_lost`, `partial`, or a worker's
 `decision`) takes none.
 

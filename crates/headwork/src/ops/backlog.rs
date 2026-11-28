@@ -676,8 +676,9 @@ pub fn add_for(
 ///
 /// # Errors
 ///
-/// Fails when a worker asks (only the user and the orchestrator order the backlog), the dependency guard refuses (itself, a
-/// cycle, an item not in the backlog or blocked, a cancelled dependency) or the store fails; nothing changes then.
+/// Fails when a worker asks (only the user and the orchestrator order the backlog), the dependency guard refuses (itself, an
+/// item not in the backlog or blocked, a blocked item that does not return to the backlog, a cancelled dependency, a
+/// cycle) or the store fails; nothing changes then.
 pub fn depend(store: &mut Store, env: &Env<'_>, id: i64, deps: &[i64]) -> Result<Change> {
     if backlog_actor(env.actor) == BacklogActor::Worker {
         bail!("a worker does not change dependencies: ask the orchestrator");
@@ -686,8 +687,8 @@ pub fn depend(store: &mut Store, env: &Env<'_>, id: i64, deps: &[i64]) -> Result
     Ok(changed(store, env, &[item]))
 }
 
-/// Removes the dependency of `id` on `dep` and exports; an item blocked for `depends` that waits for nothing else open is
-/// unblocked.
+/// Removes the dependency of `id` on `dep` and exports; the item's dependency block is settled again: unblocked when nothing
+/// is left to wait for, else blocked for the dependency that still waits.
 ///
 /// # Errors
 ///

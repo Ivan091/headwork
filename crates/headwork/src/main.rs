@@ -675,8 +675,8 @@ enum BacklogAction {
         #[arg(long)]
         json: bool,
     },
-    /// Make an item wait for others: it is blocked until each is done. Refused for itself, a cycle, an item not in the
-    /// backlog or blocked, and a cancelled dependency.
+    /// Make an item wait for others: it is blocked until each is done. Refused for itself, an item not in the backlog or
+    /// blocked, a blocked item that does not return to the backlog, a cancelled dependency, and a cycle.
     Depend {
         /// The item that waits.
         id: i64,
@@ -687,7 +687,8 @@ enum BacklogAction {
         #[arg(long)]
         json: bool,
     },
-    /// Remove a dependency; an item that waits for nothing else open goes back to what it was.
+    /// Remove a dependency; the item's block is settled again: with nothing left to wait for it goes back to what it was,
+    /// else it is blocked for the dependency that still waits (`dep_cancelled` while one is cancelled).
     Undepend {
         /// The item that waited.
         id: i64,

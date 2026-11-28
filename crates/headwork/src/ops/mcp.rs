@@ -456,8 +456,8 @@ const TOOLS: &[ToolDef] = &[
         name: "backlog_depend",
         description: concat!(
             "Make a backlog item wait for others, and export `backlog.md`: it is blocked (`depends`) until each is done, and ",
-            "freed when the last is. Refused for itself, a cycle, an item not in the backlog or blocked, and a cancelled ",
-            "dependency.",
+            "freed when the last is. Refused for itself, an item not in the backlog or blocked, a blocked item that does not ",
+            "return to the backlog, a cancelled dependency, and a cycle.",
         ),
         roles: ORCHESTRATOR,
         schema: || {
@@ -473,8 +473,9 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "backlog_undepend",
         description: concat!(
-            "Remove a dependency of a backlog item, and export `backlog.md`; an item blocked for `depends` that waits for ",
-            "nothing else open goes back to what it was.",
+            "Remove a dependency of a backlog item, and export `backlog.md`; its dependency block is settled again: with ",
+            "nothing left to wait for the item goes back to what it was, else it is blocked for the dependency that still ",
+            "waits (`dep_cancelled` while one is cancelled).",
         ),
         roles: ORCHESTRATOR,
         schema: || {

@@ -1112,9 +1112,18 @@ fn short_text(text: &str, max: usize) -> String {
     }
 }
 
+fn replayed_deps<'f>(draw: &Draw<'f>) -> impl Iterator<Item = &'f super::DepFact> {
+    let draw_until = draw.at;
+    draw.facts
+        .item_deps
+        .iter()
+        .filter(move |dep| draw_until.is_none_or(|at| dep.created_at.as_str() <= at))
+}
+
 /// The backlog items drawn: those linked to a drawn task; and, outside a one-task view, open ones with a dependency or
-/// a dependant, and epics with an open child. An instant shows the items and the dependencies added by then, each
-/// item in its status now.
+/// a dependant, and epics with an open child. An instant shows the items created by then and the dependencies still
+/// stored that were added by then, each item in its status now: a dependency removed before now is not drawn even at an
+/// instant when it existed, because removals are not replayed.
 fn drawn_items<'f>(draw: &Draw<'f>) -> Vec<&'f super::ItemFact> {
     let existing: Vec<&super::ItemFact> = draw
         .facts
@@ -1129,12 +1138,7 @@ fn drawn_items<'f>(draw: &Draw<'f>) -> Vec<&'f super::ItemFact> {
         .map(|item| item.id)
         .collect();
     let mut tied: BTreeSet<i64> = BTreeSet::new();
-    for dep in draw
-        .facts
-        .item_deps
-        .iter()
-        .filter(|dep| draw.until(&dep.created_at))
-    {
+    for dep in replayed_deps(draw) {
         if ids.contains(&dep.item) && ids.contains(&dep.depends_on) {
             tied.insert(dep.item);
             tied.insert(dep.depends_on);
@@ -1197,12 +1201,7 @@ fn items(draw: &Draw<'_>, canvas: &mut Canvas) {
             );
         }
     }
-    for dep in draw
-        .facts
-        .item_deps
-        .iter()
-        .filter(|dep| draw.until(&dep.created_at))
-    {
+    for dep in replayed_deps(draw) {
         canvas.link(
             EdgeKind::Depends,
             &item_node(dep.item),

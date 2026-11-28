@@ -96,7 +96,7 @@ Items are nodes `item:<id>` (`kind` `item` or `epic`), read straight from `backl
 - it is open (`backlog`, `in_progress`, `blocked`) and has a dependency or a dependant; or
 - it is an epic with an open child (the last two rules apply to every view except one task's, `--task`).
 
-Edges: `depends` (item to the item it waits for, dashed amber), `part-of` (item to its epic, dotted) and `tracks` (task to its linked item, dotted); an edge whose other end is not drawn is left out. A past instant (`--at`, the replay slider) draws the items and the dependencies added by then (`created_at`); an item's status is not yet replayed from the `backlog-moved` events, so each shows the status it has now. The page has a `backlog items` filter and a legend entry; the project filter applies through the item's project.
+Edges: `depends` (item to the item it waits for, dashed amber), `part-of` (item to its epic, dotted) and `tracks` (task to its linked item, dotted); an edge whose other end is not drawn is left out. A past instant (`--at`, the replay slider) draws the items and the dependencies added by then (`created_at`); a replay draws only the dependencies still stored, so a dependency removed before now is not drawn even at an instant when it existed, and an item's status is not replayed from the `backlog-moved` events, so each shows the status it has now. The page has a `backlog items` filter and a legend entry; the project filter applies through the item's project.
 
 ## 5. Store: one new migration
 

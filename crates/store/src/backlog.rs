@@ -590,10 +590,8 @@ fn cascade_move(
 /// a dependency is added or removed.
 fn settle_dependency_block(tx: &Transaction<'_>, id: i64, by: Actor) -> Result<(), StoreError> {
     let status = load(tx, id)?.draft.status;
-    match dependency_block(&status, &dependency_statuses(tx, id)?) {
-        Some(target) => cascade_move(tx, id, target, by),
-        None => Ok(()),
-    }
+    dependency_block(&status, &dependency_statuses(tx, id)?)
+        .map_or(Ok(()), |target| cascade_move(tx, id, target, by))
 }
 
 fn dep_event(
@@ -656,8 +654,7 @@ fn add_dependency(
     Ok(())
 }
 
-/// Removes "`item` depends on `dep`"; an item blocked for `depends` or `dep_cancelled` with nothing else open to wait for
-/// goes back to the status it had.
+/// Removes "`item` depends on `dep`" and settles the dependency block of the item again.
 fn remove_dependency(
     tx: &Transaction<'_>,
     item: i64,
@@ -1052,8 +1049,8 @@ impl Store {
         Ok(item)
     }
 
-    /// Removes the dependency and logs `backlog-undepended`; an item blocked for `depends` that waits for nothing else open
-    /// is unblocked in the same transaction.
+    /// Removes the dependency and logs `backlog-undepended`; the dependency block of the item is settled again in the same
+    /// transaction: lifted when nothing is left to wait for, else `depends` or `dep_cancelled` for what still waits.
     ///
     /// # Errors
     ///
