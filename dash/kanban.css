@@ -1,0 +1,224 @@
+body[data-view="board"] #graph,
+body[data-view="board"] #timeline,
+body[data-view="board"] #scope,
+body[data-view="board"] #layout,
+body[data-view="board"] #fit,
+body[data-view="board"] #legend-toggle,
+body[data-view="board"] #unfocus,
+body[data-view="board"] #gates-toggle,
+body[data-view="board"] #backlog-toggle,
+body[data-view="board"] header label,
+body[data-view="board"] #focus,
+body[data-view="board"] #replay-task {
+  display: none;
+}
+
+#board {
+  display: none;
+}
+
+body[data-view="board"] #board {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+#views button.on {
+  background: var(--blue);
+  color: #fff;
+}
+
+#board h2,
+#board h3 {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.kb-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.kb-heads {
+  position: sticky;
+  top: -10px;
+  z-index: 2;
+  padding: 6px 0;
+  background: var(--bg);
+}
+
+.kb-head {
+  font-weight: 600;
+  border-bottom: 2px solid var(--grey);
+  padding-bottom: 3px;
+}
+
+.kb-head.clickable {
+  cursor: pointer;
+}
+
+.kb-head.status-in_progress {
+  border-color: var(--green);
+}
+
+.kb-head.status-blocked {
+  border-color: var(--red);
+}
+
+.kb-head.status-done {
+  border-color: var(--faded);
+}
+
+.kb-count,
+.kb-more-done {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.kb-lane {
+  margin: 14px 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.kb-strip {
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.kb-strip-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kb-strip-cards .kb-card {
+  width: 260px;
+}
+
+.kb-group {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.kb-group.group-needs-you {
+  color: var(--red);
+}
+
+.kb-group.group-working {
+  color: var(--green);
+}
+
+.kb-group.group-in-review {
+  color: var(--amber);
+}
+
+.kb-card {
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.kb-card.waiting {
+  border-left-color: var(--red);
+}
+
+.kb-card.held {
+  opacity: 0.6;
+}
+
+.kb-card.drift {
+  border-left-color: var(--amber);
+}
+
+.kb-id {
+  color: var(--muted);
+}
+
+.kb-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kb-card.open .kb-text {
+  display: block;
+}
+
+.kb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+#board .chip {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  text-decoration: none;
+}
+
+#board .chip.owner-user,
+#board .chip.status-blocked,
+#board .chip.overdue {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+#board .chip.held {
+  color: var(--grey);
+}
+
+#board button.chip.task {
+  cursor: pointer;
+  color: var(--text);
+}
+
+#board button.chip.link {
+  cursor: pointer;
+  color: var(--blue);
+}
+
+#board .chip.status-working {
+  border-color: var(--green);
+}
+
+#board .chip.status-needs-you {
+  border-color: var(--red);
+}
+
+#board .chip.status-in-review {
+  border-color: var(--amber);
+}
+
+.kb-more {
+  display: none;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.kb-card.open .kb-more {
+  display: block;
+}
+
+.kb-note {
+  margin-top: 2px;
+}

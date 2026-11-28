@@ -18,6 +18,18 @@ use serde::Serialize;
 pub struct StatusLine {
     /// The task's name.
     pub task: String,
+    /// The task's id.
+    pub task_id: i64,
+    /// The task's model.
+    pub model: String,
+    /// The task's effort as shown, `?` when none is stored.
+    pub effort: String,
+    /// How many parts the task has.
+    pub parts: u32,
+    /// The task's own lifecycle state.
+    pub state: TaskState,
+    /// When the task last changed.
+    pub updated_at: String,
     /// The rolled-up status.
     pub status: TaskStatus,
     /// The open pull requests of the task and its parts.
@@ -153,15 +165,7 @@ pub fn lines_waiting(
             .filter(|pr| pr.state == "open")
             .map(|pr| pr.url.clone())
             .collect();
-        let asking_parts: Vec<String> = parts
-            .iter()
-            .zip(&part_facts)
-            .filter(|(_, facts)| {
-                !matches!(facts.state, TaskState::Closing | TaskState::Closed)
-                    && (facts.asking || facts.state == TaskState::NeedsUser)
-            })
-            .map(|(part, _)| part.task.name.to_string())
-            .collect();
+        let asking_parts = asking(&parts, &part_facts);
         let task = top.task.name.to_string();
         let line = match status {
             TaskStatus::InReview if !prs.is_empty() => {
@@ -215,6 +219,12 @@ pub fn lines_waiting(
         };
         out.push(StatusLine {
             task,
+            task_id: top.task.id.0,
+            model: top.task.model.to_string(),
+            effort: top.task.effort_label(),
+            parts: u32::try_from(parts.len()).unwrap_or(u32::MAX),
+            state: top.task.state,
+            updated_at: top.task.updated_at.clone(),
             status,
             prs,
             asking_parts,
@@ -231,6 +241,18 @@ pub fn lines_waiting(
         });
     }
     Ok(out)
+}
+
+fn asking(parts: &[&BoardTask], facts: &[StatusFacts]) -> Vec<String> {
+    parts
+        .iter()
+        .zip(facts)
+        .filter(|(_, facts)| {
+            !matches!(facts.state, TaskState::Closing | TaskState::Closed)
+                && (facts.asking || facts.state == TaskState::NeedsUser)
+        })
+        .map(|(part, _)| part.task.name.to_string())
+        .collect()
 }
 
 fn open_findings(board: &Board, top: &BoardTask, parts: &[&BoardTask]) -> Vec<String> {

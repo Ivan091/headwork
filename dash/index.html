@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>headwork graph</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/kanban.css">
 </head>
 <body>
 <header>
   <strong class="brand">headwork</strong>
+  <span id="views"><button id="view-graph" type="button" class="on">graph</button><button id="view-board" type="button">board</button></span>
   <select id="scope" title="which tasks">
     <option value="live">live</option>
     <option value="all">all tasks</option>
@@ -39,6 +41,7 @@
 </header>
 <main>
   <div id="graph"></div>
+  <div id="board" aria-label="kanban board"></div>
   <aside id="gates" aria-label="gate slots" hidden></aside>
   <aside id="legend" hidden aria-label="legend"></aside>
   <aside id="backlog" aria-label="backlog" hidden></aside>
@@ -72,5 +75,6 @@
 <script src="/vendor/cytoscape-fcose.js"></script>
 <script src="/untangle.js"></script>
 <script src="/app.js"></script>
+<script src="/kanban.js"></script>
 </body>
 </html>

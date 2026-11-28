@@ -2475,3 +2475,58 @@ fn a_restored_pane_whose_host_stops_answering_gets_the_whole_ladder_then_closes(
         "the pane closes after the ladder: {calls:?}"
     );
 }
+
+#[test]
+fn the_kanban_board_rolls_a_lead_with_an_asking_part_into_needs_you_and_shows_its_gate_wait() {
+    use headwork::ops::kanban::kanban;
+    use headwork_core::TaskStatus;
+    use headwork_core::gate::GateClass;
+    use headwork_core::kanban::Options;
+
+    let mut w = world_with("ask", LEADS);
+    let (lead, _, _) = w.working("plan");
+    let (part, part_session, _) = w.part(&lead, "render");
+    w.store
+        .open_ask(
+            &NewAsk {
+                task_id: Some(part.id),
+                session_id: Some(part_session),
+                kind: AskKind::Question,
+                question: "Ship it?".to_owned(),
+                options: vec!["Ship".to_owned(), "Hold".to_owned()],
+            },
+            Actor::Hook,
+        )
+        .unwrap();
+    w.store
+        .transition(part.id, &Trigger::AskOpened, Actor::Hook)
+        .unwrap();
+    let board = kanban(
+        &w.store,
+        &headwork_core::usage::UsageConfig::default(),
+        &[(part.id.0, GateClass::Cpu)],
+        &Options::default(),
+    )
+    .unwrap();
+    let card = board
+        .unlinked
+        .iter()
+        .find(|task| task.name == "demo-plan")
+        .unwrap();
+    assert_eq!(
+        card.status,
+        TaskStatus::NeedsYou,
+        "the asking part lifts the lead"
+    );
+    assert_eq!(card.parts, 1, "one part counted");
+    assert_eq!(
+        card.asking_parts,
+        vec!["demo-plan-render".to_owned()],
+        "who asks"
+    );
+    assert_eq!(
+        card.waiting_for.as_deref(),
+        Some("cpu"),
+        "the gate wait of the part"
+    );
+}

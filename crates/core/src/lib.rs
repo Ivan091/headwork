@@ -13,6 +13,7 @@ pub mod flags;
 pub mod gate;
 pub mod graph;
 pub mod guard;
+pub mod kanban;
 pub mod layout;
 pub mod lead;
 pub mod leftover;
